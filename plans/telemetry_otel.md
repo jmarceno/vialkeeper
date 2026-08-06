@@ -1,10 +1,13 @@
 # Plan — OpenTelemetry Observability for Version 1
 
 Addresses G2 in [implementation_gaps.md](../implementation_gaps.md): Plan §11 mandates
-project telemetry events, but the current `ElixirDB.Telemetry` module only *declares*
-nine event prefixes and is never emitted anywhere. We take the opportunity to implement
-observability properly against the **OpenTelemetry (OTel)** standard from the start,
-rather than wiring the placeholder.
+project telemetry events. The current `ElixirDB.Telemetry` module declares nine event
+names and exposes a `span/3` wrapper that is **never called anywhere** (only the module's
+own `defmodule` line references `ElixirDB.Telemetry`). However, two of the nine events are
+**already emitted directly** via bare `:telemetry.execute/3`, outside the placeholder
+module (see §5.3 and §5.6); those must be migrated, not re-added. We take the opportunity
+to implement observability properly against the **OpenTelemetry (OTel)** standard from the
+start, rather than wiring the placeholder.
 
 **Goal:** every Plan §11 event is emitted as OTel spans + metrics, trace context
 propagates across the HTTP boundary and into replication workers, and the existing
@@ -36,10 +39,11 @@ zero-observability footprint is replaced by a correct, low-overhead, opt-in pipe
 Add OpenTelemetry libraries. Pin major versions; the lockfile is authoritative (Plan §4.2).
 
 ```elixir
-# Runtime — OpenTelemetry
-{:opentelemetry_api, "~> 1.4"},     # stable tracing/metrics API (no app by default)
-{:opentelemetry, "~> 1.5"},         # SDK, application process; conditionally started
-{:opentelemetry_exporter, "~> 1.8"} # OTLP exporter (gRPC+HTTP)
+# Runtime — OpenTelemetry. Mark runtime: false so the SDK/exporter apps do NOT
+# auto-start; the Observability.Supervisor starts them only when configured.
+{:opentelemetry_api, "~> 1.4", runtime: false},  # stable tracing/metrics API
+{:opentelemetry, "~> 1.5", runtime: false},       # SDK, application process
+{:opentelemetry_exporter, "~> 1.8", runtime: false}, # OTLP exporter (gRPC+HTTP)
 {:telemetry, "1.4.2"}               # KEEP — bridge target, and used by bandit/req/finch
 ```
 
@@ -52,6 +56,11 @@ span (§5.7) — it is ~15 lines.
 
 ### 2.2 `config/config.exs`
 
+Resource and processor tuning only. **Do not set `otlp_endpoint` here** — a hardcoded
+endpoint (even `localhost:4318`) risks a network attempt on misconfiguration and would
+weaken the OBSV-004 "zero network when unconfigured" guarantee. The endpoint is set
+exclusively inside the `runtime.exs` gate (§2.3).
+
 ```elixir
 config :opentelemetry, :resource,
   service: %{name: "elixir_db", version: "0.1.0"}
@@ -62,17 +71,18 @@ config :opentelemetry, :processors,
     max_queue_size: 2048,
     exporting_timeout_ms: 30_000
   }
-
-config :opentelemetry_exporter,
-  otlp_protocol: :http_protobuf,
-  otlp_endpoint: "http://localhost:4318"
 ```
 
 ### 2.3 `config/runtime.exs` (opt-in gate)
 
+Applies to every env. The exporter endpoint and OTLP trace/metric exporters are wired
+**only** when `ELIXIRDB_OTLP_ENDPOINT` is present; otherwise both exporter lists stay empty.
+
 ```elixir
-if config_env() == :prod and System.get_env("ELIXIRDB_OTLP_ENDPOINT") do
-  config :opentelemetry_exporter, otlp_endpoint: System.fetch_env!("ELIXIRDB_OTLP_ENDPOINT")
+if System.get_env("ELIXIRDB_OTLP_ENDPOINT") do
+  config :opentelemetry_exporter,
+    otlp_protocol: :http_protobuf,
+    otlp_endpoint: System.fetch_env!("ELIXIRDB_OTLP_ENDPOINT")
   config :opentelemetry, traces_exporter: [:otlp]
   config :opentelemetry, metrics_exporter: [:otlp]
 else
@@ -97,9 +107,10 @@ children = [
 ```
 
 The supervisor reads `:opentelemetry` config and decides whether to
-`Application.ensure_all_started(:opentelemetry_exporter)`. When unconfigured, it starts
-only a lightweight `ElixirDB.Observability.Meter` (a periodic metric reader). This keeps
-the "no collector → no network" guarantee.
+`Application.ensure_all_started(:opentelemetry_exporter)`. Because the deps are declared
+`runtime: false` (§2.1), nothing auto-starts without this explicit call. When unconfigured,
+it starts only a lightweight `ElixirDB.Observability.Meter` (a periodic metric reader that
+is a no-op with `metrics_exporter: []`). This keeps the "no collector → no network" guarantee.
 
 ---
 
@@ -157,8 +168,20 @@ lib/elixir_db/observability/
 ```
 
 `lib/elixir_db/telemetry.ex` (the dead placeholder) is **deleted**; the event list moves
-to `Observability.Attributes`/`Instrumentation.*` as real emitters. `grep` for
-`ElixirDB.Telemetry` after removal must be empty.
+to `Observability.Attributes`/`Instrumentation.*` as real emitters. After removal,
+`grep -rn "ElixirDB.Telemetry" lib/ test/` must be empty.
+
+**Note on existing emitters (critical).** The placeholder module is unused, but two of the
+nine events are *already* emitted via bare `:telemetry.execute/3` elsewhere in the codebase
+— `[:elixir_db, :database, :overload]` at `runtime/database_admission.ex:55` and
+`[:elixir_db, :replication, :checkpoint]` at `replication.ex:179-183`. These must be
+**migrated** to the new OTel emitters (§5.3, §5.6) and their bare `:telemetry.execute`
+calls removed. The existing checkpoint emit also carries `source_sequence` metadata, which
+is **not** in the OBSV-003 allow-list and must be dropped on migration. Failing to migrate
+these would cause double emission and an allow-list leak. As a gate, after migration no
+bare emitter must remain. Use multiline matching — the replication call spans several
+lines, so a plain single-line `grep` misses it:
+`rg -U --multiline ':telemetry\.execute\(\s*\[\s*:elixir_db' lib/` must be empty.
 
 ---
 
@@ -170,67 +193,113 @@ not SQL rows.
 
 ### 5.1 `:database, :open` — `lib/elixir_db/runtime/database_catalog.ex`
 
-Wrap the `:open` GenServer call path (entry `def open(uuid)` line 22; the actual open is
-the `DynamicSupervisor.start_child` around line 216). Create the span in the caller
-process before `GenServer.call`, set `outcome` from the result. On the
-`database_unavailable`/`database_in_use` paths, record `outcome: :rejected` and the error
-code; these are not exceptions — do not set span status to ERROR, since they are
-expected application outcomes.
+Wrap the `:open` GenServer call path (public entry `def open(uuid)` at line 22; the actual
+open is the `DynamicSupervisor.start_child` inside `defp open_runtime/2` at line 216).
+Create the span in the caller process before `GenServer.call`, set `outcome` from the
+result. On the `database_unavailable`/`database_in_use` paths, record `outcome: :rejected`
+and the error code; these are not exceptions — do not set span status to ERROR, since they
+are expected application outcomes.
 
-### 5.2 `:database, :command` — `lib/elixir_db/runtime/database_catalog.ex:command/3`
+### 5.2 `:database, :command` — `lib/elixir_db/runtime/database_catalog.ex`
 
-The central command dispatch (line ~175, the `DatabaseAdmission.with_token(...)` path).
-This single wrap covers all owner commands (put/get/delete/resolve/index/import/etc.).
-`command.type` comes from the normalized `Storage.Commands` struct — the owner already
-pattern-matches on it (`database_owner.ex:45-141`), so add a `command_type/1` helper.
+The central command dispatch. The public API is `command/3` (lines 25-26); the server-side
+dispatch is `handle_call({:command, uuid, command}, ...)` at lines 171-181, which runs
+`DatabaseAdmission.with_token(uuid, fn -> DatabaseOwner.command(uuid, command) end)` at
+line 175. (Module name is `DatabaseAdmission`, singular.) This single wrap covers all owner
+commands (put/get/delete/resolve/index/import/etc.).
+
+`command.type` comes from the normalized `Storage.Commands` struct — the owner
+pattern-matches on each struct (`database_owner.ex:45-147`, covering `Identity` through
+`DeleteJob` plus `Close` and the unknown-command fallback). Since dispatch is by struct
+module (e.g. `%ElixirDB.Storage.Commands.PutDocument{}`), add a `command_type/1` helper
+that maps the struct module to an atom (e.g. `:put`, `:get`, `:delete`, `:resolve`).
+
 On `{:error, error}`, set `error.code` and span status ERROR only when
 `error.code == :internal_error`; expected domain errors (`:revision_conflict`,
 `:document_not_found`) stay span status UNSET to avoid alert noise.
 
+`outcome` is sourced from the owner result per `TX-006`: `:ok` on a normal
+acknowledged mutation, `:replayed` when the owner returns `%{replayed: true}` (an
+idempotent retry that matched an existing identical revision), and left unset/`:ok` on
+error. This is how the OBSV-003 `outcome: :replayed` attribute is captured.
+
 ### 5.3 `:database, :overload` — `lib/elixir_db/runtime/database_admission.ex`
 
-At the no-token path (line ~56, where `database_overloaded` is returned). This is a
-**counter increment, not a span** (overload is not a unit of work). Emit
-`elixir_db.database.overload.count` with `db.uuid`.
+**Migration, not addition.** This event is already emitted today as a bare
+`:telemetry.execute([:elixir_db, :database, :overload], %{count: count}, %{})` at line 55,
+inside `defp acquire(counter, limit)` where `database_overloaded` is returned (line 56).
+Replace that bare call with the OTel counter increment via
+`Observability.Instrumentation.Database`. It remains a **counter increment, not a span**
+(overload is not a unit of work). Emit `elixir_db.database.overload.count` with `db.uuid`.
+(`db.uuid` is available here via the `acquire` call path; thread it down from
+`with_token/2` if not already in scope.)
 
 ### 5.4 `:changes, :read` — `lib/elixir_db/changes.ex`
 
-Wrap `Changes.read/3` and the bounded re-reads inside `Changes.wait/3` (the `receive`
-block does not hold the owner; only the owner calls are bounded reads). `entries` = length
-of `results` returned. The long-poll wait itself is NOT inside this span — only each
-bounded read is. (Avoids a span that lasts the whole `wait_ms`.)
+Wrap `Changes.read/2` (`def read(uuid, request \\ %{})`, line 5) and the bounded re-reads
+performed by the waiting path. `wait/2` (`def wait(uuid, request)`, line 11) delegates to
+the private `wait_request/2`, whose `receive` block (lines 36-50) calls back into `read/2`
+on notification, timeout, and close — those are the bounded reads to wrap. `entries` =
+length of `results` returned. The long-poll wait itself is NOT inside this span — only each
+bounded read is. (Avoids a span that lasts the whole `wait_ms`, and the wait does not hold
+the owner connection.)
 
 ### 5.5 `:query, :execute` and `:index, :build` — `lib/elixir_db/storage/sqlite/adapter.ex`
 
-Wrap `execute_query/2` (line ~265) and `create_index`/`rebuild_index` (lines ~247, ~257)
-at the **adapter entry**, but emit from the owner process context so the span parent is
-the `:command` span. `index_id` and `index_type` are available on the definition/request.
-`examined` = the candidate count the runner already computes (`query_runner.ex:84`).
+Wrap `execute_query/2` (line 265) and `create_index`/`rebuild_index` (lines 247, 257) at
+the **adapter entry**, but emit from the owner process context so the span parent is the
+`:command` span. `index_id` and `index_type` are available on the definition/request.
+`examined` = the candidate count the runner computes (`query_runner.ex`: the `count(*)`
+full-scan at line ~84, bound as `examined` at lines 21 and 37 of `execute/2`).
+
+`execute_query/2` already captures `System.monotonic_time(:millisecond)` at line 266 for
+its `max_execution_ms` overrun guard — reuse that timing value for the span duration rather
+than starting a second monotonic clock.
 
 Note: there is a tension with §5's "never inside the SQLite adapter" — resolution is that
 the adapter calls into `Observability.Instrumentation.Query` (a service-level helper), not
 OTel directly. The adapter still knows nothing about OTel; it knows about a project
 callback.
 
-### 5.6 `:replication, :batch` and `:replication, :checkpoint` — `lib/elixir_db/replication.ex`
+### 5.6 `:replication, :batch` and `:replication, :checkpoint` — `lib/elixir_db/replication.ex` / `worker.ex`
 
 The batch span wraps one full `read_changes → diff → fetch → import → checkpoint_target`
-cycle. The cleanest seam is `handle_phase_result(:checkpoint_source, ...)` completing in
-`worker.ex` — emit `:batch` when a batch finishes (success or retryable failure), with
-`revisions_written` from the import context. `:checkpoint` wraps each
-`checkpoint_target`/`checkpoint_source` `put_checkpoint` call (replication.ex:147, 170).
+cycle. The cleanest seam is `handle_phase_result(:checkpoint_source, {:ok, context}, data)`
+in `worker.ex` (line 236) — emit `:batch` when a batch finishes (success or retryable
+failure), with `revisions_written` from the import context.
+
+`:checkpoint` wraps each `checkpoint_target`/`checkpoint_source` `put_checkpoint` call.
+`checkpoint_target/4` is at `replication.ex:147` (the `endpoint_call(target, :put_checkpoint, ...)`
+at lines 151-154); `checkpoint_source/3` is at `replication.ex:170` (the
+`endpoint_call(source, :put_checkpoint, ...)` at lines 175-178).
+
+**Migration (critical).** `checkpoint_source/3` already emits a bare
+`:telemetry.execute([:elixir_db, :replication, :checkpoint], %{documents, revisions},
+%{replication_id, source_sequence})` at `replication.ex:179-183`. Replace it with the new
+OTel span + counter emitter. Note `source_sequence` is **not** in the OBSV-003 allow-list
+— drop it on migration (keep only `replication.id`). `revisions`/`documents` become the
+bounded counts; they map to `revisions_written`. Failing to remove the bare call would
+cause double emission.
 
 Carry the worker span context into endpoint calls so remote-end HTTP requests are children
 of the batch span (§6.2).
 
 ### 5.7 `:http, :request` — `lib/elixir_db/http/router.ex`
 
-Add a top-level `Plug.Builder` plug that starts a span at request entry, sets
-`http.method`, `http.route` (use `conn.path_info` mapped to a route template, NOT the raw
-path), and on completion records `http.status_code` + duration. Extract incoming trace
-context from W3C `traceparent`/`tracestate` headers (§6.1) so a caller's trace continues.
+`HTTP.Router` does `use Plug.Router` with `plug(:match)` / `plug(:dispatch)`; the HTTP
+server is Bandit wrapping this plug (`application.ex:9`). Add a top-level `plug` placed
+ahead of `plug(:match)` that starts a span at request entry, sets `http.method`,
+`http.route` (a route template, NOT the raw `conn.path_info`), and on completion records
+`http.status_code` + duration. Extract incoming trace context from W3C
+`traceparent`/`tracestate` headers (§6.1) so a caller's trace continues.
 
-`db.uuid` is attached when the route is database-scoped (extract from path params).
+**Route-template mapping caveat.** Database-scoped routes are declared with `forward/2`
+(`/v1/databases/:uuid/documents` → `Documents`, etc.) plus a few inline `post`/`delete`
+macros and a catch-all `match _`. Because routing is forwarded to sub-modules, building the
+`http.route` template requires a small lookup from `conn.path_info` (e.g.
+`["v1","databases",_uuid,"documents","put"]` → `/v1/databases/:uuid/documents/put`) that
+covers both the forwarded and inline routes. The `:uuid` path param is available as the
+route template's `:database_uuid`; use it for `db.uuid` when the route is database-scoped.
 
 ---
 
@@ -256,9 +325,10 @@ Req.request(options, headers: headers)
 ```
 On the **remote** server, the router span (§6.1) extracts it, so a push job's trace
 spans both servers in one trace. The worker process must **detach and re-attach** the
-context across its `Task.Supervisor.async_nolink` phase tasks (`worker.ex:176`): capture
-`OpenTelemetry.Ctx.get_current()` before the task, `OpenTelemetry.Ctx.attach/1` inside
-it. Without this the async task has no parent and the trace breaks.
+context across its `Task.Supervisor.async_nolink` phase tasks (`worker.ex:176-184`,
+`async_phase/1` calling `Task.Supervisor.async_nolink(ElixirDB.TaskSupervisor, fn -> run_phase(...) end)`):
+capture `OpenTelemetry.Ctx.get_current()` before the task, `OpenTelemetry.Ctx.attach/1`
+inside it. Without this the async task has no parent and the trace breaks.
 
 ### 6.3 `:telemetry` bridge for dependencies
 
@@ -331,13 +401,23 @@ removal condition).
 
 ## 8. Rollout / migration
 
-1. **Phase A — skeleton (no behavior change):** add deps, config gate (default off),
-   supervisor, attributes module, in-memory test exporter. Delete `lib/elixir_db/telemetry.ex`.
-   `grep -rn "ElixirDB.Telemetry"` must be empty. CI stays green with export off.
-2. **Phase B — instrument the three highest-value events:** `:http.request`,
-   `:database.command`, `:database.overload`. Validate with the in-memory exporter tests.
+1. **Phase A — skeleton (no behavior change):** add deps (`runtime: false`), config gate
+   (default off, no hardcoded endpoint), supervisor, attributes module, in-memory test
+   exporter. Delete `lib/elixir_db/telemetry.ex`. At this point
+   `grep -rn "ElixirDB.Telemetry" lib/ test/` must be empty. **Also** migrate the two
+   pre-existing bare emitters so the placeholder's contract is fully retired:
+   `runtime/database_admission.ex:55` (`:database.overload`) and
+   `replication.ex:179-183` (`:replication.checkpoint`, dropping `source_sequence`).
+   These two become the first real OTel emitters; without this step they would keep firing
+   bare `:telemetry.execute` in parallel with the new pipeline. Gate (multiline — the
+   replication call spans several lines):
+   `rg -U --multiline ':telemetry\.execute\(\s*\[\s*:elixir_db' lib/` must be empty.
+   CI stays green with export off.
+2. **Phase B — instrument the next highest-value events:** `:http.request` and
+   `:database.command`. (`:database.overload` and `:replication.checkpoint` were already
+   migrated in Phase A.) Validate with the in-memory exporter tests.
 3. **Phase C — remaining events:** `:open`, `:changes.read`, `:query.execute`,
-   `:index.build`, `:replication.batch`, `:replication.checkpoint`.
+   `:index.build`, `:replication.batch`.
 4. **Phase D — propagation:** inbound `traceparent`, outbound Req injection, worker
    cross-task context detach/attach, `:telemetry` bridge.
 5. **Phase E — docs:** add an "Observability" section to `docs/operations.md` listing
@@ -362,6 +442,10 @@ Each phase ends with `mix check.fast`; Phase E ends with `mix check.full`.
 - `docs/operations.md` documents how to enable/configure collection and the full span
   catalog.
 - `grep -rn "ElixirDB.Telemetry" lib/ test/` is empty; the placeholder is gone.
+- `rg -U --multiline ':telemetry\.execute\(\s*\[\s*:elixir_db' lib/` is empty; the two
+  pre-existing bare emitters (`:database.overload`, `:replication.checkpoint`) have been
+  migrated to OTel
+  and the non-allowlisted `source_sequence` metadata dropped.
 
 ---
 
@@ -373,3 +457,23 @@ Each phase ends with `mix check.fast`; Phase E ends with `mix check.full`.
   can follow once a collector is in production.
 - Metrics on replication retry/backoff delay distribution (add as a follow-up histogram if
   operational need arises).
+
+## 11. Risk notes and interpretations
+
+- **OBSV-007 "identical to a node with no OTel dependencies reachable"** is read as *no
+  network and no observable behavior change*, not literally zero footprint. With
+  `:opentelemetry` deps present and `runtime: false`, the SDK starts only when
+  `Observability.Supervisor` starts it; with `traces_exporter: []`/`metrics_exporter: []`
+  no exporter is wired. Spans are no-ops over a no-op tracer provider. This satisfies the
+  intent; a true zero-dep footprint is not achievable while OTel is the mandated standard.
+- **Metrics API stability is the single riskiest dependency.** The Erlang OTel metrics
+  surface (`:otel_metric`, periodic reader) has historically churned more than tracing.
+  Pin `opentelemetry ~> 1.5` (which carries it) and validate the counter/histogram reader
+  end-to-end early in Phase B, before building remaining signals on top.
+- **Verify bridge sources before relying on them.** Bandit, Plug, and Finch (via Req) are
+  confirmed emitters and safe bridge targets. `db_connection` appears in `mix.lock` only
+  transitively; exqlite 0.39 uses its own connection path, so do not assume `db_connection`
+  emits useful events here — confirm before wiring a handler for it.
+- **No `prod.exs` exists**; `config/config.exs` imports `"#{config_env()}.exs"`. Production
+  configuration is therefore driven by `runtime.exs` (where the OTLP gate lives), which is
+  the correct place for it.
