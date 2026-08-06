@@ -11,6 +11,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @behaviour ElixirDB.Storage.Adapter
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+
   alias ElixirDB.Storage.SQLite.{
     Chains,
     Changes,
@@ -104,9 +105,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     else
       {:error, %ElixirDB.Error{} = error} ->
         {:error, error}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
     end
   end
 

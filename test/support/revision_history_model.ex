@@ -124,10 +124,14 @@ defmodule ElixirDB.RevisionHistoryModel do
     leaves = Tree.leaves(Map.values(state.revisions))
     live = Winner.live_leaves(leaves)
     expected = expected_live_ids(live, op[:expected])
+
     concrete =
       op
       |> Map.put(:expected, expected)
-      |> Map.put(:chosen_parent_revision, choose_parent(live, Map.get(op, :chosen_side, :winner), op))
+      |> Map.put(
+        :chosen_parent_revision,
+        choose_parent(live, Map.get(op, :chosen_side, :winner), op)
+      )
 
     case ConflictResolution.validate_leaf_set(leaves, expected) do
       {:error, %ElixirDB.Error{code: code}} ->

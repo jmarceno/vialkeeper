@@ -493,7 +493,9 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
     Enum.map(rows, fn [id, generation, parent, deleted, body_json] ->
       body =
         cond do
-          is_nil(body_json) -> nil
+          is_nil(body_json) ->
+            nil
+
           true ->
             {:ok, decoded} = StrictDecoder.decode(body_json)
             decoded

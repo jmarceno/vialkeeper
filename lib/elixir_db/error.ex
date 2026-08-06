@@ -40,18 +40,30 @@ defmodule ElixirDB.Error do
     database_overloaded: {429, true},
     database_closed: {503, true},
     database_unavailable: {503, true},
-    internal_error: {500, true}
+    # API-016: internal_error retryability is "Depends on details". The `:depends` sentinel
+    # records that the registry does not own a single answer; callers must opt into
+    # retryability for genuinely transient internal failures. Absent an explicit opt-in,
+    # the safer default for an unknown internal failure is non-retryable.
+    internal_error: {500, :depends}
   }
 
   @spec new(atom(), String.t(), map(), keyword()) :: t()
   def new(code, message, details \\ %{}, opts \\ [])
       when is_atom(code) and is_binary(message) and is_map(details) do
-    {status, retryable} = Map.get(@registry, code, {500, Keyword.get(opts, :retryable, false)})
+    {status, registry_retryable} = Map.get(@registry, code, {500, false})
+
+    # API-016: a registry value of `:depends` means retryability is per-site. Without an
+    # explicit `:retryable` opt, default to the safer non-retryable outcome.
+    default_retryable =
+      case registry_retryable do
+        :depends -> false
+        boolean when is_boolean(boolean) -> boolean
+      end
 
     %__MODULE__{
       code: code,
       message: message,
-      retryable: Keyword.get(opts, :retryable, retryable),
+      retryable: Keyword.get(opts, :retryable, default_retryable),
       http_status: Keyword.get(opts, :http_status, status),
       details: details,
       cause: Keyword.get(opts, :cause)

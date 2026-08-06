@@ -253,7 +253,9 @@ defmodule ElixirDB.ModelGenerators do
 
   defp wrong_cas_resolve_operation_history do
     StreamData.bind(
-      StreamData.tuple({document_id(), document_body(), document_body(), document_body(), document_body()}),
+      StreamData.tuple(
+        {document_id(), document_body(), document_body(), document_body(), document_body()}
+      ),
       fn {document_id, root, left, right, resolve_body} ->
         left = if left == right, do: Map.put(left, "_side", "left"), else: left
         right = Map.put(right, "_side", "right")

@@ -1,6 +1,7 @@
 defmodule ElixirDB.Runtime.DatabaseCatalog do
   @moduledoc "Registration catalog and lazy database runtime manager."
   use GenServer
+  require Logger
   alias ElixirDB.Storage.SQLite.Adapter
 
   alias ElixirDB.Runtime.{
@@ -29,10 +30,26 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   def init(_) do
     root = ElixirDB.Config.database_root()
     :ok = File.mkdir_p(root)
-    {:ok, entries} = RegistrationManifest.read()
-    state = %{root: root, entries: Map.new(entries, &{&1.uuid, &1})}
+    state = %{root: root, entries: load_entries()}
     Process.send_after(self(), :resume_registered_jobs, 0)
     {:ok, state}
+  end
+
+  # The registration manifest is routing-only, reconstructible state. If it cannot
+  # be read cleanly — corrupt JSON, an invalid entry, an unsupported version, or
+  # duplicate uuid/path — the catalog degrades to an empty registration set rather
+  # than crashing. A poisoned manifest must never take the server down; the fault
+  # is surfaced loudly for operators instead.
+  defp load_entries do
+    case RegistrationManifest.read() do
+      {:ok, entries} ->
+        Map.new(entries, &{&1.uuid, &1})
+
+      {:error, %ElixirDB.Error{code: code}} ->
+        Logger.warning("registration manifest unreadable (#{code}); starting with an empty catalog")
+
+        %{}
+    end
   end
 
   @impl true

@@ -206,7 +206,7 @@ Companion docs: [operations.md](operations.md), [adr/0001-strict-decoder.md](adr
 
 | ID | Proving test / note |
 | --- | --- |
-| REF-001–REF-005 | Behavioural overlap covered by revision/changes/replication suites above; no separate CouchDB/PouchDB port suite |
+| REF-001–REF-005 | Behavioural overlap covered by the revision/changes/replication/query/FTS suites above (independent implementation, DEF-006/007). No PouchDB/CouchDB port or differential harness in Version 1 — selected/excluded upstream categories and REF-004 documented reasons are recorded in [adr/0002-upstream-test-scope.md](adr/0002-upstream-test-scope.md) |
 | DEF-001–DEF-020 | Deferred scope: absence of unsupported routes asserted by `test/http/unknown_fields_and_routes_test.exs` / method matrix (non-404 only for normative paths); normative text in Architecture.md |
 | OUT-001 | `test/end_to_end/hot_journal_recovery_test.exs` — DELETE journal / `-journal` recovery (WAL out of scope) |
 | OUT-002 | `test/end_to_end/offline_copy_test.exs` — closed-file copy, no mandatory export |

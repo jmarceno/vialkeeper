@@ -8,8 +8,18 @@ defmodule ElixirDB.Query.Selector do
     Enum.reduce_while(selector, {:ok, true}, fn
       {"$and", clauses}, {:ok, true} when is_list(clauses) and clauses != [] ->
         case Enum.reduce_while(clauses, {:ok, true}, fn
-               clause, {:ok, _} -> matches?(document, clause)
-               _, {:error, _} = error -> {:halt, error}
+               clause, {:ok, true} ->
+                 case matches?(document, clause) do
+                   {:ok, true} -> {:cont, {:ok, true}}
+                   {:ok, false} -> {:halt, {:ok, false}}
+                   {:error, _} = error -> {:halt, error}
+                 end
+
+               _clause, {:ok, false} = acc ->
+                 {:halt, acc}
+
+               _clause, {:error, _} = error ->
+                 {:halt, error}
              end) do
           {:ok, value} -> {:cont, {:ok, value}}
           {:error, _} = error -> {:halt, error}

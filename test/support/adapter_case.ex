@@ -34,7 +34,7 @@ defmodule ElixirDB.Storage.AdapterCase do
   @doc """
   Opens a temporary adapter instance and registers cleanup for the test process.
   """
-  @spec open_temp_adapter(module(), map()) :: {:ok, map()}
+  @spec open_temp_adapter(module(), map()) :: {:ok, keyword()}
   def open_temp_adapter(adapter_mod, _context) when is_atom(adapter_mod) do
     {:ok, path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-adapter")
     {:ok, adapter} = adapter_mod.create(path, %{})

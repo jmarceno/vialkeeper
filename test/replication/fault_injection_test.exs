@@ -105,11 +105,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
           source = FaultEndpoint.wrap(local_source)
           target = FaultEndpoint.wrap(local_target)
 
-          {source, target} =
-            case side do
-              :source -> {FaultEndpoint.inject(source, endpoint_point, fault), target}
-              :target -> {source, FaultEndpoint.inject(target, endpoint_point, fault)}
-            end
+          {source, target} = inject_endpoint_fault(side, source, target, endpoint_point, fault)
 
           options = %{
             source: source,
@@ -499,6 +495,16 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   defp map_phase_to_endpoint(:after_fetch_chains), do: {:source, :after_get_revision_chains}
   defp map_phase_to_endpoint(:import), do: {:target, :import_revision_chains}
   defp map_phase_to_endpoint(:after_import), do: {:target, :after_import_revision_chains}
+
+  # Injects the scheduled fault into the source or target endpoint based on `side`.
+  # Hoisted into a helper so the compiler does not constant-fold `side` per unrolled test
+  # (which produced "clause will never match" warnings on the case arms).
+  defp inject_endpoint_fault(:source, source, target, endpoint_point, fault),
+    do: {FaultEndpoint.inject(source, endpoint_point, fault), target}
+
+  defp inject_endpoint_fault(:target, source, target, endpoint_point, fault),
+    do: {source, FaultEndpoint.inject(target, endpoint_point, fault)}
+
   defp parent_phase(point) do
     case Atom.to_string(point) do
       "after_" <> rest -> String.to_existing_atom(rest)

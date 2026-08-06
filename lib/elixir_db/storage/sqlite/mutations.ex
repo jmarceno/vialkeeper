@@ -25,15 +25,12 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     with :ok <- validate_document_input(adapter, document_id, deleted, body),
          {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current} <- current_winner(adapter, doc),
-         {:ok, candidate_state} <-
+         {:ok, candidate} <-
            candidate_revision(adapter, doc, document_id, if_revision, current, deleted, body) do
-      case candidate_state do
-        {:replayed, candidate} ->
-          {:ok, %{revision: candidate.revision_id, sequence: doc.update_sequence, replayed: true}}
-
-        candidate ->
-          insert_local_revision(adapter, doc, candidate, if_revision, operation)
-      end
+      # TX-006: insert_local_revision owns the single unified replay/winner check. An
+      # identical existing revision replays only when it is still the winner; a
+      # superseded retry surfaces revision_conflict with operation_already_committed: true.
+      insert_local_revision(adapter, doc, candidate, if_revision, operation)
     end
   end
 
@@ -194,16 +191,24 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
               {:ok, revision}
 
             true ->
+              # Stale parent: the candidate is only acceptable if an identical revision
+              # already exists (a replay). Defer the winner check to insert_local_revision,
+              # which rejects superseded retries with operation_already_committed: true and
+              # replays only when the candidate is still the winner. A content mismatch under
+              # the same revision id is an integrity violation (caught in the unified path).
               case Revisions.find(adapter.conn, doc.doc_key, revision.revision_id) do
                 {:ok, existing} ->
                   if Revisions.same?(existing, revision) do
-                    {:ok, {:replayed, revision}}
+                    {:ok, revision}
                   else
                     stale_revision_error(if_revision, current, revision)
                   end
 
-                _ ->
+                {:error, %ElixirDB.Error{code: :revision_not_found}} ->
                   stale_revision_error(if_revision, current, revision)
+
+                {:error, error} ->
+                  {:error, error}
               end
           end
         end
@@ -356,19 +361,10 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
              }}
           end
 
-        doc when is_tuple(candidate_state) ->
-          {:replayed, candidate} = candidate_state
-
-          {:ok,
-           %{
-             doc_key: doc.doc_key,
-             document_id: document_id,
-             changed: false,
-             replayed: true,
-             result: %{revision: candidate.revision_id, sequence: doc.update_sequence}
-           }}
-
         doc ->
+          # TX-006: the same unified winner check as insert_local_revision. A stale-parent
+          # retry that was superseded fails the batch atomically with
+          # operation_already_committed: true; only the still-winning candidate replays.
           candidate = candidate_state
 
           case Revisions.find(adapter.conn, doc.doc_key, candidate.revision_id) do

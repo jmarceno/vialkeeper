@@ -67,7 +67,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          rejected_index_reasons: rejected_index_reasons(indexes, selected, request),
          full_scan: is_nil(selected),
          candidate_count: count,
-         scan_allowed: not is_nil(selected) or count <= scan_threshold,
+         scan_allowed: not is_nil(selected) or count < scan_threshold,
          selector: request[:selector] || request["selector"] || %{},
          sort: request[:sort] || request["sort"] || [],
          pagination: if(selected, do: :indexed, else: :bounded_scan)
@@ -85,7 +85,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
            ),
          :ok <-
            if(
-             count <=
+             count <
                (get_in(adapter_identity(adapter), [:config, "queries", "scan_threshold"]) || 1_000),
              do: :ok,
              else:
@@ -135,18 +135,19 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   defp structured_candidate_rows(adapter, selected, request) do
     fields = selected["fields"] || []
     selector = request[:selector] || request["selector"] || %{}
-    conditions = QueryCompiler.structured_conditions(selector, fields)
 
-    {where, params} =
-      Enum.reduce(conditions, {"winning_deleted = 0", []}, fn {sql, value}, {where, params} ->
-        {where <> " AND " <> sql, params ++ List.wrap(value)}
-      end)
+    with {:ok, conditions} <- QueryCompiler.structured_conditions(selector, fields) do
+      {where, params} =
+        Enum.reduce(conditions, {"winning_deleted = 0", []}, fn {sql, value}, {where, params} ->
+          {where <> " AND " <> sql, params ++ List.wrap(value)}
+        end)
 
-    Connection.query(
-      adapter.conn,
-      "SELECT document_id, winning_revision, winning_body_json FROM documents WHERE #{where} ORDER BY document_id",
-      params
-    )
+      Connection.query(
+        adapter.conn,
+        "SELECT document_id, winning_revision, winning_body_json FROM documents WHERE #{where} ORDER BY document_id",
+        params
+      )
+    end
   end
 
   defp rejected_index_reasons(indexes, selected, request) do
@@ -163,7 +164,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   defp enforce_scan_limit(nil, examined, identity) do
     threshold = get_in(identity, [:config, "queries", "scan_threshold"]) || 1_000
 
-    if examined <= threshold,
+    if examined < threshold,
       do: :ok,
       else:
         {:error,

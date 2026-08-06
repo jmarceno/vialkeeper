@@ -237,7 +237,10 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
              ElixirDB.Replication.Id.calculate(a_uuid, b_uuid, "push", "one_shot")
 
     assert {:ok, %{version: a_cp_version, value: a_checkpoint}} =
-             DatabaseCatalog.command(a_uuid, {:command, :get_local_record, "checkpoints", replication_id})
+             DatabaseCatalog.command(
+               a_uuid,
+               {:command, :get_local_record, "checkpoints", replication_id}
+             )
 
     assert a_cp_version >= 1
     assert a_checkpoint["source_sequence"] >= 1

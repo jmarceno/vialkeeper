@@ -24,6 +24,7 @@ defmodule ElixirDB.HTTP.Response do
       })
 
   def result(conn, result, status \\ 200)
+
   def result(conn, {:ok, data}, status),
     do: ok(conn, ElixirDB.Storage.Results.to_public(data), status)
 

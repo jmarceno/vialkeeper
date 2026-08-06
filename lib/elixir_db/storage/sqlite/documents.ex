@@ -115,8 +115,6 @@ defmodule ElixirDB.Storage.SQLite.Documents do
       else: Map.put(result, :conflicts, Winner.conflicts(leaves, revision))
   end
 
-  defp normalize_error(%ElixirDB.Error{} = error), do: error
-
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
 end

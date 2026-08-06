@@ -105,7 +105,7 @@ defmodule ElixirDB.Storage.SQLite.Chains do
              %{
                document_id: doc.document_id,
                leaf_revision: leaf_id,
-               revisions: Enum.map(revisions, &revision_wire/1)
+               revisions: Enum.map(revisions, &revision_wire(&1, doc.document_id))
              }}
 
           {:error, error} ->
@@ -163,9 +163,9 @@ defmodule ElixirDB.Storage.SQLite.Chains do
 
   defp valid_replication_document_request?(_), do: false
 
-  defp revision_wire(%Revision{} = revision),
+  defp revision_wire(%Revision{} = revision, document_id),
     do: %{
-      document_id: revision.document_id,
+      document_id: document_id,
       revision_id: revision.revision_id,
       generation: revision.generation,
       parent_revision: revision.parent_revision,

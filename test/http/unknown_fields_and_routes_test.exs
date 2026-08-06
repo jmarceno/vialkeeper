@@ -48,8 +48,7 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
     replication_id = "rep_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
 
     cases = [
-      {:post, "/v1/databases/#{uuid}/documents/put",
-       %{"id" => "x", "body" => %{}, "nope" => 1}},
+      {:post, "/v1/databases/#{uuid}/documents/put", %{"id" => "x", "body" => %{}, "nope" => 1}},
       {:post, "/v1/databases/#{uuid}/documents/get", %{"id" => "seed", "extra" => true}},
       {:post, "/v1/databases/#{uuid}/documents/delete",
        %{"id" => "seed", "if_revision" => revision, "noise" => 1}},

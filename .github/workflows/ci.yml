@@ -19,3 +19,26 @@ jobs:
           key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - run: mix check.full
+      # Plan §3.1: record release metadata as a build artifact. Write the git commit to a
+      # build-time file (priv/git_ref) so Diagnostics.runtime/0 can report it without
+      # shelling out to git, then emit the full release record as a JSON artifact.
+      - name: Record git ref
+        run: |
+          mkdir -p priv
+          printf '%s' "${{ github.sha }}" > priv/git_ref
+      - name: Emit release metadata
+        env:
+          ELIXIRDB_GIT_REF: ${{ github.sha }}
+        run: |
+          mkdir -p artifacts
+          mix run -e 'IO.inspect(ElixirDB.Diagnostics.runtime(), pretty: true)' > artifacts/release-metadata.txt
+          # Emit a JSON record via the stdlib JSON encoder (atom keys are fine for JSON.stringify).
+          # On the (unexpected) chance encoding fails, write a valid JSON error marker rather
+          # than copying the pretty-printed text, so the .json artifact is always parseable.
+          mix run -e 'IO.puts(:erlang.iolist_to_binary(JSON.encode_to_iodata!(ElixirDB.Diagnostics.runtime())))' > artifacts/release-metadata.json || printf '{"error":"release metadata JSON encoding failed"}\n' > artifacts/release-metadata.json
+      - name: Upload release metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: artifacts/

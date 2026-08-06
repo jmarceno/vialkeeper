@@ -106,7 +106,10 @@ defmodule ElixirDB.Contract.FixturesTest do
       diacritics = fixture["diacritics"] || "preserve"
       remove = if diacritics == "remove", do: "2", else: "0"
       expected = fixture["expected"]
-      actual_elixir = FullText.tokens(fixture["input"], if(diacritics == "remove", do: :remove, else: :preserve))
+
+      actual_elixir =
+        FullText.tokens(fixture["input"], if(diacritics == "remove", do: :remove, else: :preserve))
+
       assert actual_elixir == expected
 
       fts_counts = fts5_token_counts(fixture["input"], remove)
@@ -256,7 +259,12 @@ defmodule ElixirDB.Contract.FixturesTest do
       :done = Exqlite.Sqlite3.step(conn, insert)
       :ok = Exqlite.Sqlite3.release(conn, insert)
 
-      :ok = Exqlite.Sqlite3.execute(conn, "CREATE VIRTUAL TABLE docs_vocab USING fts5vocab(docs, 'row')")
+      :ok =
+        Exqlite.Sqlite3.execute(
+          conn,
+          "CREATE VIRTUAL TABLE docs_vocab USING fts5vocab(docs, 'row')"
+        )
+
       {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, "SELECT term, cnt FROM docs_vocab")
 
       rows =

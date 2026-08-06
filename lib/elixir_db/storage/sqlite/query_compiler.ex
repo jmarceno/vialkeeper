@@ -9,32 +9,56 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
 
   def compile(_), do: {:error, ElixirDB.Error.invalid_request("query must be an object")}
 
-  @doc "Compile a validated JSON Pointer into an SQLite `json_extract` / `json_type` path."
-  @spec sqlite_path(binary()) :: binary()
-  def sqlite_path(path) when is_binary(path) do
-    {:ok, tokens} = Pointer.parse(path)
+  @doc """
+  Compile a validated JSON Pointer into an SQLite `json_extract` / `json_type` path.
 
-    Enum.reduce(tokens, "$", fn token, acc ->
-      acc <> ".\"" <> String.replace(token, "\"", "\"\"") <> "\""
-    end)
+  Returns `{:error, %ElixirDB.Error{}}` for an internally-invalid pointer rather than
+  raising `MatchError`. HTTP pointers are pre-validated by the `Normalizer`, so an error
+  here signals storage-layer misuse, not client input.
+  """
+  @spec sqlite_path(binary()) :: {:ok, binary()} | {:error, ElixirDB.Error.t()}
+  def sqlite_path(path) when is_binary(path) do
+    case Pointer.parse(path) do
+      {:ok, tokens} ->
+        compiled =
+          Enum.reduce(tokens, "$", fn token, acc ->
+            acc <> ".\"" <> String.replace(token, "\"", "\"\"") <> "\""
+          end)
+
+        {:ok, compiled}
+
+      {:error, error} ->
+        {:error, error}
+    end
   end
 
-  @doc "Compile a JSON Pointer into a `json_extract(winning_body_json, …)` expression."
-  @spec json_expression(binary()) :: binary()
+  @doc """
+  Compile a JSON Pointer into a `json_extract(winning_body_json, …)` expression.
+
+  Returns `{:error, %ElixirDB.Error{}}` when the pointer cannot be compiled.
+  """
+  @spec json_expression(binary()) :: {:ok, binary()} | {:error, ElixirDB.Error.t()}
   def json_expression(path) when is_binary(path) do
-    "json_extract(winning_body_json, #{quote_literal(sqlite_path(path))})"
+    with {:ok, compiled} <- sqlite_path(path),
+         do: {:ok, "json_extract(winning_body_json, #{quote_literal(compiled)})"}
   end
 
   @doc """
   Compile a structured index field into the SQLite expression-index column pair
   `(json_type(...), json_extract(...))`.
+
+  Returns `{:error, %ElixirDB.Error{}}` when the field's pointer cannot be compiled.
   """
-  @spec structured_expression(map() | binary()) :: binary()
+  @spec structured_expression(map() | binary()) ::
+          {:ok, binary()} | {:error, ElixirDB.Error.t()}
   def structured_expression(field) do
     path = field["path"] || field[:path] || field
-    path = sqlite_path(path)
 
-    "json_type(winning_body_json, #{quote_literal(path)}), json_extract(winning_body_json, #{quote_literal(path)})"
+    with {:ok, compiled} <- sqlite_path(path) do
+      quoted = quote_literal(compiled)
+
+      {:ok, "json_type(winning_body_json, #{quoted}), json_extract(winning_body_json, #{quoted})"}
+    end
   end
 
   @doc "SQL string literal quoting for compiled path fragments."
@@ -44,54 +68,71 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
 
   @doc """
   Compile selector clauses against structured index fields into `{sql, param}` pairs.
-  """
-  @spec structured_conditions(map(), [map()]) :: [{binary(), term()}]
-  def structured_conditions(selector, fields) do
-    Enum.flat_map(selector, fn
-      {"$and", clauses} when is_list(clauses) ->
-        Enum.flat_map(clauses, &structured_conditions(&1, fields))
 
-      {path, condition} ->
-        case Enum.find(fields, fn field -> field["path"] == path end) do
-          nil -> []
-          field -> field_condition(path, condition, field["type"])
-        end
-    end)
+  Returns `{:error, %ElixirDB.Error{}}` if any clause's pointer cannot be compiled.
+  """
+  @spec structured_conditions(map(), [map()]) ::
+          {:ok, [{binary(), term()}]} | {:error, ElixirDB.Error.t()}
+  def structured_conditions(selector, fields) do
+    reduce_ok(selector, [], fn clause, acc -> compile_clause(clause, acc, fields) end)
+  end
+
+  defp compile_clause({"$and", clauses}, acc, fields) when is_list(clauses) do
+    # The Normalizer produces $and clauses as a list of selector maps; recurse into each
+    # clause (a map of {path, condition} pairs) the same way structured_conditions/2 does.
+    reduce_ok(clauses, acc, fn clause, inner_acc -> compile_clause(clause, inner_acc, fields) end)
+  end
+
+  defp compile_clause(clause, acc, fields) when is_map(clause) do
+    # A $and sub-clause (or a bare selector map) is a set of {path, condition} pairs.
+    reduce_ok(clause, acc, fn pair, inner_acc -> compile_clause(pair, inner_acc, fields) end)
+  end
+
+  defp compile_clause({path, condition}, acc, fields) do
+    case Enum.find(fields, fn field -> field["path"] == path end) do
+      nil ->
+        {:ok, acc}
+
+      field ->
+        with {:ok, compiled} <- field_condition(path, condition, field["type"]),
+             do: {:ok, acc ++ compiled}
+    end
   end
 
   @doc "Compile one scalar comparison against a typed JSON path."
-  @spec scalar_condition(binary(), binary(), term(), binary()) :: [{binary(), term()}]
+  @spec scalar_condition(binary(), binary(), term(), binary()) ::
+          {:ok, [{binary(), term()}]} | {:error, ElixirDB.Error.t()}
   def scalar_condition(path, operator, value, type) do
     if type_matches?(value, type) do
-      expression = json_expression(path)
-      comparison = operator_sql(operator)
-      type_sql = json_type_sql(path, type)
-      [{"(#{type_sql} AND #{expression} #{comparison} ?)", value}]
+      with {:ok, expression} <- json_expression(path),
+           {:ok, type_sql} <- json_type_sql(path, type) do
+        comparison = operator_sql(operator)
+        {:ok, [{"(#{type_sql} AND #{expression} #{comparison} ?)", value}]}
+      end
     else
-      []
+      {:ok, []}
     end
   end
 
   @doc "SQLite `json_type` predicate for a structured index field type."
-  @spec json_type_sql(binary(), binary()) :: binary()
-  def json_type_sql(path, "string"),
-    do: "json_type(winning_body_json, #{quote_literal(sqlite_path(path))}) = 'text'"
+  @spec json_type_sql(binary(), binary()) ::
+          {:ok, binary()} | {:error, ElixirDB.Error.t()}
+  def json_type_sql(path, "string") do
+    with {:ok, compiled} <- sqlite_path(path),
+         do: {:ok, "json_type(winning_body_json, #{quote_literal(compiled)}) = 'text'"}
+  end
 
   def json_type_sql(path, type) do
-    quoted = quote_literal(sqlite_path(path))
+    with {:ok, compiled} <- sqlite_path(path) do
+      quoted = quote_literal(compiled)
 
-    case type do
-      "number" ->
-        "json_type(winning_body_json, #{quoted}) IN ('integer', 'real')"
-
-      "boolean" ->
-        "json_type(winning_body_json, #{quoted}) IN ('true', 'false')"
-
-      "null" ->
-        "json_type(winning_body_json, #{quoted}) = 'null'"
-
-      _ ->
-        "json_type(winning_body_json, #{quoted}) = 'text'"
+      {:ok,
+       case type do
+         "number" -> "json_type(winning_body_json, #{quoted}) IN ('integer', 'real')"
+         "boolean" -> "json_type(winning_body_json, #{quoted}) IN ('true', 'false')"
+         "null" -> "json_type(winning_body_json, #{quoted}) = 'null'"
+         _ -> "json_type(winning_body_json, #{quoted}) = 'text'"
+       end}
     end
   end
 
@@ -104,30 +145,46 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
   def operator_sql("$lte"), do: "<="
 
   defp field_condition(path, condition, type) when is_map(condition) do
-    Enum.flat_map(condition, fn
-      {operator, value} when operator in ["$eq", "$gt", "$gte", "$lt", "$lte"] ->
-        scalar_condition(path, operator, value, type)
+    reduce_ok(condition, [], fn
+      {operator, value}, acc when operator in ["$eq", "$gt", "$gte", "$lt", "$lte"] ->
+        with {:ok, compiled} <- scalar_condition(path, operator, value, type),
+             do: {:ok, acc ++ compiled}
 
-      {"$in", values} when is_list(values) ->
-        values = Enum.flat_map(values, &scalar_condition(path, "$eq", &1, type))
+      {"$in", values}, acc when is_list(values) ->
+        with {:ok, compiled} <-
+               reduce_ok(values, [], fn value, inner_acc ->
+                 with {:ok, pairs} <- scalar_condition(path, "$eq", value, type),
+                      do: {:ok, inner_acc ++ pairs}
+               end) do
+          case compiled do
+            [] ->
+              {:ok, acc}
 
-        case values do
-          [] ->
-            []
-
-          _ ->
-            [
-              {"(" <> Enum.map_join(values, " OR ", &elem(&1, 0)) <> ")",
-               Enum.map(values, &elem(&1, 1))}
-            ]
+            _ ->
+              {:ok,
+               acc ++
+                 [
+                   {"(" <> Enum.map_join(compiled, " OR ", &elem(&1, 0)) <> ")",
+                    Enum.map(compiled, &elem(&1, 1))}
+                 ]}
+          end
         end
 
-      _ ->
-        []
+      _clause, acc ->
+        {:ok, acc}
     end)
   end
 
   defp field_condition(path, value, type), do: scalar_condition(path, "$eq", value, type)
+
+  defp reduce_ok(enumerable, acc, fun) do
+    Enum.reduce_while(enumerable, {:ok, acc}, fn element, {:ok, inner} ->
+      case fun.(element, inner) do
+        {:ok, result} -> {:cont, {:ok, result}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
 
   defp type_matches?(value, "string"), do: is_binary(value)
   defp type_matches?(value, "number"), do: is_number(value) and not is_boolean(value)

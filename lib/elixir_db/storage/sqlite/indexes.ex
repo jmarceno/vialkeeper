@@ -133,17 +133,31 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   defp create_structured(conn, index_id, definition) do
     fields = definition["fields"] || definition[:fields] || []
     name = physical_name(index_id, :structured)
-    expressions = Enum.map(fields, &QueryCompiler.structured_expression/1)
 
-    sql =
-      "CREATE INDEX #{quote_identifier(name)} ON documents (winning_deleted, " <>
-        Enum.join(expressions, ", ") <> ", document_id)"
+    with {:ok, expressions} <- reduce_compiled_expressions(fields) do
+      sql =
+        "CREATE INDEX #{quote_identifier(name)} ON documents (winning_deleted, " <>
+          Enum.join(expressions, ", ") <> ", document_id)"
 
-    with :ok <- Connection.execute(conn, sql),
-         {:ok, metadata} <- metadata(index_id, definition, name) do
-      {:ok, metadata}
-    else
-      {:error, reason} -> normalize_result({:error, reason})
+      with :ok <- Connection.execute(conn, sql),
+           {:ok, metadata} <- metadata(index_id, definition, name) do
+        {:ok, metadata}
+      else
+        {:error, reason} -> normalize_result({:error, reason})
+      end
+    end
+  end
+
+  defp reduce_compiled_expressions(fields) do
+    Enum.reduce_while(fields, {:ok, []}, fn field, {:ok, acc} ->
+      case QueryCompiler.structured_expression(field) do
+        {:ok, expression} -> {:cont, {:ok, [expression | acc]}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, expressions} -> {:ok, Enum.reverse(expressions)}
+      error -> error
     end
   end
 

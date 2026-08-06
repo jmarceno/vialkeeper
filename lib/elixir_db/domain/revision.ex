@@ -12,7 +12,7 @@ defmodule ElixirDB.Domain.Revision do
   ]
 
   @type t :: %__MODULE__{
-          document_id: binary(),
+          document_id: binary() | nil,
           revision_id: binary(),
           generation: pos_integer(),
           parent_revision: binary() | nil,

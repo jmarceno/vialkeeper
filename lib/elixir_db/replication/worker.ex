@@ -52,16 +52,22 @@ defmodule ElixirDB.Replication.Worker do
 
     with true <- is_binary(replication_id),
          {:ok, _} <- Registry.register(ElixirDB.Replication.WorkerRegistry, replication_id, %{}) do
-      {:ok, :idle,
-       %{
-         options: normalize_options(options),
-         attempts: 0,
-         result: nil,
-         error: nil,
-         cancel_requested: false,
-         context: nil,
-         task: nil
-       }}
+      data = %{
+        options: normalize_options(options),
+        attempts: 0,
+        result: nil,
+        error: nil,
+        cancel_requested: false,
+        context: nil,
+        task: nil
+      }
+
+      # Notify the initial :idle state so observers see the full Plan §7.7 sequence from
+      # :idle through :completed/:failed. notify_state/2 runs synchronously here (a direct
+      # send) before the state machine loop starts, so the :idle notification is guaranteed
+      # to arrive before any :start-driven phase notification.
+      notify_state(data, :idle)
+      {:ok, :idle, data}
     else
       false ->
         {:stop, ElixirDB.Error.invalid_request("replication id is required")}

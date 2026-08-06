@@ -75,7 +75,10 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => closed_path})
 
     closed_uuid = closed_body["data"]["database_uuid"]
-    assert {:ok, %{status: 200}} = Req.post(server.base_url <> "/v1/databases/#{closed_uuid}/close", json: %{})
+
+    assert {:ok, %{status: 200}} =
+             Req.post(server.base_url <> "/v1/databases/#{closed_uuid}/close", json: %{})
+
     on_exit(fn -> cleanup(closed_uuid, closed_path) end)
 
     extra_path = "matrix-extra-#{System.unique_integer([:positive])}.db"
@@ -194,7 +197,8 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
        }, 200, &assert_data_map/1},
       # Destructive routes last so earlier matrix entries keep a valid setup.
       {:post, "/v1/databases/#{uuid}/documents/delete", %{"id" => "doc-2", "if_revision" => nil},
-       :error, &assert_error_code(&1, ["revision_conflict", "invalid_request", "document_not_found"])},
+       :error,
+       &assert_error_code(&1, ["revision_conflict", "invalid_request", "document_not_found"])},
       {:delete, "/v1/databases/#{uuid}/indexes/#{index_id}", nil, 200,
        &assert_data(&1, fn data -> data["deleted"] == true or data["index_id"] == index_id end)},
       {:post, "/v1/databases/#{uuid}/replications/#{job_id}/start", %{}, :any_ok_or_domain,
@@ -294,6 +298,7 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
   defp assert_envelope_ok(response) do
     assert response.status in 200..299
+
     assert is_map(response.body["data"]) or response.body["data"] == %{} or
              Map.has_key?(response.body, "data")
   end
@@ -348,7 +353,9 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   defp stringify_keys(list) when is_list(list) do
     Enum.map(list, fn
       map when is_map(map) ->
-        Map.new(map, fn {k, v} -> {to_string(k), if(is_map(v), do: Map.new(v, fn {a, b} -> {to_string(a), b} end), else: v)} end)
+        Map.new(map, fn {k, v} ->
+          {to_string(k), if(is_map(v), do: Map.new(v, fn {a, b} -> {to_string(a), b} end), else: v)}
+        end)
 
       other ->
         other

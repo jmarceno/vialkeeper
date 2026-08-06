@@ -2,6 +2,12 @@ defmodule ElixirDB.Domain.ReplicationEndpoint do
   @enforce_keys [:kind, :database_uuid]
   defstruct [:kind, :database_uuid, :base_url]
 
+  @type t :: %__MODULE__{
+          kind: atom(),
+          database_uuid: binary(),
+          base_url: binary() | nil
+        }
+
   def new(attrs) when is_map(attrs) do
     attrs = stringify_keys(attrs)
 

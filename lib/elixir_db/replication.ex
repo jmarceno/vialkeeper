@@ -514,6 +514,7 @@ defmodule ElixirDB.Replication do
 
   defp source_uuid(map), do: get(map, :database_uuid)
   defp version(map, key), do: get(map, key)
+
   defp get(map, key) when is_map(map) and is_atom(key) do
     case Map.fetch(map, key) do
       {:ok, value} -> value
@@ -521,19 +522,6 @@ defmodule ElixirDB.Replication do
     end
   end
 
-  defp get(map, key) when is_map(map) and is_binary(key) do
-    case Map.fetch(map, key) do
-      {:ok, value} ->
-        value
-
-      :error ->
-        try do
-          Map.get(map, String.to_existing_atom(key))
-        rescue
-          ArgumentError -> nil
-        end
-    end
-  end
   defp value(nil), do: nil
   defp value(%{value: value}), do: value
   defp value(%{"value" => value}), do: value

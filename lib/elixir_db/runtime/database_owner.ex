@@ -60,9 +60,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp handle_command(%ElixirDB.Storage.Commands.PutDocument{request: request}, _from, state),
     do:
       mutate(
-        wrap_put(
-          Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :put))
-        ),
+        wrap_put(Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :put))),
         state
       )
 

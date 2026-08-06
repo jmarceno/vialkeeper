@@ -51,7 +51,7 @@ defmodule ElixirDB.HTTP.Routes.Indexes do
   @doc false
   def explain(conn) do
     Request.call(conn, Schemas.opts(:query, "query explain contains an unknown field"), fn body,
-                                                                                            conn ->
+                                                                                           conn ->
       Response.result(conn, ElixirDB.Query.explain(Request.uuid(conn), body))
     end)
   end

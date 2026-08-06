@@ -107,12 +107,40 @@ defmodule ElixirDB.Contract.V1ContractsTest do
     assert {:error, %ElixirDB.Error{code: :resource_limit}} =
              ElixirDB.Config.merge_and_bound(%{"queries" => %{"max_limit" => 501}})
 
-    Enum.each(ElixirDB.Error.registry(), fn {code, {status, retryable}} ->
+    Enum.each(ElixirDB.Error.registry(), fn {code, {status, registry_retryable}} ->
       error = ElixirDB.Error.new(code, "message")
+
+      expected_retryable =
+        case registry_retryable do
+          # API-016: internal_error retryability is "Depends on details"; absent an explicit
+          # opt-in the default is the safer non-retryable outcome.
+          :depends -> false
+          boolean -> boolean
+        end
+
       assert error.http_status == status
-      assert error.retryable == retryable
+      assert error.retryable == expected_retryable
+      assert is_boolean(error.retryable)
       assert is_map(ElixirDB.Error.public(error))
     end)
+  end
+
+  test "internal_error retryability depends on details (API-016)" do
+    # API-016: internal_error is "Depends on details". The registry records a `:depends`
+    # sentinel; the auto-generated constructor defaults to the safer non-retryable outcome,
+    # and only an explicit opt-in marks a genuinely transient internal failure retryable.
+    assert :depends == elem(ElixirDB.Error.registry()[:internal_error], 1)
+
+    default = ElixirDB.Error.internal_error("unexpected SQLite failure")
+    assert default.http_status == 500
+    assert default.retryable == false
+
+    transient =
+      ElixirDB.Error.new(:internal_error, "transient remote failure", %{}, retryable: true)
+
+    assert transient.retryable == true
+
+    assert %{code: "internal_error", retryable: false} = ElixirDB.Error.public(default)
   end
 
   test "unicode_words_v1 tokenization is deterministic" do

@@ -129,8 +129,6 @@ defmodule ElixirDB.Storage.SQLite.Changes do
     end
   end
 
-  defp normalize_error(%ElixirDB.Error{} = error), do: error
-
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
 end

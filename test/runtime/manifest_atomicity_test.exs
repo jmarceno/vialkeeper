@@ -59,7 +59,11 @@ defmodule ElixirDB.Runtime.ManifestAtomicityTest do
     prior_bytes = File.read!(manifest)
 
     orphan = Path.join(dir, "registrations.json.tmp.#{System.unique_integer([:positive])}")
-    File.write!(orphan, "{\"version\":1,\"databases\":[{\"uuid\":\"not-a-uuid\",\"path\":\"x.db\"}]}")
+
+    File.write!(
+      orphan,
+      "{\"version\":1,\"databases\":[{\"uuid\":\"not-a-uuid\",\"path\":\"x.db\"}]}"
+    )
 
     assert File.exists?(orphan)
     assert File.read!(manifest) == prior_bytes
