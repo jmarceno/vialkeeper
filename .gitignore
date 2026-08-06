@@ -15,6 +15,7 @@ erl_crash.dump
 /config/*.secret.exs
 .elixir_ls/
 
+
 ### Elixir Patch ###
 
 # End of https://www.toptal.com/developers/gitignore/api/elixir

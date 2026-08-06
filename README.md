@@ -8,18 +8,24 @@ replication metadata, and logical indexes live in that file.
 ## Runtime
 
 The checked-in baseline is Elixir 1.20.2 on Erlang/OTP 29.0.4. Dependencies
-are pinned in `mix.lock`. The default HTTP listener binds to loopback at
+are pinned in `mix.lock`. Hosts run an assembled OTP release; Mix is for
+development and CI only. The default HTTP listener binds to loopback at
 `127.0.0.1:4000`; set `ELIXIR_DB_ROOT` to choose the database root.
 
 ```sh
+# development / CI
 mix deps.get
 mix check.fast
 mix check.full
-mix run --no-halt
+
+# production artifact
+MIX_ENV=prod mix release.build
+export ELIXIR_DB_ROOT=/var/lib/elixirdb
+/opt/elixir_db/bin/elixir_db daemon
 ```
 
-Operator procedures (start/stop, registration, offline copy, leases, integrity,
-replication job states, and host-limit troubleshooting) live in
+Operator procedures (build/start/stop, registration, offline copy, leases,
+integrity, replication job states, and host-limit troubleshooting) live in
 [docs/operations.md](docs/operations.md).
 
 The public protocol is rooted at `/v1`. Database and document operations use
@@ -28,10 +34,11 @@ backend-specific query syntax are never accepted from clients.
 
 ## How to use
 
-Start the application (`mix run --no-halt`, or add `:elixir_db` as a dependency
-and start it from your supervision tree). Databases live under the configured
-root (`ELIXIR_DB_ROOT` or the app default). Paths passed to create/register are
-relative to that root.
+Deploy the OTP release (`MIX_ENV=prod mix release.build`, then
+`bin/elixir_db start` or `daemon`), or add `:elixir_db` as a dependency and
+start it from your supervision tree. Databases live under the configured root
+(`ELIXIR_DB_ROOT`; required for the production release). Paths passed to
+create/register are relative to that root.
 
 ### From Elixir (in-process)
 
@@ -68,7 +75,7 @@ Add the app as a Mix dependency when embedding it:
 defp deps do
   [
     {:elixir_db, path: "../elixirdb"}
-    # or: {:elixir_db, git: "https://github.com/OWNER/elixirdb.git"}
+    # or: {:elixir_db, git: "https://git.example.com/owner/elixirdb.git"}
   ]
 end
 ```
@@ -134,7 +141,7 @@ mutation fields travel in the JSON body, not in the URL path.
 
 ## Offline portability
 
-Stop the server, close the database, and copy the database file with ordinary
+Stop the release, close the database, and copy the database file with ordinary
 operating-system tools. The copied file remains inert until it is explicitly
 registered with the destination server. The `.lease` companion is transient
 and is not part of authoritative database state.
@@ -176,6 +183,7 @@ names and SQL text are not part of the public error contract.
 
 ## Operational checks
 
-`ElixirDB.Diagnostics.runtime/0` reports the Elixir, OTP, Exqlite, SQLite,
-compile-option, and protocol versions recorded for a release. The maintenance
-HTTP endpoint `/v1/databases/:uuid/integrity-check` validates the SQLite file.
+`ElixirDB.Diagnostics.runtime/0` reports the application, Elixir, OTP, Exqlite,
+SQLite, compile-option, and protocol versions recorded for a release. The
+maintenance HTTP endpoint `/v1/databases/:uuid/integrity-check` validates the
+SQLite file.

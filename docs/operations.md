@@ -4,30 +4,66 @@ Practical runbook for a Version 1 ElixirDB host. Behaviour matches the
 CONFIG / LIFE / REPL / MAINT sections of `Architecture.md` and the modules
 under `lib/elixir_db/`.
 
-## Start and stop
+Production and staging hosts run an assembled OTP release. `mix` is for
+local development and CI only.
 
-The application starts a Bandit HTTP listener (`ElixirDB.Application`) with
-`ElixirDB.HTTP.Router` as the plug, plus the database catalog and replication
-worker supervision trees.
+## Build the release
+
+On a machine with the pinned Elixir/OTP toolchain (see `mise.toml`):
 
 ```sh
-# from the project root
-mix deps.get
-ELIXIR_DB_ROOT=/var/lib/elixirdb mix run --no-halt
+export MIX_ENV=prod
+mix release.build
 ```
 
-Default listener binds **loopback only** (`127.0.0.1:4000`, `CONFIG-005`).
-Override with application config:
+The assembled tree is `_build/prod/rel/elixir_db/`. It includes ERTS and the
+application BEAMs. Copy that directory to the target host (same OS/ABI as the
+build machine). `ElixirDB.Diagnostics.runtime/0` reports the Mix application
+version and runtime/SQLite identity from the assembled BEAMs; it does not
+read VCS metadata.
+
+## Start and stop
+
+```sh
+export ELIXIR_DB_ROOT=/var/lib/elixirdb
+# optional overrides:
+# export ELIXIR_DB_IP=127.0.0.1
+# export ELIXIR_DB_PORT=4000
+# export ELIXIR_DB_REGISTRATION_MANIFEST=/var/lib/elixirdb/registrations.json
+# export ELIXIR_DB_SHUTDOWN_TIMEOUT_MS=30000
+
+mkdir -p "$ELIXIR_DB_ROOT"
+/opt/elixir_db/bin/elixir_db daemon    # background
+# or: /opt/elixir_db/bin/elixir_db start   # foreground
+```
+
+Control a running release:
+
+```sh
+/opt/elixir_db/bin/elixir_db pid
+/opt/elixir_db/bin/elixir_db remote    # remote console
+/opt/elixir_db/bin/elixir_db stop
+```
+
+`ELIXIR_DB_ROOT` is required in production. Default listener binds **loopback
+only** (`127.0.0.1:4000`, `CONFIG-005`). Override with `ELIXIR_DB_IP` /
+`ELIXIR_DB_PORT` or application config:
 
 * `:listener` — `[ip: {127, 0, 0, 1}, port: 4000]`
 * `:database_root` — or env `ELIXIR_DB_ROOT` via `config/runtime.exs`
 * `:registration_manifest` — defaults to `<database_root>/registrations.json`
-* `:shutdown_timeout` — catalog/runtime stop timeout (ms)
+* `:shutdown_timeout` — catalog/runtime stop timeout (ms); env
+  `ELIXIR_DB_SHUTDOWN_TIMEOUT_MS`
 * `:host_limits` — admission, open-database, body, and batch caps
 
-Stop with a normal OTP shutdown (`Ctrl-C` twice in `mix run`, or stop the
-release). The catalog closes open database runtimes; each runtime rolls back
-its companion `.lease` transaction on terminate (`ElixirDB.Runtime.FileLease`).
+Stop with `bin/elixir_db stop` (or SIGTERM to the release OS process). The
+catalog closes open database runtimes; each runtime rolls back its companion
+`.lease` transaction on terminate (`ElixirDB.Runtime.FileLease`).
+
+### Development only
+
+From a source checkout, `mix run --no-halt` starts the same supervision tree
+for interactive work. Do not use Mix as the production entrypoint.
 
 ## Database root and registration manifest
 
@@ -89,8 +125,8 @@ retryable).
 
 Safe recovery:
 
-1. Confirm no live ElixirDB process owns the database (OS process list / release
-   status). A healthy owner always holds the lease while open.
+1. Confirm no live ElixirDB release process owns the database (OS process list /
+   `bin/elixir_db pid`). A healthy owner always holds the lease while open.
 2. If the previous process crashed and left a stale `.lease` **file** but no
    live SQLite exclusive lock, a new open can succeed — FileLease opens the
    lease DB and takes `BEGIN EXCLUSIVE`. Do not delete a `.lease` while another
@@ -116,7 +152,12 @@ Failures return `integrity_violation`. Rebuild a damaged logical index with the
 index rebuild endpoint after investigating the reported details.
 
 `ElixirDB.Diagnostics.runtime/0` reports Elixir/OTP/SQLite/protocol versions for
-release notes; it is not a substitute for per-database integrity checks.
+release notes; it is not a substitute for per-database integrity checks. From a
+running release:
+
+```sh
+/opt/elixir_db/bin/elixir_db eval 'IO.inspect(ElixirDB.Diagnostics.runtime(), pretty: true)'
+```
 
 ## Replication job states
 

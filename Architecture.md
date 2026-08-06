@@ -160,6 +160,27 @@ The following state MUST remain local to each database file and MUST NOT be tran
 
 Ordinary operating-system copying of an offline database file preserves both replicated and local state. Protocol replication preserves only document revision state.
 
+## `DESIGN-007` — OTP release packaging
+
+Version 1 production and staging hosts MUST run ElixirDB as an assembled OTP
+release produced by the project’s Mix release pipeline (`MIX_ENV=prod mix
+release` / `mix release.build`). The release artifact includes the BEAM
+applications and a pinned ERTS suitable for the build OS/ABI.
+
+Mix project commands (`mix run`, `mix test`, and related tasks) are permitted
+only for local development and continuous integration. They MUST NOT be the
+production process entrypoint.
+
+The release pipeline MUST record release metadata consumed by
+`ElixirDB.Diagnostics.runtime/0`, including application version, Elixir
+version, OTP version, Exqlite version, and SQLite runtime version and compile
+options. Release metadata MUST NOT depend on VCS state.
+
+Operational start, stop, remote console, and evaluation MUST use the release
+scripts under `bin/elixir_db` (`start`, `daemon`, `stop`, `remote`, `eval`,
+`pid`). Host configuration for the release is supplied through environment
+variables evaluated in `config/runtime.exs` (see `CONFIG-001`).
+
 ---
 
 # 4. System architecture
@@ -1897,6 +1918,18 @@ The server MAY require host-level configuration for:
 * Observability export configuration (see Section 20.5, `OBSV-001`).
 * Shutdown timeout.
 
+For the production OTP release, host configuration is supplied through
+environment variables evaluated by `config/runtime.exs`:
+
+* `ELIXIR_DB_ROOT` — absolute database root (required in `:prod`).
+* `ELIXIR_DB_REGISTRATION_MANIFEST` — absolute manifest path when not derived
+  from the database root.
+* `ELIXIR_DB_IP` / `ELIXIR_DB_PORT` — listener bind address and port.
+* `ELIXIR_DB_SHUTDOWN_TIMEOUT_MS` — catalog and runtime shutdown timeout.
+
+Compile-time defaults live in `config/config.exs`. Non-loopback listeners
+still require an explicit host configuration change (`CONFIG-005`).
+
 ## `CONFIG-002` — Database configuration
 
 The logical database configuration object MUST contain:
@@ -2845,7 +2878,8 @@ Every accepted structured query MUST use a compatible index or permitted bounded
 * Long-running local and remote replication tests.
 * Revision, query, bookmark, protocol, and JSON fuzzing.
 * Offline portability and registration-recovery tests.
-* Operational documentation and Version 1 format declaration.
+* OTP release pipeline (`mix release.build`), release metadata artifact, and operational documentation.
+* Version 1 format declaration.
 
 ### Required end-to-end scenario
 
@@ -2879,6 +2913,7 @@ Version 1 is ready only when:
 * Tests prove that protocol replication transfers document revision state only.
 * Offline single-file portability and registration recovery pass.
 * Every derived structured and full-text index can be rebuilt from authoritative state.
+* The OTP release builds (`MIX_ENV=prod mix release.build`) and emits release metadata through `bin/elixir_db eval`.
 * No ignored failure represents a product defect.
 * Every excluded upstream test has a documented scope reason.
 * All requirement IDs are mapped to validation.
@@ -3197,9 +3232,9 @@ A convenience copy command MAY be added, but ordinary operating-system copying o
 
 Version 1 SHALL be:
 
-> A stateless Elixir document-database server with frozen storage-neutral domain and HTTP contracts plus a compartmentalized SQLite storage adapter. Each logical database is one SQLite file using rollback-journal `DELETE` mode. The system stores canonical revisioned JSON documents, preserves complete revision trees and tombstones, distinguishes active conflicts, provides atomic conflict resolution, maintains an exact local changes feed, and performs checkpointed Couch-inspired replication by transferring complete revision chains. Protocol replication transfers document revision state only; database configuration, logical indexes, replication jobs, checkpoints, and maintenance state remain local to each database file. Structured queries use RFC 6901 field references and deterministic bounded planning. Full-text search uses the fixed storage-neutral `unicode_words_v1` contract, implemented by the Version 1 SQLite adapter through FTS5. A cleanly closed database file can be copied, moved, renamed, backed up, and restored with ordinary operating-system file operations without an export command.
+> A stateless Elixir document-database server packaged as an OTP release, with frozen storage-neutral domain and HTTP contracts plus a compartmentalized SQLite storage adapter. Each logical database is one SQLite file using rollback-journal `DELETE` mode. The system stores canonical revisioned JSON documents, preserves complete revision trees and tombstones, distinguishes active conflicts, provides atomic conflict resolution, maintains an exact local changes feed, and performs checkpointed Couch-inspired replication by transferring complete revision chains. Protocol replication transfers document revision state only; database configuration, logical indexes, replication jobs, checkpoints, and maintenance state remain local to each database file. Structured queries use RFC 6901 field references and deterministic bounded planning. Full-text search uses the fixed storage-neutral `unicode_words_v1` contract, implemented by the Version 1 SQLite adapter through FTS5. A cleanly closed database file can be copied, moved, renamed, backed up, and restored with ordinary operating-system file operations without an export command.
 
-The server provides explicit database registration, exclusive per-file ownership, bounded per-database admission, non-blocking changes waiters, supervised replication workers, and the versioned `/v1` HTTP protocol.
+The server provides explicit database registration, exclusive per-file ownership, bounded per-database admission, non-blocking changes waiters, supervised replication workers, and the versioned `/v1` HTTP protocol. Production hosts run the assembled release (`bin/elixir_db`); Mix is reserved for development and CI.
 
 The registration manifest is reconstructible non-authoritative routing metadata. The database file remains the complete durable unit.
 

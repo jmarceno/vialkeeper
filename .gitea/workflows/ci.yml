@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29.0.4'
+          elixir-version: '1.20.2'
+          version-type: strict
+      - uses: actions/cache@v4
+        with:
+          path: deps
+          key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - run: mix check.full
+      - name: Build OTP release
+        env:
+          MIX_ENV: prod
+        run: mix release.build
+      - name: Emit release metadata
+        env:
+          ELIXIR_DB_ROOT: ${{ runner.temp }}/elixirdb-root
+          MIX_ENV: prod
+        run: |
+          mkdir -p artifacts "$ELIXIR_DB_ROOT"
+          bin=_build/prod/rel/elixir_db/bin/elixir_db
+          "$bin" eval 'IO.inspect(ElixirDB.Diagnostics.runtime(), pretty: true)' > artifacts/release-metadata.txt
+          "$bin" eval 'IO.puts(:erlang.iolist_to_binary(JSON.encode_to_iodata!(ElixirDB.Diagnostics.runtime())))' > artifacts/release-metadata.json || printf '{"error":"release metadata JSON encoding failed"}\n' > artifacts/release-metadata.json
+      - name: Upload release metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: artifacts/
+      - name: Upload OTP release
+        uses: actions/upload-artifact@v4
+        with:
+          name: elixir-db-release
+          path: _build/prod/rel/elixir_db

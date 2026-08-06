@@ -21,6 +21,7 @@ Companion docs: [operations.md](operations.md), [adr/0001-strict-decoder.md](adr
 | DESIGN-004 | `test/end_to_end/local_convergence_test.exs` — `"two-database local convergence replicates documents from A to B"` |
 | DESIGN-005 | `test/replication/fault_injection_test.exs` — `"retryable fault at #{point} may repeat work but never skips source revision"` |
 | DESIGN-006 | `test/storage_adapter/checkpoints_test.exs` — `"checkpoint local records support CAS write, replay, and conflict"` |
+| DESIGN-007 | `test/runtime/diagnostics_test.exs` — `"runtime/0 records release metadata including the app version"`; Gitea CI `mix release.build` + release `eval` of `Diagnostics.runtime/0` |
 | ARCH-001 | `test/runtime/owner_crash_test.exs` — `"owner kill restarts under supervisor; close releases lease; DB usable again"` |
 | ARCH-002 | `test/runtime/owner_uniqueness_test.exs` — `"catalog open registers a single owner; second lease fails"` |
 | ARCH-003 | `test/runtime/catalog_lifecycle_test.exs` — `"swapped database file UUID marks registration unavailable"` |

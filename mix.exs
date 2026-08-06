@@ -1,16 +1,19 @@
 defmodule ElixirDB.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+
   def project do
     [
       app: :elixir_db,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      dialyzer: [plt_add_apps: [:ex_unit, :mix]]
+      dialyzer: [plt_add_apps: [:ex_unit, :mix]],
+      releases: releases()
     ]
   end
 
@@ -18,7 +21,7 @@ defmodule ElixirDB.MixProject do
   defp elixirc_paths(_), do: ["lib"]
 
   def cli do
-    [preferred_envs: ["check.fast": :test, "check.full": :test]]
+    [preferred_envs: ["check.fast": :test, "check.full": :test, "release.build": :prod]]
   end
 
   def application do
@@ -37,6 +40,15 @@ defmodule ElixirDB.MixProject do
     ]
   end
 
+  defp releases do
+    [
+      elixir_db: [
+        include_executables_for: [:unix],
+        applications: [runtime_tools: :permanent]
+      ]
+    ]
+  end
+
   defp aliases do
     [
       "check.fast": [
@@ -50,7 +62,8 @@ defmodule ElixirDB.MixProject do
         "xref graph --format cycles --label compile-connected --fail-above 0",
         "test --warnings-as-errors",
         "dialyzer"
-      ]
+      ],
+      "release.build": ["deps.get", "compile", "release --overwrite"]
     ]
   end
 end

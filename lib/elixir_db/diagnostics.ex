@@ -11,6 +11,7 @@ defmodule ElixirDB.Diagnostics do
       _ = Connection.close(conn)
 
       %{
+        app_version: app_version(),
         elixir: System.version(),
         otp: :erlang.system_info(:otp_release) |> List.to_string(),
         exqlite: Application.spec(:exqlite, :vsn) |> to_string(),
@@ -19,52 +20,28 @@ defmodule ElixirDB.Diagnostics do
         fts5_contentless_delete: contentless_delete,
         protocol_major: ElixirDB.protocol_major(),
         revision_algorithm_version: ElixirDB.revision_algorithm_version(),
-        canonicalization_version: ElixirDB.canonicalization_version(),
-        # Plan §3.1: release record MUST include the git commit. Prefer an explicit
-        # ELIXIRDB_GIT_REF env override, then a build-time file written by the release
-        # step (priv/git_ref), then "unknown" — never shell out to git at runtime.
-        git_commit: git_commit()
+        canonicalization_version: ElixirDB.canonicalization_version()
       }
     else
       _ ->
         %{
+          app_version: app_version(),
           elixir: System.version(),
-          otp: :erlang.system_info(:otp_release) |> List.to_string(),
-          git_commit: git_commit()
+          otp: :erlang.system_info(:otp_release) |> List.to_string()
         }
     end
   end
 
   @doc """
-  Resolves the release git commit without shelling out to git at runtime.
-
-  Resolution order: `ELIXIRDB_GIT_REF` env (only when non-empty), `priv/git_ref`
-  build-time file, `"unknown"`.
+  Returns the assembled `:elixir_db` application version from the BEAM app
+  resource (the Mix project version), not from any VCS metadata.
   """
-  @spec git_commit() :: binary()
-  def git_commit do
-    case System.get_env("ELIXIRDB_GIT_REF") do
-      value when is_binary(value) and value != "" -> value
-      _ -> read_build_time_git_ref() || "unknown"
-    end
-  end
-
-  defp read_build_time_git_ref do
-    # :code.priv_dir/1 returns {:error, :bad_name} when the app's priv dir cannot be
-    # resolved (unusual deployment layouts); treat that as "no build-time ref" rather than
-    # crashing runtime/0.
-    path =
-      case :code.priv_dir(:elixir_db) do
-        {:error, :bad_name} -> nil
-        priv -> Path.join(priv, "git_ref")
-      end
-
-    with dest when is_binary(dest) <- path,
-         {:ok, content} <- File.read(dest) do
-      ref = String.trim(content)
-      if ref == "", do: nil, else: ref
-    else
-      _ -> nil
+  @spec app_version() :: binary()
+  def app_version do
+    case Application.spec(:elixir_db, :vsn) do
+      vsn when is_list(vsn) -> List.to_string(vsn)
+      vsn when is_binary(vsn) -> vsn
+      _ -> "unknown"
     end
   end
 

@@ -118,16 +118,36 @@ Erlang/OTP 29.0.4
 
 Use a checked-in `mise.toml`, `.tool-versions`, or equivalent repository-standard toolchain file.
 
-The release pipeline MUST record:
+Version 1 ships as an assembled OTP release. The release pipeline is:
 
+```text
+MIX_ENV=prod mix release.build
+```
+
+That alias fetches production dependencies, compiles, and runs `mix release`, which
+assembles `_build/prod/rel/elixir_db/` with ERTS.
+
+CI MUST build the release and emit release metadata by evaluating
+`ElixirDB.Diagnostics.runtime/0` through the release binary
+(`bin/elixir_db eval …`), not through `mix run`. Continuous integration runs
+as a Gitea Actions workflow under `.gitea/workflows/`.
+
+The release metadata record MUST include:
+
+* Application version.
 * Elixir version.
 * OTP version.
 * Exqlite version.
 * SQLite runtime version.
 * SQLite compile options.
-* Git commit.
+
+Release metadata MUST NOT depend on VCS state.
 
 A secondary CI smoke job MAY run on the newest supported OTP 28 maintenance release, but OTP 29 is the authoritative Version 1 development target.
+
+Production and staging hosts start and stop through `bin/elixir_db`
+(`start` / `daemon` / `stop` / `remote` / `pid` / `eval`). Mix commands remain
+valid only for local development and continuous integration.
 
 ## 3.2 Elixir 1.20 gradual typing strategy
 
@@ -211,7 +231,7 @@ mix dialyzer
 
 # 4. Project form and dependencies
 
-## 4.1 Single OTP application
+## 4.1 Single OTP application and release
 
 Use one supervised Mix application, not an umbrella.
 
@@ -220,7 +240,24 @@ Suggested application and module namespace:
 ```text
 application: :elixir_db
 namespace: ElixirDB
+release: elixir_db
 ```
+
+Configure a Mix release in `mix.exs`:
+
+```elixir
+releases: [
+  elixir_db: [
+    include_executables_for: [:unix],
+    applications: [runtime_tools: :permanent]
+  ]
+]
+```
+
+The deployable artifact is `_build/prod/rel/elixir_db/`. Hosts run
+`bin/elixir_db`; they do not run Mix. `config/runtime.exs` supplies production
+host settings from `ELIXIR_DB_*` environment variables and requires
+`ELIXIR_DB_ROOT` when `MIX_ENV=prod`.
 
 An umbrella would add release, configuration, dependency, and test boundaries without providing a deployment benefit in Version 1.
 
@@ -2265,9 +2302,12 @@ Fuzz:
 
 ## PARALLEL Track D — Operational documentation
 
-Document:
+Document in `docs/operations.md`:
 
-* Starting and stopping.
+* Building the OTP release (`MIX_ENV=prod mix release.build`).
+* Starting and stopping through `bin/elixir_db` (`start`, `daemon`, `stop`,
+  `remote`, `pid`, `eval`).
+* Required and optional `ELIXIR_DB_*` environment variables.
 * Database root.
 * Registration.
 * Offline copy procedure.
@@ -2277,6 +2317,9 @@ Document:
 * Limits.
 * Troubleshooting stable error codes.
 
+State explicitly that Mix is only for development and CI. Architecture
+`DESIGN-007` and `CONFIG-001` are authoritative for packaging and host config.
+
 ## INTEGRATION — Final validation
 
 Run:
@@ -2284,11 +2327,20 @@ Run:
 ```text
 mix check.full
 mix test --only slow
+MIX_ENV=prod mix release.build
 ```
 
-Run the architecture end-to-end scenario on Linux and at least one of macOS or Windows.
+Evaluate release metadata through the assembled binary:
 
-Validate ordinary OS file copy with the server stopped.
+```text
+ELIXIR_DB_ROOT=/tmp/elixirdb-root \
+  _build/prod/rel/elixir_db/bin/elixir_db eval \
+  'IO.inspect(ElixirDB.Diagnostics.runtime(), pretty: true)'
+```
+
+Run the architecture end-to-end scenario on Linux and at least one of macOS or Windows, using the OTP release as the server process.
+
+Validate ordinary OS file copy with the release stopped.
 
 Record the final SQLite compile options and file-format declaration.
 
@@ -2303,6 +2355,7 @@ The implementation is complete only when:
 * No ignored or quarantined test represents a product defect.
 * The full remote replication suite converges after injected failures.
 * The copied offline file opens independently without sidecars.
+* The OTP release builds and starts through `bin/elixir_db`.
 * The final pull request contains architecture, implementation, and operational documentation.
 
 ---
