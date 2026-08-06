@@ -62,19 +62,22 @@ defmodule ElixirDB.Replication do
 
       terminal = get(source_identity, :current_sequence) || 0
 
-      {:ok,
-       %{
-         session_id: option(options, :session_id, ElixirDB.UUID.v4()),
-         replication_id: replication_id,
-         since: since,
-         terminal: terminal,
-         source_checkpoint: source_checkpoint,
-         target_checkpoint: target_checkpoint,
-         selected: [],
-         documents: [],
-         chains: [],
-         imported: nil
-       }}
+      context = %{
+        session_id: option(options, :session_id, ElixirDB.UUID.v4()),
+        replication_id: replication_id,
+        since: since,
+        terminal: terminal,
+        source_checkpoint: source_checkpoint,
+        target_checkpoint: target_checkpoint,
+        selected: [],
+        documents: [],
+        chains: [],
+        imported: nil
+      }
+
+      with :ok <- phase_hook(options, :after_handshake, context) do
+        {:ok, context}
+      end
     end
   end
 
@@ -92,7 +95,11 @@ defmodule ElixirDB.Replication do
          {:ok, changes} <- endpoint_call(source, :read_changes, [request]),
          {:ok, selected} <- take_batch_bytes(terminal_changes(changes, context.terminal), options),
          :ok <- ensure_progress(selected, context.since, context.terminal) do
-      {:ok, %{context | selected: selected}}
+      context = %{context | selected: selected}
+
+      with :ok <- phase_hook(options, :after_read_changes, context) do
+        {:ok, context}
+      end
     end
   end
 
@@ -100,7 +107,11 @@ defmodule ElixirDB.Replication do
   def diff(target, context, options) do
     with :ok <- phase_hook(options, :diff, context),
          {:ok, documents} <- target_diff(target, context.selected) do
-      {:ok, %{context | documents: documents}}
+      context = %{context | documents: documents}
+
+      with :ok <- phase_hook(options, :after_diff, context) do
+        {:ok, context}
+      end
     end
   end
 
@@ -109,7 +120,11 @@ defmodule ElixirDB.Replication do
     with :ok <- phase_hook(options, :fetch_chains, context),
          {:ok, chains} <-
            endpoint_call(source, :get_revision_chains, [%{documents: context.documents}]) do
-      {:ok, %{context | chains: get(chains, :chains) || []}}
+      context = %{context | chains: get(chains, :chains) || []}
+
+      with :ok <- phase_hook(options, :after_fetch_chains, context) do
+        {:ok, context}
+      end
     end
   end
 
@@ -120,7 +135,11 @@ defmodule ElixirDB.Replication do
            endpoint_call(target, :import_revision_chains, [%{chains: context.chains}]),
          {:ok, _confirmed} <-
            endpoint_call(target, :confirm_durable_commit, [%{imported: imported}]) do
-      {:ok, %{context | imported: imported}}
+      context = %{context | imported: imported}
+
+      with :ok <- phase_hook(options, :after_import, context) do
+        {:ok, context}
+      end
     end
   end
 
@@ -133,13 +152,17 @@ defmodule ElixirDB.Replication do
              context.replication_id,
              prepared.target_request
            ]) do
-      {:ok,
-       Map.merge(context, %{
-         checkpoint_prepared: prepared,
-         target_checkpoint_result: target_result,
-         source_checkpoint: prepared.source_current,
-         target_checkpoint: prepared.target_current
-       })}
+      context =
+        Map.merge(context, %{
+          checkpoint_prepared: prepared,
+          target_checkpoint_result: target_result,
+          source_checkpoint: prepared.source_current,
+          target_checkpoint: prepared.target_current
+        })
+
+      with :ok <- phase_hook(options, :after_checkpoint_target, context) do
+        {:ok, context}
+      end
     end
   end
 
@@ -161,16 +184,20 @@ defmodule ElixirDB.Replication do
 
       next = prepared.sequence
 
-      {:ok,
-       context
-       |> Map.put(:since, next)
-       |> Map.put(:source_checkpoint_result, source_result)
-       |> Map.put(:selected, [])
-       |> Map.put(:documents, [])
-       |> Map.put(:chains, [])
-       |> Map.put(:imported, nil)
-       |> Map.delete(:checkpoint_prepared)
-       |> Map.delete(:target_checkpoint_result)}
+      context =
+        context
+        |> Map.put(:since, next)
+        |> Map.put(:source_checkpoint_result, source_result)
+        |> Map.put(:selected, [])
+        |> Map.put(:documents, [])
+        |> Map.put(:chains, [])
+        |> Map.put(:imported, nil)
+        |> Map.delete(:checkpoint_prepared)
+        |> Map.delete(:target_checkpoint_result)
+
+      with :ok <- phase_hook(options, :after_checkpoint_source, context) do
+        {:ok, context}
+      end
     end
   end
 
@@ -193,7 +220,11 @@ defmodule ElixirDB.Replication do
           _ -> context.since
         end
 
-      {:ok, %{context | terminal: terminal, selected: selected}}
+      context = %{context | terminal: terminal, selected: selected}
+
+      with :ok <- phase_hook(options, :after_waiting, context) do
+        {:ok, context}
+      end
     end
   end
 
@@ -478,15 +509,31 @@ defmodule ElixirDB.Replication do
     end
   end
 
-  defp endpoint_call(%ElixirDB.Replication.LocalEndpoint{} = endpoint, function, args),
-    do: apply(ElixirDB.Replication.LocalEndpoint, function, [endpoint | args])
-
-  defp endpoint_call(%ElixirDB.Replication.RemoteEndpoint{} = endpoint, function, args),
-    do: apply(ElixirDB.Replication.RemoteEndpoint, function, [endpoint | args])
+  defp endpoint_call(%module{} = endpoint, function, args) when is_atom(module),
+    do: apply(module, function, [endpoint | args])
 
   defp source_uuid(map), do: get(map, :database_uuid)
   defp version(map, key), do: get(map, key)
-  defp get(map, key) when is_map(map), do: map[key] || map[Atom.to_string(key)]
+  defp get(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
+
+  defp get(map, key) when is_map(map) and is_binary(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        try do
+          Map.get(map, String.to_existing_atom(key))
+        rescue
+          ArgumentError -> nil
+        end
+    end
+  end
   defp value(nil), do: nil
   defp value(%{value: value}), do: value
   defp value(%{"value" => value}), do: value

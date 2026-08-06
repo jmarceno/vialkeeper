@@ -52,19 +52,26 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     do: reply(Adapter.integrity_check(state.adapter, request), state)
 
   defp handle_command(%ElixirDB.Storage.Commands.GetDocument{request: request}, _from, state),
-    do: reply(Adapter.get_document(state.adapter, request), state)
+    do: reply(wrap_get(Adapter.get_document(state.adapter, request)), state)
 
   defp handle_command(%ElixirDB.Storage.Commands.GetRevision{request: request}, _from, state),
-    do: reply(Adapter.get_revision(state.adapter, request), state)
+    do: reply(wrap_get(Adapter.get_revision(state.adapter, request)), state)
 
   defp handle_command(%ElixirDB.Storage.Commands.PutDocument{request: request}, _from, state),
     do:
-      mutate(Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :put)), state)
+      mutate(
+        wrap_put(
+          Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :put))
+        ),
+        state
+      )
 
   defp handle_command(%ElixirDB.Storage.Commands.DeleteDocument{request: request}, _from, state),
     do:
       mutate(
-        Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :delete)),
+        wrap_put(
+          Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :delete))
+        ),
         state
       )
 
@@ -75,7 +82,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     do: mutate(Adapter.resolve_conflict(state.adapter, request), state)
 
   defp handle_command(%ElixirDB.Storage.Commands.ReadChanges{request: request}, _from, state),
-    do: reply(Adapter.read_changes(state.adapter, request), state)
+    do: reply(wrap_changes(Adapter.read_changes(state.adapter, request)), state)
 
   defp handle_command(%ElixirDB.Storage.Commands.DiffRevisions{request: request}, _from, state),
     do: reply(Adapter.diff_revisions(state.adapter, request), state)
@@ -150,4 +157,19 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp mutate({:ok, value}, state), do: {:reply, {:ok, value}, state}
   defp mutate({:error, _} = result, state), do: {:reply, result, state}
   defp reply(result, state), do: {:reply, result, state}
+
+  defp wrap_get({:ok, map}) when is_map(map),
+    do: {:ok, ElixirDB.Storage.Results.get_document(map)}
+
+  defp wrap_get(other), do: other
+
+  defp wrap_put({:ok, map}) when is_map(map),
+    do: {:ok, ElixirDB.Storage.Results.put_document(map)}
+
+  defp wrap_put(other), do: other
+
+  defp wrap_changes({:ok, map}) when is_map(map),
+    do: {:ok, ElixirDB.Storage.Results.read_changes(map)}
+
+  defp wrap_changes(other), do: other
 end

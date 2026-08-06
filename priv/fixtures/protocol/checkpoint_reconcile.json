@@ -1,0 +1,54 @@
+[
+  {
+    "id": "shared-newest-session",
+    "description": "REPL-007 common history picks newest shared session entry",
+    "source": {
+      "history": [
+        {"session_id": "s1", "source_sequence": 10},
+        {"session_id": "s2", "source_sequence": 20}
+      ]
+    },
+    "target": {
+      "history": [
+        {"session_id": "s1", "source_sequence": 10},
+        {"session_id": "s3", "source_sequence": 15}
+      ]
+    },
+    "expected_common_sequence": 10
+  },
+  {
+    "id": "no-common-session",
+    "description": "No shared session restarts from sequence 0",
+    "source": {
+      "history": [{"session_id": "x", "source_sequence": 1}]
+    },
+    "target": {
+      "history": [{"session_id": "y", "source_sequence": 1}]
+    },
+    "expected_common_sequence": 0
+  },
+  {
+    "id": "both-nil",
+    "description": "Missing checkpoints restart from 0",
+    "source": null,
+    "target": null,
+    "expected_common_sequence": 0
+  },
+  {
+    "id": "prefer-higher-shared-sequence",
+    "description": "When multiple shared sessions exist, prefer the higher source_sequence",
+    "source": {
+      "history": [
+        {"session_id": "old", "source_sequence": 5},
+        {"session_id": "new", "source_sequence": 40}
+      ]
+    },
+    "target": {
+      "history": [
+        {"session_id": "old", "source_sequence": 5},
+        {"session_id": "new", "source_sequence": 40}
+      ]
+    },
+    "expected_common_sequence": 40
+  }
+]

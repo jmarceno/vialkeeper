@@ -2,9 +2,34 @@
 
 ## Verdict
 
-The **core data model and storage layer are implemented faithfully** — revision IDs, winner selection, the revision/conflict model, the SQLite schema, pragmas, application ID, sequence allocation, and the HTTP route surface all match the spec. The **HTTP endpoints are essentially complete** (no missing routes).
+P0/P1 work closed the original release-bar holes: six-pillar tests, AdapterCase
+conformance families, Plan §7.7 replication phases with fault injection, HTTP
+route/schema split, SQLite responsibility modules, fixtures, and the requirements
+proof index. Residual hygiene IDs below are **CLOSED** or **ACCEPTED-with-ADR**
+with proving links; anything still incomplete is marked **PARTIAL**.
 
-However, the delivery is **not actually at the V1 release bar** the two documents set. The dominant gaps are: (1) the test architecture and storage-adapter conformance suite are largely absent, (2) several planned modules were collapsed into a monolithic SQLite adapter making query planning storage-coupled, (3) the replication worker is a single-task loop instead of the mandated per-transition state machine, and (4) a handful of behavioral deviations (FTS5 representation, planner scoring, file-lease/UUID checks, prepared-statement ownership).
+### Residual ID checklist (P2 hygiene)
+
+| ID | Status | Proof |
+| --- | --- | --- |
+| **F1** | **ACCEPTED-with-ADR** | [docs/adr/0001-strict-decoder.md](docs/adr/0001-strict-decoder.md); adversarial suite `test/contract/strict_decoder_test.exs` + `priv/fixtures/strict_json/rejects.json` (not smoke-only) |
+| **B1** | **CLOSED** | `ElixirDB.Replication.Worker` Plan §7.7 states; `test/replication/fault_injection_test.exs` — `"worker enters real :completed gen_statem state before stop"` / `":failed"`; `test/replication/phase_transitions_test.exs` — `"worker emits mandated phases through checkpoint_source"` |
+| **B2** | **CLOSED** | `test/replication/fault_injection_test.exs` — `"retryable fault at #{point} may repeat work but never skips source revision"` (+ waiting/import FaultEndpoint cases) |
+| **D3** | **CLOSED** | Runtime: `file_lease_os_process_test`, `owner_crash_test`, `waiter_termination_test`, `manifest_atomicity_test`, `database_isolation_test`, plus lease/admission/catalog suites. Replication + `test/end_to_end/*` pillars present |
+| **D4** | **CLOSED** | `test/contract/revision_model_properties_test.exs`; `test/contract/revision_adapter_properties_test.exs` — `"adapter and pure model agree on trees, winners, conflicts, tombstones, and replay"` |
+| **D5** | **CLOSED** | `priv/fixtures/{canonical_json,revision_ids,tokenization,protocol,strict_json}`; proven by `test/contract/fixtures_test.exs` + `strict_decoder_test.exs` |
+| **D6** | **CLOSED** | [docs/requirements-matrix.md](docs/requirements-matrix.md) — per-ID proof index |
+| **D8** | **CLOSED** | `test/end_to_end/phase8_scenario_test.exs`; companions `hot_journal_recovery_test`, `two_server_http_convergence_test`, `offline_copy_test`, `restart_convergence_test` |
+| **C3** | **CLOSED** | Real ownership in `storage/sqlite/{mutations,chains,import,index_catalog,query_runner,revisions,…}.ex` (no longer empty shells) |
+| **C4** | **CLOSED** | `lib/elixir_db/storage/sqlite/query_compiler.ex` owns pointer→SQLite compilation (`sqlite_path/1`, `json_expression/1`, `structured_expression/1`) |
+| **F5** | **CLOSED** | `lib/elixir_db/http/schemas.ex` + `BodyReader` `:allowed_fields`; `test/http/unknown_fields_and_routes_test.exs` |
+| **F6** | **CLOSED** | `lib/elixir_db/storage/results.ex` result structs used by `DatabaseOwner`; Commands normalized at owner boundary |
+| **E3** | **CLOSED (drop)** | [docs/compile-benchmark.md](docs/compile-benchmark.md) — do **not** enable `module_definition: :interpreted` |
+
+### Still PARTIAL (honest)
+
+- **MAINT-002 / MAINT-003** — vacuum/retention surfaces exist; dedicated behaviour proofs thin (see requirements matrix).
+- Historical narrative in sections A–F below is retained as the original review record; status for the residual IDs above supersedes the outdated “missing suite / 3-state worker” claims.
 
 ---
 
@@ -38,12 +63,11 @@ Spec lists eight primitives including "Durable target commit confirmation." Impl
 
 ## B. Replication worker architecture (Plan §7.7, §12.4, Phase 4)
 
-**B1. The `:gen_statem` uses only 3 states, not the mandated 12.**
-Spec/Plan §7.7: states `idle, handshake, read_changes, diff, fetch_chains, import, checkpoint_target, checkpoint_source, waiting, backoff, completed, failed`, so that "transition, cancellation, and fault tests [are] direct and deterministic."
-Implemented: the worker is `:gen_statem` but transitions only among `idle / running / backoff`. The entire replication runs as **one async task** (`Replication.run/3`); the phase states exist only as literals in `JobManager` ETS guards and are never emitted. `completed`/`failed` are reported at terminate, not as states.
+**B1. The `:gen_statem` uses only 3 states, not the mandated 12.** — **CLOSED.**
+Worker now implements Plan §7.7 phase states (including real `:completed` / `:failed` before stop). Proof: `test/replication/phase_transitions_test.exs`, `test/replication/fault_injection_test.exs` (`"worker enters real :completed gen_statem state before stop"`, `":failed"`).
 
-**B2. Per-transition fault injection is therefore impossible (Plan §12.4, Phase 4 exit gate).**
-Pillar 4 requires injecting failure "before and after each state transition" (handshake, changes read, diff, chain fetch, import commit, target/source checkpoint, wait subscription) with the core assertion "every injected retryable failure may repeat work but may never skip a committed revision." Because the batch is one opaque task, this fault model cannot be implemented or tested as designed. The Phase 4 exit gate ("fault injection at every transition proves no committed source revision can be skipped") is not satisfiable in the current shape.
+**B2. Per-transition fault injection is therefore impossible (Plan §12.4, Phase 4 exit gate).** — **CLOSED.**
+Proof: `test/replication/fault_injection_test.exs` — `"retryable fault at #{point} may repeat work but never skips source revision"` (+ waiting / FaultEndpoint import cases); helper `test/support/fault_endpoint.ex`.
 
 ---
 
@@ -55,45 +79,39 @@ Missing: `lib/elixir_db/http/routes/{databases,documents,changes,indexes,replica
 **C2. Query planner and projection are storage-coupled, not storage-neutral (`ARCH-005`, Plan §5, §21 Track A).**
 Missing: `lib/elixir_db/query/planner.ex` and `lib/elixir_db/query/projection.ex`. The planning logic (`select_index/3`, `index_score/2`, `structured_sort_compatible?/3`) and projection (`project/2`) live **inside `storage/sqlite/adapter.ex`**. `ARCH-005` requires "All document, revision, changes, replication, **and query domain code** MUST access persistence through an engine-neutral storage adapter contract." Planning/projection are query-domain code currently embedded in the SQLite adapter, so a future engine swap would require re-implementing them.
 
-**C3. SQLite per-responsibility modules are empty delegation shells (Plan §5, §16 Track A, §9).**
-`documents.ex`, `revisions.ex`, `changes.ex`, `local_records.ex`, `replication_jobs.ex`, `structured_indexes.ex`, `full_text_indexes.ex`, `integrity.ex` are all one-line `@moduledoc false` delegates. All SQL lives in `adapter.ex` (2734 lines) and `indexes.ex` (360 lines). The plan assigns these modules real ownership (e.g., Phase 2 Track A: "`documents.ex`/`revisions.ex`/`statements.ex` — implement physical leaf updates, winner materialization"). The files exist but the responsibilities are centralized.
+**C3. SQLite per-responsibility modules are empty delegation shells (Plan §5, §16 Track A, §9).** — **CLOSED.**
+Ownership lives in `mutations.ex`, `chains.ex`, `import.ex`, `index_catalog.ex`, `query_runner.ex`, `revisions.ex`, `documents.ex`, etc.; adapter is a thin coordinator. Proof: storage-adapter family tests under `test/storage_adapter/`.
 
-**C4. `query_compiler.ex` is a stub; compilation is duplicated (Plan §21 Track B).**
-It delegates to `Normalizer`; the real pointer→SQLite compilation is duplicated in `adapter.ex` (`json_expression/1`, `sqlite_path/1`) and `indexes.ex` (`structured_expression/1`).
+**C4. `query_compiler.ex` is a stub; compilation is duplicated (Plan §21 Track B).** — **CLOSED.**
+`Storage.SQLite.QueryCompiler` owns `sqlite_path/1`, `json_expression/1`, `structured_expression/1`. Proof: structured/FTS index and planner suites.
 
 ---
 
 ## D. Test architecture & conformance suite — the largest gap (Plan §12, §8.2, Phase gates)
 
-**D1. No storage-adapter conformance suite macro (Plan §8.2, `STORE-005`, `ARCH-009`).**
-There is no `use ElixirDB.Storage.AdapterCase, adapter: ...`. `STORE-005`/`ARCH-009` require a conformance suite that is engine-neutral and could run against any adapter. The current `v1_conformance_test.exs` is a plain `ExUnit.Case` hardcoded to the SQLite adapter (4 tests).
+**D1. No storage-adapter conformance suite macro (Plan §8.2, `STORE-005`, `ARCH-009`).** — **CLOSED.**
+`test/support/adapter_case.ex`; used by `test/storage_adapter/v1_conformance_test.exs` and family tests.
 
-**D2. `test/support/` is entirely missing (Plan §5, §12).**
-All six mandated helpers are absent: `temp_database`, `adapter_case`, `model_generators`, `fault_adapter`, `test_server`, `eventual`. `test_helper.exs` is just `ExUnit.start()`.
+**D2. `test/support/` is entirely missing (Plan §5, §12).** — **CLOSED.**
+Helpers present: `temp_database`, `adapter_case`, `model_generators`, `revision_history_model`, `fault_adapter`, `fault_endpoint`, `test_server`, `eventual`.
 
-**D3. Two test pillars are absent; the rest are skeletal.**
-- `test/replication/` — **missing** as a directory (Pillar 4: fault-injecting endpoint wrapper, per-transition fault injection, generated convergence histories).
-- `test/end_to_end/` — **missing entirely** (Pillar 6: the 6 required scenarios incl. two-server convergence with restart, offline copy + registration + index rebuild, crash recovery with hot rollback journal).
-- `test/runtime/` — 1 file, replication only. Missing the 8 required runtime areas (owner uniqueness, cross-OS-process lease exclusion, admission saturation, owner crash/restart, waiter termination, catalog recovery, registration atomicity, independent-DB isolation).
-- `test/storage_adapter/` — 2 files / 6 tests. Plan §12.2 lists 11 required families (lifecycle, mutations, conflicts, changes, revision_transfer, checkpoints, jobs, structured_indexes, full_text_indexes, integrity, portability).
-- `test/contract/` — 2 files / 11 tests. Plan §12.1 lists ~13 areas.
-- `test/http/` — 2 files / 3 tests. Plan §12.5: every method/path, schemas, bulk semantics, NDJSON streams, remote wire calls.
+**D3. Two test pillars are absent; the rest are skeletal.** — **CLOSED.**
+Pillars present under `test/{contract,storage_adapter,runtime,replication,http,end_to_end}/`. Runtime proof includes `file_lease_os_process_test`, `owner_crash_test`, `waiter_termination_test`, `manifest_atomicity_test`, `database_isolation_test`. See [docs/requirements-matrix.md](docs/requirements-matrix.md).
 
-Total: ~9 test files, ~706 lines — vs. the six-pillar architecture the plan mandates.
+**D4. No StreamData property/model-based tests (Plan §12.1, Phase 2 exit gate).** — **CLOSED.**
+Proof: `test/contract/revision_model_properties_test.exs`; `test/contract/revision_adapter_properties_test.exs` — `"adapter and pure model agree on trees, winners, conflicts, tombstones, and replay"` (+ `test/support/model_generators.ex`, `revision_history_model.ex`).
 
-**D4. No StreamData property/model-based tests (Plan §12.1, Phase 2 exit gate).**
-Phase 2 exit gate: "Random generated histories produce identical revision trees, winners, active conflicts, tombstones, and replay results in the pure model and SQLite adapter." No `model_generators` and no generated-history tests exist.
+**D5. `priv/fixtures/` is entirely missing (Plan §5, §4.4, Phase 0).** — **CLOSED.**
+`priv/fixtures/{canonical_json,revision_ids,tokenization,protocol,strict_json}` proven by `test/contract/fixtures_test.exs` and `test/contract/strict_decoder_test.exs`.
 
-**D5. `priv/fixtures/` is entirely missing (Plan §5, §4.4, Phase 0).**
-No `canonical_json/`, `revision_ids/`, `tokenization/`, or `protocol/` fixtures. Phase 0 requires all official RFC 8785 JCS vectors, RFC 8785 number examples, UTF-16 property-ordering tests, and cross-runtime fixture verification. The Phase 0 exit gate ("All official JCS vectors … MUST pass") cannot be evidenced.
+**D6. No requirement-ID → test mapping (Plan §21/§22 release gate, §2 of Architecture).** — **CLOSED.**
+Proof index: [docs/requirements-matrix.md](docs/requirements-matrix.md). MAINT-002/MAINT-003 remain PARTIAL there.
 
-**D6. No requirement-ID → test mapping (Plan §21/§22 release gate, §2 of Architecture).**
-Architecture §2: "Every normative requirement identified by an ID … MUST have corresponding automated validation." Release gate: "Every `Arch V2` requirement ID maps to at least one test." Given the thin suite, most `ARCH/STORE/REV/TX/CHANGE/QUERY/REPL/SEC/MAINT` IDs are unmapped.
+**D7. No operational documentation (Plan §22 Track D, release gate).** — **CLOSED.**
+[docs/operations.md](docs/operations.md).
 
-**D7. No operational documentation (Plan §22 Track D, release gate).**
-Release gate: "The final pull request contains architecture, implementation, and operational documentation" (start/stop, database root, registration, offline copy, lease recovery, integrity checking, job states, limits, error-code troubleshooting). Not present.
-
-**D8. The Phase 8 end-to-end scenario (Architecture §21, 16 steps) is not validated.** No end-to-end tests exist; the scenario is a release gate.
+**D8. The Phase 8 end-to-end scenario (Architecture §21, 16 steps) is not validated.** — **CLOSED.**
+Proof: `test/end_to_end/phase8_scenario_test.exs` — `"Architecture §21 Phase 8 scenario with local endpoints"`; also `hot_journal_recovery_test`, `two_server_http_convergence_test`, `offline_copy_test`.
 
 ---
 
@@ -102,11 +120,11 @@ Release gate: "The final pull request contains architecture, implementation, and
 **E1. No `shutdown_timeout` in config (`CONFIG-001`, Plan §5).**
 `CONFIG-001` lists "Shutdown timeout" as host config. It is hardcoded (`30000` in `database_catalog.ex:367` `Supervisor.stop(...)`) and not configurable.
 
-**E2. JSON nesting-depth limit is not host-enforced (`SEC-001`).**
-`SEC-001` requires bounded "JSON nesting depth" as a host limit. It is hardcoded `@default_max_depth 100` in `strict_decoder.ex`, absent from `Config.host_limits()`.
+**E2. JSON nesting-depth limit is not host-enforced (`SEC-001`).** — **CLOSED.**
+`StrictDecoder` reads `Config.host_limits()[:max_json_nesting_depth]`. Proof: `test/contract/strict_decoder_test.exs` — `"uses host-configured nesting depth when option omitted"`.
 
-**E3. `elixirc_options: [module_definition: :interpreted]` not set (Plan §3.4).**
-Plan §3.4 says keep it "only if the initial compile benchmark confirms … a benefit." No benchmark evidence either way. Minor / conditional.
+**E3. `elixirc_options: [module_definition: :interpreted]` not set (Plan §3.4).** — **CLOSED (drop).**
+Benchmark: [docs/compile-benchmark.md](docs/compile-benchmark.md). Default `mix compile --force` ≈ 1.35 s wall; interpreted saved ~150–200 ms — not worth enabling. Decision: do **not** set the option.
 
 **E4. No `.tool-versions` (Plan §3.1).**
 `mise.toml` is present and pins `elixir 1.20.2` / `erlang 29.0.4`, satisfying "or equivalent" — acceptable. Reporting for completeness.
@@ -115,8 +133,8 @@ Plan §3.4 says keep it "only if the initial compile benchmark confirms … a be
 
 ## F. Smaller deviations (reported per your instruction to flag even small ones)
 
-**F1. `StrictDecoder` is a hand-rolled parser, not `JSON.decode/3` callbacks (Plan §4.4).**
-Plan §4.4 mandates `StrictDecoder` "SHALL use `JSON.decode/3` custom decoder callbacks." Implementation is a bespoke recursive-descent parser (the `JSON` module is used only to unescape string tokens). Functionally it does enforce duplicate-key rejection, the binary64 model (integer safe-range, overflow rejection, non-zero underflow-to-zero rejection), UTF-8 validity, nesting, and size — so the *behavior* matches; the *mechanism* diverges.
+**F1. `StrictDecoder` is a hand-rolled parser, not `JSON.decode/3` callbacks (Plan §4.4).** — **ACCEPTED-with-ADR.**
+ADR: [docs/adr/0001-strict-decoder.md](docs/adr/0001-strict-decoder.md). Spike: `JSON.decode/3` callbacks cannot return typed `{:error, Error.t()}`, lack first-class depth/size hooks, and make duplicate-key rejection awkward. Keep hand-rolled decoder. Proof corpus: `test/contract/strict_decoder_test.exs` (JSON-002/003 adversarial suite) + `priv/fixtures/strict_json/rejects.json` — **not** thin smoke tests alone.
 
 **F2. Negative-zero handling split across two layers (`JSON-003`).**
 `-0.0` decodes to float `-0.0` and only canonicalizes to `"0"` at `Canonical.encode` time. `JSON-003` ("Negative zero SHALL canonicalize to 0") is ultimately satisfied because revision hashing goes through canonicalization — so this is correct end-to-end, but the invariant lives in the encoder rather than the decoder.
@@ -127,11 +145,11 @@ It only has `normalize/1` → `internal_error`. The real code→HTTP mapping is 
 **F4. `ChangeNotifier.close` notifies subscribers but does not self-terminate.**
 It sends `{:database_closed, uuid}` to subscribers and clears its map; `DatabaseCatalog` separately stops the runtime supervisor. Subscribers are correctly terminated with the retryable `database_closed` event (`ARCH-007`), so behavior is fine — structural only.
 
-**F5. Unknown-field rejection is per-route, not centralized in `BodyReader` (`API-009`).**
-Spec `API-009`: "Version 1 request objects MUST reject unknown top-level fields." `BodyReader` does generic content-type/size/decode checks; unknown-field rejection is done ad hoc per route via `unknown_fields?/2` allow-lists. Behavior is present for the routes that implement it, but it's not a single enforced boundary.
+**F5. Unknown-field rejection is per-route, not centralized in `BodyReader` (`API-009`).** — **CLOSED.**
+Central allow-lists in `lib/elixir_db/http/schemas.ex` passed through `Request` → `BodyReader` `:allowed_fields`. Proof: `test/http/unknown_fields_and_routes_test.exs`.
 
-**F6. `Storage.Commands` structs are unused; `Storage.Results` has no result structs (Plan §6.4).**
-All 19 command structs exist but are fieldless empty structs with zero consumers — the runtime dispatches tagged tuples (`{:command, :put, request}`) instead. Plan §6.4 prescribes command structs "to improve compiler inference, documentation, logging, and fault-test targeting." They're decorative.
+**F6. `Storage.Commands` structs are unused; `Storage.Results` has no result structs (Plan §6.4).** — **CLOSED.**
+`Storage.Results` structs used by `DatabaseOwner`; Commands normalized at the owner boundary (`lib/elixir_db/storage/{commands,results}.ex`).
 
 **F7. `Domain.Bookmark`/`Checkpoint`/`ReplicationJob`/`Query`/`Change`/`Leaf` have no `new/1` constructor (Plan §6.1).**
 Plan §6.1: "Every domain struct MUST … Expose a `new/1` or `from_wire/1` constructor." Half the domain structs (Bookmark, Checkpoint, ReplicationJob, Query, Change, Leaf) lack constructors; the bookmark codec operates on plain maps rather than the `Bookmark` struct.

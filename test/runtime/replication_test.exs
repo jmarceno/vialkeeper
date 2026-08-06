@@ -127,12 +127,19 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
     assert phases == [
              :handshake,
+             :after_handshake,
              :read_changes,
+             :after_read_changes,
              :diff,
+             :after_diff,
              :fetch_chains,
+             :after_fetch_chains,
              :import,
+             :after_import,
              :checkpoint_target,
-             :checkpoint_source
+             :after_checkpoint_target,
+             :checkpoint_source,
+             :after_checkpoint_source
            ]
 
     assert {:ok, %{body: %{"n" => 1}}} =

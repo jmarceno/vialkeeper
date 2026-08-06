@@ -1,7 +1,7 @@
 defmodule ElixirDB.HTTP.Routes.Documents do
   @moduledoc false
   use Plug.Router
-  alias ElixirDB.HTTP.{Request, Response}
+  alias ElixirDB.HTTP.{Request, Response, Schemas}
 
   plug(:match)
   plug(:dispatch)
@@ -9,10 +9,7 @@ defmodule ElixirDB.HTTP.Routes.Documents do
   post "/get" do
     Request.call(
       conn,
-      [
-        allowed_fields: ["id", "revision", "include_conflicts"],
-        unknown_message: "document get contains an unknown field"
-      ],
+      Schemas.opts(:document_get, "document get contains an unknown field"),
       fn body, conn ->
         Response.result(conn, ElixirDB.Documents.get(Request.uuid(conn), body))
       end
@@ -22,10 +19,7 @@ defmodule ElixirDB.HTTP.Routes.Documents do
   post "/put" do
     Request.call(
       conn,
-      [
-        allowed_fields: ["id", "if_revision", "body"],
-        unknown_message: "document put contains an unknown field"
-      ],
+      Schemas.opts(:document_put, "document put contains an unknown field"),
       fn body, conn ->
         Response.result(conn, ElixirDB.Documents.put(Request.uuid(conn), body), 201)
       end
@@ -35,10 +29,7 @@ defmodule ElixirDB.HTTP.Routes.Documents do
   post "/delete" do
     Request.call(
       conn,
-      [
-        allowed_fields: ["id", "if_revision"],
-        unknown_message: "document delete contains an unknown field"
-      ],
+      Schemas.opts(:document_delete, "document delete contains an unknown field"),
       fn body, conn ->
         Response.result(conn, ElixirDB.Documents.delete(Request.uuid(conn), body))
       end
@@ -48,17 +39,7 @@ defmodule ElixirDB.HTTP.Routes.Documents do
   post "/resolve" do
     Request.call(
       conn,
-      [
-        allowed_fields: [
-          "id",
-          "document_id",
-          "expected_live_revisions",
-          "chosen_parent_revision",
-          "body",
-          "delete_all"
-        ],
-        unknown_message: "document resolve contains an unknown field"
-      ],
+      Schemas.opts(:document_resolve, "document resolve contains an unknown field"),
       fn body, conn ->
         Response.result(conn, ElixirDB.Documents.resolve(Request.uuid(conn), body))
       end
@@ -66,6 +47,8 @@ defmodule ElixirDB.HTTP.Routes.Documents do
   end
 
   post "/bulk-get" do
+    # Bulk get is an array of get requests — BodyReader allows arrays; per-item validation
+    # remains in Documents.bulk_get/2.
     Request.call(conn, fn body, conn ->
       Response.result(conn, ElixirDB.Documents.bulk_get(Request.uuid(conn), body))
     end)

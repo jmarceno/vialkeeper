@@ -139,8 +139,15 @@ defmodule ElixirDB.JSON.StrictDecoder do
       true ->
         if String.contains?(token, [".", "e", "E"]) do
           case Float.parse(token) do
-            {value, ""} when is_float(value) -> validate_float(value, token, rest)
-            _ -> {:error, ElixirDB.Error.invalid_request("invalid JSON number")}
+            {value, ""} when is_float(value) ->
+              validate_float(value, token, rest)
+
+            :error ->
+              # Extremely large exponents fail Float.parse on some OTP builds; treat as overflow.
+              {:error, ElixirDB.Error.invalid_request("number overflows to infinity")}
+
+            _ ->
+              {:error, ElixirDB.Error.invalid_request("invalid JSON number")}
           end
         else
           {value, ""} = Integer.parse(token)
@@ -159,6 +166,9 @@ defmodule ElixirDB.JSON.StrictDecoder do
     cond do
       not :erlang.is_float(value) ->
         {:error, ElixirDB.Error.invalid_request("invalid JSON number")}
+
+      abs(value) > Float.max_finite() ->
+        {:error, ElixirDB.Error.invalid_request("number overflows to infinity")}
 
       value == 0.0 and not zero_literal? ->
         {:error, ElixirDB.Error.invalid_request("number underflows to zero")}

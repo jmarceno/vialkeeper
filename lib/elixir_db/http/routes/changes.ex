@@ -1,29 +1,37 @@
 defmodule ElixirDB.HTTP.Routes.Changes do
   @moduledoc false
   use Plug.Router
-  alias ElixirDB.HTTP.{BodyReader, Request, Response}
+  alias ElixirDB.HTTP.{Request, Response}
 
   plug(:match)
   plug(:dispatch)
 
   post "/" do
-    Request.call(conn, fn body, conn ->
-      Response.result(conn, ElixirDB.Changes.wait(Request.uuid(conn), body))
-    end)
+    Request.call(
+      conn,
+      ElixirDB.HTTP.Schemas.opts(:changes, "changes request contains an unknown field"),
+      fn body, conn ->
+        Response.result(conn, ElixirDB.Changes.wait(Request.uuid(conn), body))
+      end
+    )
   end
 
   post "/stream" do
-    Request.call(conn, fn body, conn ->
-      with :ok <- validate_stream_request(body),
-           {:ok, changes} <- stream_read(Request.uuid(conn), body),
-           {:ok, conn} <- start_stream(conn),
-           {:ok, conn} <- stream_events(conn, changes) do
-        stream_follow(Request.uuid(conn), conn, changes.last_sequence, body)
-      else
-        {:error, %ElixirDB.Error{} = error} -> Response.error(conn, error)
-        {:error, _reason} -> conn
+    Request.call(
+      conn,
+      ElixirDB.HTTP.Schemas.opts(:changes_stream, "changes stream contains an unknown field"),
+      fn body, conn ->
+        with :ok <- validate_stream_request(body),
+             {:ok, changes} <- stream_read(Request.uuid(conn), body),
+             {:ok, conn} <- start_stream(conn),
+             {:ok, conn} <- stream_events(conn, changes) do
+          stream_follow(Request.uuid(conn), conn, changes.last_sequence, body)
+        else
+          {:error, %ElixirDB.Error{} = error} -> Response.error(conn, error)
+          {:error, _reason} -> conn
+        end
       end
-    end)
+    )
   end
 
   match _ do
@@ -34,37 +42,30 @@ defmodule ElixirDB.HTTP.Routes.Changes do
   end
 
   defp validate_stream_request(body) when is_map(body) do
-    with :ok <-
-           BodyReader.reject_unknown_fields(
-             body,
-             ["since", "limit", "heartbeat_ms"],
-             "changes stream contains an unknown field"
-           ) do
-      since = body["since"] || 0
-      limit = body["limit"] || 100
-      heartbeat = body["heartbeat_ms"] || 0
-      max_batch = ElixirDB.Config.host_limits()[:max_changes_batch] || 500
-      max_wait = ElixirDB.Config.host_limits()[:max_wait_ms] || 30_000
+    since = body["since"] || 0
+    limit = body["limit"] || 100
+    heartbeat = body["heartbeat_ms"] || 0
+    max_batch = ElixirDB.Config.host_limits()[:max_changes_batch] || 500
+    max_wait = ElixirDB.Config.host_limits()[:max_wait_ms] || 30_000
 
-      cond do
-        not is_integer(since) or since < 0 ->
-          {:error, ElixirDB.Error.invalid_request("since must be a non-negative integer")}
+    cond do
+      not is_integer(since) or since < 0 ->
+        {:error, ElixirDB.Error.invalid_request("since must be a non-negative integer")}
 
-        not is_integer(limit) or limit <= 0 ->
-          {:error, ElixirDB.Error.invalid_request("limit must be a positive integer")}
+      not is_integer(limit) or limit <= 0 ->
+        {:error, ElixirDB.Error.invalid_request("limit must be a positive integer")}
 
-        limit > max_batch ->
-          {:error, ElixirDB.Error.resource_limit("changes stream limit exceeds the host limit")}
+      limit > max_batch ->
+        {:error, ElixirDB.Error.resource_limit("changes stream limit exceeds the host limit")}
 
-        not is_integer(heartbeat) or heartbeat < 0 ->
-          {:error, ElixirDB.Error.invalid_request("heartbeat_ms must be a non-negative integer")}
+      not is_integer(heartbeat) or heartbeat < 0 ->
+        {:error, ElixirDB.Error.invalid_request("heartbeat_ms must be a non-negative integer")}
 
-        heartbeat > max_wait ->
-          {:error, ElixirDB.Error.resource_limit("heartbeat_ms exceeds the host limit")}
+      heartbeat > max_wait ->
+        {:error, ElixirDB.Error.resource_limit("heartbeat_ms exceeds the host limit")}
 
-        true ->
-          :ok
-      end
+      true ->
+        :ok
     end
   end
 

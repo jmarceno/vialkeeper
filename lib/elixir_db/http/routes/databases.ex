@@ -9,10 +9,7 @@ defmodule ElixirDB.HTTP.Routes.Databases do
   post "/" do
     Request.call(
       conn,
-      [
-        allowed_fields: ["path", "config"],
-        unknown_message: "database creation contains an unknown field"
-      ],
+      ElixirDB.HTTP.Schemas.opts(:database_create, "database creation contains an unknown field"),
       fn body, conn ->
         path = body["path"] || "#{ElixirDB.UUID.v4()}.db"
 
@@ -102,10 +99,7 @@ defmodule ElixirDB.HTTP.Routes.Databases do
   def register(conn) do
     Request.call(
       conn,
-      [
-        allowed_fields: ["path"],
-        unknown_message: "registration contains an unknown field"
-      ],
+      ElixirDB.HTTP.Schemas.opts(:database_register, "registration contains an unknown field"),
       fn body, conn ->
         case ElixirDB.Runtime.DatabaseCatalog.register(body["path"]) do
           {:ok, info} -> Response.ok(conn, info, 201)

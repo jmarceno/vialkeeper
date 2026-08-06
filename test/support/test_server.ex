@@ -47,7 +47,14 @@ defmodule ElixirDB.TestServer do
   def stop(%{pid: pid}), do: stop(pid)
 
   def stop(pid) when is_pid(pid) do
-    if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5_000)
+    if Process.alive?(pid) do
+      try do
+        GenServer.stop(pid, :normal, 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
     :ok
   end
 

@@ -3,8 +3,8 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   Revision-row SQL helpers for the Version 1 SQLite adapter.
 
   Owns find/insert/leaf queries against the `revisions` table, parent checks,
-  and leaf-set encoding used by change-feed rows. Import/get orchestration and
-  transaction boundaries remain in the adapter.
+  and leaf-set encoding used by change-feed rows. Chain reads live in `Chains`;
+  import writes live in `Import`. Transaction boundaries remain in the adapter.
   """
 
   alias ElixirDB.Domain.Revision

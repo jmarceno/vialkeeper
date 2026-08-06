@@ -1,15 +1,19 @@
 defmodule ElixirDB.HTTP.Routes.Replications do
   @moduledoc false
   use Plug.Router
-  alias ElixirDB.HTTP.{Request, Response}
+  alias ElixirDB.HTTP.{Request, Response, Schemas}
 
   plug(:match)
   plug(:dispatch)
 
   post "/" do
-    Request.call(conn, fn body, conn ->
-      Response.result(conn, ElixirDB.Replication.JobManager.put(Request.uuid(conn), body), 201)
-    end)
+    Request.call(
+      conn,
+      Schemas.opts(:replication_job, "replication job contains an unknown field"),
+      fn body, conn ->
+        Response.result(conn, ElixirDB.Replication.JobManager.put(Request.uuid(conn), body), 201)
+      end
+    )
   end
 
   get "/" do

@@ -1,71 +1,120 @@
 defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
   use ExUnit.Case, async: false
 
-  alias Plug.Conn
+  alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.TestServer
 
   test "registration rejects unknown fields" do
-    response =
-      request(:post, "/v1/registrations", %{
-        "path" => "http-unknown-reg.db",
-        "extra" => true
-      })
+    server = TestServer.start_supervised!()
 
-    assert response.status == 400
+    assert {:ok, %{status: 400, body: body}} =
+             Req.post(server.base_url <> "/v1/registrations",
+               json: %{"path" => "http-unknown-reg.db", "extra" => true}
+             )
 
-    assert {:ok, %{"error" => %{"code" => "invalid_request", "retryable" => false}}} =
-             ElixirDB.JSON.StrictDecoder.decode(response.resp_body)
+    assert %{"error" => %{"code" => "invalid_request", "retryable" => false}} = body
   end
 
-  test "GET /v1/databases and GET /v1/databases/:uuid plus unknown document fields" do
+  test "GET databases plus table-driven unknown fields over Bandit" do
+    server = TestServer.start_supervised!()
     path = "http-list-#{System.unique_integer([:positive])}.db"
-    created = request(:post, "/v1/databases", %{"path" => path})
-    assert created.status == 201
 
-    {:ok, %{"data" => %{"database_uuid" => uuid}}} =
-      ElixirDB.JSON.StrictDecoder.decode(created.resp_body)
+    assert {:ok, %{status: 201, body: created}} =
+             Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
+
+    uuid = created["data"]["database_uuid"]
 
     on_exit(fn ->
-      _ = ElixirDB.Runtime.DatabaseCatalog.close(uuid)
-      _ = ElixirDB.Runtime.DatabaseCatalog.unregister(uuid)
+      _ = DatabaseCatalog.close(uuid)
+      _ = DatabaseCatalog.unregister(uuid)
       _ = File.rm(Path.join(ElixirDB.Config.database_root(), path))
       _ = File.rm(Path.join(ElixirDB.Config.database_root(), path <> ".lease"))
     end)
 
-    listed = request(:get, "/v1/databases", nil)
-    assert listed.status == 200
+    assert {:ok, %{status: 200, body: listed}} = Req.get(server.base_url <> "/v1/databases")
 
-    {:ok, %{"data" => data}} = ElixirDB.JSON.StrictDecoder.decode(listed.resp_body)
-
-    assert Enum.any?(List.wrap(data), fn entry ->
-             entry["database_uuid"] == uuid or entry[:database_uuid] == uuid
+    assert Enum.any?(List.wrap(listed["data"]), fn entry ->
+             entry["database_uuid"] == uuid
            end)
 
-    info = request(:get, "/v1/databases/#{uuid}", nil)
-    assert info.status == 200
+    assert {:ok, %{status: 200}} = Req.get(server.base_url <> "/v1/databases/#{uuid}")
 
-    bad =
-      request(:post, "/v1/databases/#{uuid}/documents/put", %{
-        "id" => "x",
-        "body" => %{},
-        "nope" => 1
-      })
+    assert {:ok, %{status: 201, body: put_body}} =
+             Req.post(server.base_url <> "/v1/databases/#{uuid}/documents/put",
+               json: %{"id" => "seed", "body" => %{"k" => 1}}
+             )
 
-    assert bad.status == 400
+    revision = put_body["data"]["revision"]
+    replication_id = "rep_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
 
-    assert {:ok, %{"error" => %{"code" => "invalid_request"}}} =
-             ElixirDB.JSON.StrictDecoder.decode(bad.resp_body)
-  end
+    cases = [
+      {:post, "/v1/databases/#{uuid}/documents/put",
+       %{"id" => "x", "body" => %{}, "nope" => 1}},
+      {:post, "/v1/databases/#{uuid}/documents/get", %{"id" => "seed", "extra" => true}},
+      {:post, "/v1/databases/#{uuid}/documents/delete",
+       %{"id" => "seed", "if_revision" => revision, "noise" => 1}},
+      {:post, "/v1/databases/#{uuid}/documents/resolve",
+       %{
+         "id" => "seed",
+         "expected_live_revisions" => [revision],
+         "chosen_parent_revision" => revision,
+         "body" => %{},
+         "mystery" => true
+       }},
+      {:post, "/v1/databases/#{uuid}/indexes",
+       %{
+         "name" => "by-kind",
+         "type" => "structured",
+         "fields" => [%{"path" => "/kind", "type" => "string", "direction" => "asc"}],
+         "unexpected" => true
+       }},
+      {:post, "/v1/databases/#{uuid}/query", %{"selector" => %{"/kind" => "task"}, "bonus" => 1}},
+      {:post, "/v1/databases/#{uuid}/changes",
+       %{"since" => 0, "limit" => 10, "wait_ms" => 0, "extra" => true}},
+      {:post, "/v1/databases/#{uuid}/changes/stream",
+       %{"since" => 0, "limit" => 10, "heartbeat_ms" => 0, "noise" => true}},
+      {:post, "/v1/databases/#{uuid}/replications",
+       %{
+         "persist" => true,
+         "mode" => "one_shot",
+         "direction" => "push",
+         "endpoint" => %{
+           "kind" => "remote",
+           "base_url" => "http://127.0.0.1:9",
+           "database_uuid" => ElixirDB.UUID.v4()
+         },
+         "enabled" => false,
+         "mystery" => true
+       }},
+      {:post, "/v1/databases/#{uuid}/replication/changes",
+       %{"since" => 0, "limit" => 10, "wait_ms" => 0, "extra" => true}},
+      {:post, "/v1/databases/#{uuid}/replication/revisions/diff",
+       %{"documents" => [], "extra" => true}},
+      {:post, "/v1/databases/#{uuid}/replication/revisions/get",
+       %{"documents" => [], "extra" => true}},
+      {:post, "/v1/databases/#{uuid}/replication/revisions/put",
+       %{"chains" => [], "extra" => true}},
+      {:put, "/v1/databases/#{uuid}/replication/checkpoints/#{replication_id}",
+       %{
+         "expected_checkpoint_version" => 0,
+         "version" => 1,
+         "checkpoint_version" => 1,
+         "replication_id" => replication_id,
+         "session_id" => ElixirDB.UUID.v4(),
+         "source_sequence" => 0,
+         "history" => [],
+         "extra" => true
+       }}
+    ]
 
-  defp request(method, path, nil) do
-    Plug.Test.conn(method, path)
-    |> ElixirDB.HTTP.Router.call([])
-  end
+    for {method, route, body} <- cases do
+      assert {:ok, %{status: 400, body: resp}} =
+               Req.request(method: method, url: server.base_url <> route, json: body)
 
-  defp request(method, path, body) when is_map(body) do
-    payload = IO.iodata_to_binary(JSON.encode_to_iodata!(body))
+      assert resp["error"]["code"] == "invalid_request",
+             "#{method} #{route} expected invalid_request, got #{inspect(resp)}"
 
-    Plug.Test.conn(method, path, payload)
-    |> Conn.put_req_header("content-type", "application/json")
-    |> ElixirDB.HTTP.Router.call([])
+      assert resp["error"]["retryable"] == false
+    end
   end
 end

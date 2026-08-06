@@ -26,6 +26,112 @@ The public protocol is rooted at `/v1`. Database and document operations use
 JSON envelopes, and document IDs are carried in request bodies. SQL and
 backend-specific query syntax are never accepted from clients.
 
+## How to use
+
+Start the application (`mix run --no-halt`, or add `:elixir_db` as a dependency
+and start it from your supervision tree). Databases live under the configured
+root (`ELIXIR_DB_ROOT` or the app default). Paths passed to create/register are
+relative to that root.
+
+### From Elixir (in-process)
+
+```elixir
+alias ElixirDB.Runtime.DatabaseCatalog
+alias ElixirDB.Documents
+
+# Create (and open) a database file under the configured root.
+{:ok, %{database_uuid: uuid}} = DatabaseCatalog.create("notes.db")
+
+# Put a document. Revision IDs are content-addressed SHA-256 digests.
+{:ok, %{revision: rev1}} =
+  Documents.put(uuid, %{id: "note-1", body: %{"title" => "Hello", "done" => false}})
+
+# Conditional update: pass the current revision as if_revision.
+{:ok, %{revision: rev2}} =
+  Documents.put(uuid, %{
+    id: "note-1",
+    if_revision: rev1,
+    body: %{"title" => "Hello", "done" => true}
+  })
+
+{:ok, %{revision: ^rev2, body: %{"done" => true}}} =
+  Documents.get(uuid, %{id: "note-1"})
+
+# Close when finished; the .db file remains registered until unregister/1.
+:ok = DatabaseCatalog.close(uuid)
+```
+
+Add the app as a Mix dependency when embedding it:
+
+```elixir
+# mix.exs
+defp deps do
+  [
+    {:elixir_db, path: "../elixirdb"}
+    # or: {:elixir_db, git: "https://github.com/OWNER/elixirdb.git"}
+  ]
+end
+```
+
+### From TypeScript (HTTP `/v1`)
+
+With the server listening on `http://127.0.0.1:4000`:
+
+```typescript
+const baseUrl = "http://127.0.0.1:4000";
+
+type Envelope<T> = {
+  request_id: string;
+  data?: T;
+  error?: { code: string; message: string; retryable: boolean };
+};
+
+async function postJson<T>(
+  path: string,
+  body: unknown,
+): Promise<{ status: number; envelope: Envelope<T> }> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const envelope = (await response.json()) as Envelope<T>;
+  return { status: response.status, envelope };
+}
+
+const created = await postJson<{ database_uuid: string }>("/v1/databases", {
+  path: "notes.db",
+});
+if (created.status !== 201 || !created.envelope.data) {
+  throw new Error(created.envelope.error?.message ?? "create failed");
+}
+const uuid = created.envelope.data.database_uuid;
+
+const put = await postJson<{ revision: string; body: Record<string, unknown> }>(
+  `/v1/databases/${uuid}/documents/put`,
+  { id: "note-1", body: { title: "Hello", done: false } },
+);
+if (put.status !== 201 || !put.envelope.data) {
+  throw new Error(put.envelope.error?.message ?? "put failed");
+}
+const revision = put.envelope.data.revision;
+
+const got = await postJson<{ revision: string; body: { title: string } }>(
+  `/v1/databases/${uuid}/documents/get`,
+  { id: "note-1" },
+);
+console.log(got.envelope.data?.body.title, got.envelope.data?.revision === revision);
+
+await postJson(`/v1/databases/${uuid}/close`, {});
+```
+
+Successful responses use `{"request_id","data"}`; failures use
+`{"request_id","error":{"code","message","retryable",...}}`. Document IDs and
+mutation fields travel in the JSON body, not in the URL path.
+
 ## Offline portability
 
 Stop the server, close the database, and copy the database file with ordinary

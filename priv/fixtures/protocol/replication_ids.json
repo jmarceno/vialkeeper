@@ -1,0 +1,42 @@
+[
+  {
+    "id": "push-one-shot",
+    "description": "REPL-006 replication identity for push/one_shot",
+    "source_database_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "target_database_uuid": "ffffffff-0000-1111-2222-333333333333",
+    "direction": "push",
+    "mode": "one_shot",
+    "filter": null,
+    "expected_replication_id": "cf6bd834932fe81ef78ea94baac50ab98cfb2c2333a3a06c13df14e6096233b4"
+  },
+  {
+    "id": "pull-continuous",
+    "description": "REPL-006 replication identity for pull/continuous",
+    "source_database_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "target_database_uuid": "ffffffff-0000-1111-2222-333333333333",
+    "direction": "pull",
+    "mode": "continuous",
+    "filter": null,
+    "expected_replication_id": "59c10f24531b523efa77c5b9cc375567909fe502be3eb2b1a92f55cf0a0d4bdf"
+  },
+  {
+    "id": "push-continuous-swapped-uuids",
+    "description": "UUID pair and direction participate in identity",
+    "source_database_uuid": "11111111-2222-3333-4444-555555555555",
+    "target_database_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "direction": "push",
+    "mode": "continuous",
+    "filter": null,
+    "expected_replication_id": "956af4b7b41f19a97878d87531084d727d1c2c196f5bf32daaab43bbb3b171f5"
+  },
+  {
+    "id": "push-continuous-same-endpoints",
+    "description": "Mode alone distinguishes identity from push-one-shot",
+    "source_database_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "target_database_uuid": "ffffffff-0000-1111-2222-333333333333",
+    "direction": "push",
+    "mode": "continuous",
+    "filter": null,
+    "expected_replication_id": "d492ad63d2b060297cec661132dfe8e641f287a10423e7fde97eea10b8887609"
+  }
+]

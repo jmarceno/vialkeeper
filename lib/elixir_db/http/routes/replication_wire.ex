@@ -1,7 +1,7 @@
 defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   @moduledoc false
   use Plug.Router
-  alias ElixirDB.HTTP.{BodyReader, Request, Response}
+  alias ElixirDB.HTTP.{Request, Response}
 
   plug(:match)
   plug(:dispatch)
@@ -30,45 +30,61 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   end
 
   post "/changes" do
-    Request.call(conn, fn body, conn ->
-      Response.result(conn, ElixirDB.Changes.wait(Request.uuid(conn), body))
-    end)
+    Request.call(
+      conn,
+      ElixirDB.HTTP.Schemas.opts(:wire_changes, "replication changes contains an unknown field"),
+      fn body, conn ->
+        Response.result(conn, ElixirDB.Changes.wait(Request.uuid(conn), body))
+      end
+    )
   end
 
   post "/revisions/diff" do
-    Request.call(conn, fn body, conn ->
-      Response.result(
-        conn,
-        ElixirDB.Runtime.DatabaseCatalog.command(
-          Request.uuid(conn),
-          {:command, :diff_revisions, body}
+    Request.call(
+      conn,
+      ElixirDB.HTTP.Schemas.opts(:wire_diff, "revision diff contains an unknown field"),
+      fn body, conn ->
+        Response.result(
+          conn,
+          ElixirDB.Runtime.DatabaseCatalog.command(
+            Request.uuid(conn),
+            {:command, :diff_revisions, body}
+          )
         )
-      )
-    end)
+      end
+    )
   end
 
   post "/revisions/get" do
-    Request.call(conn, fn body, conn ->
-      Response.result(
-        conn,
-        ElixirDB.Runtime.DatabaseCatalog.command(
-          Request.uuid(conn),
-          {:command, :get_revision_chains, body}
+    Request.call(
+      conn,
+      ElixirDB.HTTP.Schemas.opts(:wire_get_chains, "revision get contains an unknown field"),
+      fn body, conn ->
+        Response.result(
+          conn,
+          ElixirDB.Runtime.DatabaseCatalog.command(
+            Request.uuid(conn),
+            {:command, :get_revision_chains, body}
+          )
         )
-      )
-    end)
+      end
+    )
   end
 
   post "/revisions/put" do
-    Request.call(conn, fn body, conn ->
-      Response.result(
-        conn,
-        ElixirDB.Runtime.DatabaseCatalog.command(
-          Request.uuid(conn),
-          {:command, :import_revision_chains, body}
+    Request.call(
+      conn,
+      ElixirDB.HTTP.Schemas.opts(:wire_put_chains, "revision put contains an unknown field"),
+      fn body, conn ->
+        Response.result(
+          conn,
+          ElixirDB.Runtime.DatabaseCatalog.command(
+            Request.uuid(conn),
+            {:command, :import_revision_chains, body}
+          )
         )
-      )
-    end)
+      end
+    )
   end
 
   get "/checkpoints/:replication_id" do
@@ -82,28 +98,32 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   end
 
   put "/checkpoints/:replication_id" do
-    Request.call(conn, fn body, conn ->
-      if valid_checkpoint_put?(body),
-        do:
-          Response.result(
-            conn,
-            ElixirDB.Runtime.DatabaseCatalog.command(
-              Request.uuid(conn),
-              {:command, :put_local_record,
-               %{
-                 namespace: "checkpoints",
-                 key: conn.path_params["replication_id"],
-                 expected_version: body["expected_checkpoint_version"],
-                 value: Map.delete(body, "expected_checkpoint_version")
-               }}
+    Request.call(
+      conn,
+      ElixirDB.HTTP.Schemas.opts(:wire_checkpoint, "checkpoint PUT has an invalid replacement"),
+      fn body, conn ->
+        if valid_checkpoint_put?(body),
+          do:
+            Response.result(
+              conn,
+              ElixirDB.Runtime.DatabaseCatalog.command(
+                Request.uuid(conn),
+                {:command, :put_local_record,
+                 %{
+                   namespace: "checkpoints",
+                   key: conn.path_params["replication_id"],
+                   expected_version: body["expected_checkpoint_version"],
+                   value: Map.delete(body, "expected_checkpoint_version")
+                 }}
+              )
+            ),
+          else:
+            Response.error(
+              conn,
+              ElixirDB.Error.invalid_request("checkpoint PUT has an invalid replacement")
             )
-          ),
-        else:
-          Response.error(
-            conn,
-            ElixirDB.Error.invalid_request("checkpoint PUT has an invalid replacement")
-          )
-    end)
+      end
+    )
   end
 
   match _ do
@@ -114,19 +134,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   end
 
   defp valid_checkpoint_put?(body) when is_map(body) do
-    allowed = [
-      "expected_checkpoint_version",
-      "version",
-      "checkpoint_version",
-      "replication_id",
-      "session_id",
-      "source_sequence",
-      "history"
-    ]
-
-    BodyReader.reject_unknown_fields(body, allowed, "checkpoint PUT has an invalid replacement") ==
-      :ok and
-      is_integer(body["expected_checkpoint_version"]) and
+    is_integer(body["expected_checkpoint_version"]) and
       body["expected_checkpoint_version"] >= 0 and
       body["version"] == 1 and
       is_integer(body["checkpoint_version"]) and body["checkpoint_version"] > 0 and

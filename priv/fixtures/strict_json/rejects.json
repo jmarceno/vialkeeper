@@ -1,0 +1,75 @@
+[
+  {
+    "id": "duplicate-top-level",
+    "input": "{\"a\":1,\"a\":2}",
+    "error_code": "invalid_request",
+    "message_includes": "duplicate"
+  },
+  {
+    "id": "duplicate-nested",
+    "input": "{\"outer\":{\"k\":1,\"k\":2}}",
+    "error_code": "invalid_request",
+    "message_includes": "duplicate"
+  },
+  {
+    "id": "unsafe-integer-high",
+    "input": "9007199254740992",
+    "error_code": "invalid_request",
+    "message_includes": "binary64"
+  },
+  {
+    "id": "unsafe-integer-low",
+    "input": "-9007199254740992",
+    "error_code": "invalid_request",
+    "message_includes": "binary64"
+  },
+  {
+    "id": "underflow-positive",
+    "input": "1e-400",
+    "error_code": "invalid_request",
+    "message_includes": "underflow"
+  },
+  {
+    "id": "underflow-negative",
+    "input": "-1e-400",
+    "error_code": "invalid_request",
+    "message_includes": "underflow"
+  },
+  {
+    "id": "overflow-infinity",
+    "input": "1e309",
+    "error_code": "invalid_request",
+    "message_includes": "overflow"
+  },
+  {
+    "id": "overflow-negative-infinity",
+    "input": "-1e309",
+    "error_code": "invalid_request",
+    "message_includes": "overflow"
+  },
+  {
+    "id": "nan-token",
+    "input": "NaN",
+    "error_code": "invalid_request",
+    "message_includes": "invalid"
+  },
+  {
+    "id": "infinity-token",
+    "input": "Infinity",
+    "error_code": "invalid_request",
+    "message_includes": "invalid"
+  },
+  {
+    "id": "neg-infinity-token",
+    "input": "-Infinity",
+    "error_code": "invalid_request",
+    "message_includes": "invalid"
+  },
+  {
+    "id": "invalid-utf8-note",
+    "input": "null",
+    "error_code": "invalid_request",
+    "skip": true,
+    "note": "UTF-8 invalid bytes cannot live in JSON fixture text; covered in ExUnit"
+  }
+]

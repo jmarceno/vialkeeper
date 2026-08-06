@@ -80,6 +80,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
       {key, value} when key in ["content-type", "Content-Type"] -> value
       _ -> nil
     end)
+    |> content_type_header()
     |> case do
       nil -> true
       value -> String.starts_with?(value, "application/json")
@@ -87,4 +88,9 @@ defmodule ElixirDB.Replication.RemoteTransport do
   end
 
   defp accepted_content_type?(_), do: true
+
+  defp content_type_header(nil), do: nil
+  defp content_type_header(value) when is_binary(value), do: value
+  defp content_type_header([value | _]) when is_binary(value), do: value
+  defp content_type_header(_), do: nil
 end

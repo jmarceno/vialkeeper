@@ -1,15 +1,19 @@
 defmodule ElixirDB.HTTP.Routes.Indexes do
   @moduledoc false
   use Plug.Router
-  alias ElixirDB.HTTP.{Request, Response}
+  alias ElixirDB.HTTP.{Request, Response, Schemas}
 
   plug(:match)
   plug(:dispatch)
 
   post "/" do
-    Request.call(conn, fn body, conn ->
-      Response.result(conn, ElixirDB.Query.create_index(Request.uuid(conn), body), 201)
-    end)
+    Request.call(
+      conn,
+      Schemas.opts(:index_create, "index create contains an unknown field"),
+      fn body, conn ->
+        Response.result(conn, ElixirDB.Query.create_index(Request.uuid(conn), body), 201)
+      end
+    )
   end
 
   get "/" do
@@ -39,14 +43,15 @@ defmodule ElixirDB.HTTP.Routes.Indexes do
 
   @doc false
   def query(conn) do
-    Request.call(conn, fn body, conn ->
+    Request.call(conn, Schemas.opts(:query, "query contains an unknown field"), fn body, conn ->
       Response.result(conn, ElixirDB.Query.execute(Request.uuid(conn), body))
     end)
   end
 
   @doc false
   def explain(conn) do
-    Request.call(conn, fn body, conn ->
+    Request.call(conn, Schemas.opts(:query, "query explain contains an unknown field"), fn body,
+                                                                                            conn ->
       Response.result(conn, ElixirDB.Query.explain(Request.uuid(conn), body))
     end)
   end

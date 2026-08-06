@@ -2,8 +2,9 @@ defmodule ElixirDB.Storage.SQLite.StructuredIndexes do
   @moduledoc """
   Structured logical-index facade for the Version 1 SQLite adapter.
 
-  Physical DDL and probes live in `Indexes`. Catalog-row transactions remain in
-  the adapter; this module thin-wraps the structured physical path.
+  Physical DDL and probes live in `Indexes`. Catalog-row transactions live in
+  `IndexCatalog` (via the adapter); this module thin-wraps the structured
+  physical path.
   """
 
   alias ElixirDB.Storage.SQLite.{Adapter, Connection, Indexes}

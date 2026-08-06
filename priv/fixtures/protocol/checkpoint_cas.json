@@ -1,0 +1,120 @@
+[
+  {
+    "id": "cas-write-replay-conflict",
+    "description": "REPL-007 checkpoint CAS: create, lost-response replay, stale conflict",
+    "replication_id": "fixture-rep-cas-0001",
+    "steps": [
+      {
+        "op": "put",
+        "expected_version": 0,
+        "value": {
+          "version": 1,
+          "replication_id": "fixture-rep-cas-0001",
+          "checkpoint_version": 1,
+          "session_id": "sess-a",
+          "source_sequence": 3,
+          "history": []
+        },
+        "expect": {"ok": true, "version": 1, "replayed": false}
+      },
+      {
+        "op": "put",
+        "expected_version": 0,
+        "value": {
+          "version": 1,
+          "replication_id": "fixture-rep-cas-0001",
+          "checkpoint_version": 1,
+          "session_id": "sess-a",
+          "source_sequence": 3,
+          "history": []
+        },
+        "expect": {"ok": true, "version": 1, "replayed": true}
+      },
+      {
+        "op": "put",
+        "expected_version": 1,
+        "value": {
+          "version": 1,
+          "replication_id": "fixture-rep-cas-0001",
+          "checkpoint_version": 2,
+          "session_id": "sess-a",
+          "source_sequence": 7,
+          "history": [
+            {
+              "session_id": "sess-a",
+              "source_sequence": 7,
+              "documents_read": 2,
+              "revisions_written": 2,
+              "completed_at": "2026-01-01T00:00:00Z"
+            }
+          ]
+        },
+        "expect": {"ok": true, "version": 2, "replayed": false}
+      },
+      {
+        "op": "put",
+        "expected_version": 1,
+        "value": {
+          "version": 1,
+          "replication_id": "fixture-rep-cas-0001",
+          "checkpoint_version": 2,
+          "session_id": "sess-a",
+          "source_sequence": 99,
+          "history": []
+        },
+        "expect": {"ok": false, "error_code": "checkpoint_conflict"}
+      },
+      {
+        "op": "get",
+        "expect": {
+          "ok": true,
+          "version": 2,
+          "source_sequence": 7
+        }
+      }
+    ]
+  },
+  {
+    "id": "checkpoint-wire-accept",
+    "description": "Domain.Checkpoint.from_wire accepts REPL-007 shape",
+    "op": "from_wire",
+    "input": {
+      "version": 1,
+      "replication_id": "sha256-digest",
+      "checkpoint_version": 7,
+      "session_id": "session-uuid",
+      "source_sequence": 42,
+      "history": []
+    },
+    "expect": {"ok": true}
+  },
+  {
+    "id": "checkpoint-wire-reject-unknown",
+    "description": "Unknown checkpoint fields are rejected",
+    "op": "from_wire",
+    "input": {
+      "version": 1,
+      "replication_id": "sha256-digest",
+      "checkpoint_version": 7,
+      "session_id": "session-uuid",
+      "source_sequence": 42,
+      "history": [],
+      "extra": true
+    },
+    "expect": {"ok": false, "error_code": "invalid_request"}
+  },
+  {
+    "id": "checkpoint-wire-reject-version",
+    "description": "Unsupported checkpoint version is rejected",
+    "op": "from_wire",
+    "input": {
+      "version": 2,
+      "replication_id": "sha256-digest",
+      "checkpoint_version": 7,
+      "session_id": "session-uuid",
+      "source_sequence": 42,
+      "history": []
+    },
+    "expect": {"ok": false, "error_code": "invalid_request"}
+  }
+]
