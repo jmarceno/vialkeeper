@@ -94,7 +94,8 @@ Version 1 host-level configuration is limited to:
 * Database root location.
 * Registration manifest location, when not derived from the database root.
 * Network listeners.
-* Logging and metrics.
+* Logging.
+* Observability export endpoint and sampling (see Section 20.5).
 * Resource ceilings.
 * Shutdown timeout.
 
@@ -1893,7 +1894,7 @@ The server MAY require host-level configuration for:
 * Absolute document size.
 * Absolute request size.
 * Logging.
-* Metrics.
+* Observability export configuration (see Section 20.5, `OBSV-001`).
 * Shutdown timeout.
 
 ## `CONFIG-002` — Database configuration
@@ -2473,6 +2474,85 @@ Before accepting an existing file as a project database, the server MUST validat
 * Database UUID.
 * File location.
 * Internal integrity.
+
+---
+
+# 20.5. Observability
+
+## `OBSV-001` — OpenTelemetry-native observability
+
+Version 1 observability SHALL be emitted through the OpenTelemetry (OTel) standard, not through ad hoc logging or bare `:telemetry.execute/3` calls.
+
+The implementation plan's observability section ([Implementation_Plan_V1.md §11](Implementation_Plan_V1.md)) is authoritative for module layout, instrumentation sites, dependencies, and rollout phasing. This section fixes the normative, externally observable contract.
+
+### `OBSV-002` — Required signals
+
+Every Version 1 installation MUST emit the following signal families when export is enabled. The signal names are part of the operational contract and MUST remain stable for protocol major version 1.
+
+Each of the nine operational events defined in the implementation plan MUST be emitted as one OpenTelemetry span and, where the plan specifies a metric, one counter or histogram:
+
+```text
+elixir_db.database.open       (span + counter)
+elixir_db.database.command    (span + histogram)
+elixir_db.database.overload   (counter only)
+elixir_db.changes.read        (span + histogram)
+elixir_db.query.execute       (span + histogram)
+elixir_db.index.build         (span + histogram)
+elixir_db.replication.batch   (span + histogram)
+elixir_db.replication.checkpoint (span + counter)
+elixir_db.http.request        (span + histogram)
+```
+
+Measurements MUST include monotonic duration for each span and histogram and a bounded count where the plan defines one (changes entries returned, query candidates examined, revisions written).
+
+### `OBSV-003` — Attribute allow-list
+
+Span and metric attributes MUST be drawn exclusively from a project-owned allow-list. Permitted attributes are limited to:
+
+* `db.uuid`
+* `command.type` (the normalized command atom)
+* `error.code` (the stable `ElixirDB.Error` code atom)
+* `outcome` (`:ok`, `:rejected`, or `:replayed`)
+* `http.method`, `http.route` (route template, never the raw path), `http.status_code`
+* `index_id`, `index_type`
+* `replication.id`, `endpoint` (`:source` or `:target`)
+* Bounded counts defined by the plan
+
+The following MUST NOT appear in any span or metric attribute:
+
+* Document bodies.
+* Document IDs.
+* Search text.
+* Revision IDs and revision bodies.
+* Complete remote URLs containing private path data.
+* SQLite error messages and backend exception names.
+
+Storage-engine details remain behind the storage adapter boundary and MUST NOT leak into telemetry any more than into public protocol responses.
+
+### `OBSV-004` — Opt-in export
+
+Telemetry export MUST be disabled by default. When no collector endpoint is configured, the server MUST start, serve traffic, and make zero network connections to any collector. Enabling export MUST be an explicit host configuration action, not a default behavior.
+
+A configured exporter MUST transport traces and metrics over OTLP. Propagation across the HTTP and replication boundaries MUST use W3C Trace Context.
+
+### `OBSV-005` — Trace context continuity
+
+A replication worker MUST preserve trace context across its asynchronous phase tasks so that a single replication batch, its endpoint calls, and any remote-server HTTP handling share one trace.
+
+Inbound HTTP requests SHALL accept a W3C `traceparent` so an external caller's trace continues into the server. Outbound remote-replication HTTP requests SHALL inject the current context. A one-shot remote replication between two Version 1 servers MUST produce spans on both servers under a single `trace_id`.
+
+### `OBSV-006` — Span status policy
+
+Span status MUST distinguish unexpected internal failures from expected application outcomes:
+
+* `internal_error` and unmapped adapter failures SHALL set span status to ERROR.
+* Registered domain errors (`revision_conflict`, `document_not_found`, `database_in_use`, `checkpoint_conflict`, and all others in the `API-016` registry) SHALL leave span status UNSET and instead carry `error.code` as an attribute.
+
+This keeps error-rate signals reserved for genuine internal failures.
+
+### `OBSV-007` — Low overhead
+
+Instrumentation MUST be in-process and non-blocking. Export SHALL be asynchronous and bounded. Hot paths — document mutation, changes reads, query execution — MUST NOT allocate per event beyond what the OpenTelemetry API requires. A node with export disabled MUST behave identically to a node with no OpenTelemetry dependencies reachable.
 
 ---
 

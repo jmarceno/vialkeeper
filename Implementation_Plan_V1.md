@@ -334,7 +334,19 @@ lib/elixir_db.ex
 lib/elixir_db/application.ex
 lib/elixir_db/config.ex
 lib/elixir_db/error.ex
-lib/elixir_db/telemetry.ex
+
+lib/elixir_db/observability/
+  supervisor.ex
+  tracer.ex
+  attributes.ex
+  meters.ex
+  telemetry_bridge.ex
+  instrumentation/
+    database.ex
+    changes.ex
+    query.ex
+    replication.ex
+    http.ex
 
 lib/elixir_db/domain/
   database_info.ex
@@ -1068,40 +1080,207 @@ A slow client MUST not block `DatabaseOwner`; it only blocks its own request pro
 
 # 11. Observability
 
-Define project telemetry events before implementing runtime logic.
+This section is the implementation authority for observability. `Architecture.md`
+Section 20.5 (`OBSV-001` through `OBSV-007`) is the authoritative normative contract;
+this plan defines module layout, dependencies, instrumentation sites, and rollout
+phasing that satisfies it.
 
-Use prefixes such as:
+## 11.1 Standard — OpenTelemetry
+
+Version 1 observability SHALL be emitted through the OpenTelemetry (OTel) standard, not
+through ad hoc logging or bare `:telemetry.execute/3` calls (`OBSV-001`). Every
+operational event is one OpenTelemetry span plus, where specified below, one metric.
+Signal names are part of the operational contract and MUST remain stable for protocol
+major version 1.
+
+The existing `:telemetry` dependency is retained because Bandit, Plug, Req (via Finch),
+and `db_connection` already emit `:telemetry` events; those are bridged into OTel rather
+than re-instrumented.
+
+## 11.2 Required signals (`OBSV-002`)
 
 ```text
-[:elixir_db, :database, :open]
-[:elixir_db, :database, :command]
-[:elixir_db, :database, :overload]
-[:elixir_db, :changes, :read]
-[:elixir_db, :query, :execute]
-[:elixir_db, :index, :build]
-[:elixir_db, :replication, :batch]
-[:elixir_db, :replication, :checkpoint]
-[:elixir_db, :http, :request]
+elixir_db.database.open          span + counter
+elixir_db.database.command       span + histogram
+elixir_db.database.overload      counter only (not a unit of work)
+elixir_db.changes.read           span + histogram
+elixir_db.query.execute          span + histogram
+elixir_db.index.build            span + histogram
+elixir_db.replication.batch      span + histogram
+elixir_db.replication.checkpoint span + counter
+elixir_db.http.request           span + histogram
 ```
 
-Measurements SHOULD include duration and bounded counts.
+Span measurements MUST include monotonic duration. Histogram/counter measurements MUST
+include the bounded counts the plan defines: changes entries returned, query candidates
+examined, revisions written. Overload is a counter only — it is not a span because no
+unit of work is performed.
 
-Metadata MAY include:
+## 11.3 Attribute allow-list (`OBSV-003`)
 
-* Database UUID.
-* Command type.
-* Logical index ID.
-* Replication ID.
-* Error code.
+A single project-owned allow-list module owns every span and metric attribute.
+Attributes MUST be drawn exclusively from:
 
-Never include:
+* `db.uuid`
+* `command.type` (the normalized command atom)
+* `error.code` (the stable `ElixirDB.Error` code atom)
+* `outcome` (`:ok`, `:rejected`, or `:replayed`)
+* `http.method`, `http.route` (route template, never the raw path), `http.status_code`
+* `index_id`, `index_type`
+* `replication.id`, `endpoint` (`:source` or `:target`)
+* Bounded counts defined by the plan
+
+The following MUST NOT appear in any span or metric attribute:
 
 * Document bodies.
+* Document IDs (unbounded cardinality and customer data).
 * Search text.
-* Revision bodies.
+* Revision IDs and revision bodies.
 * Complete remote URLs containing private path data.
+* SQLite error messages and backend exception names.
 
-Logging SHALL use Logger metadata and stable event names, not ad hoc interpolated messages.
+Storage-engine details remain behind the storage adapter boundary.
+
+## 11.4 Opt-in export (`OBSV-004`)
+
+Telemetry export MUST be disabled by default. When no collector endpoint is configured,
+the server MUST start, serve traffic, and make zero network connections to any collector.
+Enabling export is an explicit host configuration action (an OTLP endpoint environment
+variable). A configured exporter MUST transport traces and metrics over OTLP.
+
+## 11.5 Trace context continuity (`OBSV-005`)
+
+Propagation across the HTTP and replication boundaries MUST use W3C Trace Context.
+
+* Inbound HTTP requests SHALL accept a W3C `traceparent` so an external caller's trace
+  continues into the server.
+* Outbound remote-replication HTTP requests SHALL inject the current context.
+* A replication worker MUST detach and re-attach context across its asynchronous phase
+  tasks so that one replication batch, its endpoint calls, and any remote-server HTTP
+  handling share one trace.
+
+A one-shot remote replication between two Version 1 servers MUST produce spans on both
+servers under a single `trace_id`.
+
+## 11.6 Span status policy (`OBSV-006`)
+
+Span status MUST distinguish unexpected internal failures from expected application
+outcomes:
+
+* `internal_error` and unmapped adapter failures SHALL set span status to ERROR.
+* Registered domain errors (`revision_conflict`, `document_not_found`,
+  `database_in_use`, `checkpoint_conflict`, and all others in the `API-016` registry)
+  SHALL leave span status UNSET and carry `error.code` as an attribute.
+
+This keeps error-rate signals reserved for genuine internal failures.
+
+## 11.7 Low overhead (`OBSV-007`)
+
+Instrumentation MUST be in-process and non-blocking. Export SHALL be asynchronous and
+bounded. Hot paths — document mutation, changes reads, query execution — MUST NOT
+allocate per event beyond what the OpenTelemetry API requires. A node with export
+disabled MUST behave identically to a node with no OpenTelemetry dependencies reachable.
+
+## 11.8 Dependencies and module layout
+
+Add OpenTelemetry libraries to the dependency set (pin major versions; the lockfile is
+authoritative per §4.2):
+
+```text
+opentelemetry_api
+opentelemetry
+opentelemetry_exporter
+telemetry (retained — bridge target for bandit/req/finch/db_connection)
+```
+
+Module layout:
+
+```text
+lib/elixir_db/observability/
+  supervisor.ex            # OTel app/exporter lifecycle (opt-in gate)
+  tracer.ex                # thin wrappers: with_span/3, context inject/extract
+  attributes.ex            # the allow-list + sanitization (§11.3)
+  instrumentation/
+    database.ex            # :open, :command, :overload
+    changes.ex             # :read
+    query.ex               # :execute, :index :build
+    replication.ex         # :batch, :checkpoint
+    http.ex                # :request (router span)
+  meters.ex                # metric declarations (counters/histograms)
+  telemetry_bridge.ex      # :telemetry → OTel for bandit/req/finch
+```
+
+The previous `lib/elixir_db/telemetry.ex` placeholder (which only declared event prefixes
+and was never emitted) is removed.
+
+## 11.9 Instrumentation sites
+
+Instrumentation is at the service/owner boundary, never inside the SQLite adapter. The
+adapter still knows nothing about OTel; it calls project-owned callbacks.
+
+* `:database.open` — `Runtime.DatabaseCatalog` open path (caller process, around the
+  `DynamicSupervisor.start_child`). `outcome` from the result; rejected opens
+  (`database_unavailable`/`database_in_use`) set `outcome: :rejected`, span status UNSET.
+* `:database.command` — central command dispatch in `Runtime.DatabaseCatalog.command/3`
+  (covers all owner commands). `command.type` from the normalized `Storage.Commands`
+  struct.
+* `:database.overload` — `Runtime.DatabaseAdmission` no-token path. Counter increment
+  only; no span.
+* `:changes.read` — `Changes.read/3` and bounded re-reads inside `Changes.wait/3`. The
+  long-poll wait itself is not inside the span; only each bounded read is.
+* `:query.execute` — `Storage.SQLite.Adapter.execute_query/2` entry, emitted in the owner
+  process context so the parent is the `:command` span. `examined` = candidate count the
+  runner already computes.
+* `:index.build` — `create_index`/`rebuild_index` adapter entries.
+* `:replication.batch` — emitted when a batch finishes in the worker
+  (`handle_phase_result(:checkpoint_source, ...)`). `revisions_written` from the import
+  context.
+* `:replication.checkpoint` — each `checkpoint_target`/`checkpoint_source`
+  `put_checkpoint` call.
+* `:http.request` — a top-level Plug in `HTTP.Router` that wraps request entry, sets
+  `http.method`, `http.route` (template), and on completion records `http.status_code` +
+  duration. `db.uuid` attached when the route is database-scoped.
+
+## 11.10 Testing
+
+An in-memory OTel span exporter in `test/support` records spans for assertions. Required
+tests under `test/observability/`:
+
+* One span per signal with the attributes from §11.3.
+* A privacy test that puts a document with a distinctive body and search text, runs a
+  query, and asserts NO recorded span or metric attribute contains the body, the search
+  text, or the document ID.
+* A remote-replication trace test asserting spans on both `TestServer` instances share a
+  single `trace_id` (validates §11.5).
+* A no-collector integration test asserting that with export disabled the app starts,
+  serves traffic, and makes zero collector network connections.
+* A `:telemetry` bridge test asserting a Finch child span appears under the replication
+  span.
+
+Dialyzer ignore entries, if any are required for OTel dependencies, MUST follow §3.3
+(warning text, rationale, owner, removal condition).
+
+## 11.11 Logging
+
+Logging SHALL use Logger metadata and stable event names, not ad hoc interpolated
+messages. A logs-to-OTel logs bridge is out of scope for Version 1 telemetry; Logger
+retains its own stable metadata contract independent of the span/metric pipeline.
+
+## 11.12 Rollout phasing
+
+```text
+Phase A — skeleton (deps, opt-in config gate default off, supervisor, allow-list,
+          in-memory exporter); remove telemetry.ex. No behavior change with export off.
+Phase B — instrument :http.request, :database.command, :database.overload.
+Phase C — remaining signals: :open, :changes.read, :query.execute, :index.build,
+          :replication.batch, :replication.checkpoint.
+Phase D — context propagation: inbound traceparent, outbound Req injection, worker
+          cross-task detach/attach, :telemetry bridge.
+Phase E — operational documentation (span/metric catalog, attribute allow-list,
+          error→status policy, collector configuration).
+```
+
+Each phase ends with `mix check.fast`; Phase E ends with `mix check.full`.
 
 ---
 
