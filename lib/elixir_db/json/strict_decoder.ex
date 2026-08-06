@@ -1,13 +1,20 @@
 defmodule ElixirDB.JSON.StrictDecoder do
   @moduledoc "A bounded JSON decoder that rejects duplicate keys and unsafe numbers."
 
+  # F1 / Plan §4.4 deferred: `JSON.decode/3` custom decoders can customize object/number
+  # construction, but they cannot return `{:error, ...}` (only throw/raise), have no
+  # first-class nesting-depth or size callbacks, and thread parent container state as the
+  # accumulator — making duplicate-key rejection, binary64 validation, underflow checks,
+  # and depth limits awkward to combine without losing the current typed-error contract.
+  # This hand-rolled recursive descent therefore remains the authoritative decoder.
+
   @default_max_depth 100
 
   @spec decode(binary(), keyword()) :: {:ok, term()} | {:error, ElixirDB.Error.t()}
   def decode(input, opts \\ [])
 
   def decode(input, opts) when is_binary(input) do
-    max_depth = Keyword.get(opts, :max_depth, @default_max_depth)
+    max_depth = Keyword.get(opts, :max_depth, configured_max_depth())
     max_bytes = Keyword.get(opts, :max_bytes, byte_size(input))
 
     cond do
@@ -29,6 +36,10 @@ defmodule ElixirDB.JSON.StrictDecoder do
   end
 
   def decode(_, _), do: {:error, ElixirDB.Error.invalid_request("JSON body must be UTF-8 text")}
+
+  defp configured_max_depth do
+    ElixirDB.Config.host_limits()[:max_json_nesting_depth] || @default_max_depth
+  end
 
   defp parse_value(_input, depth, max_depth) when depth > max_depth,
     do: {:error, ElixirDB.Error.resource_limit("JSON nesting exceeds the configured limit")}

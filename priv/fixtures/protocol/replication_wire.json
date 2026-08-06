@@ -1,0 +1,80 @@
+[
+  {
+    "id": "handshake-identity",
+    "description": "REPL-015 handshake identity payload",
+    "shape": {
+      "database_uuid": "database-uuid",
+      "current_sequence": 42,
+      "replication_protocol_major": 1,
+      "revision_algorithm_version": 1,
+      "canonicalization_version": 1
+    }
+  },
+  {
+    "id": "checkpoint",
+    "description": "REPL-007 checkpoint local-record shape",
+    "shape": {
+      "version": 1,
+      "replication_id": "sha256-digest",
+      "checkpoint_version": 7,
+      "session_id": "session-uuid",
+      "source_sequence": 42,
+      "history": [
+        {
+          "session_id": "session-uuid",
+          "source_sequence": 42,
+          "documents_read": 10,
+          "revisions_written": 8,
+          "completed_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "checkpoint-put-request",
+    "description": "API checkpoint CAS write request",
+    "method": "PUT",
+    "path": "/v1/databases/{database_uuid}/replication/checkpoints/{replication_id}",
+    "shape": {
+      "expected_checkpoint_version": 7,
+      "checkpoint": {
+        "version": 1,
+        "replication_id": "sha256-digest",
+        "checkpoint_version": 8,
+        "session_id": "session-uuid",
+        "source_sequence": 50,
+        "history": []
+      }
+    }
+  },
+  {
+    "id": "transferred-revision",
+    "description": "REPL-016 transferred revision wire shape",
+    "shape": {
+      "document_id": "document-id",
+      "revision_id": "3-digest",
+      "generation": 3,
+      "parent_revision": "2-parent-digest",
+      "deleted": false,
+      "body": {"example": true}
+    }
+  },
+  {
+    "id": "diff-revisions-request",
+    "description": "Target missing-revision probe",
+    "shape": {
+      "candidates": [
+        {"document_id": "document-id", "leaf_revisions": ["3-digest"]}
+      ]
+    }
+  },
+  {
+    "id": "diff-revisions-response",
+    "description": "Missing leaf revision IDs reported by target",
+    "shape": {
+      "missing": [
+        {"document_id": "document-id", "leaf_revisions": ["3-digest"]}
+      ]
+    }
+  }
+]

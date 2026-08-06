@@ -18,6 +18,10 @@ mix check.full
 mix run --no-halt
 ```
 
+Operator procedures (start/stop, registration, offline copy, leases, integrity,
+replication job states, and host-limit troubleshooting) live in
+[docs/operations.md](docs/operations.md).
+
 The public protocol is rooted at `/v1`. Database and document operations use
 JSON envelopes, and document IDs are carried in request bodies. SQL and
 backend-specific query syntax are never accepted from clients.

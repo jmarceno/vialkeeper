@@ -1,6 +1,7 @@
 defmodule ElixirDB.Storage.SQLite.Connection do
   @moduledoc false
   alias Exqlite.Sqlite3
+  alias ElixirDB.Storage.SQLite.Statements
 
   @type handle :: reference()
 
@@ -10,7 +11,12 @@ defmodule ElixirDB.Storage.SQLite.Connection do
   end
 
   @spec close(handle() | nil) :: :ok | {:error, term()}
-  def close(handle), do: Sqlite3.close(handle)
+  def close(nil), do: :ok
+
+  def close(handle) do
+    Statements.release_all(handle)
+    Sqlite3.close(handle)
+  end
 
   @spec execute(handle(), iodata(), list()) :: :ok | {:error, term()}
   def execute(conn, sql, params \\ []) do
@@ -27,13 +33,11 @@ defmodule ElixirDB.Storage.SQLite.Connection do
   def pragma(conn, statement), do: query(conn, "PRAGMA " <> statement)
 
   defp run(conn, sql, params, collect_rows) do
-    with {:ok, statement} <- Sqlite3.prepare(conn, IO.iodata_to_binary(sql)),
+    sql = IO.iodata_to_binary(sql)
+
+    with {:ok, statement} <- Statements.checkout(conn, sql),
          :ok <- Sqlite3.bind(statement, params) do
-      try do
-        step(conn, statement, collect_rows, [])
-      after
-        _ = Sqlite3.release(conn, statement)
-      end
+      step(conn, statement, collect_rows, [])
     end
   end
 

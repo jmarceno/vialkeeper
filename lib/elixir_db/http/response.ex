@@ -23,6 +23,11 @@ defmodule ElixirDB.HTTP.Response do
         "error" => ElixirDB.Error.public(error)
       })
 
+  def result(conn, result, status \\ 200)
+  def result(conn, {:ok, data}, status), do: ok(conn, data, status)
+  def result(conn, {:error, error}, _status), do: error(conn, error)
+  def result(conn, :ok, status), do: ok(conn, %{}, status)
+
   def send_json(conn, status, body) do
     request_id = body["request_id"] || body[:request_id] || request_id(conn)
 

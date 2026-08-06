@@ -68,7 +68,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     assert {:ok, _} =
              ElixirDB.Documents.put(a.database_uuid, %{id: "job-doc", body: %{"ok" => true}})
 
-    assert {:ok, %{job_id: job_id, state: :running}} =
+    assert {:ok, %{job_id: job_id, state: state}} =
              ElixirDB.Replication.JobManager.put(a.database_uuid, %{
                "persist" => true,
                "mode" => "one_shot",
@@ -77,10 +77,134 @@ defmodule ElixirDB.Runtime.ReplicationTest do
                "enabled" => true
              })
 
+    assert state in [:idle, :handshake, :read_changes, :diff, :fetch_chains, :import]
+
     assert :completed = wait_for_job(a.database_uuid, job_id, 50)
 
     assert {:ok, %{body: %{"ok" => true}}} =
              ElixirDB.Documents.get(b.database_uuid, %{id: "job-doc"})
+  end
+
+  test "worker reports mandated phase transitions through completed", %{a: a, b: b} do
+    assert {:ok, _} =
+             ElixirDB.Documents.put(a.database_uuid, %{id: "phases", body: %{"n" => 1}})
+
+    {:ok, agent} = Agent.start_link(fn -> [] end)
+
+    assert {:ok, source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
+    assert {:ok, target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+
+    assert {:ok, replication_id} =
+             ElixirDB.Replication.Id.calculate(
+               a.database_uuid,
+               b.database_uuid,
+               "push",
+               "one_shot"
+             )
+
+    parent = self()
+
+    options = %{
+      source: source,
+      target: target,
+      replication_id: replication_id,
+      mode: "one_shot",
+      direction: "push",
+      phase_hook: fn phase, _context ->
+        Agent.update(agent, &(&1 ++ [phase]))
+        send(parent, {:phase, phase})
+        :ok
+      end
+    }
+
+    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    ref = Process.monitor(pid)
+    :gen_statem.cast(pid, :start)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+
+    phases = Agent.get(agent, & &1)
+
+    assert phases == [
+             :handshake,
+             :read_changes,
+             :diff,
+             :fetch_chains,
+             :import,
+             :checkpoint_target,
+             :checkpoint_source
+           ]
+
+    assert {:ok, %{body: %{"n" => 1}}} =
+             ElixirDB.Documents.get(b.database_uuid, %{id: "phases"})
+  end
+
+  test "cancel between phases finishes current work without brutal_kill", %{a: a, b: b} do
+    assert {:ok, _} =
+             ElixirDB.Documents.put(a.database_uuid, %{id: "cancel-doc", body: %{"n" => 1}})
+
+    assert {:ok, source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
+    assert {:ok, target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+
+    assert {:ok, replication_id} =
+             ElixirDB.Replication.Id.calculate(
+               a.database_uuid,
+               b.database_uuid,
+               "push",
+               "one_shot"
+             )
+
+    parent = self()
+    gate = make_ref()
+
+    options = %{
+      source: source,
+      target: target,
+      replication_id: replication_id,
+      mode: "one_shot",
+      direction: "push",
+      phase_hook: fn phase, _context ->
+        send(parent, {:phase, phase})
+
+        if phase == :handshake do
+          send(parent, {:blocked, gate})
+
+          receive do
+            {:release, ^gate} -> :ok
+          after
+            5_000 -> :ok
+          end
+        else
+          :ok
+        end
+      end
+    }
+
+    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    ref = Process.monitor(pid)
+    :gen_statem.cast(pid, :start)
+
+    assert_receive {:phase, :handshake}, 1_000
+    assert_receive {:blocked, ^gate}, 1_000
+
+    :gen_statem.cast(pid, :cancel)
+    # Handshake task must still be alive — cancel must not brutal_kill mid-phase.
+    assert Process.alive?(pid)
+
+    release_handshake_task(gate)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+    refute_receive {:phase, :read_changes}, 100
+
+    # Cancel before read_changes means the target stays empty.
+    assert {:error, %{code: :document_not_found}} =
+             ElixirDB.Documents.get(b.database_uuid, %{id: "cancel-doc"})
+  end
+
+  defp release_handshake_task(gate) do
+    ElixirDB.TaskSupervisor
+    |> Task.Supervisor.children()
+    |> Enum.each(fn pid -> send(pid, {:release, gate}) end)
   end
 
   defp wait_for_job(uuid, job_id, attempts) when attempts > 0 do

@@ -215,7 +215,7 @@ defmodule ElixirDB.Query do
                ElixirDB.Query.BookmarkCodec.decode(bookmark, %{
                  "query_fingerprint" => request.fingerprint
                }),
-             sequence <- decoded["sequence"],
+             sequence <- decoded.sequence,
              current <- identity[:current_sequence] || identity["current_sequence"],
              :ok <-
                if(sequence == current,
@@ -226,15 +226,15 @@ defmodule ElixirDB.Query do
              :ok <- validate_bookmark_index(decoded, request, indexes) do
           {:ok,
            request
-           |> Map.put(:after_id, decoded["last_id"])
-           |> Map.put(:after_ordering, decoded["ordering_key"])
+           |> Map.put(:after_id, decoded.last_id)
+           |> Map.put(:after_ordering, decoded.ordering_key)
            |> Map.put(:bookmark_payload, decoded)}
         end
     end
   end
 
   defp validate_bookmark_index(decoded, request, indexes) do
-    bookmark_index = decoded["index_id"]
+    bookmark_index = decoded.index_id
     requested_index = request[:index] || request["index"]
 
     requested_matches_bookmark? =
@@ -259,7 +259,7 @@ defmodule ElixirDB.Query do
       true ->
         case Enum.find(indexes, &(&1["index_id"] == bookmark_index)) do
           %{"definition_digest" => digest} ->
-            if digest == decoded["index_digest"],
+            if digest == decoded.index_digest,
               do: :ok,
               else: {:error, ElixirDB.Error.invalid_bookmark("bookmark index definition changed")}
 

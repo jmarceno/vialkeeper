@@ -3,6 +3,7 @@ import Config
 config :elixir_db,
   database_root: Path.expand("data", File.cwd!()),
   registration_manifest: nil,
+  shutdown_timeout: 30_000,
   host_limits: [
     max_document_bytes: 1_048_576,
     max_request_bytes: 2_097_152,
@@ -19,7 +20,8 @@ config :elixir_db,
     max_wait_ms: 30_000,
     max_open_databases: 64,
     max_replication_workers: 32,
-    admission_limit: 128
+    admission_limit: 128,
+    max_json_nesting_depth: 100
   ],
   listener: [ip: {127, 0, 0, 1}, port: 4000]
 

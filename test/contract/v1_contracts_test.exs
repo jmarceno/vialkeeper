@@ -59,7 +59,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
     assert {:ok, decoded} =
              BookmarkCodec.decode(bookmark, %{"query_fingerprint" => "query"})
 
-    assert decoded["last_id"] == "doc"
+    assert decoded.last_id == "doc"
 
     assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} =
              BookmarkCodec.decode(bookmark, %{"query_fingerprint" => "different"})

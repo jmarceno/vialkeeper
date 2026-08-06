@@ -6,12 +6,16 @@ defmodule ElixirDB.MixProject do
       app: :elixir_db,
       version: "0.1.0",
       elixir: "~> 1.20",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
       dialyzer: [plt_add_apps: [:ex_unit, :mix]]
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   def cli do
     [preferred_envs: ["check.fast": :test, "check.full": :test]]

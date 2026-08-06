@@ -1,6 +1,19 @@
 defmodule ElixirDB.Query.BookmarkCodec do
   @moduledoc false
+  alias ElixirDB.Domain.Bookmark
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+
+  def encode(%Bookmark{} = bookmark) do
+    encode(%{
+      "query_fingerprint" => bookmark.query_fingerprint,
+      "index_id" => bookmark.index_id,
+      "index_digest" => bookmark.index_digest,
+      "sequence" => bookmark.sequence,
+      "sort_direction" => bookmark.sort_direction,
+      "ordering_key" => bookmark.ordering_key,
+      "last_id" => bookmark.last_id
+    })
+  end
 
   def encode(payload) when is_map(payload) do
     payload = Map.put(payload, "version", 1) |> Map.put("protocol_major", ElixirDB.protocol_major())
@@ -32,9 +45,13 @@ defmodule ElixirDB.Query.BookmarkCodec do
          true <- is_binary(unsigned["query_fingerprint"]),
          true <- is_integer(unsigned["sequence"]) and unsigned["sequence"] >= 0,
          true <- is_binary(unsigned["last_id"]),
-         :ok <- validate_expected(unsigned, expected) do
-      {:ok, value}
+         :ok <- validate_expected(unsigned, expected),
+         {:ok, struct} <- Bookmark.from_wire(value) do
+      {:ok, struct}
     else
+      {:error, %ElixirDB.Error{} = error} ->
+        {:error, error}
+
       _ ->
         {:error, ElixirDB.Error.invalid_bookmark("bookmark is invalid or bound to another query")}
     end

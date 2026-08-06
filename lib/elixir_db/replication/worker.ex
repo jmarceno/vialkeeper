@@ -1,8 +1,30 @@
 defmodule ElixirDB.Replication.Worker do
-  @moduledoc "Supervised replication state machine with cancellable bounded work."
+  @moduledoc """
+  Supervised replication state machine with cancellable bounded work.
+
+  States (Plan §7.7): idle, handshake, read_changes, diff, fetch_chains, import,
+  checkpoint_target, checkpoint_source, waiting, backoff, completed, failed.
+
+  Cancellation (REPL-018) is checked between phases after a phase Task completes.
+  In-flight endpoint work is allowed to finish; the worker never brutal-kills a
+  task mid-import or mid-checkpoint commit.
+  """
   @behaviour :gen_statem
 
-  @retryable_states [:running, :waiting, :backoff]
+  alias ElixirDB.Replication
+
+  @active_states [
+    :idle,
+    :handshake,
+    :read_changes,
+    :diff,
+    :fetch_chains,
+    :import,
+    :checkpoint_target,
+    :checkpoint_source,
+    :waiting,
+    :backoff
+  ]
 
   def start_link(options), do: :gen_statem.start_link(__MODULE__, options, [])
 
@@ -25,7 +47,16 @@ defmodule ElixirDB.Replication.Worker do
 
     with true <- is_binary(replication_id),
          {:ok, _} <- Registry.register(ElixirDB.Replication.WorkerRegistry, replication_id, %{}) do
-      {:ok, :idle, %{options: options, attempts: 0, result: nil, error: nil}}
+      {:ok, :idle,
+       %{
+         options: normalize_options(options),
+         attempts: 0,
+         result: nil,
+         error: nil,
+         cancel_requested: false,
+         context: nil,
+         task: nil
+       }}
     else
       false ->
         {:stop, ElixirDB.Error.invalid_request("replication id is required")}
@@ -37,60 +68,65 @@ defmodule ElixirDB.Replication.Worker do
 
   @impl true
   def handle_event(:cast, :start, :idle, data) do
-    report(data, :running)
-    {:next_state, :running, data, [{:next_event, :internal, :execute}]}
+    enter_phase(:handshake, data)
   end
 
-  def handle_event(:internal, :execute, :running, data) do
-    task =
-      Task.Supervisor.async_nolink(ElixirDB.TaskSupervisor, fn ->
-        ElixirDB.Replication.run(data.options.source, data.options.target, data.options)
-      end)
+  def handle_event(:cast, :cancel, state, data) when state in @active_states do
+    error = cancelled_error()
 
-    {:keep_state, Map.put(data, :task, task)}
+    if data[:task] do
+      # Let the in-flight bounded phase finish; stop before the next transition.
+      {:keep_state, %{data | cancel_requested: true, error: error}}
+    else
+      report(data, :failed, %{error: error})
+      {:stop, :normal, %{data | error: error, cancel_requested: true}}
+    end
   end
 
-  def handle_event(:info, {ref, result}, :running, %{task: %{ref: ref}} = data) do
+  def handle_event(:cast, :cancel, _state, data), do: {:keep_state, data}
+
+  def handle_event(:state_timeout, :retry, :backoff, data) do
+    if data.cancel_requested do
+      stop_cancelled(data)
+    else
+      enter_phase(:handshake, %{data | context: nil})
+    end
+  end
+
+  def handle_event(:info, {ref, result}, state, %{task: %{ref: ref}} = data) do
     Process.demonitor(ref, [:flush])
     data = Map.delete(data, :task)
 
-    case result do
-      {:ok, value} ->
-        report(data, :completed, %{result: value})
-        {:stop, :normal, %{data | result: value}}
-
-      {:error, error} ->
-        handle_failure(data, error)
+    if data.cancel_requested do
+      stop_cancelled(data)
+    else
+      handle_phase_result(state, result, data)
     end
   end
 
   def handle_event(
         :info,
         {:DOWN, ref, :process, _pid, reason},
-        :running,
+        state,
         %{task: %{ref: ref}} = data
-      ) do
-    if reason in [:normal, :shutdown] do
-      handle_failure(data, ElixirDB.Error.database_closed("replication task stopped"))
-    else
-      handle_failure(
-        data,
-        ElixirDB.Error.internal_error("replication task crashed", %{cause: inspect(reason)})
       )
+      when state in @active_states do
+    data = Map.delete(data, :task)
+
+    if data.cancel_requested do
+      stop_cancelled(data)
+    else
+      error =
+        if reason in [:normal, :shutdown] do
+          ElixirDB.Error.database_closed("replication task stopped")
+        else
+          ElixirDB.Error.internal_error("replication task crashed", %{cause: inspect(reason)})
+        end
+
+      handle_failure(data, error)
     end
   end
 
-  def handle_event(:state_timeout, :retry, :backoff, data),
-    do: {:next_state, :running, data, [{:next_event, :internal, :execute}]}
-
-  def handle_event(:cast, :cancel, state, data) when state in @retryable_states do
-    if task = data[:task], do: Task.shutdown(task, :brutal_kill)
-    report(data, :failed, %{error: ElixirDB.Error.database_closed("replication was cancelled")})
-
-    {:stop, :normal, %{data | error: ElixirDB.Error.database_closed("replication was cancelled")}}
-  end
-
-  def handle_event(:cast, :cancel, _state, data), do: {:keep_state, data}
   def handle_event(:info, _event, _state, data), do: {:keep_state, data}
   def handle_event(_type, _event, _state, data), do: {:keep_state, data}
 
@@ -101,25 +137,154 @@ defmodule ElixirDB.Replication.Worker do
     :ok
   end
 
-  defp handle_failure(data, error) do
-    attempts = data.attempts + 1
-    max_attempts = retry_option(data.options, :max_attempts, 8)
-
-    if error.retryable and attempts < max_attempts do
-      delay = retry_delay(data.options, attempts)
-      report(data, :backoff, %{error: error, attempt: attempts, delay_ms: delay})
-
-      {:next_state, :backoff, %{data | attempts: attempts, error: error},
-       [{:state_timeout, delay, :retry}]}
+  defp enter_phase(phase, data) do
+    if data.cancel_requested do
+      stop_cancelled(data)
     else
-      report(data, :failed, %{error: error, attempt: attempts})
-      {:stop, :normal, %{data | attempts: attempts, error: error}}
+      report(data, phase)
+      task = async_phase(phase, data)
+      {:next_state, phase, Map.put(data, :task, task)}
     end
   end
+
+  defp async_phase(phase, data) do
+    options = data.options
+    source = options.source
+    target = options.target
+    context = data.context
+
+    Task.Supervisor.async_nolink(ElixirDB.TaskSupervisor, fn ->
+      run_phase(phase, source, target, context, options)
+    end)
+  end
+
+  defp run_phase(:handshake, source, target, _context, options),
+    do: Replication.handshake(source, target, options)
+
+  defp run_phase(:read_changes, source, _target, context, options),
+    do: Replication.read_changes(source, context, options)
+
+  defp run_phase(:diff, _source, target, context, options),
+    do: Replication.diff(target, context, options)
+
+  defp run_phase(:fetch_chains, source, _target, context, options),
+    do: Replication.fetch_chains(source, context, options)
+
+  defp run_phase(:import, _source, target, context, options),
+    do: Replication.import_chains(target, context, options)
+
+  defp run_phase(:checkpoint_target, source, target, context, options),
+    do: Replication.checkpoint_target(source, target, context, options)
+
+  defp run_phase(:checkpoint_source, source, _target, context, options),
+    do: Replication.checkpoint_source(source, context, options)
+
+  defp run_phase(:waiting, source, _target, context, options),
+    do: Replication.wait_for_changes(source, context, options)
+
+  defp handle_phase_result(:handshake, {:ok, context}, data) do
+    data = %{data | context: context, attempts: 0, error: nil}
+
+    if Replication.caught_up?(context) do
+      enter_phase(:checkpoint_target, data)
+    else
+      enter_phase(:read_changes, data)
+    end
+  end
+
+  defp handle_phase_result(:read_changes, {:ok, context}, data),
+    do: enter_phase(:diff, %{data | context: context})
+
+  defp handle_phase_result(:diff, {:ok, context}, data),
+    do: enter_phase(:fetch_chains, %{data | context: context})
+
+  defp handle_phase_result(:fetch_chains, {:ok, context}, data),
+    do: enter_phase(:import, %{data | context: context})
+
+  defp handle_phase_result(:import, {:ok, context}, data),
+    do: enter_phase(:checkpoint_target, %{data | context: context})
+
+  defp handle_phase_result(:checkpoint_target, {:ok, context}, data),
+    do: enter_phase(:checkpoint_source, %{data | context: context})
+
+  defp handle_phase_result(:checkpoint_source, {:ok, context}, data) do
+    data = %{data | context: context}
+
+    case Replication.next_after_checkpoint(context, data.options) do
+      {:completed, result} ->
+        report(data, :completed, %{result: result})
+        {:stop, :normal, %{data | result: result}}
+
+      {:waiting, context} ->
+        enter_phase(:waiting, %{data | context: context})
+
+      {:continue_batch, context} ->
+        enter_phase(:read_changes, %{data | context: context})
+    end
+  end
+
+  defp handle_phase_result(:waiting, {:ok, context}, data) do
+    if context.selected == [] and context.terminal <= context.since do
+      enter_phase(:waiting, %{data | context: context})
+    else
+      enter_phase(:read_changes, %{data | context: %{context | selected: []}})
+    end
+  end
+
+  defp handle_phase_result(_state, {:error, error}, data), do: handle_failure(data, error)
+
+  defp handle_phase_result(_state, other, data) do
+    handle_failure(
+      data,
+      ElixirDB.Error.internal_error("unexpected replication phase result", %{
+        cause: inspect(other)
+      })
+    )
+  end
+
+  defp handle_failure(data, error) do
+    if data.cancel_requested do
+      stop_cancelled(data)
+    else
+      attempts = data.attempts + 1
+      max_attempts = retry_option(data.options, :max_attempts, 8)
+
+      if error.retryable and attempts < max_attempts do
+        delay = retry_delay(data.options, attempts)
+        report(data, :backoff, %{error: error, attempt: attempts, delay_ms: delay})
+
+        {:next_state, :backoff, %{data | attempts: attempts, error: error, context: nil},
+         [{:state_timeout, delay, :retry}]}
+      else
+        report(data, :failed, %{error: error, attempt: attempts})
+        {:stop, :normal, %{data | attempts: attempts, error: error}}
+      end
+    end
+  end
+
+  defp stop_cancelled(data) do
+    error = data.error || cancelled_error()
+    report(data, :failed, %{error: error})
+    {:stop, :normal, %{data | error: error}}
+  end
+
+  defp cancelled_error,
+    do: ElixirDB.Error.database_closed("replication was cancelled")
 
   defp report(data, state, details \\ %{}) do
     job_id = data.options[:job_id] || data.options["job_id"]
     if job_id, do: ElixirDB.Replication.JobManager.report(job_id, state, details)
+    :ok
+  end
+
+  defp normalize_options(options) when is_map(options) do
+    session_id = options[:session_id] || options["session_id"] || ElixirDB.UUID.v4()
+    Map.put(options, :session_id, session_id)
+  end
+
+  defp normalize_options(options) when is_list(options) do
+    session_id = Keyword.get(options, :session_id, ElixirDB.UUID.v4())
+    Keyword.put(options, :session_id, session_id)
   end
 
   defp retry_option(options, key, default) do

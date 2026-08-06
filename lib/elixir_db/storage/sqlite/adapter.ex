@@ -1,11 +1,32 @@
 defmodule ElixirDB.Storage.SQLite.Adapter do
-  @moduledoc "Version 1 SQLite storage adapter."
+  @moduledoc """
+  Version 1 SQLite storage adapter.
+
+  Orchestrates transactions and the Storage.Adapter behaviour. Per-concern SQL
+  lives in `Documents`, `Revisions`, `Changes`, `LocalRecords`,
+  `ReplicationJobs`, and `Integrity`. Physical index DDL remains in `Indexes`,
+  with thin facades in `StructuredIndexes` / `FullTextIndexes`.
+  """
   @behaviour ElixirDB.Storage.Adapter
 
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.Query.{Planner, Projection}
   alias ElixirDB.Revisions.{Id, Winner}
-  alias ElixirDB.Storage.SQLite.{Connection, Indexes, Schema}
+
+  alias ElixirDB.Storage.SQLite.{
+    Changes,
+    Connection,
+    Documents,
+    FullTextIndexes,
+    Integrity,
+    LocalRecords,
+    QueryCompiler,
+    ReplicationJobs,
+    Revisions,
+    Schema,
+    StructuredIndexes
+  }
 
   defstruct [:path, :conn, :identity]
   @type t :: %__MODULE__{path: binary(), conn: Connection.handle(), identity: map()}
@@ -77,21 +98,11 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   @impl true
-  def integrity_check(%__MODULE__{conn: conn} = adapter, _options) do
-    with {:ok, [["ok"]]} <- Connection.pragma(conn, "integrity_check"),
-         {:ok, []} <- Connection.pragma(conn, "foreign_key_check"),
-         :ok <- required_tables_present(conn),
-         :ok <- validate_revision_rows(conn),
-         :ok <- validate_document_rows(conn),
-         :ok <- validate_change_rows(conn),
-         {:ok, indexes} <- list_indexes(adapter),
-         :ok <- validate_index_rows(conn, indexes) do
+  def integrity_check(%__MODULE__{} = adapter, _options) do
+    with {:ok, indexes} <- list_indexes(adapter),
+         :ok <- Integrity.run(adapter.conn, indexes) do
       {:ok, %{ok: true, indexes: length(indexes)}}
     else
-      {:ok, rows} ->
-        {:error,
-         ElixirDB.Error.integrity_violation("SQLite integrity check failed", %{results: rows})}
-
       {:error, %ElixirDB.Error{} = error} ->
         {:error, error}
 
@@ -102,15 +113,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def get_document(%__MODULE__{} = adapter, request) when is_map(request) do
-    with {:ok, doc} <- find_document(adapter, request[:document_id] || request["document_id"]),
+    with {:ok, doc} <- Documents.find(adapter.conn, request[:document_id] || request["document_id"]),
          {:ok, revision} <- choose_revision(adapter, doc, request[:revision] || request["revision"]) do
       include_conflicts = request[:include_conflicts] || request["include_conflicts"] || false
 
       {:ok,
-       document_result(
+       Documents.to_result(
          doc,
          revision,
-         if(include_conflicts, do: leaves(adapter, doc.doc_key), else: [])
+         if(include_conflicts, do: Revisions.leaves(adapter.conn, doc.doc_key), else: [])
        )}
     end
   end
@@ -123,9 +134,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     document_id = request[:document_id] || request["document_id"]
     revision_id = request[:revision_id] || request["revision_id"]
 
-    with {:ok, doc} <- find_document(adapter, document_id),
-         {:ok, revision} <- find_revision(adapter, doc.doc_key, revision_id) do
-      {:ok, document_result(doc, revision, [])}
+    with {:ok, doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, revision} <- Revisions.find(adapter.conn, doc.doc_key, revision_id) do
+      {:ok, Documents.to_result(doc, revision, [])}
     end
   end
 
@@ -170,22 +181,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
              limit,
              get_in(adapter_identity(adapter), [:config, "changes", "max_batch"])
            ),
-         {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT sequence, document_id, winning_revision, winning_deleted, leaf_set_json, origin FROM changes WHERE sequence > ? ORDER BY sequence LIMIT ?",
-             [since, limit]
-           ),
-         {:ok, results} <- decode_changes(rows),
-         {:ok, [[has_more]]} <-
-           Connection.query(conn, "SELECT EXISTS(SELECT 1 FROM changes WHERE sequence > ?)", [
-             List.last(results, %{sequence: since}).sequence
-           ]) do
+         {:ok, rows} <- Changes.fetch_after(conn, since, limit),
+         {:ok, results} <- Changes.decode_rows(rows),
+         last_sequence <- List.last(results, %{sequence: since}).sequence,
+         {:ok, has_more} <- Changes.exists_after?(conn, last_sequence) do
       {:ok,
        %{
          results: results,
-         last_sequence: List.last(results, %{sequence: since}).sequence,
-         has_more: has_more == 1
+         last_sequence: last_sequence,
+         has_more: has_more
        }}
     else
       {:error, reason} -> {:error, normalize_error(reason)}
@@ -205,13 +209,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
              id = entry[:document_id] || entry["document_id"]
              leaves_requested = entry[:leaf_revisions] || entry["leaf_revisions"] || []
 
-             case find_document(adapter, id) do
+             case Documents.find(adapter.conn, id) do
                {:ok, nil} ->
                  {:cont, {:ok, [%{document_id: id, missing_revisions: leaves_requested} | acc]}}
 
                {:ok, doc} ->
                  existing =
-                   leaves(adapter, doc.doc_key) |> Enum.map(& &1.revision_id) |> MapSet.new()
+                   Revisions.leaves(adapter.conn, doc.doc_key)
+                   |> Enum.map(& &1.revision_id)
+                   |> MapSet.new()
 
                  {:cont,
                   {:ok,
@@ -249,7 +255,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
              id = entry[:document_id] || entry["document_id"]
              requested = entry[:leaf_revisions] || entry["leaf_revisions"] || []
 
-             case find_document(adapter, id) do
+             case Documents.find(adapter.conn, id) do
                {:ok, nil} ->
                  {:cont, {:ok, acc}}
 
@@ -290,77 +296,25 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: {:error, ElixirDB.Error.invalid_request("revision import request must be an object")}
 
   @impl true
-  def get_local_record(%__MODULE__{conn: conn}, namespace, key) do
-    case Connection.query(
-           conn,
-           "SELECT record_version, value_json FROM local_records WHERE namespace = ? AND record_key = ?",
-           [namespace, key]
-         ) do
-      {:ok, []} ->
-        {:ok, nil}
-
-      {:ok, [[version, value_json]]} ->
-        with {:ok, value} <- decode_json(value_json), do: {:ok, %{version: version, value: value}}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
+  def get_local_record(%__MODULE__{conn: conn}, namespace, key),
+    do: LocalRecords.fetch(conn, namespace, key)
 
   @impl true
   def put_local_record_cas(%__MODULE__{} = adapter, request) when is_map(request),
-    do: transaction(adapter, fn -> put_local_record_tx(adapter, request) end)
+    do: transaction(adapter, fn -> LocalRecords.put_cas_tx(adapter, request) end)
 
   def put_local_record_cas(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("local record request must be an object")}
 
   @impl true
-  def list_replication_jobs(%__MODULE__{conn: conn}) do
-    with {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT job_id, definition_json, enabled, last_diagnostic_json FROM replication_jobs ORDER BY job_id"
-           ) do
-      {:ok,
-       Enum.map(rows, fn [id, definition, enabled, diagnostic] ->
-         %{
-           job_id: id,
-           definition: decode_json!(definition),
-           enabled: enabled == 1,
-           diagnostic: if(diagnostic, do: decode_json!(diagnostic))
-         }
-       end)}
-    else
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
+  def list_replication_jobs(%__MODULE__{conn: conn}), do: ReplicationJobs.list_all(conn)
 
   @impl true
-  def put_replication_job(%__MODULE__{conn: conn}, job) do
-    id = job[:job_id] || job["job_id"]
-    definition = job[:definition] || job["definition"] || job
-    enabled = if(job[:enabled] || job["enabled"], do: 1, else: 0)
-
-    with {:ok, definition_json} <- Canonical.encode(definition),
-         :ok <-
-           Connection.execute(
-             conn,
-             "INSERT INTO replication_jobs(job_id, definition_json, enabled, last_diagnostic_json) VALUES (?, ?, ?, NULL) ON CONFLICT(job_id) DO UPDATE SET definition_json=excluded.definition_json, enabled=excluded.enabled",
-             [id, definition_json, enabled]
-           ) do
-      {:ok, %{job_id: id}}
-    else
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
+  def put_replication_job(%__MODULE__{conn: conn}, job), do: ReplicationJobs.upsert(conn, job)
 
   @impl true
-  def delete_replication_job(%__MODULE__{conn: conn}, job_id) do
-    case Connection.execute(conn, "DELETE FROM replication_jobs WHERE job_id = ?", [job_id]) do
-      :ok -> :ok
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
+  def delete_replication_job(%__MODULE__{conn: conn}, job_id),
+    do: ReplicationJobs.delete_by_id(conn, job_id)
 
   @impl true
   def create_index(%__MODULE__{conn: conn}, definition) do
@@ -375,7 +329,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
            {:ok, result} <-
              (case existing do
                 nil ->
-                  with {:ok, metadata} <- Indexes.create(conn, id, definition),
+                  with {:ok, metadata} <- create_physical_index(conn, id, definition),
                        {:ok, metadata_json} <- Canonical.encode(metadata),
                        :ok <-
                          Connection.execute(
@@ -408,10 +362,10 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     transaction(%__MODULE__{conn: conn}, fn ->
       with {:ok, row} <- find_index(conn, index_id),
            {:ok, metadata} <- decode_index_metadata(row),
-           :ok <- Indexes.drop(conn, metadata),
+           :ok <- drop_physical_index(conn, metadata),
            :ok <-
              Connection.execute(conn, "DELETE FROM index_definitions WHERE index_id = ?", [index_id]) do
-        :ok
+        {:ok, %{index_id: index_id, deleted: true}}
       end
     end)
   end
@@ -422,8 +376,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       with {:ok, row} <- find_index(conn, index_id),
            {:ok, definition} <- decode_json(row.definition_json),
            {:ok, old_metadata} <- decode_index_metadata(row),
-           :ok <- Indexes.drop(conn, old_metadata),
-           {:ok, new_metadata} <- Indexes.create(conn, index_id, definition),
+           :ok <- drop_physical_index(conn, old_metadata),
+           {:ok, new_metadata} <- create_physical_index(conn, index_id, definition),
            {:ok, metadata_json} <- Canonical.encode(new_metadata),
            :ok <-
              Connection.execute(
@@ -484,7 +438,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @impl true
   def explain_query(%__MODULE__{} = adapter, request) when is_map(request) do
     with {:ok, indexes} <- list_indexes(adapter),
-         {:ok, selected} <- select_index(adapter, indexes, request),
+         {:ok, selected} <- Planner.select_index(indexes, request),
          {:ok, [[count]]} <-
            Connection.query(
              adapter.conn,
@@ -514,7 +468,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   defp execute_query_impl(%__MODULE__{} = adapter, request) do
     with {:ok, indexes} <- list_indexes(adapter),
-         {:ok, selected} <- select_index(adapter, indexes, request),
+         {:ok, selected} <- Planner.select_index(indexes, request),
          {:ok, documents, examined} <- candidate_documents(adapter, selected, request),
          {:ok, matched} <- filter_query(documents, request),
          identity <- adapter_identity(adapter),
@@ -579,7 +533,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       metadata = Map.merge(selected, selected["_metadata"] || %{})
 
       with {:ok, rows} <-
-             Indexes.search(
+             FullTextIndexes.search(
                adapter.conn,
                metadata,
                search[:text] || search["text"],
@@ -656,7 +610,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   defp scalar_condition(path, operator, value, type) do
     if type_matches?(value, type) do
-      expression = json_expression(path)
+      expression = QueryCompiler.json_expression(path)
       comparison = operator_sql(operator)
       type_sql = json_type_sql(path, type)
       [{"(#{type_sql} AND #{expression} #{comparison} ?)", value}]
@@ -664,121 +618,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       []
     end
   end
-
-  defp select_index(_adapter, indexes, request) do
-    requested =
-      request[:index] || request["index"] || get_in(request, [:search, :index]) ||
-        get_in(request, ["search", "index"])
-
-    case requested do
-      nil ->
-        selected =
-          indexes
-          |> Enum.filter(&compatible_index?(&1, request, false))
-          |> Enum.sort_by(fn index -> {-index_score(index, request), index["index_id"]} end)
-          |> List.first()
-
-        {:ok, selected}
-
-      name ->
-        case Enum.find(indexes, &(&1["name"] == name or &1["index_id"] == name)) do
-          nil ->
-            {:error,
-             ElixirDB.Error.invalid_index_hint("requested index does not exist", %{index: name})}
-
-          index ->
-            if compatible_index?(index, request, true),
-              do: {:ok, index},
-              else:
-                {:error,
-                 ElixirDB.Error.invalid_index_hint(
-                   "requested index is incompatible with the query",
-                   %{index: name}
-                 )}
-        end
-    end
-  end
-
-  defp compatible_index?(%{"type" => "full_text"} = index, request, _explicit),
-    do:
-      not is_nil(request[:search] || request["search"]) and
-        search_index_name(request) in [index["name"], index["index_id"]]
-
-  defp compatible_index?(%{"type" => "structured", "fields" => fields}, request, _explicit) do
-    selector = request[:selector] || request["selector"] || %{}
-    sort = request[:sort] || request["sort"] || []
-    paths = Enum.map(fields, & &1["path"])
-    selector_paths = selector_paths(selector)
-
-    equality_or_range = Enum.any?(selector_paths, &(&1 in paths))
-    sort_compatible = structured_sort_compatible?(fields, selector, sort)
-    equality_or_range or sort_compatible
-  end
-
-  defp compatible_index?(_, _request, _explicit), do: false
-
-  defp search_index_name(request) do
-    search = request[:search] || request["search"] || %{}
-    search[:index] || search["index"]
-  end
-
-  defp selector_paths(selector) do
-    Enum.flat_map(selector, fn
-      {"$and", clauses} when is_list(clauses) -> Enum.flat_map(clauses, &selector_paths/1)
-      {path, _} when is_binary(path) -> [path]
-      _ -> []
-    end)
-  end
-
-  defp structured_sort_compatible?(_fields, _selector, []), do: false
-
-  defp structured_sort_compatible?(fields, selector, sort) do
-    equality_paths = equality_selector_paths(selector)
-    remaining = Enum.drop_while(fields, &(&1["path"] in equality_paths))
-    prefix = Enum.take(remaining, length(sort))
-
-    paths_match = Enum.map(prefix, & &1["path"]) == Enum.map(sort, &get(&1, :path))
-    directions = Enum.map(prefix, & &1["direction"])
-    requested = Enum.map(sort, &get(&1, :direction))
-    same = requested == directions
-    inverse = requested == Enum.map(directions, &if(&1 == "asc", do: "desc", else: "asc"))
-
-    paths_match and (same or inverse)
-  end
-
-  defp equality_selector_paths(selector) do
-    Enum.flat_map(selector, fn
-      {"$and", clauses} when is_list(clauses) ->
-        Enum.flat_map(clauses, &equality_selector_paths/1)
-
-      {path, value} when is_binary(path) ->
-        if equality_condition?(value), do: [path], else: []
-
-      _ ->
-        []
-    end)
-  end
-
-  defp equality_condition?(value) when is_map(value),
-    do:
-      Map.keys(value) in [["$eq"], [:"$eq"]] or Map.has_key?(value, "$in") or
-        Map.has_key?(value, :"$in")
-
-  defp equality_condition?(_), do: true
-
-  defp index_score(%{"type" => "full_text"}, request),
-    do: if(is_nil(request[:search] || request["search"]), do: -1, else: 10_000)
-
-  defp index_score(%{"type" => "structured", "fields" => fields}, request) do
-    paths = MapSet.new(Enum.map(fields, & &1["path"]))
-    selector = request[:selector] || request["selector"] || %{}
-    sort = request[:sort] || request["sort"] || []
-    equality_count = selector_paths(selector) |> Enum.count(&MapSet.member?(paths, &1))
-    sort_count = Enum.count(sort, &MapSet.member?(paths, get(&1, :path)))
-    equality_count * 100 + sort_count
-  end
-
-  defp index_score(_, _), do: -1
 
   defp rejected_index_reasons(indexes, selected, request) do
     Enum.map(indexes, fn index ->
@@ -804,7 +643,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
          })}
   end
 
-  defp project_documents(values, request), do: {:ok, Enum.map(values, &project(&1, request))}
+  defp project_documents(values, request),
+    do: {:ok, Enum.map(values, &Projection.project(&1, request))}
 
   defp apply_local_mutation_tx(adapter, request) do
     operation = request[:operation] || request["operation"] || :put
@@ -814,7 +654,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     body = if deleted, do: nil, else: request[:body] || request["body"]
 
     with :ok <- validate_document_input(adapter, document_id, deleted, body),
-         {:ok, doc} <- find_document(adapter, document_id),
+         {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current} <- current_winner(adapter, doc),
          {:ok, candidate_state} <-
            candidate_revision(adapter, doc, document_id, if_revision, current, deleted, body) do
@@ -875,7 +715,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   defp document_mutation_result(adapter, doc, winner) do
-    with {:ok, leaves_now} <- load_leaves(adapter, doc.doc_key) do
+    with {:ok, leaves_now} <- Revisions.load_leaves(adapter.conn, doc.doc_key) do
       {:ok,
        %{
          revision: winner.revision_id,
@@ -899,9 +739,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
               {:ok, revision}
 
             true ->
-              case find_revision(adapter, doc.doc_key, revision.revision_id) do
+              case Revisions.find(adapter.conn, doc.doc_key, revision.revision_id) do
                 {:ok, existing} ->
-                  if same_revision?(existing, revision) do
+                  if Revisions.same?(existing, revision) do
                     {:ok, {:replayed, revision}}
                   else
                     stale_revision_error(if_revision, current, revision)
@@ -942,17 +782,17 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   defp insert_local_revision(adapter, nil, %Revision{} = candidate, _if_revision, _operation) do
-    with {:ok, doc_key} <- insert_document(adapter.conn, candidate.document_id),
-         :ok <- insert_revision(adapter.conn, doc_key, candidate),
+    with {:ok, doc_key} <- Documents.insert(adapter.conn, candidate.document_id),
+         :ok <- Revisions.insert(adapter.conn, doc_key, candidate),
          {:ok, result} <- finalize_document(adapter, doc_key, candidate.document_id, candidate) do
       {:ok, Map.put(result, :replayed, false)}
     end
   end
 
   defp insert_local_revision(adapter, doc, %Revision{} = candidate, _if_revision, _operation) do
-    case find_revision(adapter, doc.doc_key, candidate.revision_id) do
+    case Revisions.find(adapter.conn, doc.doc_key, candidate.revision_id) do
       {:ok, existing} ->
-        if same_revision?(existing, candidate) do
+        if Revisions.same?(existing, candidate) do
           if doc.winning_revision == candidate.revision_id,
             do:
               {:ok,
@@ -968,8 +808,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
         end
 
       {:error, %ElixirDB.Error{code: :revision_not_found}} ->
-        with :ok <- ensure_parent(adapter, doc.doc_key, candidate.parent_revision),
-             :ok <- insert_revision(adapter.conn, doc.doc_key, candidate),
+        with :ok <- Revisions.ensure_parent(adapter.conn, doc.doc_key, candidate.parent_revision),
+             :ok <- Revisions.insert(adapter.conn, doc.doc_key, candidate),
              {:ok, result} <-
                finalize_document(adapter, doc.doc_key, candidate.document_id, candidate) do
           {:ok, Map.put(result, :replayed, false)}
@@ -981,15 +821,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   defp finalize_document(adapter, doc_key, document_id, _candidate) do
-    with {:ok, all_leaves} <- load_leaves(adapter, doc_key),
+    with {:ok, all_leaves} <- Revisions.load_leaves(adapter.conn, doc_key),
          {:ok, winner} <- Winner.select(all_leaves),
-         {:ok, leaf_json} <- leaf_json(all_leaves),
-         :ok <- update_document(adapter.conn, doc_key, winner, 0),
+         {:ok, leaf_json} <- Revisions.encode_leaf_set(all_leaves),
+         :ok <- Documents.update(adapter.conn, doc_key, winner, 0),
          :ok <- refresh_indexes(adapter, doc_key, winner),
-         {:ok, sequence} <- allocate_sequence(adapter.conn),
-         :ok <- update_document(adapter.conn, doc_key, winner, sequence),
+         {:ok, sequence} <- Changes.allocate_sequence(adapter.conn),
+         :ok <- Documents.update(adapter.conn, doc_key, winner, sequence),
          :ok <-
-           insert_change(adapter.conn, sequence, doc_key, document_id, winner, leaf_json, "local") do
+           Changes.insert(adapter.conn, sequence, doc_key, document_id, winner, leaf_json, "local") do
       publishless = %{
         revision: winner.revision_id,
         sequence: sequence,
@@ -1051,7 +891,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     body = if(deleted, do: nil, else: request[:body] || request["body"])
 
     with :ok <- validate_document_input(adapter, document_id, deleted, body),
-         {:ok, doc} <- find_document(adapter, document_id),
+         {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current} <- current_winner(adapter, doc),
          {:ok, candidate_state} <-
            candidate_revision(adapter, doc, document_id, if_revision, current, deleted, body) do
@@ -1059,8 +899,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
         nil ->
           candidate = candidate_state
 
-          with {:ok, doc_key} <- insert_document(adapter.conn, document_id),
-               :ok <- insert_revision(adapter.conn, doc_key, candidate),
+          with {:ok, doc_key} <- Documents.insert(adapter.conn, document_id),
+               :ok <- Revisions.insert(adapter.conn, doc_key, candidate),
                :ok <- update_pending_document(adapter, doc_key, candidate) do
             {:ok,
              %{
@@ -1087,9 +927,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
         doc ->
           candidate = candidate_state
 
-          case find_revision(adapter, doc.doc_key, candidate.revision_id) do
+          case Revisions.find(adapter.conn, doc.doc_key, candidate.revision_id) do
             {:ok, existing} ->
-              if same_revision?(existing, candidate) do
+              if Revisions.same?(existing, candidate) do
                 if doc.winning_revision == candidate.revision_id do
                   {:ok,
                    %{
@@ -1111,8 +951,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
               end
 
             {:error, %ElixirDB.Error{code: :revision_not_found}} ->
-              with :ok <- ensure_parent(adapter, doc.doc_key, candidate.parent_revision),
-                   :ok <- insert_revision(adapter.conn, doc.doc_key, candidate),
+              with :ok <-
+                     Revisions.ensure_parent(adapter.conn, doc.doc_key, candidate.parent_revision),
+                   :ok <- Revisions.insert(adapter.conn, doc.doc_key, candidate),
                    :ok <- update_pending_document(adapter, doc.doc_key, candidate) do
                 {:ok,
                  %{
@@ -1146,8 +987,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
              if(delete_all, do: nil, else: body)
            ),
          true <- is_list(expected) and Enum.all?(expected, &is_binary/1),
-         {:ok, %{doc_key: _} = doc} <- find_document(adapter, document_id),
-         {:ok, leaves} <- load_leaves(adapter, doc.doc_key),
+         {:ok, %{doc_key: _} = doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, leaves} <- Revisions.load_leaves(adapter.conn, doc.doc_key),
          :ok <- ElixirDB.Revisions.ConflictResolution.validate_leaf_set(leaves, expected),
          {:ok, revisions} <-
            build_resolution_revisions(document_id, leaves, request, body, delete_all),
@@ -1192,9 +1033,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   defp update_pending_document(adapter, doc_key, _candidate) do
-    with {:ok, leaves_now} <- load_leaves(adapter, doc_key),
+    with {:ok, leaves_now} <- Revisions.load_leaves(adapter.conn, doc_key),
          {:ok, winner} <- Winner.select(leaves_now),
-         :ok <- update_document(adapter.conn, doc_key, winner, 0),
+         :ok <- Documents.update(adapter.conn, doc_key, winner, 0),
          :ok <- refresh_indexes(adapter, doc_key, winner) do
       :ok
     end
@@ -1225,8 +1066,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
              delete_all,
              if(delete_all, do: nil, else: body)
            ),
-         {:ok, %{doc_key: _} = doc} <- find_document(adapter, document_id),
-         {:ok, current_leaves} <- load_leaves(adapter, doc.doc_key),
+         {:ok, %{doc_key: _} = doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, current_leaves} <- Revisions.load_leaves(adapter.conn, doc.doc_key),
          :ok <- ElixirDB.Revisions.ConflictResolution.validate_leaf_set(current_leaves, expected),
          {:ok, revisions} <-
            build_resolution_revisions(document_id, current_leaves, request, body, delete_all),
@@ -1257,10 +1098,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   defp resolution_status(adapter, doc_key, revisions) do
     statuses =
       Enum.map(revisions, fn revision ->
-        case find_revision(adapter, doc_key, revision.revision_id) do
-          {:ok, existing} -> if(same_revision?(existing, revision), do: :existing, else: :different)
-          {:error, %ElixirDB.Error{code: :revision_not_found}} -> :missing
-          {:error, _} -> :different
+        case Revisions.find(adapter.conn, doc_key, revision.revision_id) do
+          {:ok, existing} ->
+            if(Revisions.same?(existing, revision), do: :existing, else: :different)
+
+          {:error, %ElixirDB.Error{code: :revision_not_found}} ->
+            :missing
+
+          {:error, _} ->
+            :different
         end
       end)
 
@@ -1282,7 +1128,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   defp insert_resolution_revisions(adapter, doc_key, revisions) do
     Enum.reduce_while(revisions, :ok, fn revision, :ok ->
-      case insert_or_accept_revision(adapter, doc_key, revision) do
+      case Revisions.insert_or_accept(adapter.conn, doc_key, revision) do
         :ok -> {:cont, :ok}
         {:error, error} -> {:halt, {:error, error}}
       end
@@ -1481,23 +1327,23 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   defp insert_imported_revisions(adapter, revisions) do
     Enum.reduce_while(revisions, {:ok, MapSet.new(), 0}, fn revision, {:ok, affected, inserted} ->
-      case find_document(adapter, revision.document_id) do
+      case Documents.find(adapter.conn, revision.document_id) do
         {:ok, nil} ->
-          with {:ok, doc_key} <- insert_document(adapter.conn, revision.document_id),
-               :ok <- insert_revision(adapter.conn, doc_key, revision) do
+          with {:ok, doc_key} <- Documents.insert(adapter.conn, revision.document_id),
+               :ok <- Revisions.insert(adapter.conn, doc_key, revision) do
             {:cont, {:ok, MapSet.put(affected, {doc_key, revision.document_id}), inserted + 1}}
           end
 
         {:error, %ElixirDB.Error{code: :document_not_found}} ->
-          with {:ok, doc_key} <- insert_document(adapter.conn, revision.document_id),
-               :ok <- insert_revision(adapter.conn, doc_key, revision) do
+          with {:ok, doc_key} <- Documents.insert(adapter.conn, revision.document_id),
+               :ok <- Revisions.insert(adapter.conn, doc_key, revision) do
             {:cont, {:ok, MapSet.put(affected, {doc_key, revision.document_id}), inserted + 1}}
           end
 
         {:ok, doc} ->
-          case find_revision(adapter, doc.doc_key, revision.revision_id) do
+          case Revisions.find(adapter.conn, doc.doc_key, revision.revision_id) do
             {:ok, existing} ->
-              if same_revision?(existing, revision),
+              if Revisions.same?(existing, revision),
                 do: {:cont, {:ok, affected, inserted}},
                 else:
                   {:halt,
@@ -1507,8 +1353,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
                     )}}
 
             {:error, %ElixirDB.Error{code: :revision_not_found}} ->
-              with :ok <- ensure_parent(adapter, doc.doc_key, revision.parent_revision),
-                   :ok <- insert_revision(adapter.conn, doc.doc_key, revision),
+              with :ok <-
+                     Revisions.ensure_parent(adapter.conn, doc.doc_key, revision.parent_revision),
+                   :ok <- Revisions.insert(adapter.conn, doc.doc_key, revision),
                    do:
                      {:cont,
                       {:ok, MapSet.put(affected, {doc.doc_key, revision.document_id}), inserted + 1}}
@@ -1534,15 +1381,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       affected,
       {:ok, %{documents_changed: 0, revisions_inserted: inserted, last_sequence: 0}},
       fn {doc_key, document_id}, {:ok, acc} ->
-        with {:ok, leaves_now} <- load_leaves(adapter, doc_key),
+        with {:ok, leaves_now} <- Revisions.load_leaves(adapter.conn, doc_key),
              {:ok, winner} <- Winner.select(leaves_now),
-             {:ok, leaf_json} <- leaf_json(leaves_now),
-             :ok <- update_document(adapter.conn, doc_key, winner, 0),
+             {:ok, leaf_json} <- Revisions.encode_leaf_set(leaves_now),
+             :ok <- Documents.update(adapter.conn, doc_key, winner, 0),
              :ok <- refresh_indexes(adapter, doc_key, winner),
-             {:ok, sequence} <- allocate_sequence(adapter.conn),
-             :ok <- update_document(adapter.conn, doc_key, winner, sequence),
+             {:ok, sequence} <- Changes.allocate_sequence(adapter.conn),
+             :ok <- Documents.update(adapter.conn, doc_key, winner, sequence),
              :ok <-
-               insert_change(
+               Changes.insert(
                  adapter.conn,
                  sequence,
                  doc_key,
@@ -1579,7 +1426,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
         with {:ok, definition} <- decode_json(definition_json),
              {:ok, metadata} <- decode_json(metadata_json),
              :ok <-
-               Indexes.refresh_document(
+               FullTextIndexes.refresh_document(
                  adapter.conn,
                  Map.merge(Map.put(metadata, "index_id", index_id), definition),
                  doc_key,
@@ -1593,74 +1440,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       end)
     end
   end
-
-  defp put_local_record_tx(adapter, request) do
-    namespace = request[:namespace] || request["namespace"]
-    key = request[:key] || request["key"]
-    expected = request[:expected_version] || request["expected_version"] || 0
-    value = request[:value] || request["value"]
-
-    with {:ok, current} <- get_local_record(adapter, namespace, key),
-         observed <- if(is_nil(current), do: 0, else: current.version),
-         {:ok, json} <- Canonical.encode(value),
-         :ok <- validate_local_record_request(namespace, key, expected, observed, current, json),
-         {:ok, next_version, replayed} <-
-           next_local_record_version(expected, observed, current, json),
-         :ok <-
-           Connection.execute(
-             adapter.conn,
-             "INSERT INTO local_records(namespace, record_key, record_version, value_json) VALUES (?, ?, ?, ?) ON CONFLICT(namespace, record_key) DO UPDATE SET record_version=excluded.record_version, value_json=excluded.value_json",
-             [namespace, key, next_version, json]
-           ) do
-      {:ok, %{version: next_version, value: value, replayed: replayed}}
-    end
-  end
-
-  defp validate_local_record_request(namespace, key, expected, _observed, _current, _json)
-       when not is_binary(namespace) or not is_binary(key) or not is_integer(expected) or
-              expected < 0,
-       do: {:error, ElixirDB.Error.invalid_request("local record CAS fields are invalid")}
-
-  defp validate_local_record_request(_namespace, _key, expected, observed, current, json)
-       when observed != expected and not is_nil(current) do
-    current_json = Canonical.encode!(current.value)
-
-    if current_json == json do
-      :ok
-    else
-      {:error,
-       ElixirDB.Error.checkpoint_conflict("local record version is stale", %{
-         expected_version: expected,
-         observed_version: observed
-       })}
-    end
-  end
-
-  defp validate_local_record_request(_namespace, _key, expected, observed, nil, _json)
-       when observed != expected,
-       do:
-         {:error,
-          ElixirDB.Error.checkpoint_conflict("local record version is stale", %{
-            expected_version: expected,
-            observed_version: observed
-          })}
-
-  defp validate_local_record_request(_namespace, _key, _expected, _observed, _current, _json),
-    do: :ok
-
-  defp next_local_record_version(expected, observed, current, json)
-       when observed != expected and not is_nil(current) do
-    if Canonical.encode!(current.value) == json,
-      do: {:ok, observed, true},
-      else: {:error, ElixirDB.Error.checkpoint_conflict("local record version is stale")}
-  end
-
-  defp next_local_record_version(expected, observed, _current, _json)
-       when expected == observed,
-       do: {:ok, expected + 1, false}
-
-  defp next_local_record_version(_expected, _observed, _current, _json),
-    do: {:error, ElixirDB.Error.checkpoint_conflict("local record version is stale")}
 
   defp transaction(%__MODULE__{conn: conn}, fun) do
     with :ok <- Connection.execute(conn, "BEGIN IMMEDIATE") do
@@ -1686,36 +1465,10 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     end
   end
 
-  defp find_document(_adapter, nil),
-    do: {:error, ElixirDB.Error.invalid_request("document_id is required")}
-
-  defp find_document(%__MODULE__{conn: conn}, document_id) do
-    case Connection.query(
-           conn,
-           "SELECT doc_key, document_id, winning_revision, winning_body_json, winning_deleted, update_sequence FROM documents WHERE document_id = ?",
-           [document_id]
-         ) do
-      {:ok, [[key, id, winning, body, deleted, sequence]]} ->
-        {:ok,
-         %{
-           doc_key: key,
-           document_id: id,
-           winning_revision: winning,
-           winning_body_json: body,
-           winning_deleted: deleted == 1,
-           update_sequence: sequence
-         }}
-
-      {:ok, []} ->
-        {:ok, nil}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
-
   defp current_winner(_adapter, nil), do: {:ok, nil}
-  defp current_winner(adapter, doc), do: find_revision(adapter, doc.doc_key, doc.winning_revision)
+
+  defp current_winner(adapter, doc),
+    do: Revisions.find(adapter.conn, doc.doc_key, doc.winning_revision)
 
   defp choose_revision(_adapter, nil, _revision),
     do: {:error, ElixirDB.Error.document_not_found("document not found")}
@@ -1727,234 +1480,14 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
          ElixirDB.Error.document_not_found("document is deleted", %{
            winning_revision: doc.winning_revision
          })},
-      else: find_revision(adapter, doc.doc_key, doc.winning_revision)
+      else: Revisions.find(adapter.conn, doc.doc_key, doc.winning_revision)
   end
 
-  defp choose_revision(adapter, doc, revision), do: find_revision(adapter, doc.doc_key, revision)
-
-  defp find_revision(_adapter, _doc_key, nil),
-    do: {:error, ElixirDB.Error.document_not_found("document has no winning revision")}
-
-  defp find_revision(%__MODULE__{conn: conn}, doc_key, revision_id) do
-    case Connection.query(
-           conn,
-           "SELECT revision_id, generation, parent_revision, digest, deleted, body_json, insertion_sequence FROM revisions WHERE doc_key = ? AND revision_id = ?",
-           [doc_key, revision_id]
-         ) do
-      {:ok, [[id, generation, parent, digest_value, deleted, body_json, sequence]]} ->
-        {:ok,
-         revision_from_row(
-           doc_key,
-           id,
-           generation,
-           parent,
-           digest_value,
-           deleted,
-           body_json,
-           sequence
-         )}
-
-      {:ok, []} ->
-        {:error, ElixirDB.Error.revision_not_found("revision not found", %{revision: revision_id})}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
-
-  defp leaves(adapter, doc_key) do
-    case load_leaves(adapter, doc_key) do
-      {:ok, value} -> value
-      _ -> []
-    end
-  end
-
-  defp load_leaves(%__MODULE__{conn: conn}, doc_key) do
-    case Connection.query(
-           conn,
-           "SELECT revision_id, generation, parent_revision, digest, deleted, body_json, insertion_sequence FROM revisions WHERE doc_key = ? AND is_leaf = 1 ORDER BY revision_id",
-           [doc_key]
-         ) do
-      {:ok, rows} ->
-        {:ok,
-         Enum.map(rows, fn [id, generation, parent, digest_value, deleted, body_json, sequence] ->
-           revision_from_row(
-             doc_key,
-             id,
-             generation,
-             parent,
-             digest_value,
-             deleted,
-             body_json,
-             sequence
-           )
-         end)}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
-
-  defp insert_document(conn, id) do
-    case Connection.execute(
-           conn,
-           "INSERT INTO documents(document_id, winning_revision, winning_body_json, winning_deleted, update_sequence) VALUES (?, NULL, NULL, 1, 0)",
-           [id]
-         ) do
-      :ok ->
-        case Connection.query(conn, "SELECT doc_key FROM documents WHERE document_id = ?", [id]) do
-          {:ok, [[key]]} -> {:ok, key}
-          {:error, reason} -> {:error, normalize_error(reason)}
-        end
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
-
-  defp insert_revision(conn, doc_key, %Revision{} = revision) do
-    body = if revision.deleted, do: nil, else: Canonical.encode!(revision.body)
-
-    with :ok <-
-           Connection.execute(
-             conn,
-             "UPDATE revisions SET is_leaf = 0 WHERE doc_key = ? AND revision_id = ?",
-             [doc_key, revision.parent_revision]
-           ),
-         :ok <-
-           Connection.execute(
-             conn,
-             "INSERT INTO revisions(doc_key, revision_id, generation, parent_revision, digest, deleted, body_json, insertion_sequence, is_leaf) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1)",
-             [
-               doc_key,
-               revision.revision_id,
-               revision.generation,
-               revision.parent_revision,
-               revision.digest,
-               if(revision.deleted, do: 1, else: 0),
-               body
-             ]
-           ) do
-      :ok
-    else
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
-
-  defp insert_or_accept_revision(adapter, doc_key, %Revision{} = revision) do
-    case find_revision(adapter, doc_key, revision.revision_id) do
-      {:ok, existing} ->
-        if same_revision?(existing, revision),
-          do: :ok,
-          else:
-            {:error,
-             ElixirDB.Error.integrity_violation("existing revision differs from imported revision")}
-
-      {:error, %ElixirDB.Error{code: :revision_not_found}} ->
-        insert_revision(adapter.conn, doc_key, revision)
-
-      {:error, error} ->
-        {:error, error}
-    end
-  end
-
-  defp ensure_parent(_adapter, _doc_key, nil), do: :ok
-
-  defp ensure_parent(adapter, doc_key, parent) do
-    case find_revision(adapter, doc_key, parent) do
-      {:ok, _} ->
-        :ok
-
-      {:error, _} ->
-        {:error,
-         ElixirDB.Error.integrity_violation("revision parent is missing", %{parent_revision: parent})}
-    end
-  end
-
-  defp update_document(conn, doc_key, %Revision{} = winner, sequence) do
-    body = if winner.deleted, do: nil, else: Canonical.encode!(winner.body)
-
-    Connection.execute(
-      conn,
-      "UPDATE documents SET winning_revision = ?, winning_body_json = ?, winning_deleted = ?, update_sequence = ? WHERE doc_key = ?",
-      [winner.revision_id, body, if(winner.deleted, do: 1, else: 0), sequence, doc_key]
-    )
-  end
-
-  defp allocate_sequence(conn) do
-    with :ok <-
-           Connection.execute(
-             conn,
-             "UPDATE db_meta SET current_sequence = current_sequence + 1 WHERE id = 1"
-           ),
-         {:ok, [[sequence]]} <-
-           Connection.query(conn, "SELECT current_sequence FROM db_meta WHERE id = 1") do
-      {:ok, sequence}
-    else
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
-
-  defp insert_change(conn, sequence, doc_key, document_id, winner, leaf_json, origin),
-    do:
-      Connection.execute(
-        conn,
-        "INSERT INTO changes(sequence, doc_key, document_id, winning_revision, winning_deleted, leaf_set_json, origin) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
-          sequence,
-          doc_key,
-          document_id,
-          winner.revision_id,
-          if(winner.deleted, do: 1, else: 0),
-          leaf_json,
-          origin
-        ]
-      )
-
-  defp leaf_json(leaves),
-    do:
-      Canonical.encode(
-        Enum.map(leaves, fn leaf -> %{"revision" => leaf.revision_id, "deleted" => leaf.deleted} end)
-      )
-
-  defp document_result(doc, %Revision{} = revision, leaves) do
-    result = %{
-      id: doc.document_id,
-      revision: revision.revision_id,
-      deleted: revision.deleted,
-      body: revision.body,
-      sequence: doc.update_sequence
-    }
-
-    if leaves == [],
-      do: result,
-      else: Map.put(result, :conflicts, Winner.conflicts(leaves, revision))
-  end
-
-  defp revision_from_row(
-         _doc_key,
-         id,
-         generation,
-         parent,
-         digest_value,
-         deleted,
-         body_json,
-         sequence
-       ) do
-    %Revision{
-      document_id: nil,
-      revision_id: id,
-      generation: generation,
-      parent_revision: parent,
-      digest: digest_value,
-      deleted: deleted == 1,
-      body: if(body_json, do: decode_json!(body_json)),
-      insertion_sequence: sequence
-    }
-  end
+  defp choose_revision(adapter, doc, revision),
+    do: Revisions.find(adapter.conn, doc.doc_key, revision)
 
   defp chain_for_leaf(adapter, doc, leaf_id) do
-    case find_revision(adapter, doc.doc_key, leaf_id) do
+    case Revisions.find(adapter.conn, doc.doc_key, leaf_id) do
       {:ok, leaf} ->
         case chain(adapter, doc.doc_key, leaf, []) do
           {:ok, revisions} ->
@@ -1978,7 +1511,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: {:ok, [revision | acc]}
 
   defp chain(adapter, doc_key, %Revision{parent_revision: parent} = revision, acc) do
-    case find_revision(adapter, doc_key, parent) do
+    case Revisions.find(adapter.conn, doc_key, parent) do
       {:ok, parent_revision} ->
         chain(adapter, doc_key, parent_revision, [revision | acc])
 
@@ -2098,42 +1631,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       deleted: revision.deleted,
       body: revision.body
     }
-
-  defp decode_changes(rows) do
-    Enum.reduce_while(rows, {:ok, []}, fn [
-                                            sequence,
-                                            document_id,
-                                            winning,
-                                            deleted,
-                                            leaf_json,
-                                            origin
-                                          ],
-                                          {:ok, acc} ->
-      case StrictDecoder.decode(leaf_json) do
-        {:ok, leaves} ->
-          {:cont,
-           {:ok,
-            [
-              %{
-                sequence: sequence,
-                document_id: document_id,
-                winning_revision: winning,
-                deleted: deleted == 1,
-                leaf_revisions: leaves,
-                origin: origin
-              }
-              | acc
-            ]}}
-
-        {:error, error} ->
-          {:halt, {:error, error}}
-      end
-    end)
-    |> case do
-      {:ok, entries} -> {:ok, Enum.reverse(entries)}
-      error -> error
-    end
-  end
 
   defp decode_query_documents(rows) do
     Enum.reduce_while(rows, {:ok, []}, fn [id, revision, body_json], {:ok, acc} ->
@@ -2264,25 +1761,18 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   defp compare_values({:ok, _}, {:ok, _}), do: :gt
   defp compare_values(_, _), do: :eq
 
-  defp project(document, request) do
-    case request[:fields] || request["fields"] do
-      nil ->
-        %{id: document.id, revision: document.revision, body: document.body}
+  defp create_physical_index(conn, index_id, definition) do
+    case index_type(definition) do
+      "full_text" -> FullTextIndexes.create_physical(conn, index_id, definition)
+      _ -> StructuredIndexes.create_physical(conn, index_id, definition)
+    end
+  end
 
-      fields ->
-        %{
-          id: document.id,
-          revision: document.revision,
-          fields:
-            Map.new(
-              Enum.flat_map(fields, fn path ->
-                case ElixirDB.JSON.Pointer.get(document.body, path) do
-                  {:ok, value} -> [{path, value}]
-                  _ -> []
-                end
-              end)
-            )
-        }
+  defp drop_physical_index(conn, metadata) do
+    case metadata["index_type"] || metadata[:index_type] || metadata["type"] || metadata[:type] do
+      "full_text" -> FullTextIndexes.drop(conn, metadata)
+      :full_text -> FullTextIndexes.drop(conn, metadata)
+      _ -> StructuredIndexes.drop(conn, metadata)
     end
   end
 
@@ -2382,26 +1872,25 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     end
   end
 
-  defp json_expression(path) do
-    "json_extract(winning_body_json, #{quote_sql_literal(sqlite_path(path))})"
-  end
-
   defp json_type_sql(path, "string"),
-    do: "json_type(winning_body_json, #{quote_sql_literal(sqlite_path(path))}) = 'text'"
+    do:
+      "json_type(winning_body_json, #{QueryCompiler.quote_literal(QueryCompiler.sqlite_path(path))}) = 'text'"
 
   defp json_type_sql(path, type) do
+    quoted = QueryCompiler.quote_literal(QueryCompiler.sqlite_path(path))
+
     case type do
       "number" ->
-        "json_type(winning_body_json, #{quote_sql_literal(sqlite_path(path))}) IN ('integer', 'real')"
+        "json_type(winning_body_json, #{quoted}) IN ('integer', 'real')"
 
       "boolean" ->
-        "json_type(winning_body_json, #{quote_sql_literal(sqlite_path(path))}) IN ('true', 'false')"
+        "json_type(winning_body_json, #{quoted}) IN ('true', 'false')"
 
       "null" ->
-        "json_type(winning_body_json, #{quote_sql_literal(sqlite_path(path))}) = 'null'"
+        "json_type(winning_body_json, #{quoted}) = 'null'"
 
       _ ->
-        "json_type(winning_body_json, #{quote_sql_literal(sqlite_path(path))}) = 'text'"
+        "json_type(winning_body_json, #{quoted}) = 'text'"
     end
   end
 
@@ -2416,291 +1905,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   defp operator_sql("$gte"), do: ">="
   defp operator_sql("$lt"), do: "<"
   defp operator_sql("$lte"), do: "<="
-
-  defp sqlite_path(path) do
-    {:ok, tokens} = ElixirDB.JSON.Pointer.parse(path)
-
-    Enum.reduce(tokens, "$", fn token, acc ->
-      acc <> ".\"" <> String.replace(token, "\"", "\"\"") <> "\""
-    end)
-  end
-
-  defp quote_sql_literal(value), do: "'" <> String.replace(value, "'", "''") <> "'"
-
-  defp get(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
-  defp get(_, _key), do: nil
-
-  defp required_tables_present(conn) do
-    required =
-      ~w(db_meta documents revisions changes local_records replication_jobs index_definitions)
-
-    with {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('db_meta', 'documents', 'revisions', 'changes', 'local_records', 'replication_jobs', 'index_definitions')"
-           ) do
-      present = MapSet.new(rows, &List.first/1)
-
-      if Enum.all?(required, &MapSet.member?(present, &1)),
-        do: :ok,
-        else: {:error, ElixirDB.Error.integrity_violation("required SQLite tables are missing")}
-    end
-  end
-
-  defp validate_revision_rows(conn) do
-    with {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT d.document_id, r.revision_id, r.generation, r.parent_revision, r.deleted, r.body_json, r.is_leaf FROM revisions AS r JOIN documents AS d ON d.doc_key = r.doc_key ORDER BY d.document_id, r.revision_id"
-           ) do
-      Enum.reduce_while(rows, :ok, fn [
-                                        document_id,
-                                        revision_id,
-                                        generation,
-                                        parent,
-                                        deleted,
-                                        body_json,
-                                        leaf
-                                      ],
-                                      :ok ->
-        body = if(deleted == 1, do: nil, else: decode_json!(body_json))
-
-        with {:ok, calculated} <- Id.calculate(document_id, parent, deleted == 1, body),
-             true <- calculated == revision_id,
-             {:ok, expected_generation} <- Id.generation(revision_id),
-             true <- expected_generation == generation,
-             :ok <- validate_parent_row(conn, document_id, revision_id, parent),
-             :ok <- validate_leaf_row(conn, revision_id, leaf) do
-          {:cont, :ok}
-        else
-          false ->
-            {:halt,
-             {:error,
-              ElixirDB.Error.integrity_violation("revision identity or generation is invalid", %{
-                revision: revision_id
-              })}}
-
-          {:error, error} ->
-            {:halt, {:error, error}}
-        end
-      end)
-    end
-  end
-
-  defp validate_parent_row(_conn, _document_id, _revision_id, nil), do: :ok
-
-  defp validate_parent_row(conn, document_id, revision_id, parent) do
-    case Connection.query(
-           conn,
-           "SELECT 1 FROM revisions AS r JOIN documents AS d ON d.doc_key = r.doc_key WHERE d.document_id = ? AND r.revision_id = ?",
-           [document_id, parent]
-         ) do
-      {:ok, [[1]]} ->
-        :ok
-
-      {:ok, []} ->
-        {:error,
-         ElixirDB.Error.integrity_violation("revision has a dangling parent", %{
-           revision: revision_id,
-           parent_revision: parent
-         })}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
-
-  defp validate_leaf_row(conn, revision_id, leaf) do
-    with {:ok, [[children]]} <-
-           Connection.query(
-             conn,
-             "SELECT EXISTS(SELECT 1 FROM revisions WHERE parent_revision = ?)",
-             [revision_id]
-           ),
-         true <- leaf == 1 == (children == 0) do
-      :ok
-    else
-      false ->
-        {:error,
-         ElixirDB.Error.integrity_violation("revision leaf marker is stale", %{
-           revision: revision_id
-         })}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
-
-  defp validate_document_rows(conn) do
-    with {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT doc_key, document_id, winning_revision, winning_body_json, winning_deleted, update_sequence FROM documents"
-           ) do
-      Enum.reduce_while(rows, :ok, fn [doc_key, document_id, winning, body_json, deleted, sequence],
-                                      :ok ->
-        cond do
-          is_nil(winning) and body_json == nil and deleted == 1 and sequence == 0 ->
-            {:cont, :ok}
-
-          is_nil(winning) ->
-            {:halt,
-             {:error,
-              ElixirDB.Error.integrity_violation("document has no winning revision", %{
-                document_id: document_id
-              })}}
-
-          true ->
-            case Connection.query(
-                   conn,
-                   "SELECT deleted, body_json FROM revisions WHERE doc_key = ? AND revision_id = ?",
-                   [doc_key, winning]
-                 ) do
-              {:ok, [[revision_deleted, revision_body]]} ->
-                body_matches =
-                  if revision_deleted == 1,
-                    do: is_nil(body_json) and deleted == 1,
-                    else:
-                      is_binary(body_json) and deleted == 0 and
-                        Canonical.encode!(decode_json!(revision_body)) == body_json
-
-                if body_matches,
-                  do: {:cont, :ok},
-                  else:
-                    {:halt,
-                     {:error,
-                      ElixirDB.Error.integrity_violation("materialized winner is inconsistent", %{
-                        document_id: document_id
-                      })}}
-
-              {:ok, []} ->
-                {:halt,
-                 {:error,
-                  ElixirDB.Error.integrity_violation("document winner is missing", %{
-                    document_id: document_id
-                  })}}
-
-              {:error, reason} ->
-                {:halt, {:error, normalize_error(reason)}}
-            end
-        end
-      end)
-    end
-  end
-
-  defp validate_change_rows(conn) do
-    with {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT document_id, winning_revision, leaf_set_json FROM changes ORDER BY sequence"
-           ) do
-      Enum.reduce_while(rows, :ok, fn [document_id, winning, leaf_json], :ok ->
-        with {:ok, leaves} <- StrictDecoder.decode(leaf_json),
-             true <- is_list(leaves),
-             :ok <- validate_change_leaves(conn, document_id, winning, leaves) do
-          {:cont, :ok}
-        else
-          false ->
-            {:halt,
-             {:error,
-              ElixirDB.Error.integrity_violation("change leaf set is invalid", %{
-                document_id: document_id
-              })}}
-
-          {:error, error} ->
-            {:halt, {:error, error}}
-        end
-      end)
-    end
-  end
-
-  defp validate_change_leaves(conn, document_id, winning, leaves) do
-    Enum.reduce_while(leaves, :ok, fn leaf, :ok ->
-      if not is_map(leaf) do
-        {:halt,
-         {:error,
-          ElixirDB.Error.integrity_violation("change leaf entry is not an object", %{
-            document_id: document_id
-          })}}
-      else
-        revision = leaf["revision"] || leaf[:revision]
-
-        if not is_binary(revision) or revision == "" do
-          {:halt,
-           {:error,
-            ElixirDB.Error.integrity_violation("change leaf revision is invalid", %{
-              document_id: document_id
-            })}}
-        else
-          case Connection.query(
-                 conn,
-                 "SELECT r.revision_id, r.deleted FROM revisions AS r JOIN documents AS d ON d.doc_key = r.doc_key WHERE d.document_id = ? AND r.revision_id = ?",
-                 [document_id, revision]
-               ) do
-            {:ok, [[^revision, deleted]]} ->
-              expected_deleted = deleted == 1
-              supplied_deleted = Map.get(leaf, "deleted", Map.get(leaf, :deleted))
-
-              if is_boolean(supplied_deleted) and supplied_deleted == expected_deleted,
-                do: {:cont, :ok},
-                else:
-                  {:halt,
-                   {:error,
-                    ElixirDB.Error.integrity_violation("change leaf deletion marker is stale", %{
-                      revision: revision
-                    })}}
-
-            {:ok, []} ->
-              {:halt,
-               {:error,
-                ElixirDB.Error.integrity_violation("change references a missing revision", %{
-                  revision: revision
-                })}}
-
-            {:error, reason} ->
-              {:halt, {:error, normalize_error(reason)}}
-          end
-        end
-      end
-    end)
-    |> case do
-      :ok ->
-        case Connection.query(
-               conn,
-               "SELECT 1 FROM revisions AS r JOIN documents AS d ON d.doc_key = r.doc_key WHERE d.document_id = ? AND r.revision_id = ?",
-               [document_id, winning]
-             ) do
-          {:ok, [[1]]} ->
-            :ok
-
-          {:ok, []} ->
-            {:error,
-             ElixirDB.Error.integrity_violation("change winner is missing", %{revision: winning})}
-
-          {:error, reason} ->
-            {:error, normalize_error(reason)}
-        end
-
-      error ->
-        error
-    end
-  end
-
-  defp validate_index_rows(conn, indexes) do
-    Enum.reduce_while(indexes, :ok, fn index, :ok ->
-      metadata = Map.merge(index, index["_metadata"] || %{})
-
-      case Indexes.integrity(conn, metadata) do
-        {:ok, _} -> {:cont, :ok}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
-
-  defp same_revision?(a, b),
-    do:
-      a.revision_id == b.revision_id and a.generation == b.generation and
-        a.parent_revision == b.parent_revision and a.deleted == b.deleted and a.body == b.body
 
   defp digest(id), do: id |> String.split("-", parts: 2) |> List.last()
   defp decode_json(json), do: StrictDecoder.decode(json)

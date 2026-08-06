@@ -5,6 +5,24 @@ defmodule ElixirDB.Replication do
 
   @default_batch 100
 
+  @doc "Ordered worker phase states from Plan §7.7 (excluding terminal idle entry)."
+  def phases do
+    [
+      :idle,
+      :handshake,
+      :read_changes,
+      :diff,
+      :fetch_chains,
+      :import,
+      :checkpoint_target,
+      :checkpoint_source,
+      :waiting,
+      :backoff,
+      :completed,
+      :failed
+    ]
+  end
+
   def one_shot(source_uuid, target_uuid, options \\ %{}) do
     with {:ok, source} <- ElixirDB.Replication.LocalEndpoint.new(source_uuid),
          {:ok, target} <- ElixirDB.Replication.LocalEndpoint.new(target_uuid) do
@@ -18,9 +36,16 @@ defmodule ElixirDB.Replication do
   def run(source, target, options \\ %{}) do
     session_id = option(options, :session_id, ElixirDB.UUID.v4())
     options = put_option(options, :session_id, session_id)
-    report_phase(options, :running)
 
-    with {:ok, source_identity} <- endpoint_call(source, :identity, []),
+    with {:ok, context} <- handshake(source, target, options) do
+      process_from_handshake(source, target, context, options)
+    end
+  end
+
+  @doc "Handshake: identities, compatibility, replication id, checkpoint reconciliation."
+  def handshake(source, target, options) do
+    with :ok <- phase_hook(options, :handshake, %{}),
+         {:ok, source_identity} <- endpoint_call(source, :identity, []),
          {:ok, target_identity} <- endpoint_call(target, :identity, []),
          :ok <- compatible(source_identity, target_identity),
          {:ok, replication_id} <-
@@ -36,68 +61,213 @@ defmodule ElixirDB.Replication do
         CheckpointReconciler.common_sequence(value(source_checkpoint), value(target_checkpoint))
 
       terminal = get(source_identity, :current_sequence) || 0
-      process_batches(source, target, replication_id, since, terminal, options)
+
+      {:ok,
+       %{
+         session_id: option(options, :session_id, ElixirDB.UUID.v4()),
+         replication_id: replication_id,
+         since: since,
+         terminal: terminal,
+         source_checkpoint: source_checkpoint,
+         target_checkpoint: target_checkpoint,
+         selected: [],
+         documents: [],
+         chains: [],
+         imported: nil
+       }}
     end
   end
 
-  defp process_batches(source, target, replication_id, since, terminal, options)
-       when since >= terminal do
-    with :ok <- maybe_checkpoint(source, target, replication_id, since, 0, nil, options) do
-      if option(options, :mode, "one_shot") in ["continuous", :continuous] do
-        wait_for_next_batch(source, target, replication_id, since, options)
-      else
-        {:ok, %{status: :completed, replication_id: replication_id, source_sequence: since}}
+  @doc "Read a bounded change batch from the source after `context.since`."
+  def read_changes(source, context, options) do
+    limit = option(options, :batch, @default_batch)
+    wait_ms = option(options, :wait_ms_for_read, 0)
+
+    request =
+      if wait_ms > 0,
+        do: %{since: context.since, limit: limit, wait_ms: wait_ms},
+        else: %{since: context.since, limit: limit}
+
+    with :ok <- phase_hook(options, :read_changes, context),
+         {:ok, changes} <- endpoint_call(source, :read_changes, [request]),
+         {:ok, selected} <- take_batch_bytes(terminal_changes(changes, context.terminal), options),
+         :ok <- ensure_progress(selected, context.since, context.terminal) do
+      {:ok, %{context | selected: selected}}
+    end
+  end
+
+  @doc "Diff selected change leaves against the target."
+  def diff(target, context, options) do
+    with :ok <- phase_hook(options, :diff, context),
+         {:ok, documents} <- target_diff(target, context.selected) do
+      {:ok, %{context | documents: documents}}
+    end
+  end
+
+  @doc "Fetch complete revision chains for missing documents from the source."
+  def fetch_chains(source, context, options) do
+    with :ok <- phase_hook(options, :fetch_chains, context),
+         {:ok, chains} <-
+           endpoint_call(source, :get_revision_chains, [%{documents: context.documents}]) do
+      {:ok, %{context | chains: get(chains, :chains) || []}}
+    end
+  end
+
+  @doc "Import chains into the target and confirm durable commit (REPL-004)."
+  def import_chains(target, context, options) do
+    with :ok <- phase_hook(options, :import, context),
+         {:ok, imported} <-
+           endpoint_call(target, :import_revision_chains, [%{chains: context.chains}]),
+         {:ok, _confirmed} <-
+           endpoint_call(target, :confirm_durable_commit, [%{imported: imported}]) do
+      {:ok, %{context | imported: imported}}
+    end
+  end
+
+  @doc "CAS-write the target checkpoint for the current batch sequence."
+  def checkpoint_target(source, target, context, options) do
+    with :ok <- phase_hook(options, :checkpoint_target, context),
+         {:ok, prepared} <- prepare_checkpoint(source, target, context, options),
+         {:ok, target_result} <-
+           endpoint_call(target, :put_checkpoint, [
+             context.replication_id,
+             prepared.target_request
+           ]) do
+      {:ok,
+       Map.merge(context, %{
+         checkpoint_prepared: prepared,
+         target_checkpoint_result: target_result,
+         source_checkpoint: prepared.source_current,
+         target_checkpoint: prepared.target_current
+       })}
+    end
+  end
+
+  @doc "CAS-write the source checkpoint after the target checkpoint succeeded."
+  def checkpoint_source(source, context, options) do
+    prepared = Map.fetch!(context, :checkpoint_prepared)
+
+    with :ok <- phase_hook(options, :checkpoint_source, context),
+         {:ok, source_result} <-
+           endpoint_call(source, :put_checkpoint, [
+             context.replication_id,
+             prepared.source_request
+           ]) do
+      :telemetry.execute(
+        [:elixir_db, :replication, :checkpoint],
+        %{documents: prepared.documents, revisions: prepared.revisions},
+        %{replication_id: context.replication_id, source_sequence: prepared.sequence}
+      )
+
+      next = prepared.sequence
+
+      {:ok,
+       context
+       |> Map.put(:since, next)
+       |> Map.put(:source_checkpoint_result, source_result)
+       |> Map.put(:selected, [])
+       |> Map.put(:documents, [])
+       |> Map.put(:chains, [])
+       |> Map.put(:imported, nil)
+       |> Map.delete(:checkpoint_prepared)
+       |> Map.delete(:target_checkpoint_result)}
+    end
+  end
+
+  @doc "Wait for source changes beyond the current checkpoint (continuous mode)."
+  def wait_for_changes(source, context, options) do
+    with :ok <- phase_hook(options, :waiting, context),
+         {:ok, changes} <-
+           endpoint_call(source, :read_changes, [
+             %{
+               since: context.since,
+               limit: option(options, :batch, @default_batch),
+               wait_ms: option(options, :wait_ms, 1_000)
+             }
+           ]) do
+      selected = get(changes, :results) || []
+
+      terminal =
+        case endpoint_call(source, :identity, []) do
+          {:ok, identity} -> get(identity, :current_sequence) || context.since
+          _ -> context.since
+        end
+
+      {:ok, %{context | terminal: terminal, selected: selected}}
+    end
+  end
+
+  @doc "Advance after checkpoint_source: more batches, waiting, or completed."
+  def next_after_checkpoint(context, options) do
+    continuous? = option(options, :mode, "one_shot") in ["continuous", :continuous]
+
+    cond do
+      context.since < context.terminal ->
+        {:continue_batch, context}
+
+      continuous? ->
+        {:waiting, context}
+
+      true ->
+        {:completed,
+         %{
+           status: :completed,
+           replication_id: context.replication_id,
+           source_sequence: context.since
+         }}
+    end
+  end
+
+  @doc "Whether handshake found the source already caught up to the terminal sequence."
+  def caught_up?(%{since: since, terminal: terminal}), do: since >= terminal
+
+  defp process_from_handshake(source, target, context, options) do
+    if caught_up?(context) do
+      with {:ok, context} <- checkpoint_target(source, target, context, options),
+           {:ok, context} <- checkpoint_source(source, context, options) do
+        case next_after_checkpoint(context, options) do
+          {:completed, result} ->
+            {:ok, result}
+
+          {:waiting, context} ->
+            wait_loop(source, target, context, options)
+
+          {:continue_batch, context} ->
+            process_batches(source, target, context, options)
+        end
+      end
+    else
+      process_batches(source, target, context, options)
+    end
+  end
+
+  defp process_batches(source, target, context, options) do
+    with {:ok, context} <- read_changes(source, context, options),
+         {:ok, context} <- diff(target, context, options),
+         {:ok, context} <- fetch_chains(source, context, options),
+         {:ok, context} <- import_chains(target, context, options),
+         {:ok, context} <- checkpoint_target(source, target, context, options),
+         {:ok, context} <- checkpoint_source(source, context, options) do
+      case next_after_checkpoint(context, options) do
+        {:completed, result} ->
+          {:ok, result}
+
+        {:waiting, context} ->
+          wait_loop(source, target, context, options)
+
+        {:continue_batch, context} ->
+          process_batches(source, target, context, options)
       end
     end
   end
 
-  defp process_batches(source, target, replication_id, since, terminal, options) do
-    limit = option(options, :batch, @default_batch)
-
-    with {:ok, changes} <- endpoint_call(source, :read_changes, [%{since: since, limit: limit}]),
-         {:ok, selected} <- take_batch_bytes(terminal_changes(changes, terminal), options),
-         :ok <- ensure_progress(selected, since, terminal),
-         {:ok, documents} <- target_diff(target, selected),
-         {:ok, chains} <- endpoint_call(source, :get_revision_chains, [%{documents: documents}]),
-         {:ok, imported} <-
-           endpoint_call(target, :import_revision_chains, [%{chains: get(chains, :chains) || []}]),
-         next <- get(List.last(selected), :sequence),
-         :ok <-
-           maybe_checkpoint(
-             source,
-             target,
-             replication_id,
-             next,
-             length(selected),
-             imported,
-             options
-           ) do
-      if next >= terminal and option(options, :mode, "one_shot") not in ["continuous", :continuous],
-        do: {:ok, %{status: :completed, replication_id: replication_id, source_sequence: next}},
-        else: process_batches(source, target, replication_id, next, terminal, options)
-    end
-  end
-
-  defp wait_for_next_batch(source, target, replication_id, since, options) do
-    report_phase(options, :waiting)
-    wait_ms = option(options, :wait_ms, 1_000)
-    limit = option(options, :batch, @default_batch)
-
-    case endpoint_call(source, :read_changes, [%{since: since, limit: limit, wait_ms: wait_ms}]) do
-      {:ok, changes} ->
-        selected = get(changes, :results) || []
-
-        terminal =
-          case endpoint_call(source, :identity, []) do
-            {:ok, identity} -> get(identity, :current_sequence) || since
-            _ -> since
-          end
-
-        if selected == [] and terminal <= since do
-          wait_for_next_batch(source, target, replication_id, since, options)
+  defp wait_loop(source, target, context, options) do
+    case wait_for_changes(source, context, options) do
+      {:ok, context} ->
+        if context.selected == [] and context.terminal <= context.since do
+          wait_loop(source, target, context, options)
         else
-          report_phase(options, :running)
-          process_batches(source, target, replication_id, since, terminal, options)
+          process_batches(source, target, %{context | selected: []}, options)
         end
 
       {:error, error} ->
@@ -105,42 +275,27 @@ defmodule ElixirDB.Replication do
     end
   end
 
-  defp target_diff(_target, []), do: {:ok, []}
+  defp prepare_checkpoint(source, target, context, _options) do
+    sequence =
+      case context.selected do
+        [_ | _] = selected -> get(List.last(selected), :sequence)
+        _ -> context.since
+      end
 
-  defp target_diff(target, changes) do
-    request = %{
-      documents:
-        Enum.map(changes, fn change ->
-          %{
-            document_id: get(change, :document_id),
-            leaf_revisions: Enum.map(get(change, :leaf_revisions) || [], &get(&1, :revision))
-          }
-        end)
-    }
+    documents = length(context.selected)
+    imported = context.imported
 
-    with {:ok, result} <- endpoint_call(target, :diff_revisions, [request]) do
-      {:ok,
-       Enum.map(get(result, :documents) || [], fn document ->
-         %{
-           document_id: get(document, :document_id),
-           leaf_revisions: get(document, :missing_revisions) || []
-         }
-       end)}
-    end
-  end
-
-  defp maybe_checkpoint(source, target, replication_id, sequence, documents, imported, options) do
-    with {:ok, source_current} <- endpoint_call(source, :get_checkpoint, [replication_id]),
-         {:ok, target_current} <- endpoint_call(target, :get_checkpoint, [replication_id]),
+    with {:ok, source_current} <- endpoint_call(source, :get_checkpoint, [context.replication_id]),
+         {:ok, target_current} <- endpoint_call(target, :get_checkpoint, [context.replication_id]),
          source_value <- value(source_current),
          target_value <- value(target_current),
-         session_id <- option(options, :session_id, ElixirDB.UUID.v4()),
+         session_id <- context.session_id,
          entry <-
            checkpoint_entry(source_value, target_value, session_id, sequence, documents, imported),
          history <- checkpoint_history(source_value, target_value, entry),
          payload <- %{
            "version" => 1,
-           "replication_id" => replication_id,
+           "replication_id" => context.replication_id,
            "session_id" => session_id,
            "source_sequence" => sequence,
            "history" => history
@@ -148,30 +303,25 @@ defmodule ElixirDB.Replication do
          target_payload <-
            Map.put(payload, "checkpoint_version", record_version(target_current) + 1),
          source_payload <-
-           Map.put(payload, "checkpoint_version", record_version(source_current) + 1),
-         {:ok, _target_result} <-
-           endpoint_call(target, :put_checkpoint, [
-             replication_id,
-             checkpoint_request(target_payload, target_current)
-           ]),
-         {:ok, _source_result} <-
-           endpoint_call(source, :put_checkpoint, [
-             replication_id,
-             checkpoint_request(source_payload, source_current)
-           ]) do
-      :telemetry.execute(
-        [:elixir_db, :replication, :checkpoint],
-        %{documents: documents, revisions: imported_count(imported)},
-        %{replication_id: replication_id, source_sequence: sequence}
-      )
-
-      :ok
+           Map.put(payload, "checkpoint_version", record_version(source_current) + 1) do
+      {:ok,
+       %{
+         sequence: sequence,
+         documents: documents,
+         revisions: imported_count(imported),
+         source_current: source_current,
+         target_current: target_current,
+         target_request: checkpoint_request(target_payload, target_current),
+         source_request: checkpoint_request(source_payload, source_current)
+       }}
     end
   end
 
   defp checkpoint_request(payload, current),
     do: Map.put(payload, "expected_checkpoint_version", record_version(current))
 
+  # REPL-007: retain at most the ten most recent completed sessions, keyed by
+  # session identity `{session_id, source_sequence}` (same key used by checkpoint_entry/6).
   defp checkpoint_history(source, target, entry) do
     (List.wrap(source && (source[:history] || source["history"])) ++
        List.wrap(target && (target[:history] || target["history"])) ++ [entry])
@@ -250,10 +400,44 @@ defmodule ElixirDB.Replication do
     end
   end
 
-  defp report_phase(options, phase) do
-    case option(options, :job_id, nil) do
-      nil -> :ok
-      job_id -> ElixirDB.Replication.JobManager.report(job_id, phase, %{})
+  defp target_diff(_target, []), do: {:ok, []}
+
+  defp target_diff(target, changes) do
+    request = %{
+      documents:
+        Enum.map(changes, fn change ->
+          %{
+            document_id: get(change, :document_id),
+            leaf_revisions: Enum.map(get(change, :leaf_revisions) || [], &get(&1, :revision))
+          }
+        end)
+    }
+
+    with {:ok, result} <- endpoint_call(target, :diff_revisions, [request]) do
+      {:ok,
+       Enum.map(get(result, :documents) || [], fn document ->
+         %{
+           document_id: get(document, :document_id),
+           leaf_revisions: get(document, :missing_revisions) || []
+         }
+       end)}
+    end
+  end
+
+  defp phase_hook(options, phase, context) do
+    case option(options, :phase_hook, nil) do
+      nil ->
+        :ok
+
+      fun when is_function(fun, 2) ->
+        case fun.(phase, context) do
+          :ok -> :ok
+          {:error, _} = error -> error
+          other -> {:error, ElixirDB.Error.internal_error("phase hook returned #{inspect(other)}")}
+        end
+
+      _ ->
+        :ok
     end
   end
 

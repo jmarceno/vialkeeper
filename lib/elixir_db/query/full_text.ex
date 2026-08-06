@@ -32,7 +32,9 @@ defmodule ElixirDB.Query.FullText do
     query = tokens(text, diacritics)
 
     values =
-      Enum.flat_map(fields, fn path ->
+      Enum.flat_map(fields, fn field ->
+        path = if is_binary(field), do: field, else: field["path"] || field[:path]
+
         case ElixirDB.JSON.Pointer.get(body, path) do
           {:ok, value} when is_binary(value) -> tokens(value, diacritics)
           _ -> []

@@ -1,9 +1,10 @@
 defmodule ElixirDB.Storage.SQLite.Indexes do
   @moduledoc "SQLite-derived structured and FTS5 index management."
 
+  alias ElixirDB.Diagnostics
   alias ElixirDB.JSON.{Pointer, StrictDecoder}
   alias ElixirDB.Query.FullText
-  alias ElixirDB.Storage.SQLite.Connection
+  alias ElixirDB.Storage.SQLite.{Connection, QueryCompiler}
 
   @physical_version 1
 
@@ -36,12 +37,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
       name = metadata["physical_name"] || metadata[:physical_name]
 
       with true <- valid_identifier?(name),
-           :ok <-
-             Connection.execute(
-               conn,
-               "DELETE FROM #{quote_identifier(name)} WHERE rowid = ?",
-               [doc_key]
-             ),
+           :ok <- delete_fts_row(conn, name, metadata, doc_key),
            :ok <- insert_text_if_present(conn, name, metadata, doc_key, body, deleted) do
         :ok
       else
@@ -57,6 +53,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
           {:ok, list()} | {:error, ElixirDB.Error.t()}
   def search(conn, metadata, text, mode) do
     name = metadata["physical_name"] || metadata[:physical_name]
+    match_definition = Map.put(metadata, "mode", mode || "all")
 
     with true <- valid_identifier?(name),
          {:ok, query} <- compile_search(text, metadata, mode),
@@ -66,8 +63,14 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
              "SELECT d.doc_key, d.document_id, d.winning_revision, d.winning_body_json, bm25(#{quote_identifier(name)}) FROM #{quote_identifier(name)} AS f JOIN documents AS d ON d.doc_key = f.rowid WHERE #{quote_identifier(name)} MATCH ? AND d.winning_deleted = 0",
              [query]
            ),
-         {:ok, result} <- decode_search_rows(rows) do
-      {:ok, Enum.sort_by(result, fn row -> {row.rank, row.id} end)}
+         {:ok, candidates} <- decode_search_rows(rows) do
+      # FTS5 retrieves candidates; unicode_words_v1 via FullText.matches?/3 is authoritative.
+      filtered =
+        Enum.filter(candidates, fn row ->
+          FullText.matches?(row.body, match_definition, text)
+        end)
+
+      {:ok, Enum.sort_by(filtered, fn row -> {row.rank, row.id} end)}
     else
       false -> {:error, ElixirDB.Error.integrity_violation("index physical metadata is invalid")}
       {:error, %ElixirDB.Error{} = error} -> {:error, error}
@@ -102,7 +105,8 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
          true <-
            (type(metadata) == :full_text and kind == "table") or
              (type(metadata) == :structured and kind == "index"),
-         true <- is_binary(sql) do
+         true <- is_binary(sql),
+         true <- full_text_sql_ok?(metadata, sql) do
       if type(metadata) == :full_text do
         check_full_text_integrity(conn, metadata, name)
       else
@@ -123,12 +127,13 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   end
 
   def physical_name(index_id, :structured), do: "exdb_s_" <> suffix(index_id)
-  def physical_name(index_id, :full_text), do: "exdb_f_" <> suffix(index_id)
+
+  def physical_name(index_id, :full_text), do: "fts_" <> digest24(index_id)
 
   defp create_structured(conn, index_id, definition) do
     fields = definition["fields"] || definition[:fields] || []
     name = physical_name(index_id, :structured)
-    expressions = Enum.map(fields, &structured_expression/1)
+    expressions = Enum.map(fields, &QueryCompiler.structured_expression/1)
 
     sql =
       "CREATE INDEX #{quote_identifier(name)} ON documents (winning_deleted, " <>
@@ -146,29 +151,46 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     name = physical_name(index_id, :full_text)
     diacritics = get_in(definition, ["tokenization", "diacritics"]) || "preserve"
     remove = if diacritics == "remove", do: "2", else: "0"
+    kind = fts_table_kind()
 
-    sql =
-      "CREATE VIRTUAL TABLE #{quote_identifier(name)} USING fts5(document_key UNINDEXED, content, tokenize = 'unicode61 remove_diacritics #{remove}')"
+    sql = full_text_create_sql(name, remove, kind)
 
     with :ok <- Connection.execute(conn, sql),
          :ok <- rebuild_full_text_rows(conn, name, definition),
-         {:ok, metadata} <- metadata(index_id, definition, name) do
+         {:ok, metadata} <- metadata(index_id, definition, name, kind) do
       {:ok, metadata}
     else
       {:error, reason} -> normalize_result({:error, reason})
     end
   end
 
-  defp metadata(index_id, definition, name) do
-    {:ok,
-     %{
-       "index_id" => index_id,
-       "physical_name" => name,
-       "physical_version" => @physical_version,
-       "type" => type_string(definition),
-       "fields" => definition["fields"] || definition[:fields] || [],
-       "tokenization" => definition["tokenization"] || definition[:tokenization] || %{}
-     }}
+  defp fts_table_kind do
+    if Diagnostics.fts5_contentless_delete_supported?() do
+      "contentless_delete"
+    else
+      "contentless"
+    end
+  end
+
+  defp full_text_create_sql(name, remove, "contentless_delete") do
+    "CREATE VIRTUAL TABLE #{quote_identifier(name)} USING fts5(content, tokenize = 'unicode61 remove_diacritics #{remove}', content='', contentless_delete=1)"
+  end
+
+  defp full_text_create_sql(name, remove, "contentless") do
+    "CREATE VIRTUAL TABLE #{quote_identifier(name)} USING fts5(content, tokenize = 'unicode61 remove_diacritics #{remove}', content='')"
+  end
+
+  defp metadata(index_id, definition, name, fts_kind \\ nil) do
+    base = %{
+      "index_id" => index_id,
+      "physical_name" => name,
+      "physical_version" => @physical_version,
+      "type" => type_string(definition),
+      "fields" => definition["fields"] || definition[:fields] || [],
+      "tokenization" => definition["tokenization"] || definition[:tokenization] || %{}
+    }
+
+    {:ok, if(fts_kind, do: Map.put(base, "fts_table_kind", fts_kind), else: base)}
   end
 
   defp rebuild_full_text_rows(conn, name, definition) do
@@ -192,6 +214,22 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     end
   end
 
+  defp delete_fts_row(conn, name, metadata, doc_key) do
+    case metadata["fts_table_kind"] || metadata[:fts_table_kind] || fts_table_kind() do
+      "contentless_delete" ->
+        Connection.execute(conn, "DELETE FROM #{quote_identifier(name)} WHERE rowid = ?", [doc_key])
+
+      "contentless" ->
+        # Ordinary contentless tables reject DELETE; use the FTS5 delete command.
+        # Without prior content we cannot remove tokens precisely — prefer contentless-delete.
+        Connection.execute(
+          conn,
+          "INSERT INTO #{quote_identifier(name)}(#{quote_identifier(name)}, rowid, content) VALUES ('delete', ?, ?)",
+          [doc_key, ""]
+        )
+    end
+  end
+
   defp insert_text_if_present(_conn, _name, _definition, _doc_key, _body, true), do: :ok
 
   defp insert_text_if_present(conn, name, definition, doc_key, body, false) do
@@ -202,8 +240,8 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     else
       Connection.execute(
         conn,
-        "INSERT INTO #{quote_identifier(name)} (rowid, document_key, content) VALUES (?, ?, ?)",
-        [doc_key, doc_key, content]
+        "INSERT INTO #{quote_identifier(name)} (rowid, content) VALUES (?, ?)",
+        [doc_key, content]
       )
     end
   end
@@ -301,6 +339,28 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     {:error, reason} -> normalize_result({:error, reason})
   end
 
+  defp full_text_sql_ok?(metadata, sql) do
+    if type(metadata) != :full_text do
+      true
+    else
+      kind = metadata["fts_table_kind"] || metadata[:fts_table_kind] || fts_table_kind()
+      lowered = String.downcase(sql)
+
+      case kind do
+        "contentless_delete" ->
+          String.contains?(lowered, "content=''") and
+            String.contains?(lowered, "contentless_delete=1")
+
+        "contentless" ->
+          String.contains?(lowered, "content=''") and
+            not String.contains?(lowered, "contentless_delete")
+
+        _ ->
+          false
+      end
+    end
+  end
+
   defp expected_text?(json, definition) do
     with {:ok, body} <- StrictDecoder.decode(json),
          text when text != "" <- extract_text(body, definition) do
@@ -308,21 +368,6 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     else
       _ -> false
     end
-  end
-
-  defp structured_expression(field) do
-    path = field["path"] || field[:path] || field
-    sqlite_path = sqlite_path(path)
-
-    "json_type(winning_body_json, #{quote_literal(sqlite_path)}), json_extract(winning_body_json, #{quote_literal(sqlite_path)})"
-  end
-
-  defp sqlite_path(path) do
-    {:ok, tokens} = Pointer.parse(path)
-
-    Enum.reduce(tokens, "$", fn token, acc ->
-      acc <> ".\"" <> String.replace(token, "\"", "\"\"") <> "\""
-    end)
   end
 
   defp drop_kind(metadata), do: if(type(metadata) == :full_text, do: "TABLE", else: "INDEX")
@@ -343,11 +388,26 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     |> String.replace(~r/[^a-zA-Z0-9_]/, "_")
   end
 
-  defp valid_identifier?(value),
-    do: is_binary(value) and Regex.match?(~r/^exdb_[sf]_[a-zA-Z0-9_]+$/, value)
+  defp digest24(index_id) do
+    case to_string(index_id) do
+      <<"idx_", digest::binary-size(24)>> ->
+        digest
+
+      other ->
+        other
+        |> then(&:crypto.hash(:sha256, &1))
+        |> Base.encode16(case: :lower)
+        |> binary_part(0, 24)
+    end
+  end
+
+  defp valid_identifier?(value) do
+    is_binary(value) and
+      (Regex.match?(~r/^exdb_s_[a-zA-Z0-9_]+$/, value) or
+         Regex.match?(~r/^fts_[0-9a-f]{24}$/, value))
+  end
 
   defp quote_identifier(value), do: "\"" <> String.replace(value, "\"", "\"\"") <> "\""
-  defp quote_literal(value), do: "'" <> String.replace(value, "'", "''") <> "'"
   defp quote_term(value), do: "\"" <> String.replace(value, "\"", "\"\"") <> "\""
 
   defp normalize_result(:ok), do: :ok

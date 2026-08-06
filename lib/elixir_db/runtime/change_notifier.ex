@@ -2,6 +2,15 @@ defmodule ElixirDB.Runtime.ChangeNotifier do
   @moduledoc false
   use GenServer
 
+  def child_spec(uuid) do
+    %{
+      id: {__MODULE__, uuid},
+      start: {__MODULE__, :start_link, [uuid]},
+      restart: :temporary,
+      type: :worker
+    }
+  end
+
   def start_link(uuid), do: GenServer.start_link(__MODULE__, uuid, name: via(uuid))
   def via(uuid), do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:notifier, uuid}}}
 
@@ -66,7 +75,7 @@ defmodule ElixirDB.Runtime.ChangeNotifier do
       send(pid, {:database_closed, state.uuid})
     end)
 
-    {:reply, :ok, %{state | subscribers: %{}}}
+    {:stop, :shutdown, :ok, %{state | subscribers: %{}}}
   end
 
   @impl true

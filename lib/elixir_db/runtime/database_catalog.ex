@@ -131,8 +131,17 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
       entry ->
         case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
-          [{_pid, _}] -> {:reply, DatabaseOwner.command(uuid, {:command, :identity, %{}}), state}
-          [] -> {:reply, inspect_entry(entry), state}
+          [{_pid, _}] ->
+            {:reply, DatabaseOwner.command(uuid, {:command, :identity, %{}}), state}
+
+          [] ->
+            case inspect_entry(entry) do
+              {:ok, _} = ok ->
+                {:reply, ok, mark_status(state, uuid, :registered)}
+
+              {:error, %ElixirDB.Error{} = error} = err ->
+                {:reply, err, maybe_mark_unavailable(state, uuid, error)}
+            end
         end
     end
   end
@@ -187,36 +196,83 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       nil ->
         {:error, ElixirDB.Error.database_not_registered("database is not registered"), state}
 
-      %{absolute_path: path} ->
+      %{absolute_path: path} = entry ->
         case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
           [{_pid, _}] ->
-            {:ok, %{database_uuid: uuid, runtime_state: :open}, state}
+            {:ok, %{database_uuid: uuid, runtime_state: :open},
+             mark_status(state, uuid, :registered)}
 
           [] ->
-            if open_count() >= (ElixirDB.Config.host_limits()[:max_open_databases] || 64) do
-              {:error, ElixirDB.Error.resource_limit("maximum open database count reached", %{}),
-               state}
-            else
-              case DynamicSupervisor.start_child(
-                     ElixirDB.Runtime.DatabaseSupervisor,
-                     {DatabaseRuntimeSupervisor, %{uuid: uuid, path: path}}
-                   ) do
-                {:ok, _pid} ->
-                  {:ok, %{database_uuid: uuid, runtime_state: :open}, state}
+            cond do
+              not File.regular?(path) ->
+                error = ElixirDB.Error.database_unavailable("registered database file is missing")
+                {:error, error, mark_status(state, uuid, :unavailable)}
 
-                {:error, {:shutdown, %ElixirDB.Error{} = error}} ->
-                  {:error, error, state}
+              open_count() >= (ElixirDB.Config.host_limits()[:max_open_databases] || 64) ->
+                {:error, ElixirDB.Error.resource_limit("maximum open database count reached", %{}),
+                 state}
 
-                {:error, reason} ->
-                  {:error,
-                   ElixirDB.Error.database_unavailable("database could not be opened", %{
-                     cause: inspect(reason)
-                   }), state}
-              end
+              true ->
+                case DynamicSupervisor.start_child(
+                       ElixirDB.Runtime.DatabaseSupervisor,
+                       {DatabaseRuntimeSupervisor, %{uuid: uuid, path: path}}
+                     ) do
+                  {:ok, _pid} ->
+                    {:ok, %{database_uuid: uuid, runtime_state: :open},
+                     mark_status(state, uuid, :registered)}
+
+                  {:error, reason} ->
+                    error = open_failure_error(reason, entry)
+                    {:error, error, maybe_mark_unavailable(state, uuid, error)}
+                end
             end
         end
     end
   end
+
+  # LIFE-007: missing file or UUID mismatch MUST mark registration unavailable.
+  defp maybe_mark_unavailable(state, uuid, %ElixirDB.Error{code: :database_unavailable} = error) do
+    if uuid_mismatch?(error) or missing_file?(error),
+      do: mark_status(state, uuid, :unavailable),
+      else: state
+  end
+
+  defp maybe_mark_unavailable(state, _uuid, _error), do: state
+
+  defp mark_status(state, uuid, status) do
+    case Map.get(state.entries, uuid) do
+      nil ->
+        state
+
+      entry ->
+        %{state | entries: Map.put(state.entries, uuid, Map.put(entry, :status, status))}
+    end
+  end
+
+  defp open_failure_error(reason, _entry) do
+    case extract_error(reason) do
+      %ElixirDB.Error{} = error ->
+        error
+
+      _ ->
+        ElixirDB.Error.database_unavailable("database could not be opened", %{
+          cause: inspect(reason)
+        })
+    end
+  end
+
+  defp extract_error(%ElixirDB.Error{} = error), do: error
+  defp extract_error({:shutdown, reason}), do: extract_error(reason)
+  defp extract_error({:failed_to_start_child, _id, reason}), do: extract_error(reason)
+  defp extract_error(_), do: nil
+
+  defp uuid_mismatch?(%ElixirDB.Error{details: %{reason: :uuid_mismatch}}), do: true
+  defp uuid_mismatch?(_), do: false
+
+  defp missing_file?(%ElixirDB.Error{message: message}) when is_binary(message),
+    do: String.contains?(message, "missing")
+
+  defp missing_file?(_), do: false
 
   defp runtime_pid(uuid) do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid}) do
@@ -292,8 +348,15 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp entry_status(entry) do
     state =
       case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, entry.uuid}) do
-        [{_pid, _}] -> :open
-        [] -> if(File.exists?(entry.absolute_path), do: :registered, else: :unavailable)
+        [{_pid, _}] ->
+          :open
+
+        [] ->
+          cond do
+            Map.get(entry, :status) == :unavailable -> :unavailable
+            File.exists?(entry.absolute_path) -> :registered
+            true -> :unavailable
+          end
       end
 
     %{database_uuid: entry.uuid, path: entry.path, state: state}
@@ -301,19 +364,34 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   defp inspect_entry(entry) do
     if File.exists?(entry.absolute_path) do
-      Adapter.open(entry.absolute_path) |> inspect_and_close()
+      case Adapter.open(entry.absolute_path) do
+        {:ok, adapter} ->
+          result = Adapter.identity(adapter)
+          _ = Adapter.close(adapter)
+
+          case result do
+            {:ok, %{database_uuid: uuid}} when uuid == entry.uuid ->
+              result
+
+            {:ok, %{database_uuid: actual}} ->
+              {:error,
+               ElixirDB.Error.database_unavailable("database UUID mismatch", %{
+                 reason: :uuid_mismatch,
+                 expected: entry.uuid,
+                 actual: actual
+               })}
+
+            other ->
+              other
+          end
+
+        {:error, error} ->
+          {:error, error}
+      end
     else
       {:error, ElixirDB.Error.database_unavailable("registered database file is missing")}
     end
   end
-
-  defp inspect_and_close({:ok, adapter}) do
-    result = Adapter.identity(adapter)
-    _ = Adapter.close(adapter)
-    result
-  end
-
-  defp inspect_and_close({:error, error}), do: {:error, error}
 
   defp no_symlink_components?(path) do
     path
@@ -364,7 +442,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
             end),
          :ok <- ElixirDB.Runtime.ChangeNotifier.close(uuid),
          runtime when not is_nil(runtime) <- runtime_pid(uuid) do
-      if Process.alive?(runtime), do: Supervisor.stop(runtime, :shutdown, 30_000), else: :ok
+      if Process.alive?(runtime),
+        do: Supervisor.stop(runtime, :shutdown, ElixirDB.Config.shutdown_timeout()),
+        else: :ok
     else
       true ->
         {:error, ElixirDB.Error.database_not_closable("database has active replication jobs")}

@@ -1,0 +1,57 @@
+[
+  {
+    "id": "success-envelope",
+    "description": "API-008 non-streaming success envelope",
+    "shape": {
+      "request_id": "request-id",
+      "data": {}
+    }
+  },
+  {
+    "id": "error-envelope",
+    "description": "API-008 public failure envelope",
+    "shape": {
+      "request_id": "request-id",
+      "error": {
+        "code": "stable_error_code",
+        "message": "Human-readable message",
+        "retryable": false,
+        "details": {}
+      }
+    }
+  },
+  {
+    "id": "document-put-request",
+    "description": "API-011 document put request body",
+    "method": "POST",
+    "path": "/v1/databases/{database_uuid}/documents/put",
+    "shape": {
+      "id": "document-id",
+      "body": {"example": true},
+      "if_revision": null
+    }
+  },
+  {
+    "id": "document-get-response-data",
+    "description": "API-011 returned document data",
+    "shape": {
+      "id": "document-id",
+      "revision": "3-digest",
+      "deleted": false,
+      "body": {},
+      "conflicts": []
+    }
+  },
+  {
+    "id": "changes-ndjson-events",
+    "description": "CHANGE-008 NDJSON stream event types",
+    "content_type": "application/x-ndjson",
+    "events": [
+      {"type": "change", "sequence": 1, "id": "document-id", "revision": "1-digest", "deleted": false},
+      {"type": "caught_up", "sequence": 1},
+      {"type": "heartbeat"},
+      {"type": "closed", "reason": "deadline"},
+      {"type": "error", "code": "database_closed", "message": "database closed", "retryable": true}
+    ]
+  }
+]

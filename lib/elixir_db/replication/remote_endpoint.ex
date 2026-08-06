@@ -58,6 +58,18 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
       )
 
   @impl true
+  def confirm_durable_commit(endpoint, _request) do
+    # Remote import responses already imply durable commit; confirm with a live identity round-trip.
+    with {:ok, identity} <- identity(endpoint) do
+      {:ok,
+       %{
+         "confirmed" => true,
+         "current_sequence" => identity["current_sequence"] || identity[:current_sequence] || 0
+       }}
+    end
+  end
+
+  @impl true
   def get_checkpoint(endpoint, replication_id),
     do:
       call(

@@ -16,92 +16,127 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   @impl true
   def init({uuid, path}) do
     case Adapter.open(path) do
-      {:ok, adapter} -> {:ok, %{uuid: uuid, path: path, adapter: adapter}}
-      {:error, %ElixirDB.Error{} = error} -> {:stop, error}
+      {:ok, adapter} ->
+        case Map.get(adapter.identity, :database_uuid) do
+          ^uuid ->
+            {:ok, %{uuid: uuid, path: path, adapter: adapter}}
+
+          actual ->
+            _ = Adapter.close(adapter)
+
+            {:stop,
+             ElixirDB.Error.database_unavailable("database UUID mismatch", %{
+               reason: :uuid_mismatch,
+               expected: uuid,
+               actual: actual
+             })}
+        end
+
+      {:error, %ElixirDB.Error{} = error} ->
+        {:stop, error}
     end
   end
 
   @impl true
-  def handle_call({:command, :identity, _request}, _from, state),
+  def handle_call(command, from, state) do
+    handle_command(ElixirDB.Storage.Commands.normalize(command), from, state)
+  end
+
+  defp handle_command(%ElixirDB.Storage.Commands.Identity{}, _from, state),
     do: reply(Adapter.identity(state.adapter), state)
 
-  def handle_call({:command, :update_config, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.UpdateConfig{request: request}, _from, state),
     do: reply(Adapter.update_config(state.adapter, request), state)
 
-  def handle_call({:command, :integrity_check, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.IntegrityCheck{request: request}, _from, state),
     do: reply(Adapter.integrity_check(state.adapter, request), state)
 
-  def handle_call({:command, :get_document, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.GetDocument{request: request}, _from, state),
     do: reply(Adapter.get_document(state.adapter, request), state)
 
-  def handle_call({:command, :get_revision, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.GetRevision{request: request}, _from, state),
     do: reply(Adapter.get_revision(state.adapter, request), state)
 
-  def handle_call({:command, :put, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.PutDocument{request: request}, _from, state),
     do:
       mutate(Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :put)), state)
 
-  def handle_call({:command, :delete, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.DeleteDocument{request: request}, _from, state),
     do:
       mutate(
         Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :delete)),
         state
       )
 
-  def handle_call({:command, :bulk_write, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.BulkWrite{request: request}, _from, state),
     do: mutate(Adapter.apply_bulk_mutation(state.adapter, request), state)
 
-  def handle_call({:command, :resolve, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.ResolveConflict{request: request}, _from, state),
     do: mutate(Adapter.resolve_conflict(state.adapter, request), state)
 
-  def handle_call({:command, :read_changes, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.ReadChanges{request: request}, _from, state),
     do: reply(Adapter.read_changes(state.adapter, request), state)
 
-  def handle_call({:command, :diff_revisions, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.DiffRevisions{request: request}, _from, state),
     do: reply(Adapter.diff_revisions(state.adapter, request), state)
 
-  def handle_call({:command, :get_revision_chains, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.GetRevisionChains{request: request}, _from, state),
     do: reply(Adapter.get_revision_chains(state.adapter, request), state)
 
-  def handle_call({:command, :import_revision_chains, request}, _from, state),
-    do: mutate(Adapter.import_revision_chains(state.adapter, request), state)
+  defp handle_command(
+         %ElixirDB.Storage.Commands.ImportRevisionChains{request: request},
+         _from,
+         state
+       ),
+       do: mutate(Adapter.import_revision_chains(state.adapter, request), state)
 
-  def handle_call({:command, :get_local_record, namespace, key}, _from, state),
-    do: reply(Adapter.get_local_record(state.adapter, namespace, key), state)
+  defp handle_command(
+         %ElixirDB.Storage.Commands.GetLocalRecord{namespace: namespace, key: key},
+         _from,
+         state
+       ),
+       do: reply(Adapter.get_local_record(state.adapter, namespace, key), state)
 
-  def handle_call({:command, :put_local_record, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.GetCheckpoint{replication_id: id}, _from, state),
+    do: reply(Adapter.get_local_record(state.adapter, "checkpoints", id), state)
+
+  defp handle_command(%ElixirDB.Storage.Commands.PutLocalRecord{request: request}, _from, state),
     do: reply(Adapter.put_local_record_cas(state.adapter, request), state)
 
-  def handle_call({:command, :list_indexes, _request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.PutCheckpoint{request: request}, _from, state),
+    do: reply(Adapter.put_local_record_cas(state.adapter, request), state)
+
+  defp handle_command(%ElixirDB.Storage.Commands.ListIndexes{}, _from, state),
     do: reply(Adapter.list_indexes(state.adapter), state)
 
-  def handle_call({:command, :create_index, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.CreateIndex{request: request}, _from, state),
     do: reply(Adapter.create_index(state.adapter, request), state)
 
-  def handle_call({:command, :delete_index, index_id}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.DeleteIndex{index_id: index_id}, _from, state),
     do: reply(Adapter.delete_index(state.adapter, index_id), state)
 
-  def handle_call({:command, :rebuild_index, index_id}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.RebuildIndex{index_id: index_id}, _from, state),
     do: reply(Adapter.rebuild_index(state.adapter, index_id), state)
 
-  def handle_call({:command, :query, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.ExecuteQuery{request: request}, _from, state),
     do: reply(Adapter.execute_query(state.adapter, request), state)
 
-  def handle_call({:command, :explain_query, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.ExplainQuery{request: request}, _from, state),
     do: reply(Adapter.explain_query(state.adapter, request), state)
 
-  def handle_call({:command, :list_jobs, _request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.ListJobs{}, _from, state),
     do: reply(Adapter.list_replication_jobs(state.adapter), state)
 
-  def handle_call({:command, :put_job, request}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.PutJob{request: request}, _from, state),
     do: reply(Adapter.put_replication_job(state.adapter, request), state)
 
-  def handle_call({:command, :delete_job, job_id}, _from, state),
+  defp handle_command(%ElixirDB.Storage.Commands.DeleteJob{job_id: job_id}, _from, state),
     do: reply(Adapter.delete_replication_job(state.adapter, job_id), state)
 
-  def handle_call({:command, :close}, _from, state), do: {:stop, :shutdown, :ok, state}
+  defp handle_command(%ElixirDB.Storage.Commands.Close{}, _from, state),
+    do: {:stop, :shutdown, :ok, state}
 
-  def handle_call(_unknown, _from, state),
+  defp handle_command(_unknown, _from, state),
     do: {:reply, {:error, ElixirDB.Error.invalid_request("unknown database command")}, state}
 
   @impl true

@@ -30,6 +30,18 @@ defmodule ElixirDB.Replication.LocalEndpoint do
     do: DatabaseCatalog.command(uuid, {:command, :import_revision_chains, request})
 
   @impl true
+  def confirm_durable_commit(%__MODULE__{database_uuid: uuid}, _request) do
+    # Import commits with synchronous=EXTRA before returning; confirm the owner is live.
+    with {:ok, identity} <- DatabaseCatalog.command(uuid, {:command, :identity, %{}}) do
+      {:ok,
+       %{
+         "confirmed" => true,
+         "current_sequence" => identity[:current_sequence] || identity["current_sequence"] || 0
+       }}
+    end
+  end
+
+  @impl true
   def get_checkpoint(%__MODULE__{database_uuid: uuid}, replication_id),
     do: DatabaseCatalog.command(uuid, {:command, :get_local_record, "checkpoints", replication_id})
 

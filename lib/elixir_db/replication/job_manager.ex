@@ -6,6 +6,19 @@ defmodule ElixirDB.Replication.JobManager do
 
   @table :elixir_db_replication_jobs
 
+  @active_states [
+    :idle,
+    :handshake,
+    :read_changes,
+    :diff,
+    :fetch_chains,
+    :import,
+    :checkpoint_target,
+    :checkpoint_source,
+    :waiting,
+    :backoff
+  ]
+
   def list(uuid) do
     table = ensure_table()
 
@@ -90,9 +103,9 @@ defmodule ElixirDB.Replication.JobManager do
          {:ok, options} <- worker_options(uuid, job),
          :ok <- ensure_worker_available(options.replication_id),
          {:ok, pid} <- start_worker(options) do
-      true = :ets.insert(table, {job_id, :running, pid, uuid, options.replication_id, %{}})
+      true = :ets.insert(table, {job_id, :idle, pid, uuid, options.replication_id, %{}})
       :gen_statem.cast(pid, :start)
-      {:ok, %{job_id: job_id, state: :running}}
+      {:ok, %{job_id: job_id, state: :idle}}
     end
   end
 
@@ -100,20 +113,7 @@ defmodule ElixirDB.Replication.JobManager do
     table = ensure_table()
 
     case :ets.lookup(table, job_id) do
-      [{^job_id, state, pid, ^uuid, _replication_id, _details}]
-      when state in [
-             :idle,
-             :running,
-             :handshake,
-             :read_changes,
-             :diff,
-             :fetch_chains,
-             :import,
-             :checkpoint_target,
-             :checkpoint_source,
-             :backoff,
-             :waiting
-           ] ->
+      [{^job_id, state, pid, ^uuid, _replication_id, _details}] when state in @active_states ->
         send_cancel(pid)
 
         report(job_id, :failed, %{
@@ -151,20 +151,7 @@ defmodule ElixirDB.Replication.JobManager do
 
   def delete(uuid, job_id) do
     case :ets.lookup(ensure_table(), job_id) do
-      [{^job_id, state, _pid, ^uuid, _, _details}]
-      when state in [
-             :idle,
-             :running,
-             :handshake,
-             :read_changes,
-             :diff,
-             :fetch_chains,
-             :import,
-             :checkpoint_target,
-             :checkpoint_source,
-             :waiting,
-             :backoff
-           ] ->
+      [{^job_id, state, _pid, ^uuid, _, _details}] when state in @active_states ->
         {:error, ElixirDB.Error.database_not_closable("replication job is active")}
 
       _ ->
@@ -192,9 +179,9 @@ defmodule ElixirDB.Replication.JobManager do
     with {:ok, options} <- worker_options(uuid, job),
          :ok <- ensure_worker_available(options.replication_id),
          {:ok, pid} <- start_worker(options) do
-      true = :ets.insert(ensure_table(), {job_id, :running, pid, uuid, options.replication_id, %{}})
+      true = :ets.insert(ensure_table(), {job_id, :idle, pid, uuid, options.replication_id, %{}})
       :gen_statem.cast(pid, :start)
-      {:ok, %{job_id: job_id, state: :running, persisted: false}}
+      {:ok, %{job_id: job_id, state: :idle, persisted: false}}
     end
   end
 
@@ -245,20 +232,7 @@ defmodule ElixirDB.Replication.JobManager do
 
   defp cancel_if_active(uuid, job_id) do
     case :ets.lookup(ensure_table(), job_id) do
-      [{^job_id, state, pid, ^uuid, _, _details}]
-      when state in [
-             :idle,
-             :running,
-             :handshake,
-             :read_changes,
-             :diff,
-             :fetch_chains,
-             :import,
-             :checkpoint_target,
-             :checkpoint_source,
-             :waiting,
-             :backoff
-           ] ->
+      [{^job_id, state, pid, ^uuid, _, _details}] when state in @active_states ->
         send_cancel(pid)
 
       _ ->
@@ -427,21 +401,7 @@ defmodule ElixirDB.Replication.JobManager do
     end
   end
 
-  defp active_state?(state),
-    do:
-      state in [
-        :idle,
-        :running,
-        :handshake,
-        :read_changes,
-        :diff,
-        :fetch_chains,
-        :import,
-        :checkpoint_target,
-        :checkpoint_source,
-        :waiting,
-        :backoff
-      ]
+  defp active_state?(state), do: state in @active_states
 
   defp ensure_table do
     case :ets.whereis(@table) do
