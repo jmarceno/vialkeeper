@@ -101,6 +101,7 @@ Version 1 host-level configuration is limited to:
 * Logging.
 * Observability export endpoint and sampling (see Section 20.5).
 * Resource ceilings.
+* Retention and compaction resource bounds.
 * Shutdown timeout.
 
 ## `DESIGN-003` — Document API only
@@ -324,6 +325,7 @@ The storage adapter MUST expose project-owned operations for:
 * Logical full-text indexes.
 * Query execution.
 * Integrity verification.
+* Compact retention and retention maintenance state.
 
 A storage-adapter conformance suite MUST define the observable behavior required from any future engine implementation.
 
@@ -340,6 +342,11 @@ Replication workers, HTTP requests, maintenance operations, and index operations
 Long-poll changes requests, streamed changes requests, replication waits, and heartbeat timers MUST NOT hold the SQLite connection, an open transaction, or the database owner call stack while waiting.
 
 After reading the current sequence, a waiting operation SHALL subscribe to a transient change notifier. A committed document mutation SHALL publish the new sequence after commit. The waiter SHALL then perform another bounded changes read through the owner.
+
+A compact-retention operation that advances the retention floor MUST publish a
+maintenance notification even though it allocates no document changes
+sequence. Replication and changes waiters MUST re-read the source identity and
+retention floor after that notification.
 
 Closing a database MUST terminate its waiters with a retryable `database_closed` event.
 
@@ -363,6 +370,7 @@ A Version 1 storage adapter MUST implement all of these capability groups:
 * Structured index create, delete, list, rebuild, explain, and query.
 * Full-text index create, delete, list, rebuild, explain, and query.
 * Domain and physical integrity verification.
+* Compact retention: revision-history, conflict-branch, and tombstone trimming with stable-frontier gating.
 * Offline single-file portability.
 
 Version 1 MUST fail database opening when the active adapter lacks any required capability. It MUST NOT silently disable query, full-text, replication, or durability behavior.
@@ -512,6 +520,7 @@ Moving or renaming the database file MUST NOT change:
 
 * Database UUID.
 * Document IDs.
+* Database history epoch.
 * Revision IDs.
 * Conflicts.
 * Local changes sequence.
@@ -590,6 +599,7 @@ The database file MUST include:
 * A physical file-format version.
 * A logical schema version.
 * A database UUID.
+* A database history epoch.
 * A revision algorithm version.
 * A JSON canonicalization version.
 * A protocol compatibility version.
@@ -607,7 +617,7 @@ The host-local registration manifest MUST define which database files belong to 
 
 The server MUST NOT recursively auto-discover or automatically adopt unregistered files.
 
-On startup, the server SHALL inspect only registered database files. It MUST validate each file’s UUID and read enough database state to identify enabled continuous replication jobs. Databases without active work SHOULD remain closed after inspection.
+On startup, the server SHALL inspect only registered database files. It MUST validate each file’s UUID and history epoch and read enough database state to identify enabled continuous replication jobs. Databases without active work SHOULD remain closed after inspection.
 
 A database copied into the configured root MUST remain inert until it is explicitly registered. Registration MUST validate the file before adding its path and UUID to the manifest.
 
@@ -687,11 +697,13 @@ The exact SQL schema is private, but it MUST implement the following logical sto
 The metadata store MUST contain at least:
 
 * Database UUID.
+* Database history epoch.
 * File-format version.
 * Logical schema version.
 * Revision algorithm version.
 * Canonicalization version.
 * Current local update sequence.
+* Retention floor and compaction epoch.
 * Database configuration.
 * Creation metadata.
 
@@ -716,6 +728,7 @@ The SQLite adapter MAY add a stable numeric row key, derived JSONB, or other opa
 Each revision record MUST contain:
 
 * Document ID.
+* History ID.
 * Revision ID.
 * Generation.
 * Parent revision ID or `null`.
@@ -724,7 +737,9 @@ Each revision record MUST contain:
 * Canonical body.
 * Local insertion sequence.
 
-Version 1 MUST store complete bodies for every revision.
+Every retained revision MUST store its complete body.
+
+Compact retention (Section 18) MAY remove entire revision records at or below the stable frontier; a removed revision MUST NOT remain individually retrievable.
 
 Revision delta storage is deferred.
 
@@ -735,7 +750,7 @@ Each changes record MUST contain:
 * Local sequence.
 * Document ID.
 * Current winning revision at that sequence.
-* The complete current physical leaf revision set and each leaf’s deletion state.
+* The physical leaf revision set at that sequence, including each leaf’s history ID and deletion state.
 * Winning deletion status.
 * Change origin for diagnostics.
 
@@ -749,6 +764,8 @@ They SHALL be used for:
 
 * Replication checkpoints.
 * Replication history.
+* Replication-peer leases and safe source positions.
+* Compaction boundaries for truncated and purged histories.
 * Local maintenance state.
 * Other explicitly local metadata.
 
@@ -897,8 +914,15 @@ A document creation request MUST:
 * Omit a parent revision.
 * Fail when an existing non-deleted document uses the same ID.
 * Produce generation `1`.
+* Generate a new random history ID for the document history.
 
-Recreating an ID with a deleted history MUST create a child revision of its tombstone unless an explicit new-history operation is later introduced.
+Recreating an ID whose winner is deleted MUST always begin a fresh history
+with generation `1`, a new history ID, and no parent, even when the old
+tombstone remains stored locally or at another peer. The old deleted history
+may temporarily coexist with the new root as a separate history until
+compact retention removes it. A fresh history ID prevents a new generation-1
+revision from colliding with an old generation-1 revision that is still
+retained by another peer.
 
 ---
 
@@ -924,6 +948,7 @@ The digest input SHALL be the RFC 8785 canonical representation of:
 {
   "version": 1,
   "document_id": "document-id",
+  "history_id": "history-id",
   "parent_revision": "parent-revision-or-null",
   "deleted": false,
   "body": {}
@@ -947,17 +972,24 @@ The digest MUST NOT include:
 * Replication job ID.
 * Replication direction.
 
+The history ID MUST be generated once for an initial or fresh-history root and
+MUST be inherited unchanged by every descendant revision.
+
 ## `REV-003` — Revision verification
 
 When a revision is received through replication, the target MUST recalculate and validate its revision digest.
 
-If an existing document ID and revision ID are received with different content or ancestry, the operation MUST fail as an integrity violation.
+If an existing document ID and revision ID are received with different history ID, content, ancestry, or deletion state, the operation MUST fail as an integrity violation.
 
 ## `REV-004` — Local updates
 
 A normal local replacement MUST provide the expected parent revision.
 
 When the supplied revision is not the current winning revision, the request MUST fail with a conflict response.
+
+A recreation whose current winner is deleted MUST use the winning tombstone as
+an expected-state precondition, but its new revision is a parentless
+generation-1 root with a new history ID (`DOC-002`).
 
 Normal CRUD operations MUST NOT silently create sibling conflict branches.
 
@@ -966,6 +998,7 @@ Normal CRUD operations MUST NOT silently create sibling conflict branches.
 Replication MUST be able to insert revisions while preserving:
 
 * Revision ID.
+* History ID.
 * Generation.
 * Parent relationship.
 * Deletion state.
@@ -975,15 +1008,29 @@ Replication MAY create sibling branches.
 
 ## `REV-006` — Revision tree
 
-All revisions belonging to one document form a revision tree.
+All revisions belonging to one history of a document form a revision tree.
+
+Revisions with different history IDs do not share ancestry. A document MAY
+temporarily contain more than one history root when a deleted history is still
+retained at one peer or has been purged at another. Such roots form a history
+forest until the old history is compacted or discarded; they participate in
+the same deterministic winner selection.
 
 A revision with no known child is a physical leaf revision. A physical leaf whose deletion state is false is a live leaf revision.
 
 A document has an active conflict when it has more than one live leaf revision. Deleted physical leaves remain part of revision history but do not count as active conflicts.
 
+A revision whose parent revision record has been removed by compact retention is a truncated revision. A truncated revision keeps its original revision ID and parent reference, remains a physical leaf unless it has a stored child, and participates normally in winner selection and conflict counting.
+
+A document history whose entire tree has been removed by compact retention no
+longer exists on that database; a later creation of the same document ID
+begins a fresh history (`DOC-002`). A compacted history boundary MUST record
+enough history ID and generation information to reject its old revisions if a
+peer sends them after compaction. The boundary contains no revision body.
+
 ## `REV-007` — Conflict preservation
 
-All physical leaves MUST remain stored.
+All physical leaves MUST remain stored until removed by compact retention (`MAINT-005`, `MAINT-007`).
 
 Selecting a winner MUST NOT destroy or overwrite losing branches.
 
@@ -993,7 +1040,7 @@ A normal document read SHALL return:
 * The winning body.
 * Active conflict revision identifiers when explicitly requested.
 
-Specific losing and deleted revisions MUST remain individually retrievable.
+Specific losing and deleted revisions MUST remain individually retrievable until removed by compact retention (`MAINT-005`); a removed revision MUST return `revision_not_found`.
 
 ## `REV-008` — Winning revision
 
@@ -1006,7 +1053,7 @@ The winning revision MUST be selected deterministically using this order:
 
 The result MUST be independent of replication direction and arrival order.
 
-This follows the central Couch-style conflict model: conflicting branches are retained while all peers deterministically select the same visible winner.
+This follows the central Couch-style conflict model: conflicting branches are retained until compact retention removes them, and all peers deterministically select the same visible winner.
 
 ## `REV-009` — Deletion
 
@@ -1021,7 +1068,7 @@ A tombstone MUST:
 * Appear in the changes feed.
 * Replicate normally.
 * Participate in winner selection.
-* Remain stored in Version 1.
+* Remain stored in Version 1 until removed by stable-frontier compact retention (`MAINT-007`).
 
 Deleting only the winning live leaf while other live conflict leaves exist MAY cause another live leaf to become the winner. Removing all live branches requires the explicit conflict-resolution operation.
 
@@ -1130,7 +1177,11 @@ It MUST NOT be:
 
 ## `CHANGE-002` — Replication visibility
 
-A changes record MUST expose every current physical leaf revision for the changed document, including deleted leaves, so a replication worker can transfer all conflict and tombstone branches.
+A changes record MUST expose every physical leaf revision present for the changed document at that sequence, including deleted leaves, so a replication worker can transfer all conflict and tombstone branches.
+
+The leaf set is a snapshot of the document state at the entry's sequence. It
+is not rewritten after compact retention. A peer that cannot start from the
+entry's sequence MUST bootstrap from a current snapshot instead.
 
 ## `CHANGE-003` — Changes operations
 
@@ -1165,10 +1216,12 @@ Every changes entry MUST use the storage-neutral form:
   "leaf_revisions": [
     {
       "revision": "3-digest",
+      "history_id": "history-id",
       "deleted": false
     },
     {
       "revision": "2-other-digest",
+      "history_id": "history-id",
       "deleted": true
     }
   ]
@@ -1189,7 +1242,7 @@ A bounded changes read MUST return:
 }
 ```
 
-`last_sequence` MUST be the last sequence examined, or the supplied `since` value when no entry was returned. `has_more` MUST indicate whether additional committed document changes existed when the read transaction completed.
+`last_sequence` MUST be the last sequence examined, or the supplied `since` value when no entry was returned. When `since` is below the database's retention floor, the read MUST fail with `history_truncated` and include the source database UUID, history epoch, retention floor, and compaction epoch in error details. It MUST NOT silently advance `since`, because doing so could make replication skip a required history boundary. `has_more` MUST indicate whether additional committed document changes existed when the read transaction completed for a non-truncated read.
 
 ## `CHANGE-007` — Race-free waiting
 
@@ -1203,6 +1256,10 @@ A waiting changes operation MUST use this sequence:
 
 This order MUST prevent a commit between the initial read and subscription from being missed.
 
+If the requested sequence is below the retention floor, the operation MUST
+terminate with `history_truncated` rather than waiting or silently advancing
+the requested sequence.
+
 ## `CHANGE-008` — Streaming events
 
 A streamed changes response MUST use newline-delimited JSON events with these types:
@@ -1212,6 +1269,9 @@ A streamed changes response MUST use newline-delimited JSON events with these ty
 * `heartbeat`: contains no database state and keeps the connection active.
 * `closed`: indicates that the database was closed or the server is shutting down.
 * `error`: contains the normal public error envelope and terminates the stream.
+
+A stream requested below the retention floor MUST emit `error` with
+`history_truncated` and terminate without emitting a synthetic catch-up event.
 
 ## `CHANGE-009` — Scope
 
@@ -1623,6 +1683,7 @@ It MUST NOT claim wire compatibility with CouchDB or PouchDB.
 Replication SHALL transfer missing revisions while preserving:
 
 * Document IDs.
+* History IDs.
 * Revision IDs.
 * Revision ancestry.
 * Tombstones.
@@ -1635,10 +1696,16 @@ Replication MUST NOT overwrite or discard a branch merely because another branch
 
 When writes stop and successful bidirectional replication completes, both databases MUST:
 
-* Contain the same replicated leaf revisions.
-* Select the same winning revision for every replicated document.
-* Preserve the same tombstones.
-* Expose the same conflict sets.
+* Select the same winning revision and materialized body for every document history visible to both peers.
+* Preserve every current live leaf whose history has not been compacted at either endpoint.
+* Permit one endpoint to retain additional historical revisions, deleted leaves, or old history roots that the other endpoint has compacted, provided the difference is covered by a recorded retention floor and history boundary.
+* Never reintroduce a revision or history that the receiving endpoint has already retired by compact retention.
+
+Active peers whose leases have not expired MUST be able to complete incremental
+replication without losing a committed change. A peer whose source checkpoint
+is below the source retention floor, whose history epoch differs, or whose
+lease has expired MUST bootstrap from a current snapshot; transparent
+multi-master rejoin is not promised after that boundary.
 
 Local sequences and local checkpoint records may differ.
 
@@ -1648,8 +1715,11 @@ The internal replication interface MUST provide equivalents of:
 
 * Database identity and current sequence.
 * Changes after sequence.
+* Retention floor, history epoch, and compaction epoch.
+* Paginated compact-history-boundary retrieval.
 * Missing-revision comparison.
 * Bulk revision retrieval.
+* Current-state snapshot/bootstrap retrieval.
 * Revision insertion with preserved identifiers.
 * Local checkpoint read.
 * Local checkpoint write.
@@ -1717,10 +1787,15 @@ A checkpoint MUST use this storage-neutral form:
   "replication_id": "sha256-digest",
   "checkpoint_version": 7,
   "session_id": "session-uuid",
+  "source_history_epoch": "history-epoch",
+  "source_compaction_epoch": 3,
   "source_sequence": 42,
+  "safe_source_sequence": 42,
+  "installed_source_compaction_epoch": 3,
   "history": [
     {
       "session_id": "session-uuid",
+      "source_history_epoch": "history-epoch",
       "source_sequence": 42,
       "documents_read": 10,
       "revisions_written": 8,
@@ -1732,7 +1807,26 @@ A checkpoint MUST use this storage-neutral form:
 
 Checkpoint history MUST retain at most the ten most recent completed sessions.
 
-At startup, the replication worker MUST find the newest session entry shared by both endpoint histories. When no common entry exists, replication MUST restart from source sequence `0`.
+`source_history_epoch` and `source_sequence` identify the applied source
+position. `source_compaction_epoch` and
+`installed_source_compaction_epoch` identify the retention fence observed by
+the target. A newer source compaction epoch is valid for incremental
+replication when `source_sequence` is at or above the source retention floor;
+the target MUST install that fence before acknowledging it. A checkpoint from
+another history epoch MUST NOT be used for incremental replication.
+
+`safe_source_sequence` MUST be no greater than `source_sequence`. It is the
+target's durable safe-position report and MAY advance only when the target has
+no unacknowledged local mutation whose causal context is earlier than that
+position. A normal checkpoint does not by itself advance the stable
+compaction frontier.
+
+At startup, the replication worker MUST find the newest session entry shared by
+both endpoint histories. When no common entry exists, replication MAY restart
+from source sequence `0` only when the source retention floor is zero and the
+source history epoch matches. Otherwise replication MUST request a current
+snapshot/bootstrap instead of reading a sequence that the source has already
+discarded.
 
 Checkpoint writes MUST use compare-and-swap with `checkpoint_version`. A writer MUST supply the version it observed and increment it by exactly one. A stale write MUST fail with the retryable `checkpoint_conflict` error and MUST NOT replace newer progress.
 
@@ -1759,6 +1853,11 @@ read source changes
 
 The target document transaction MUST commit before either endpoint advances its checkpoint beyond that batch.
 
+The target MUST NOT advertise a `safe_source_sequence` or
+`installed_source_compaction_epoch` beyond the state it has durably committed
+and fenced. A source MUST record those reports in the peer ledger only after
+the corresponding checkpoint write succeeds.
+
 Checkpoint writes across two databases are not atomic.
 
 A failure between the two checkpoint writes MUST result only in repeated work.
@@ -1781,10 +1880,11 @@ The following operations MUST be idempotent:
 
 One-shot replication MUST:
 
-1. Read or capture a source terminal sequence.
+1. Read or capture a source terminal sequence and source history epoch.
 2. Process changes through that sequence.
-3. Commit a final checkpoint.
-4. Return a completed status.
+3. If the source reports `history_truncated`, switch to the explicit snapshot/bootstrap path.
+4. Commit a final checkpoint containing the same source history epoch and compaction epoch.
+5. Return a completed status.
 
 Changes committed after the captured terminal sequence belong to a later replication.
 
@@ -1793,6 +1893,12 @@ Changes committed after the captured terminal sequence belong to a later replica
 Continuous replication MUST reuse the one-shot batch algorithm.
 
 After reaching the current source sequence, the worker SHALL wait for additional changes and continue.
+
+Before waiting and after every wake-up, the worker MUST re-read the source
+history epoch and retention floor. A compaction notification MUST wake the
+worker so it can continue from a valid checkpoint or enter the
+snapshot/bootstrap path; it MUST NOT remain asleep waiting for a document
+sequence that has already crossed a retention boundary.
 
 It MUST support:
 
@@ -1840,7 +1946,12 @@ Before reading changes, a replication worker MUST obtain this identity informati
 ```json
 {
   "database_uuid": "database-uuid",
+  "history_epoch": "history-epoch",
   "current_sequence": 42,
+  "retention_floor": 17,
+  "compaction_epoch": 3,
+  "retention_boundary_digest": "sha256-digest",
+  "retention_mode": "stable_frontier",
   "replication_protocol_major": 1,
   "revision_algorithm_version": 1,
   "canonicalization_version": 1
@@ -1855,26 +1966,58 @@ The worker MUST reject:
 * A revision algorithm mismatch.
 * A canonicalization-version mismatch.
 
-These failures are non-retryable until configuration or software changes.
+A mismatch between a checkpoint's `source_history_epoch` and the current
+source history epoch MUST NOT be treated as a protocol incompatibility. It
+invalidates the affected incremental checkpoint and requires
+snapshot/bootstrap; the source and target databases normally have different
+history epochs.
+
+A source or peer history position that regresses relative to the durable
+checkpoint or peer ledger MUST require the same bootstrap path. It MUST NOT
+renew a lease or accept new revision imports as if the old history continued.
+
+The listed protocol, revision-algorithm, canonicalization, and endpoint
+identity failures are non-retryable until configuration or software changes.
 
 ## `REPL-016` — Missing-revision and transfer model
 
 Version 1 SHALL use complete root-to-leaf revision chains rather than revision deltas.
 
+When an incremental read returns `history_truncated`, or when the source
+history epoch does not match the checkpoint, the target MUST use a bounded,
+paginated snapshot/bootstrap transfer containing the current winning state,
+all retained physical leaves, history IDs, and the source retention boundary.
+It MUST NOT restart from sequence zero against a truncated source. A target
+with unacknowledged local mutations MUST preserve them in its local durable
+state and require an explicit rebase/export decision before replacing its
+replicated state; bootstrap MUST NOT silently discard local writes.
+
+When the source compaction epoch is newer than the target's installed source
+compaction epoch, or its boundary digest differs, the target MUST retrieve and
+durably install all compact-history-boundary pages before it reports the
+source's installed epoch and digest. Boundary pages MUST be idempotent,
+resumable, and bound to the source history epoch and boundary digest. A target
+MUST NOT acknowledge a compaction epoch merely because it observed the source
+identity response.
+
 For each changes batch:
 
-1. The source provides the current physical leaf revision IDs for every changed document.
-2. The target reports which exact leaf revision IDs are absent.
-3. For every missing leaf, the source returns the complete ordered chain from the root revision through that leaf.
+1. The source provides the physical leaf revision IDs and history IDs recorded for every changed document.
+2. The target reports which exact leaf revision IDs are absent and which are
+   already covered by a local compact-history boundary. A leaf whose chain
+   later proves to begin at a retired branch root is also treated as compacted
+   stale state rather than imported.
+3. For every missing leaf, the source returns the complete ordered chain from the root revision through that leaf. When compact retention has removed ancestors, the source returns the chain beginning at the nearest retained revision and MUST mark it truncated (`MAINT-007`). A chain MUST be marked truncated exactly when any revision's parent record is absent at the source. A chain rooted at a fresh-history revision after purge (`DOC-002`) has parent `null`, a new history ID, and is never truncated. The target MUST accept a truncated chain only when the chain's source history epoch matches the handshake and checkpoint and the chain's history boundary is not retired at the target. A source or target retention boundary MUST NOT be bypassed by replaying an old chain.
 4. The target idempotently ignores revisions it already stores and inserts the remaining revisions in parent-before-child order.
 
-Sending complete chains may repeat existing ancestors. This is an accepted Version 1 trade-off for protocol simplicity and integrity.
+Sending complete chains may repeat existing ancestors. This is an accepted Version 1 trade-off for protocol simplicity and integrity. Truncated chains are the compaction counterpart of that trade-off: they stop repeating ancestors at or below the retention boundary at the cost of serving history from the first retained revision.
 
 A transferred revision MUST use:
 
 ```json
 {
   "document_id": "document-id",
+  "history_id": "history-id",
   "revision_id": "3-digest",
   "generation": 3,
   "parent_revision": "2-parent-digest",
@@ -1892,9 +2035,9 @@ A target revision-import request MUST be atomic as a complete bounded request.
 The target MUST:
 
 1. Validate chain ordering, generations, parents, canonical bodies, and revision digests.
-2. Reject any committed state that would contain a dangling parent reference.
+2. Reject any committed state that would contain a dangling parent reference, except that a chain marked truncated MAY introduce a truncated revision whose parent record is absent (`MAINT-007`, `REV-006`), and a chain rooted at a fresh-history revision with a new history ID and parent `null` MAY coexist with a deleted history already stored at the target (`DOC-002`, `REV-006`). A revision whose history ID and generation are below a target's recorded compaction boundary, or whose chain begins at a retired branch root, MUST be ignored as a compacted stale replay and MUST NOT allocate a new local changes sequence. An import containing only compacted stale revisions MUST succeed as a no-op. Any other dangling parent MUST be rejected atomically.
 3. Treat an existing identical revision as a no-op.
-4. Reject an existing revision ID with different content or ancestry as `integrity_violation`.
+4. Reject an existing revision ID with different history ID, content, ancestry, or deletion state as `integrity_violation`.
 5. Recalculate every affected document’s physical leaves, live leaves, winner, materialized body, and indexes.
 6. Allocate one local changes sequence per affected document.
 7. Commit before reporting durable success.
@@ -1932,6 +2075,7 @@ The file MAY require host-level configuration for:
 * Absolute request size.
 * Logging.
 * Observability export configuration (see Section 20.5, `OBSV-001`).
+* Retention and compaction resource bounds.
 * Shutdown timeout.
 
 A human-edited file MUST satisfy all of the following:
@@ -1983,6 +2127,7 @@ The logical database configuration object MUST contain:
 * Query scan threshold and result limits, bounded by host limits.
 * Changes batch and wait limits, bounded by host limits.
 * Default replication batch and retry settings, bounded by host limits.
+* Retention and compaction settings, bounded by host limits.
 
 Database identity, format versions, replication jobs, checkpoints, and logical index definitions are stored inside the same database file but are separate state stores, not fields of the configuration object.
 
@@ -2033,6 +2178,7 @@ Version 1 database configuration MUST be a versioned JSON object containing only
 * `queries`: default and maximum result limits and bounded-scan threshold.
 * `changes`: default and maximum batch sizes and wait limits.
 * `replication`: default batch document count, batch byte limit, and retry policy.
+* `retention`: the stable-frontier compact-retention policy defined by `MAINT-006`.
 
 SQLite pragmas, FTS5 options, native index names, JSONB settings, and other adapter-specific tuning MUST NOT appear in public or persisted logical database configuration.
 
@@ -2174,6 +2320,7 @@ The protocol MUST expose:
 * Update permitted database configuration.
 * Close database.
 * Run integrity verification.
+* Run compact retention.
 
 No export operation is required.
 
@@ -2282,6 +2429,7 @@ The following method and path contracts are normative:
 | `PUT`    | `/v1/databases/{database_uuid}/config`          | Replace permitted database configuration fields            |
 | `POST`   | `/v1/databases/{database_uuid}/close`           | Close an eligible database                                 |
 | `POST`   | `/v1/databases/{database_uuid}/integrity-check` | Run domain and adapter integrity checks                    |
+| `POST`   | `/v1/databases/{database_uuid}/compact`          | Run compact retention                                       |
 
 Registration accepts only a normalized path relative to the configured database root.
 
@@ -2412,9 +2560,10 @@ Remote replication MUST use only these database-scoped primitives:
 | Method | Path                                                                     | Purpose                               |
 | ------ | ------------------------------------------------------------------------ | ------------------------------------- |
 | `GET`  | `/v1/databases/{database_uuid}/replication/identity`                     | Handshake information from `REPL-015` |
+| `POST` | `/v1/databases/{database_uuid}/replication/boundaries`                    | Return compact-history-boundary pages |
 | `POST` | `/v1/databases/{database_uuid}/replication/changes`                      | Bounded changes read                  |
-| `POST` | `/v1/databases/{database_uuid}/replication/revisions/diff`               | Report missing exact leaf revisions   |
-| `POST` | `/v1/databases/{database_uuid}/replication/revisions/get`                | Return complete root-to-leaf chains   |
+| `POST` | `/v1/databases/{database_uuid}/replication/revisions/diff`               | Report missing and compacted leaf revisions |
+| `POST` | `/v1/databases/{database_uuid}/replication/revisions/get`                | Return complete chains or snapshot pages |
 | `POST` | `/v1/databases/{database_uuid}/replication/revisions/put`                | Atomically import revision chains     |
 | `GET`  | `/v1/databases/{database_uuid}/replication/checkpoints/{replication_id}` | Read a local checkpoint               |
 | `PUT`  | `/v1/databases/{database_uuid}/replication/checkpoints/{replication_id}` | Compare-and-swap a checkpoint         |
@@ -2426,13 +2575,53 @@ The revision-diff request MUST use:
   "documents": [
     {
       "document_id": "document-id",
-      "leaf_revisions": ["3-digest", "2-other-digest"]
+      "leaf_revisions": [
+        {
+          "revision": "3-digest",
+          "history_id": "history-id"
+        },
+        {
+          "revision": "2-other-digest",
+          "history_id": "history-id"
+        }
+      ]
     }
   ]
 }
 ```
 
-The response MUST return the same document grouping with `missing_revisions`.
+The compact-history-boundary request and response MUST be storage-neutral and
+pageable. The request MUST identify the source history epoch, desired
+compaction epoch, and an opaque page cursor. A response MUST use this shape:
+
+```json
+{
+  "source_history_epoch": "history-epoch",
+  "compaction_epoch": 3,
+  "boundary_digest": "sha256-digest",
+  "next_page": null,
+  "boundaries": [
+    {
+      "document_id": "document-id",
+      "history_id": "history-id",
+      "minimum_retained_generation": 3,
+      "retired": false,
+      "retired_branch_roots": ["3-removed-branch-root"]
+    }
+  ]
+}
+```
+
+`retired: true` means the complete history has been purged. Otherwise the
+boundary identifies the minimum retained generation; lower generations and
+descendants of `retired_branch_roots` are compacted stale state. The page
+digest MUST cover the complete ordered boundary set for the source compaction
+epoch. `minimum_retained_generation` is `null` when `retired` is true.
+
+The response MUST return the same document grouping with `missing_revisions`
+and `compacted_revisions`. A leaf covered by a target history boundary MUST be
+reported as compacted rather than missing, so the source does not repeatedly
+replay a history the target has intentionally retired.
 
 The revision-get response MUST use:
 
@@ -2441,12 +2630,21 @@ The revision-get response MUST use:
   "chains": [
     {
       "document_id": "document-id",
+      "history_id": "history-id",
       "leaf_revision": "3-digest",
       "revisions": []
     }
   ]
 }
 ```
+
+The revision-get request MAY select `bootstrap: true` instead of a leaf list.
+In that mode the source MUST return bounded pages of current document
+histories and the source retention boundary. Bootstrap pages MUST be
+idempotent and MUST be safe to resume or repeat before the target commits the
+resulting checkpoint.
+
+A chain whose history begins at a compact-retention boundary MUST include `"truncated": true`; a chain rooted at a fresh-history revision after purge (`DOC-002`) MUST include a new `history_id` and `"truncated": false`. Every revision in a truncated chain MUST still carry its original history ID, revision ID, generation, parent reference, deletion state, and body.
 
 The revision-put request uses the same `chains` form. A successful response MUST report documents changed, revisions newly inserted, and the target’s resulting local sequence.
 
@@ -2465,6 +2663,7 @@ Version 1 MUST define at least these public error codes and HTTP statuses:
 | `database_not_found`          | 404  | No                 |
 | `document_not_found`          | 404  | No                 |
 | `revision_not_found`          | 404  | No                 |
+| `history_truncated`           | 410  | No                 |
 | `index_not_found`             | 404  | No                 |
 | `database_in_use`             | 409  | Yes                |
 | `database_not_closable`       | 409  | Yes                |
@@ -2492,6 +2691,94 @@ Additional error codes MAY be added without changing the envelope, but existing 
 
 # 18. Maintenance
 
+Version 1 compact retention is a bounded-history replication protocol. It is
+not age-based pruning and it MUST NOT use the local current sequence or one
+replication-job checkpoint as a safe deletion point.
+
+A **source position** is the tuple `(database_uuid, history_epoch, sequence)`.
+The `history_epoch` identifies one database history incarnation. It is created
+with the database and MUST change when a database is discarded, recreated, or
+has its replication history explicitly reset. Compacting within one history
+epoch does not change the epoch. A sequence remains local to its originating
+database and MUST never be reused within an epoch.
+
+A clean relocation or backup copy that continues the same logical database
+MAY retain its history epoch. A restore that rolls the logical database back
+to an older state MUST rotate to a new history epoch before it participates in
+replication; peers MUST treat the old epoch as a discarded source history.
+
+The **compaction epoch** is a local monotonically increasing fence. It MUST
+advance whenever the retention floor advances and MUST remain unchanged for a
+no-op run. A peer's installed compaction epoch means that the peer has
+observed and durably installed the source's corresponding retention boundary;
+it is separate from the source history epoch and does not participate in
+revision identity.
+
+A **safe peer position** for a source is the highest source sequence that the
+peer has durably applied and for which it has no unacknowledged local mutation
+whose parent or causal context is earlier than that position. A normal received
+checkpoint is not automatically a safe peer position. A peer MUST advance its
+safe position only after its pending pre-frontier mutations have been
+replicated or otherwise resolved locally. This prevents compaction from
+removing a parent that an offline peer still needs for a local write.
+
+The **stable frontier** for a database is the minimum safe peer position for
+the database's current history epoch across every known, non-expired
+replication peer, bounded by the database's current sequence. A peer with no
+safe-position report contributes sequence zero. The frontier is local
+maintenance state; it MUST be computed from durable peer reports and MUST NOT
+be advanced from an unverified indirect claim. Its sequence MUST never move
+backwards.
+
+Each known peer MUST have a local lease record containing its database UUID,
+history epoch, last safe position, last installed compaction epoch, and lease
+expiry. A successful replication handshake renews the lease and may advance
+the recorded position. A peer that is not present in the local peer ledger is
+a new peer and MUST bootstrap; it MUST NOT require the database to retain
+history from before its registration. A new peer MUST NOT enter the
+stable-frontier minimum until bootstrap commits; its initial safe position is
+the source retention floor and its installed compaction epoch is the source
+compaction epoch returned by that bootstrap. A peer whose lease expires is removed
+from the stable-frontier minimum. If it later returns, it MUST bootstrap from
+a current snapshot or be explicitly recreated; automatic transparent
+multi-master rejoin after expiry is not guaranteed.
+
+The storage-neutral peer-ledger record for a local source MUST contain at
+least:
+
+```json
+{
+  "peer_database_uuid": "peer-uuid",
+  "peer_history_epoch": "peer-history-epoch",
+  "source_database_uuid": "database-uuid",
+  "source_history_epoch": "history-epoch",
+  "safe_source_sequence": 42,
+  "installed_source_compaction_epoch": 3,
+  "last_seen_at": "RFC3339-timestamp",
+  "lease_expires_at": "RFC3339-timestamp"
+}
+```
+
+Peer-ledger records are local state. They MUST NOT be transferred as document
+revision state or used as a substitute for the source/target checkpoint CAS.
+
+A peer reporting a different history epoch, or a lower safe position or
+installed compaction epoch than the durable ledger previously recorded, MUST
+be treated as a rollback or replacement, MUST NOT renew the old lease, and
+MUST bootstrap before it can rejoin the stable frontier.
+
+Compaction does not require a network-wide consensus round or a live
+connection to every peer. A database uses its latest durable reports. A stale
+report can delay compaction but MUST NOT make it unsafe. The membership ledger
+and expiration policy are therefore part of the correctness boundary: a
+database MUST NOT silently omit a known non-expired peer from the minimum.
+
+The multi-master guarantee is intentionally bounded by those local leases. A
+network partition can preserve safety by stopping the frontier, but it cannot
+provide indefinite automatic merge after one side expires the other. Changes
+created after an asymmetric expiry require snapshot/bootstrap plus explicit
+rebase or export handling.
+
 ## `MAINT-001` — Integrity checks
 
 The server MUST provide a maintenance operation that validates:
@@ -2507,6 +2794,10 @@ The server MUST provide a maintenance operation that validates:
 * Logical full-text-index definitions.
 * Adapter-specific physical structured and full-text index consistency.
 * Storage-adapter conformance invariants.
+* Compact-retention metadata consistency, including the history epoch, stable frontier reports, retention floor, compaction epoch, trimmed counts, and a monotonically non-decreasing compaction counter.
+* Peer leases and safe positions: expired peers MUST NOT constrain a frontier, and a non-expired peer MUST NOT be silently absent from it.
+* Truncated revisions: every revision whose parent record is absent MUST correspond to a documented compact-retention boundary, and every changes entry above the retention floor MUST reference retained leaf revisions.
+* Purged-history boundaries: every retired history ID and retired branch root MUST have a recorded compaction epoch and boundary until the peer-installation conditions in `MAINT-007` are satisfied.
 
 ## `MAINT-002` — SQLite vacuum
 
@@ -2516,19 +2807,160 @@ A maintenance operation MAY run SQLite `VACUUM`.
 
 The operation MUST run only while the database remains under its owner process.
 
+Compact retention MAY be followed by physical space reclamation; the reclamation mechanism is an adapter concern (for example, SQLite `VACUUM` in the Version 1 adapter).
+
 ## `MAINT-003` — Revision retention
 
-Version 1 MUST retain complete bodies for all revisions.
+Version 1 MUST retain complete bodies for all retained revisions.
 
-Automatic revision pruning, revision-body compaction, tombstone collection, and purge are deferred.
+Stable-frontier compact retention (`MAINT-005` through `MAINT-009`) MAY remove
+only history at or below the local stable frontier. It MUST NOT remove a
+revision merely because it is old. Until a compact operation removes a
+revision, its complete body MUST remain stored and retrievable.
 
-This intentionally favors correctness over storage efficiency.
+Time-based deletion independent of the stable frontier is not permitted.
 
 ## `MAINT-004` — Database close
 
 The server MUST support closing an individual idle database without stopping the complete server.
 
 After a successful close, the file enters the offline-portable state.
+
+## `MAINT-005` — Compact retention operation
+
+The server MUST provide one atomic compact-retention operation per database.
+
+The operation MUST:
+
+* Run as a serialized maintenance operation through the database owner and share the bounded admission mechanism with all other operations (`ARCH-001`, `ARCH-006`).
+* Be idempotent; running it when there is nothing to remove MUST succeed as a no-op.
+* Compute a monotonic stable frontier from the durable peer ledger without contacting peers during the operation.
+* Commit atomically: revision-history trimming, changes-feed trimming, retention-floor advancement, compaction-epoch advancement, and compact-history-boundary updates MUST commit or roll back together.
+* Be implemented behind the storage adapter as a storage-neutral capability; any physical space reclamation is an adapter concern and MUST NOT define the operation's contract.
+* Remove only what `MAINT-007` and `MAINT-008` permit.
+* Preserve document IDs, history IDs, revision IDs and ancestry of retained revisions, the winning revision of every surviving document, materialized winning documents, structured and full-text indexes, replication jobs, checkpoints, peer leases, database configuration, and the local changes sequence. Physical leaves, losing branches, tombstones, and old history roots are preserved only to the extent `MAINT-007` requires.
+* Allocate no document changes sequences (`TX-005`).
+* Record its outcome as local maintenance metadata: a compaction counter, the previous and resulting retention floors, the stable frontier used, the compaction epoch, the highest changes sequence removed, and the counts of revisions, history boundaries, and changes entries removed.
+
+The compaction counter MUST start at zero and increment by one on every run
+that advances the retention floor or removes at least one revision record,
+history boundary, or changes entry; a no-op run MUST NOT increment it. The
+counter makes compacted state observable: a difference between a database and
+its peers in leaf, conflict, tombstone, or retained-history counts MUST be
+attributable to the recorded retention floors, history boundaries, compaction
+counters, and trim statistics. Any difference not explained by that metadata
+indicates an error (`MAINT-001`).
+
+The operation MUST NOT be required for the correctness of reads, writes, queries, indexes, or replication; it exists to reclaim storage only.
+
+A specific-revision read of a removed revision MUST return `revision_not_found`. A bounded changes read whose `since` is below the retention floor MUST return `history_truncated` as defined by `CHANGE-006`. Nothing else in the public protocol changes after compaction.
+
+## `MAINT-006` — Retention configuration
+
+The database configuration object MUST contain a storage-neutral `retention`
+group (`CONFIG-006`) bounded by host-level ceilings, containing:
+
+* `mode`: either `disabled` or `stable_frontier`. `disabled` means that the
+  database MUST never remove revisions, tombstones, history boundaries, or
+  changes entries through compact retention.
+* `history_depth`: a non-negative integer; the number of parent generations
+  above the winning revision that an eligible surviving history retains. Zero
+  permits removal of every non-winning revision and every older winning
+  ancestor once the stable frontier permits it.
+* `peer_expiry_ms`: a positive duration used to expire a peer lease when the
+  source has not observed a successful replication handshake. Expiration is a
+  local policy decision and MUST be recorded with the peer ledger.
+* `schedule`: a storage-neutral interval after which the server MAY run the
+  operation automatically, or an explicit disabled value; a disabled or
+  absent schedule means the operation runs only on explicit request.
+
+Absent `retention` configuration MUST mean `mode: disabled`, preserving full
+retention. Enabling stable-frontier compaction is an explicit operator action;
+the server MUST NOT compact merely because a schedule exists while the mode is
+disabled.
+
+## `MAINT-007` — Revision-history trimming
+
+The operation MUST NOT remove:
+
+* Any revision state for a document whose most recent local changes entry is
+  above the resulting retention floor.
+* The winning revision of any surviving document.
+* A retained history boundary needed to reject a stale chain from a
+  non-expired peer.
+
+For a document whose most recent local changes entry is at or below the
+resulting retention floor, the operation MAY remove:
+
+* Winning ancestors older than the configured `history_depth`.
+* Every frontier-settled losing branch, including its leaves.
+* A frontier-settled deleted history in its entirety, including its tombstone and every
+  remaining ancestor, when every physical leaf in the history is deleted.
+  The document history then no longer exists on this database (`REV-006`,
+  `DOC-002`).
+
+A removed revision loses its complete record, including its body. Its history
+ID remains represented by retained ancestry or by a compact-history boundary;
+the boundary need not retain every removed revision ID. A retained revision
+whose parent record was removed is a truncated revision (`REV-006`). A
+boundary MUST retain the history ID, the minimum retained generation, retired
+branch roots, or a retired-history marker, and MUST NOT retain a revision body.
+
+A boundary MAY be removed only after every known non-expired peer has reported
+an installed compaction epoch at least as new as the boundary's compaction
+epoch. An expired peer does not prevent boundary removal and MUST bootstrap if
+it later returns. Until that condition holds, the boundary is the local fence
+that prevents a retained peer from replaying an old history after compaction.
+A peer MAY retain the fenced physical rows until its own later compact run, but
+it MUST install the boundary before reporting the compaction epoch and MUST
+exclude those rows from future replication.
+
+Every recreation uses a new history ID rather than creating a child of a
+tombstone that another peer may already have purged. Revisions in the old
+history remain valid only until the stable frontier and history-boundary rules
+remove them.
+
+Removing revisions MUST NOT change the materialized winning document,
+deterministic winner selection, or any query index of a surviving document.
+An active conflict of a frontier-settled document MAY disappear when compact retention
+removes a losing branch; winner selection remains deterministic on every peer
+that retains the corresponding history state (`REV-008`).
+
+## `MAINT-008` — Changes-feed trimming and the retention floor
+
+The retention floor MUST be the resulting stable-frontier sequence for the
+current database history epoch. It MUST be derived from all known
+non-expired-peer safe positions, not merely from persistent push jobs. Pull
+jobs and unpersisted jobs contribute through their peer safe-position reports;
+an absent or unacknowledged peer report contributes sequence zero. A database
+with no known non-expired peers MAY advance its floor to its current sequence;
+new peers then bootstrap instead of receiving old feed history.
+
+When stable-frontier compaction advances the floor, the operation MUST remove
+every changes entry at or below the new floor. There is deliberately no
+"latest entry per document" exception: a document whose latest change is
+older than the floor is discovered through snapshot/bootstrap, not through an
+artificial historical feed row. Entries above the floor MUST remain exact
+snapshots of the leaf set at their original sequence and MUST NOT be rewritten
+without allocating a new sequence.
+
+The retention floor is the highest source sequence for which the changes feed
+and revision history are no longer guaranteed to be available. A changes read
+or replication request below that floor MUST return `history_truncated` and
+MUST include the source history epoch, floor, and compaction epoch. The local
+changes sequence MUST remain monotonically increasing and MUST NOT be reused
+or renumbered (`CHANGE-001`).
+
+## `MAINT-009` — Compaction scheduling and eligibility
+
+The server MUST run the operation on explicit request and MAY run it automatically when the configured schedule applies.
+
+A scheduled run MUST be an ordinary admitted maintenance operation. It MUST
+NOT run concurrently with any other operation through the owner, MUST defer
+while the database is closing, and MUST be idempotent so overlapping or
+repeated triggers are harmless. It MUST use the latest local peer ledger and
+MUST NOT perform a network-wide coordination round. When no safe frontier is
+available beyond the current retention floor, the run MUST be a no-op.
 
 ---
 
@@ -2682,11 +3114,12 @@ The implementation plan's observability section ([Implementation_Plan_V1.md §11
 
 Every Version 1 installation MUST emit the following signal families when export is enabled. The signal names are part of the operational contract and MUST remain stable for protocol major version 1.
 
-Each of the nine operational events defined in the implementation plan MUST be emitted as one OpenTelemetry span and, where the plan specifies a metric, one counter or histogram:
+Each of the ten operational events defined in the implementation plan and this specification MUST be emitted as one OpenTelemetry span and, where the plan or specification specifies a metric, one counter or histogram:
 
 ```text
 elixir_db.database.open       (span + counter)
 elixir_db.database.command    (span + histogram)
+elixir_db.database.compact    (span + counter + histogram)
 elixir_db.database.overload   (counter only)
 elixir_db.changes.read        (span + histogram)
 elixir_db.query.execute       (span + histogram)
@@ -2696,7 +3129,7 @@ elixir_db.replication.checkpoint (span + counter)
 elixir_db.http.request        (span + histogram)
 ```
 
-Measurements MUST include monotonic duration for each span and histogram and a bounded count where the plan defines one (changes entries returned, query candidates examined, revisions written).
+Measurements MUST include monotonic duration for each span and histogram and a bounded count where the plan defines one (changes entries returned, query candidates examined, revisions written, revisions removed).
 
 ### `OBSV-003` — Attribute allow-list
 
@@ -2874,9 +3307,10 @@ Every stored revision-tree, winner, tombstone, and conflict-resolution result MU
 * Bounded, long-poll, and NDJSON streamed changes.
 * Race-free notifier integration.
 * Missing exact leaf-revision comparison.
-* Complete root-to-leaf revision-chain retrieval.
+* Complete root-to-leaf revision-chain retrieval with history IDs.
 * Atomic revision-chain import.
 * Compare-and-swap checkpoint storage and bounded history.
+* Retention-floor and snapshot/bootstrap primitives.
 
 ### Validation
 
@@ -2889,8 +3323,9 @@ Every stored revision-tree, winner, tombstone, and conflict-resolution result MU
 * Repeated chain retrieval and import.
 * Existing identical revisions are no-ops.
 * Different content under one revision ID is rejected.
-* Dangling parent chains are rejected atomically.
-* Checkpoint common-history selection, compare-and-swap conflicts, and lost-response replay.
+* Dangling parent chains are rejected atomically unless marked truncated by compact retention or rooted at a fresh-history revision after purge with a new history ID.
+* Checkpoint common-history selection, history-epoch changes, compare-and-swap conflicts, and lost-response replay.
+* History gaps switch to snapshot/bootstrap rather than restarting below the retention floor.
 
 ### Exit condition
 
@@ -3050,6 +3485,7 @@ Every accepted structured query MUST use a compatible index or permitted bounded
 * Long-running local and remote replication tests.
 * Revision, query, bookmark, protocol, and JSON fuzzing.
 * Offline portability and registration-recovery tests.
+* Compact retention with stable-frontier gating, bounded peer leases, history-boundary fencing, settled conflict-branch and tombstone removal, and truncated-chain/bootstrap replication.
 * OTP release pipeline (`mix release.build`), release metadata artifact, and operational documentation.
 * Version 1 format declaration.
 
@@ -3085,6 +3521,7 @@ Version 1 is ready only when:
 * Tests prove that protocol replication transfers document revision state only.
 * Offline single-file portability and registration recovery pass.
 * Every derived structured and full-text index can be rebuilt from authoritative state.
+* Compact retention tests pass: only history at or below the stable frontier is removed, surviving winners and their configured ancestry remain, pruned revisions and purged tombstones are unreachable, stale peer replays are fenced, recreation after purge begins a new history, the changes sequence stays monotonic, and valid peers replicate through truncated chains while expired peers bootstrap.
 * The OTP release builds (`MIX_ENV=prod mix release.build`) and emits release metadata through `bin/elixir_db eval`.
 * Copying a populated database root to a fresh host and pointing `ELIXIR_DB_ROOT` at it yields a working server carrying its host configuration, tokens, and TLS material.
 * A non-loopback listener refuses to start without authentication or TLS unless the explicit override is set.
@@ -3106,6 +3543,7 @@ Version 1 is ready only when:
 * An exclusive ownership lease prevents concurrent cross-process opening.
 * The registration manifest is atomically replaceable and reconstructible.
 * Derived JSONB, structured indexes, and full-text indexes are rebuildable from authoritative logical state.
+* Compact retention is atomic, removes only history at or below the stable frontier, never removes the winning revision of a surviving document, fences stale history replays, and never renumbers the changes sequence.
 
 ## Documents
 
@@ -3113,7 +3551,7 @@ Version 1 is ready only when:
 * Revisions and winners are deterministic.
 * Local stale writes fail and committed retries are idempotent.
 * Physical leaves, live leaves, and active conflicts remain distinct.
-* Replicated branches and tombstones are preserved.
+* Replicated branches and tombstones are preserved until removed by compact retention.
 * Explicit conflict resolution atomically keeps one branch or deletes all live branches.
 
 ## Transactions and changes
@@ -3142,7 +3580,7 @@ Version 1 is ready only when:
 * Replication transfers document revisions, ancestry, conflicts, and tombstones only.
 * Configuration, indexes, jobs, checkpoints, and other local state do not protocol-replicate.
 * Handshakes verify endpoint UUID and semantic-version compatibility.
-* Complete root-to-leaf chains preserve revision IDs and reject dangling ancestry.
+* Complete root-to-leaf chains preserve history IDs and revision IDs and reject dangling ancestry; compact retention may replace them with marked truncated chains, while expired or truncated checkpoints use snapshot/bootstrap transfer.
 * Repeated imports and checkpoint retries are safe.
 * Checkpoint disagreement causes replay rather than skipped data.
 * One-shot replication stops at a captured sequence.
@@ -3199,6 +3637,13 @@ Future design MUST define:
 * Copy and restore behavior.
 * Atomicity between document revisions and blob references.
 * Effects on the one-file database requirement.
+
+The future attachment design MUST integrate with stable-frontier compaction:
+removing a revision row MUST NOT by itself delete attachment bytes that are
+still referenced by a retained winner, conflict leaf, snapshot/bootstrap
+page, or durable pending mutation. Attachment garbage collection may use the
+same peer fences, but its reference and recovery rules belong to the future
+attachment specification.
 
 The decision between one physical file and a database-plus-blob pair MUST be explicit before implementation.
 
@@ -3264,22 +3709,22 @@ Full API, wire-protocol, storage-format, and client compatibility are not Versio
 
 A test-only compatibility facade MAY be created if useful for upstream tests, but it MUST NOT define the production API.
 
-## `DEF-008` — Revision pruning and compaction
+## `DEF-008` — Tombstone collection, purge, and automatic pruning
 
-Deferred maintenance includes:
+Stable-frontier compact retention (`MAINT-005` through `MAINT-009`) is part of Version 1 and MAY remove history, tombstones, and conflict branches at or below the recorded retention floor.
 
-* Removing non-leaf revision bodies.
-* Revision depth limits.
-* Tombstone expiration.
-* Conflict pruning.
-* Permanent purge.
-* Replication-aware garbage collection.
+The following maintenance behaviors remain deferred:
 
-Version 1 retains full revision bodies.
+* Time-based tombstone expiration independent of peer expiry and the stable frontier.
+* Automatic pruning or compaction without operator configuration or explicit request.
+* Revision depth limits beyond the configured `history_depth`.
+* Garbage collection policies beyond the stable-frontier gate and peer-expiry rules.
+
+Version 1 retains complete bodies for all retained revisions and removes only what `MAINT-007` permits.
 
 ## `DEF-009` — Revision deltas
 
-Version 1 stores complete bodies for every revision.
+Version 1 stores complete bodies for every retained revision; compact retention removes whole revision records rather than compressing bodies.
 
 Future delta compression may be an internal optimization, but complete revision semantics MUST remain unchanged.
 
@@ -3424,7 +3869,7 @@ A convenience copy command MAY be added, but ordinary operating-system copying o
 
 Version 1 SHALL be:
 
-> A stateless Elixir document-database server packaged as an OTP release, with frozen storage-neutral domain and HTTP contracts plus a compartmentalized SQLite storage adapter. Each logical database is one SQLite file using rollback-journal `DELETE` mode. The system stores canonical revisioned JSON documents, preserves complete revision trees and tombstones, distinguishes active conflicts, provides atomic conflict resolution, maintains an exact local changes feed, and performs checkpointed Couch-inspired replication by transferring complete revision chains. Protocol replication transfers document revision state only; database configuration, logical indexes, replication jobs, checkpoints, and maintenance state remain local to each database file. Structured queries use RFC 6901 field references and deterministic bounded planning. Full-text search uses the fixed storage-neutral `unicode_words_v1` contract, implemented by the Version 1 SQLite adapter through FTS5. A cleanly closed database file can be copied, moved, renamed, backed up, and restored with ordinary operating-system file operations without an export command.
+> A stateless Elixir document-database server packaged as an OTP release, with frozen storage-neutral domain and HTTP contracts plus a compartmentalized SQLite storage adapter. Each logical database is one SQLite file using rollback-journal `DELETE` mode. The system stores canonical revisioned JSON documents, retains the winning revision and configured ancestry of each surviving document, and permits explicit stable-frontier compact retention to remove history, conflict branches, tombstones, and old changes entries at or below a bounded retention floor. It distinguishes active conflicts, provides atomic conflict resolution, reports explicit history gaps, and performs checkpointed Couch-inspired replication by transferring complete revision chains or marked truncated chains, with snapshot/bootstrap for peers that cross a retention boundary. Protocol replication transfers document revision state only; database configuration, logical indexes, replication jobs, checkpoints, peer leases, and maintenance state remain local to each database file. Structured queries use RFC 6901 field references and deterministic bounded planning. Full-text search uses the fixed storage-neutral `unicode_words_v1` contract, implemented by the Version 1 SQLite adapter through FTS5. A cleanly closed database file can be copied, moved, renamed, backed up, and restored with ordinary operating-system file operations without an export command.
 
 The server provides explicit database registration, exclusive per-file ownership, bounded per-database admission, non-blocking changes waiters, supervised replication workers, the versioned `/v1` HTTP protocol, optional bearer-token authentication, and optional TLS. Production hosts run the assembled release (`bin/elixir_db`); Mix is reserved for development and CI.
 

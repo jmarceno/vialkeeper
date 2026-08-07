@@ -30,7 +30,7 @@ Companion docs: [operations.md](operations.md), [adr/0001-strict-decoder.md](adr
 | ARCH-006 | `test/runtime/admission_test.exs` — `"admission saturates at the configured limit"` |
 | ARCH-007 | `test/runtime/waiter_termination_test.exs` — `"Changes.wait returns database_closed when the database is closed"` |
 | ARCH-008 | `test/storage_adapter/mutations_test.exs` — `"bulk mutations are all-or-nothing"` |
-| ARCH-009 | `test/storage_adapter/v1_conformance_test.exs` — suite of required adapter capabilities |
+| ARCH-009 | `test/storage_adapter/v1_conformance_test.exs` — suite of required adapter capabilities; *PARTIAL* — compact-retention capability pending implementation |
 
 ## Storage & files
 
@@ -82,21 +82,21 @@ Companion docs: [operations.md](operations.md), [adr/0001-strict-decoder.md](adr
 | JSON-005 | `test/contract/json_and_revision_test.exs` — `"revision identity is independent of local sequence"` |
 | JSON-006 | `test/contract/strict_decoder_test.exs` — `"rejects bodies exceeding max_bytes"` |
 | DOC-001 | `test/storage_adapter/documents_test.exs` — put/get by document id |
-| DOC-002 | `test/storage_adapter/documents_test.exs` — `"put, update, delete, specific revision and changes"` |
+| DOC-002 | `test/storage_adapter/documents_test.exs` — `"put, update, delete, specific revision and changes"`; *PARTIAL* — fresh-history recreation with history IDs and peer-retained tombstones not yet covered |
 
 ## Revisions & transactions
 
 | ID | Proving test |
 | --- | --- |
 | REV-001 | `test/storage_adapter/mutations_test.exs` — `"put replay returns the same revision without advancing sequence"` |
-| REV-002 | `test/contract/fixtures_test.exs` — `"revision ID fixtures match ElixirDB.Revisions.Id (REV-002)"` |
+| REV-002 | `test/contract/fixtures_test.exs` — `"revision ID fixtures match ElixirDB.Revisions.Id (REV-002)"`; *PARTIAL* — history-ID-aware revision fixtures not yet covered |
 | REV-003 | `test/storage_adapter/mutations_test.exs` — `"integrity mismatch is detected after revision corruption"` |
 | REV-004 | `test/storage_adapter/documents_test.exs` — `"stale local writes are rejected"` |
 | REV-005 | `test/storage_adapter/revision_transfer_test.exs` — `"diff and import transfer a root-to-leaf chain"` |
-| REV-006 | `test/contract/revision_adapter_properties_test.exs` — `"adapter and pure model agree on trees, winners, conflicts, tombstones, and replay"` |
-| REV-007 | `test/storage_adapter/conflicts_test.exs` — `"sibling imports surface conflicts and resolve with live leaf CAS"` |
+| REV-006 | `test/contract/revision_adapter_properties_test.exs` — `"adapter and pure model agree on trees, winners, conflicts, tombstones, and replay"`; *PARTIAL* — history forests, truncated revisions, compact boundaries, and purged-document states not yet covered |
+| REV-007 | `test/storage_adapter/conflicts_test.exs` — `"sibling imports surface conflicts and resolve with live leaf CAS"`; *PARTIAL* — post-compaction conflict retrieval not yet covered |
 | REV-008 | `test/contract/revision_model_properties_test.exs` — `"linear history winner is the tip regardless of shuffle of equal set"` |
-| REV-009 | `test/storage_adapter/documents_test.exs` — delete path in `"put, update, delete, specific revision and changes"` |
+| REV-009 | `test/storage_adapter/documents_test.exs` — delete path in `"put, update, delete, specific revision and changes"`; *PARTIAL* — tombstone removal by compact retention not yet covered |
 | REV-010 | `test/storage_adapter/conflicts_test.exs` — `"conflict resolution CAS rejects stale leaf sets after success"`; also `revision_adapter_properties_test` resolve modes |
 | TX-001 | `test/storage_adapter/mutations_test.exs` — `"bulk mutations are all-or-nothing"` |
 | TX-002 | `test/storage_adapter/documents_test.exs` — successful put returns revision/sequence |
@@ -114,7 +114,7 @@ Companion docs: [operations.md](operations.md), [adr/0001-strict-decoder.md](adr
 | CHANGE-003 | `test/storage_adapter/changes_test.exs` — read changes after mutations |
 | CHANGE-004 | `test/storage_adapter/changes_test.exs` — bounded `since` reads |
 | CHANGE-005 | `test/http/ndjson_changes_test.exs` — change event payload shape |
-| CHANGE-006 | `test/storage_adapter/changes_test.exs` — `"reject invalid since and oversized limit"` |
+| CHANGE-006 | `test/storage_adapter/changes_test.exs` — `"reject invalid since and oversized limit"`; *PARTIAL* — `history_truncated` below the retention floor is not yet covered |
 | CHANGE-007 | `test/runtime/waiter_termination_test.exs` — waiters wake / terminate safely |
 | CHANGE-008 | `test/http/ndjson_changes_test.exs` — `"changes stream emits change, caught_up, heartbeat, closed, and error events"` |
 | CHANGE-009 | `test/http/ndjson_changes_test.exs` — stream scoped to one database |
@@ -151,21 +151,21 @@ Companion docs: [operations.md](operations.md), [adr/0001-strict-decoder.md](adr
 | --- | --- |
 | REPL-001 | `test/contract/v1_contracts_test.exs` — `"endpoint URLs reject credentials, paths, and unknown fields"` |
 | REPL-002 | `test/end_to_end/local_convergence_test.exs` — A→B document convergence |
-| REPL-003 | `test/end_to_end/two_server_http_convergence_test.exs` — `"two Bandit servers converge over remote wire across mid-replication restart"` |
+| REPL-003 | `test/end_to_end/two_server_http_convergence_test.exs` — `"two Bandit servers converge over remote wire across mid-replication restart"`; *PARTIAL* — stable-frontier convergence, fenced stale replays, and expired-peer bootstrap not yet covered |
 | REPL-004 | `test/replication/phase_transitions_test.exs` — `"worker emits mandated phases through checkpoint_source"` |
 | REPL-005 | `test/runtime/replication_test.exs` — local endpoint orchestration |
 | REPL-006 | `test/contract/fixtures_test.exs` — `"replication ID fixtures match ElixirDB.Replication.Id (REPL-006)"` |
-| REPL-007 | `test/contract/fixtures_test.exs` — `"checkpoint reconcile fixtures match CheckpointReconciler (REPL-007)"`; `"checkpoint CAS and wire fixtures execute (REPL-007)"` |
+| REPL-007 | `test/contract/fixtures_test.exs` — `"checkpoint reconcile fixtures match CheckpointReconciler (REPL-007)"`; `"checkpoint CAS and wire fixtures execute (REPL-007)"`; *PARTIAL* — safe positions, compaction epochs, and peer leases not yet covered |
 | REPL-008 | `test/replication/fault_injection_test.exs` — per-phase faults never skip committed source revision |
 | REPL-009 | `test/storage_adapter/revision_transfer_test.exs` — import ordering / chain integrity |
 | REPL-010 | `test/storage_adapter/revision_transfer_test.exs` — `"identical imports are idempotent no-ops"` |
-| REPL-011 | `test/runtime/replication_test.exs` — `"one-shot replication reuses durable checkpoints and transfers later changes"` |
+| REPL-011 | `test/runtime/replication_test.exs` — `"one-shot replication reuses durable checkpoints and transfers later changes"`; *PARTIAL* — history-gap detection and snapshot/bootstrap fallback not yet covered |
 | REPL-012 | `test/runtime/replication_test.exs` — continuous path via worker phase/waiting coverage in `fault_injection_test` `"retryable fault at waiting/after_waiting never skips later source revision"` |
 | REPL-013 | `test/runtime/replication_test.exs` — `"persistent one-shot jobs report terminal state and converge"` |
 | REPL-014 | `test/contract/v1_contracts_test.exs` — replication request validation |
-| REPL-015 | `test/contract/fixtures_test.exs` — `"protocol fixtures exist with required wire shapes"` |
-| REPL-016 | `test/storage_adapter/revision_transfer_test.exs` — `"dangling parent chains are rejected atomically"` |
-| REPL-017 | `test/storage_adapter/revision_transfer_test.exs` — import atomicity tests |
+| REPL-015 | `test/contract/fixtures_test.exs` — `"protocol fixtures exist with required wire shapes"`; *PARTIAL* — history epoch, retention floor, compaction epoch, and mode fields not yet covered |
+| REPL-016 | `test/storage_adapter/revision_transfer_test.exs` — `"dangling parent chains are rejected atomically"`; *PARTIAL* — truncated-chain, history-boundary, and snapshot/bootstrap transfer not yet covered |
+| REPL-017 | `test/storage_adapter/revision_transfer_test.exs` — import atomicity tests; *PARTIAL* — fresh-history-root coexistence and stale-history fencing not yet covered |
 | REPL-018 | `test/runtime/replication_test.exs` — `"cancel between phases finishes current work without brutal_kill"`; `fault_injection_test` — `"worker enters real :completed gen_statem state before stop"` / `":failed"` |
 
 ## Config, API, maintenance, security
@@ -202,12 +202,17 @@ Companion docs: [operations.md](operations.md), [adr/0001-strict-decoder.md](adr
 | API-012 | `test/http/ndjson_changes_test.exs` + method/path matrix |
 | API-013 | `test/http/method_path_matrix_test.exs` (index/query section) |
 | API-014 | `test/http/method_path_matrix_test.exs` (replication-job section) |
-| API-015 | `test/http/method_path_matrix_test.exs` (wire section); `two_server_http_convergence_test.exs` for live wire |
+| API-015 | `test/http/method_path_matrix_test.exs` (wire section); `two_server_http_convergence_test.exs` for live wire; *PARTIAL* — `history_truncated`, history-boundary fields, and `bootstrap: true` pages not yet covered |
 | API-016 | `test/http/v1_http_contract_test.exs` — `"HTTP rejects unknown fields and returns the stable error envelope"` |
 | MAINT-001 | `test/storage_adapter/mutations_test.exs` — `"integrity mismatch is detected after revision corruption"` |
 | MAINT-002 | *PARTIAL* — vacuum API present in method matrix; no dedicated vacuum behaviour assertion found |
-| MAINT-003 | *PARTIAL* — retention config exists; no dedicated retention-pruning test located |
+| MAINT-003 | *PARTIAL* — stable-frontier retention config and compact-retention spec exist; no dedicated compact-retention test located |
 | MAINT-004 | `test/runtime/waiter_termination_test.exs` + `owner_crash_test` close path |
+| MAINT-005 | *PARTIAL* — stable-frontier compact-retention operation, atomicity, history boundaries, and compaction-counter metadata specified; no dedicated test located |
+| MAINT-006 | *PARTIAL* — `retention` config group (`mode`, `history_depth`, `peer_expiry_ms`, `schedule`) specified; no dedicated test located |
+| MAINT-007 | *PARTIAL* — stable-frontier revision-history, conflict-branch, tombstone, and history-boundary trimming specified; no dedicated test located |
+| MAINT-008 | *PARTIAL* — stable-frontier gating, mandatory changes trimming below the floor, and explicit history gaps specified; no dedicated test located |
+| MAINT-009 | *PARTIAL* — explicit-request and scheduled compaction specified; no dedicated test located |
 | SEC-001 | `test/contract/strict_decoder_test.exs` — nesting/size; `test/runtime/admission_test.exs` — admission |
 | SEC-002 | `test/query/planner_test.exs` + structured index tests (compiled paths, not string-concat client SQL) |
 | SEC-003 | `test/http/v1_http_contract_test.exs` — relative paths under database root |
