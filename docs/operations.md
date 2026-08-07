@@ -26,13 +26,8 @@ read VCS metadata.
 
 ```sh
 export ELIXIR_DB_ROOT=/var/lib/elixirdb
-# optional overrides:
-# export ELIXIR_DB_IP=127.0.0.1
-# export ELIXIR_DB_PORT=4000
-# export ELIXIR_DB_REGISTRATION_MANIFEST=/var/lib/elixirdb/registrations.json
-# export ELIXIR_DB_SHUTDOWN_TIMEOUT_MS=30000
 
-mkdir -p "$ELIXIR_DB_ROOT"
+# first start: the directory and host.toml are created automatically
 /opt/elixir_db/bin/elixir_db daemon    # background
 # or: /opt/elixir_db/bin/elixir_db start   # foreground
 ```
@@ -45,20 +40,97 @@ Control a running release:
 /opt/elixir_db/bin/elixir_db stop
 ```
 
-`ELIXIR_DB_ROOT` is required in production. Default listener binds **loopback
-only** (`127.0.0.1:4000`, `CONFIG-005`). Override with `ELIXIR_DB_IP` /
-`ELIXIR_DB_PORT` or application config:
+`ELIXIR_DB_ROOT` locates the database root (the single directory holding
+`host.toml`, `registrations.json`, and the `*.db` files). On first run in an
+empty root, a fully commented `host.toml` is created; it is never overwritten
+once present.
 
-* `:listener` — `[ip: {127, 0, 0, 1}, port: 4000]`
-* `:database_root` — or env `ELIXIR_DB_ROOT` via `config/runtime.exs`
-* `:registration_manifest` — defaults to `<database_root>/registrations.json`
-* `:shutdown_timeout` — catalog/runtime stop timeout (ms); env
-  `ELIXIR_DB_SHUTDOWN_TIMEOUT_MS`
-* `:host_limits` — admission, open-database, body, and batch caps
+All host configuration lives in `<database_root>/host.toml` — a single visible,
+editable TOML file. Default listener binds **loopback only**
+(`127.0.0.1:4000`). Binding to a non-loopback interface requires
+authentication or TLS to be enabled (see below, and `CONFIG-005`); the server
+refuses to start otherwise.
+
+* `[listener]` — `ip` and `port`.
+* `[limits]` — host-enforced admission, open-database, body, and batch caps.
+* `[auth]` — bearer-token authentication (see Authentication).
+* `[tls]` — TLS listener enablement and cert/key paths (see Transport-layer
+  security).
+* `[security] allow_insecure_remote` — explicit override of the loopback
+  failsafe.
+* `[observability] otlp_endpoint` — OTLP collector endpoint; empty means no
+  exporter and no network (OBSV-004).
 
 Stop with `bin/elixir_db stop` (or SIGTERM to the release OS process). The
 catalog closes open database runtimes; each runtime rolls back its companion
 `.lease` transaction on terminate (`ElixirDB.Runtime.FileLease`).
+
+## Authentication
+
+Bearer-token authentication (`AUTH-001`) gates the HTTP API. When
+`[auth] enabled = true` in `host.toml`, every request must present a valid
+`Authorization: Bearer <token>` header.
+
+Tokens are stored as SHA-256 hex digests (never raw token text). Generate a
+token and its digest with the release command:
+
+```sh
+/opt/elixir_db/bin/elixir_db token
+# token:  <64-char hex>      (use as the Bearer value)
+# digest: <64-char hex>      (paste into host.toml)
+```
+
+Paste the **digest** into `host.toml`:
+
+```toml
+[auth]
+enabled = true
+tokens  = ["<digest>"]
+```
+
+Restart the release. Clients send the raw token:
+
+```sh
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:4000/v1/databases
+```
+
+Multiple digests may be listed to support rotation. To rotate with zero
+downtime: add the new digest alongside the old, restart, then remove the old
+digest and restart. There is no runtime revocation endpoint; rotation is done
+by editing `host.toml` and restarting. Authentication failures return
+`unauthorized` (HTTP 401) with an identical message regardless of whether the
+header was missing, malformed, or wrong (`AUTH-004`).
+
+A replication source authenticates to a target with auth enabled by carrying an
+`auth_token` in the remote endpoint reference (`AUTH-003`); see the replication
+endpoints documentation.
+
+## Transport-layer security
+
+When `[tls] enabled = true` in `host.toml`, the listener serves HTTPS only on
+a single listener (no parallel plaintext port). `certfile` and `keyfile` are
+resolved relative to the database root:
+
+```toml
+[tls]
+enabled  = true
+certfile = "cert.pem"
+keyfile  = "key.pem"
+```
+
+Place `cert.pem` and `key.pem` inside the database root so that copying the
+root relocates a working HTTPS listener (`TLS-002`). A quick self-signed pair
+for local testing:
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout "$ELIXIR_DB_ROOT/key.pem" -out "$ELIXIR_DB_ROOT/cert.pem" \
+  -subj "/CN=localhost"
+```
+
+Use a real CA (Let's Encrypt, an internal CA) for production. Replication
+sources connect over TLS when the endpoint `base_url` uses the `https` scheme
+(`TLS-003`).
 
 ### Development only
 
@@ -218,10 +290,14 @@ behaves exactly as before.
 
 ### Enabling collection
 
-Set `ELIXIRDB_OTLP_ENDPOINT` in the environment before starting the release:
+Set `otlp_endpoint` in `host.toml` before starting the release:
+
+```toml
+[observability]
+otlp_endpoint = "http://localhost:4318"
+```
 
 ```sh
-export ELIXIRDB_OTLP_ENDPOINT=http://localhost:4318
 /opt/elixir_db/bin/elixir_db daemon
 ```
 
@@ -230,7 +306,7 @@ sends traces and metrics to that endpoint. Spans are batched and exported
 asynchronously; a periodic metric reader exports every 30 seconds.
 Instrumentation never blocks the hot path.
 
-When `ELIXIRDB_OTLP_ENDPOINT` is unset, no exporter is wired and **no
+When `otlp_endpoint` is empty or unset, no exporter is wired and **no
 network connection to any collector is attempted** (`OBSV-004`). The app
 starts and serves traffic exactly as before; instrumentation calls are safe
 no-ops. The gate lives in `config/runtime.exs`.

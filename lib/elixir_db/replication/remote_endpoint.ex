@@ -2,14 +2,19 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
   @behaviour ElixirDB.Replication.Endpoint
   alias ElixirDB.Replication.RemoteTransport
 
-  defstruct [:base_url, :database_uuid]
+  defstruct [:base_url, :database_uuid, :auth_token]
 
   def new(attrs) when is_map(attrs) do
     normalized = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 
     case ElixirDB.Domain.ReplicationEndpoint.new(Map.put(normalized, "kind", "remote")) do
       {:ok, endpoint} ->
-        {:ok, %__MODULE__{base_url: endpoint.base_url, database_uuid: endpoint.database_uuid}}
+        {:ok,
+         %__MODULE__{
+           base_url: endpoint.base_url,
+           database_uuid: endpoint.database_uuid,
+           auth_token: endpoint.auth_token
+         }}
 
       {:error, error} ->
         {:error, error}
@@ -89,7 +94,8 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
       )
 
   defp call(endpoint, method, path, body \\ nil) do
-    with {:ok, response} <- RemoteTransport.request(endpoint.base_url, method, path, body) do
+    with {:ok, response} <-
+           RemoteTransport.request(endpoint.base_url, method, path, body, endpoint.auth_token) do
       case response do
         %{"data" => data} ->
           {:ok, data}

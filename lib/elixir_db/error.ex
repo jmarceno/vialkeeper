@@ -14,6 +14,7 @@ defmodule ElixirDB.Error do
         }
 
   @registry %{
+    unauthorized: {401, false},
     invalid_request: {400, false},
     invalid_bookmark: {400, false},
     database_not_registered: {404, false},

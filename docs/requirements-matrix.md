@@ -172,12 +172,22 @@ Companion docs: [operations.md](operations.md), [adr/0001-strict-decoder.md](adr
 
 | ID | Proving test |
 | --- | --- |
-| CONFIG-001 | `test/contract/v1_contracts_test.exs` — `"configuration and public errors retain their bounded stable contracts"` |
+| CONFIG-001 | `test/host_config_test.exs` — first-run template creation, never-overwrite, field-level errors; `test/observability/no_network_test.exs` — host.toml-driven OTLP gate |
+| CONFIG-001a | `test/host_config_test.exs` — `"shipped template decodes to the compiled defaults (no drift)"` + moveable-root cases |
 | CONFIG-002 | `test/storage_adapter/v1_conformance_test.exs` — `"closed databases reopen with identity, sequence, and configuration intact"` |
 | CONFIG-003 | `test/http/unknown_fields_and_routes_test.exs` — unknown client fields rejected |
 | CONFIG-004 | `test/contract/v1_contracts_test.exs` — host/database config contracts |
-| CONFIG-005 | `test/end_to_end/two_server_http_convergence_test.exs` — Bandit listeners (loopback TestServer) |
+| CONFIG-005 | `test/application_startup_test.exs` — non-loopback listener failsafe (refuses without auth/tls/override) |
 | CONFIG-006 | `test/storage_adapter/v1_conformance_test.exs` — persisted config across reopen |
+| CONFIG-007 | `test/host_config_test.exs` — config + tokens + cert material co-located in root; `test/observability/no_network_test.exs` — copyable root |
+| AUTH-001 | `test/http/auth_plug_test.exs` — disabled pass-through; enabled requires bearer |
+| AUTH-002 | `test/release_commands_test.exs` — `bin/elixir_db token` digest is SHA-256 of raw token; `test/host_config_test.exs` — digest storage/round-trip |
+| AUTH-003 | `test/replication/auth_token_transport_test.exs` — remote `auth_token` sent as `Authorization: Bearer` over the wire |
+| AUTH-004 | `test/http/auth_plug_test.exs` — missing/malformed/wrong produce indistinguishable errors |
+| AUTH-005 | `test/http/auth_plug_test.exs` — loopback no-auth default passes without credentials |
+| TLS-001 | `test/application_startup_test.exs` + `test/host_config_test.exs` — single HTTPS listener, in-root cert/key paths |
+| TLS-002 | `test/host_config_test.exs` — cert/key relative to root; escaping paths rejected |
+| TLS-003 | `test/contract/v1_contracts_test.exs` — `https` endpoint scheme accepted |
 | API-001 | `test/http/router_test.exs` — `"database and document endpoints return versioned envelopes"` |
 | API-002 | `test/http/router_test.exs` — versioned `/v1` envelopes |
 | API-003 | `test/http/method_path_matrix_test.exs` — database management methods |

@@ -1,0 +1,59 @@
+# ElixirDB host configuration.
+#
+# This file lives inside the database root and is created automatically on
+# first run. Edit it, then restart the release. It is never overwritten once
+# it exists, so copying the database root to another host carries this
+# configuration along with the databases.
+#
+# Comments start with '#'. Values are not whitespace-sensitive.
+
+# Network listener. The server refuses to start on a non-loopback address
+# unless authentication or TLS is enabled (see [security]).
+[listener]
+ip   = "127.0.0.1"
+port = 4000
+
+# Host-enforced resource ceilings. Clients cannot exceed these; per-database
+# configuration can only be more restrictive.
+[limits]
+max_document_bytes            = 1048576
+max_request_bytes             = 2097152
+max_document_id_bytes         = 512
+max_bulk_operations           = 500
+max_query_results             = 500
+max_changes_batch             = 500
+max_replication_batch_documents = 500
+max_replication_batch_bytes   = 16777216
+max_replication_attempts      = 32
+max_replication_delay_ms      = 300000
+max_full_scan_documents       = 1000
+max_query_execution_ms        = 5000
+max_wait_ms                   = 30000
+max_open_databases            = 64
+max_replication_workers       = 32
+admission_limit               = 128
+max_json_nesting_depth        = 100
+
+# Bearer-token authentication (AUTH-001). When enabled, every request must
+# present `Authorization: Bearer <token>`. Tokens are stored as SHA-256 hex
+# digests; generate a token and its digest with `bin/elixir_db token`.
+[auth]
+enabled = false
+tokens  = []
+
+# Transport-layer security (TLS-001). When enabled, the listener serves HTTPS
+# only. certfile and keyfile are resolved relative to the database root.
+[tls]
+enabled  = false
+certfile = "cert.pem"
+keyfile  = "key.pem"
+
+# Safety guard. Override the refusal to start on a non-loopback interface
+# without authentication or TLS. Leave false unless you accept the risk.
+[security]
+allow_insecure_remote = false
+
+# Observability. An empty otlp_endpoint means no exporter is wired and no
+# network connection to any collector is attempted.
+[observability]
+otlp_endpoint = ""

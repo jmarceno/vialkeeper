@@ -28,27 +28,10 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
 
   @spec write(list()) :: :ok | {:error, ElixirDB.Error.t()}
   def write(entries) do
-    root = Path.dirname(path())
-
-    with :ok <- File.mkdir_p(root),
-         {:ok, normalized} <- normalize_entries(entries),
-         {:ok, json} <- ElixirDB.JSON.Canonical.encode(%{"version" => 1, "databases" => normalized}) do
-      temp = path() <> ".tmp." <> Integer.to_string(System.unique_integer([:positive]))
-
-      with :ok <- File.write(temp, json),
-           :ok <- sync(temp),
-           :ok <- File.rename(temp, path()),
-           :ok <- sync_directory(root) do
-        :ok
-      else
-        {:error, reason} ->
-          _ = File.rm(temp)
-
-          {:error,
-           ElixirDB.Error.database_unavailable("registration manifest could not be replaced", %{
-             cause: inspect(reason)
-           })}
-      end
+    with {:ok, normalized} <- normalize_entries(entries),
+         {:ok, json} <- ElixirDB.JSON.Canonical.encode(%{"version" => 1, "databases" => normalized}),
+         :ok <- ElixirDB.Runtime.AtomicWrite.write(path(), json) do
+      :ok
     else
       {:error, %ElixirDB.Error{} = error} ->
         {:error, error}
@@ -153,21 +136,6 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
     |> case do
       false -> false
       _ -> true
-    end
-  end
-
-  defp sync(file) do
-    case File.open(file, [:read, :write], fn io -> :file.sync(io) end) do
-      {:ok, :ok} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp sync_directory(directory) do
-    case File.open(directory, [:read], fn io -> :file.sync(io) end) do
-      {:ok, :ok} -> :ok
-      {:error, reason} when reason in [:eperm, :eisdir, :enotsup] -> :ok
-      {:error, reason} -> {:error, reason}
     end
   end
 end

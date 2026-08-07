@@ -100,6 +100,53 @@ defmodule ElixirDB.Contract.V1ContractsTest do
              })
   end
 
+  test "remote endpoints accept an auth_token; local endpoints reject it (AUTH-003)" do
+    uuid = ElixirDB.UUID.v4()
+
+    # Remote endpoint may carry an auth_token sibling of base_url.
+    assert {:ok, %{kind: :remote, auth_token: "abc"}} =
+             ElixirDB.Domain.ReplicationEndpoint.new(%{
+               "kind" => "remote",
+               "database_uuid" => uuid,
+               "base_url" => "https://example.test",
+               "auth_token" => "abc"
+             })
+
+    # auth_token is optional on remote endpoints.
+    assert {:ok, %{kind: :remote, auth_token: nil}} =
+             ElixirDB.Domain.ReplicationEndpoint.new(%{
+               "kind" => "remote",
+               "database_uuid" => uuid,
+               "base_url" => "https://example.test"
+             })
+
+    # URL-embedded credentials remain rejected even with auth_token present.
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             ElixirDB.Domain.ReplicationEndpoint.new(%{
+               "kind" => "remote",
+               "database_uuid" => uuid,
+               "base_url" => "https://user:pass@example.test",
+               "auth_token" => "abc"
+             })
+
+    # Local endpoints never accept credentials.
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             ElixirDB.Domain.ReplicationEndpoint.new(%{
+               "kind" => "local",
+               "database_uuid" => uuid,
+               "auth_token" => "abc"
+             })
+
+    # Empty-string auth_token is rejected.
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             ElixirDB.Domain.ReplicationEndpoint.new(%{
+               "kind" => "remote",
+               "database_uuid" => uuid,
+               "base_url" => "https://example.test",
+               "auth_token" => ""
+             })
+  end
+
   test "configuration and public errors retain their bounded stable contracts" do
     assert {:error, %ElixirDB.Error{code: :invalid_request}} =
              ElixirDB.Config.merge_and_bound(%{"unknown" => true})
@@ -123,6 +170,14 @@ defmodule ElixirDB.Contract.V1ContractsTest do
       assert is_boolean(error.retryable)
       assert is_map(ElixirDB.Error.public(error))
     end)
+
+    # AUTH-004: unauthorized is 401, non-retryable, and uses a stable constant
+    # message indistinguishable across missing/malformed/wrong-token failures.
+    unauthorized = ElixirDB.Error.unauthorized()
+
+    assert unauthorized.code == :unauthorized
+    assert unauthorized.http_status == 401
+    assert unauthorized.retryable == false
   end
 
   test "internal_error retryability depends on details (API-016)" do
