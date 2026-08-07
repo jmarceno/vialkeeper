@@ -1,8 +1,8 @@
 defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
   @moduledoc """
-  Plan §9 acceptance: with `ELIXIRDB_OTLP_ENDPOINT` unset, the app wires NO
-  exporter and opens no collector connection; with it set, the OTLP exporter
-  is wired.
+  Plan §9 acceptance: with no otlp_endpoint configured in host.toml, the app
+  wires NO exporter and opens no collector connection; with one set, the OTLP
+  exporter is wired.
 
   The gate lives in `config/runtime.exs` and is intentionally skipped in the
   test env (so tests can wire the in-memory exporters), so this test evaluates
@@ -15,7 +15,14 @@ defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
 
   @project_root Path.expand("../..", __DIR__)
 
-  test "env unset: app starts, no exporter is wired, exporter app never starts" do
+  defp fresh_root do
+    Path.join(System.tmp_dir!(), "elixirdb-nonet-#{System.unique_integer([:positive])}")
+  end
+
+  test "otlp_endpoint unset: app starts, no exporter is wired, exporter app never starts" do
+    root = fresh_root()
+    File.mkdir_p!(root)
+    # host.toml absent on first run → template created → otlp_endpoint empty.
     script = """
     apps = Enum.map(Application.started_applications(), &elem(&1, 0))
     IO.puts("EXPORTER_STARTED=" <> inspect(:opentelemetry_exporter in apps))
@@ -27,14 +34,10 @@ defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
       System.cmd("mix", ["run", "-e", script],
         cd: @project_root,
         stderr_to_stdout: true,
-        env: %{
-          # nil removes the variable from the subprocess environment.
-          "ELIXIRDB_OTLP_ENDPOINT" => nil,
-          "MIX_ENV" => "dev",
-          # Bind an OS-assigned port so the probe cannot collide.
-          "ELIXIR_DB_PORT" => "0"
-        }
+        env: %{"MIX_ENV" => "dev", "ELIXIR_DB_ROOT" => root}
       )
+
+    _ = File.rm_rf(root)
 
     assert status == 0, "app failed to start with the endpoint unset:\n#{out}"
     assert out =~ "EXPORTER_STARTED=false", out
@@ -42,7 +45,15 @@ defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
     assert out =~ "READERS=[]", out
   end
 
-  test "env set: the OTLP exporter and a metric reader are wired" do
+  test "otlp_endpoint set: the OTLP exporter and a metric reader are wired" do
+    root = fresh_root()
+    File.mkdir_p!(root)
+
+    File.write!(Path.join(root, "host.toml"), """
+    [observability]
+    otlp_endpoint = "http://127.0.0.1:9"
+    """)
+
     script = """
     IO.puts("TRACES_EXPORTER=" <> inspect(Application.get_env(:opentelemetry, :traces_exporter)))
     readers = Application.get_env(:opentelemetry_experimental, :readers)
@@ -53,13 +64,10 @@ defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
       System.cmd("mix", ["run", "--no-start", "-e", script],
         cd: @project_root,
         stderr_to_stdout: true,
-        env: %{
-          # Unroutable loopback port: config wiring is asserted WITHOUT any
-          # real collector behind it.
-          "ELIXIRDB_OTLP_ENDPOINT" => "http://127.0.0.1:9",
-          "MIX_ENV" => "dev"
-        }
+        env: %{"MIX_ENV" => "dev", "ELIXIR_DB_ROOT" => root}
       )
+
+    _ = File.rm_rf(root)
 
     assert status == 0, "runtime config failed with the endpoint set:\n#{out}"
     assert out =~ "TRACES_EXPORTER={:opentelemetry_exporter", out

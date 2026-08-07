@@ -13,6 +13,10 @@ defmodule ElixirDB.HTTP.Router do
     Replications
   }
 
+  # Authentication runs before route matching on every request, so it is the
+  # single chokepoint for all `/v1` traffic (AUTH-001) and unauthenticated
+  # probes cannot learn which routes exist.
+  plug(ElixirDB.HTTP.AuthPlug)
   plug(:match)
   plug(:dispatch)
 

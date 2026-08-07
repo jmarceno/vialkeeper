@@ -45,6 +45,8 @@ defmodule ElixirDB.MixProject do
       {:bandit, "1.12.4"},
       {:req, "0.7.2"},
       {:telemetry, "1.4.2"},
+      # TOML parser for the host configuration file (<database_root>/host.toml).
+      {:toml, "~> 0.7"},
       # OpenTelemetry. runtime: false keeps the SDK/exporter apps from auto-starting;
       # ElixirDB.Observability.Supervisor starts them only when an OTLP endpoint is
       # configured (see config/runtime.exs). The lockfile pins exact versions.
@@ -64,7 +66,8 @@ defmodule ElixirDB.MixProject do
     [
       elixir_db: [
         include_executables_for: [:unix],
-        applications: [runtime_tools: :permanent]
+        applications: [runtime_tools: :permanent],
+        steps: [:assemble, &ElixirDB.ReleaseSteps.patch_launcher/1]
       ]
     ]
   end

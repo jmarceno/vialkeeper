@@ -393,7 +393,8 @@ defmodule ElixirDB.Replication.JobManager do
       {:ok, %{kind: :remote} = endpoint} ->
         ElixirDB.Replication.RemoteEndpoint.new(%{
           database_uuid: endpoint.database_uuid,
-          base_url: endpoint.base_url
+          base_url: endpoint.base_url,
+          auth_token: endpoint.auth_token
         })
 
       {:error, error} ->

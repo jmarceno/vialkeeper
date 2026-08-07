@@ -1,7 +1,7 @@
 defmodule ElixirDB.Replication.RemoteTransport do
   @moduledoc false
 
-  def request(base_url, method, path, body \\ nil) do
+  def request(base_url, method, path, body \\ nil, auth_token \\ nil) do
     # Inject the current trace context into outgoing replication requests so a
     # push job's trace spans both the local worker and the remote server
     # (plan §6.2). The noop propagator (no SDK) returns the headers unchanged.
@@ -9,13 +9,17 @@ defmodule ElixirDB.Replication.RemoteTransport do
       ElixirDB.Observability.Tracer.inject([])
       |> Enum.map(fn {k, v} -> {to_string(k), to_string(v)} end)
 
+    # When the endpoint declares an auth_token (AUTH-003), present it as the
+    # bearer credential so the target's AuthPlug accepts the replication call.
+    auth_headers = auth_headers(auth_token)
+
     options = [
       method: method,
       url: String.trim_trailing(base_url, "/") <> path,
       retry: false,
       receive_timeout: 30_000,
       connect_options: [timeout: 5_000],
-      headers: [{"accept", "application/json"} | trace_headers]
+      headers: [{"accept", "application/json"} | auth_headers ++ trace_headers]
     ]
 
     options =
@@ -26,7 +30,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
             json: body,
             headers: [
               {"accept", "application/json"},
-              {"content-type", "application/json"} | trace_headers
+              {"content-type", "application/json"} | auth_headers ++ trace_headers
             ]
           )
 
@@ -129,4 +133,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
   defp content_type_header(value) when is_binary(value), do: value
   defp content_type_header([value | _]) when is_binary(value), do: value
   defp content_type_header(_), do: nil
+
+  defp auth_headers(nil), do: []
+  defp auth_headers(token) when is_binary(token), do: [{"authorization", "Bearer " <> token}]
 end
