@@ -32,7 +32,9 @@ The system SHALL provide:
 * Replication jobs and checkpoints stored inside the relevant database files.
 * One canonical file per logical database while the database is cleanly offline.
 * Normal operating-system copy, move, rename, backup, and restore of closed database files.
-* Minimal authoritative server-level configuration.
+* File-based host configuration co-located with the database root.
+* Bearer-token authentication for the HTTP API.
+* Transport-layer encryption for non-loopback access.
 
 The implementation SHALL prioritize:
 
@@ -94,6 +96,8 @@ Version 1 host-level configuration is limited to:
 * Database root location.
 * Registration manifest location, when not derived from the database root.
 * Network listeners.
+* Authentication tokens and authentication enablement.
+* Transport-layer encryption certificates and enablement.
 * Logging.
 * Observability export endpoint and sampling (see Section 20.5).
 * Resource ceilings.
@@ -178,8 +182,10 @@ options. Release metadata MUST NOT depend on VCS state.
 
 Operational start, stop, remote console, and evaluation MUST use the release
 scripts under `bin/elixir_db` (`start`, `daemon`, `stop`, `remote`, `eval`,
-`pid`). Host configuration for the release is supplied through environment
-variables evaluated in `config/runtime.exs` (see `CONFIG-001`).
+`pid`). Host configuration for the release is supplied through the host
+configuration file evaluated at startup (see `CONFIG-001`); the
+`ELIXIR_DB_ROOT` environment variable locates the database root that contains
+this file.
 
 ---
 
@@ -188,10 +194,13 @@ variables evaluated in `config/runtime.exs` (see `CONFIG-001`).
 ```text
 Client
   │
-  │ HTTP/JSON
+  │ HTTPS/JSON (TLS for non-loopback access)
+  │ Authorization: Bearer <token>
   ▼
 Elixir Server
   │
+  ├── terminates TLS when enabled
+  ├── authenticates the bearer token
   ├── validates protocol input and resource limits
   ├── resolves the logical database
   ├── locates or starts its DatabaseOwner process
@@ -217,7 +226,7 @@ ApplicationSupervisor
 │       └── ChangeNotifier
 ├── ReplicationSupervisor
 │   └── ReplicationWorker
-└── HTTPServer
+└── HTTPSserver (TLS termination + bearer-token authentication)
 ```
 
 The exact module names are implementation details.
@@ -1672,7 +1681,8 @@ An endpoint reference MUST use one of these storage-neutral forms:
 {
   "kind": "remote",
   "base_url": "http://host:port",
-  "database_uuid": "database-uuid"
+  "database_uuid": "database-uuid",
+  "auth_token": "bearer-token"
 }
 ```
 
@@ -1680,7 +1690,7 @@ The expected remote database UUID MUST be stored and verified during every repli
 
 A remote `base_url` MUST use `http` or `https`, MUST NOT contain embedded credentials, and MUST NOT contain a query string or fragment. It identifies the server base before the Version 1 `/v1` paths.
 
-Version 1 endpoint references MUST contain no authentication, authorization, credential, token, key, or secret fields.
+A remote endpoint reference to a target with authentication enabled MUST carry an `auth_token` string. The source worker MUST present that value as the `Authorization: Bearer` credential on every replication wire call to that target (`AUTH-003`). A remote endpoint reference to an unauthenticated target MUST omit `auth_token`. The field holds a raw bearer token, not a digest; it MUST be stored as local state in the owning database (see `REPL-013`) and MUST NOT participate in replication. A local endpoint reference MUST omit `auth_token`.
 
 ## `REPL-006` — Replication ID
 
@@ -1803,7 +1813,7 @@ Enabled continuous jobs MUST resume after server restart without client traffic.
 
 This requires startup inspection of explicitly registered databases.
 
-Version 1 replication requests and job definitions MUST contain no authentication, authorization, credential, or secret fields.
+Version 1 replication requests and job definitions MUST NOT carry credentials in the URL or in any field other than the endpoint reference's `auth_token`. The `auth_token` is the sole permitted credential and is stored as local, non-replicating job state.
 
 A job MUST expose one of these states:
 
@@ -1905,11 +1915,17 @@ Retryable failures SHALL enter `backoff` using exponential delay with bounded ji
 
 ## `CONFIG-001` — Host configuration
 
-The server MAY require host-level configuration for:
+Host configuration MUST be supplied as a single TOML file located inside the
+configured database root. The `ELIXIR_DB_ROOT` environment variable locates the
+database root; the host configuration file MUST reside at
+`<database_root>/host.toml`.
 
-* Database root.
-* Registration manifest location.
+The file MAY require host-level configuration for:
+
+* Database root and registration manifest location.
 * Listener addresses.
+* Authentication tokens and enablement (`AUTH-001`).
+* TLS certificates and enablement (`TLS-001`).
 * Maximum open databases.
 * Maximum concurrent replication workers.
 * Absolute document size.
@@ -1918,17 +1934,45 @@ The server MAY require host-level configuration for:
 * Observability export configuration (see Section 20.5, `OBSV-001`).
 * Shutdown timeout.
 
-For the production OTP release, host configuration is supplied through
-environment variables evaluated by `config/runtime.exs`:
+A human-edited file MUST satisfy all of the following:
 
-* `ELIXIR_DB_ROOT` — absolute database root (required in `:prod`).
-* `ELIXIR_DB_REGISTRATION_MANIFEST` — absolute manifest path when not derived
-  from the database root.
-* `ELIXIR_DB_IP` / `ELIXIR_DB_PORT` — listener bind address and port.
-* `ELIXIR_DB_SHUTDOWN_TIMEOUT_MS` — catalog and runtime shutdown timeout.
+* It MUST NOT be hidden by default. The filename `host.toml` MUST be used.
+* It MUST be editable in any plain-text editor without significant risk of
+  parse failure from insignificant whitespace, as TOML is not
+  whitespace-sensitive for values.
+* Comments using `#` MUST be honored.
 
-Compile-time defaults live in `config/config.exs`. Non-loopback listeners
-still require an explicit host configuration change (`CONFIG-005`).
+Configuration precedence SHALL be:
+
+```text
+built-in defaults
+→ values in <database_root>/host.toml
+```
+
+When `host.toml` is absent on startup, the server MUST create it with the
+standard fully commented template before reading it, so that the file exists as
+a visible, editable artifact from first run. The creation MUST use the same
+write-to-temporary-file, flush, and atomic-rename discipline required of the
+registration manifest (`LIFE-007`). When `host.toml` is present, the server
+MUST read it verbatim and MUST NOT overwrite an existing file under any
+circumstance, so that operator edits are preserved across copies and
+relocations of the database root.
+
+The server MUST reject `host.toml` with field-level errors: unknown keys,
+wrong value types, and out-of-range values MUST each name the offending key.
+
+The compiled built-in defaults and the shipped template MUST hold identical
+values; a conformance test MUST assert this so the two cannot drift.
+
+## `CONFIG-001a` — Moveable host configuration
+
+Copying the database root to another host MUST carry host configuration,
+authentication tokens, and TLS material along with the database files. The
+copy MUST be usable on the destination after pointing `ELIXIR_DB_ROOT` at it;
+no further transfer of configuration, tokens, or certificates is permitted.
+
+Certificate and key file paths declared in `host.toml` MUST be relative to the
+database root unless absolute, so that a copied root remains self-contained.
 
 ## `CONFIG-002` — Database configuration
 
@@ -1955,22 +1999,31 @@ Ephemeral options MUST NOT become durable configuration unless an explicit confi
 
 ## `CONFIG-004` — Precedence
 
-Configuration precedence SHALL be:
+Configuration precedence at load time is fixed by `CONFIG-001`. Operational
+precedence at request time SHALL be:
 
 ```text
 host resource and safety limits
 → database configuration
 → permitted request-level options
-→ built-in defaults
 ```
 
 A database or client request MUST NOT weaken host-enforced safety limits.
 
-## `CONFIG-005` — Listener default
+## `CONFIG-005` — Listener safety
 
-Because Version 1 defines no authentication or authorization, the default listener configuration MUST bind only to loopback interfaces.
+The default listener configuration MUST bind to loopback interfaces. Loopback
+access with no authentication and no TLS is permitted and is the
+out-of-the-box default.
 
-Binding to a non-loopback interface MUST require an explicit host configuration change. This is an operational default, not an authentication mechanism.
+The server MUST refuse to start when the listener binds a non-loopback
+interface and neither authentication (`AUTH-001`) nor TLS (`TLS-001`) is
+enabled. This failsafe prevents an open server from reaching the network by
+accident.
+
+An operator who accepts the risk MAY override the failsafe by setting
+`[security] allow_insecure_remote = true` in `host.toml`. The override MUST be
+explicit; it MUST NOT be implied by any other configuration.
 
 ## `CONFIG-006` — Storage-neutral database configuration
 
@@ -1984,6 +2037,105 @@ Version 1 database configuration MUST be a versioned JSON object containing only
 SQLite pragmas, FTS5 options, native index names, JSONB settings, and other adapter-specific tuning MUST NOT appear in public or persisted logical database configuration.
 
 Adapter tuning belongs to adapter release configuration and MUST preserve the logical behavior defined by this specification.
+
+## `CONFIG-007` — Host configuration portability
+
+Host configuration, authentication tokens, and TLS certificate material MUST
+reside inside the database root alongside the database files and the
+registration manifest. Ordinary operating-system copying of the database root
+directory MUST carry all of them to another host with no further setup beyond
+pointing `ELIXIR_DB_ROOT` at the copy.
+
+This keeps the single-portability-unit property defined by `DESIGN-006`,
+`FILE-002`, and `CONFIG-001a` intact: a database file already carries its own
+configuration, indexes, jobs, and checkpoints; the root directory carries
+server-level configuration, tokens, and certificates in the same manner.
+
+---
+
+# 16a. Authentication
+
+## `AUTH-001` — Bearer-token authentication
+
+The server MAY authenticate HTTP API access using a single bearer-token
+scheme. When `[auth] enabled = true` in `host.toml`, every `/v1` request MUST
+present a valid `Authorization: Bearer <token>` header. When authentication is
+disabled, the server MUST NOT require credentials.
+
+Version 1 defines exactly one credential model: a single bearer token grants
+full access to the HTTP API. Usernames, roles, sessions, cookies, OAuth,
+per-database credentials, and fine-grained authorization are not part of
+Version 1.
+
+## `AUTH-002` — Token storage and comparison
+
+Tokens MUST be stored in `host.toml` as SHA-256 hexadecimal digests, never as
+raw token text. The server MUST compute the SHA-256 digest of the presented
+credential and constant-time compare it against each stored digest.
+
+Multiple digests MAY be listed to support rotation. An empty token list with
+authentication enabled MUST cause startup to fail.
+
+Token generation MUST be provided by the `bin/elixir_db token` release
+command, which MUST print the raw token once and its SHA-256 digest. Token
+rotation MUST be documented as an add-new, remove-old procedure over restarts.
+Version 1 MUST NOT provide a runtime revocation endpoint; rotation is achieved
+by editing `host.toml` and restarting.
+
+## `AUTH-003` — Replication source credentials
+
+A replication source MUST authenticate to a target that has `AUTH-001` enabled
+by sending the `Authorization: Bearer` credential declared in the remote
+endpoint reference's `auth_token` field (`REPL-005`) on every replication wire
+call. The target MUST validate that credential through the same authentication
+mechanism as direct client requests.
+
+A pull job whose source requires authentication MUST likewise carry
+`auth_token` so the source accepts its read calls.
+
+## `AUTH-004` — Authentication failures
+
+A missing, malformed, or non-matching credential MUST fail with the stable
+`unauthorized` error (`API-016`) and HTTP status 401. The error MUST NOT
+reveal whether the failure was a missing header, a malformed header, or a
+wrong token; the message MUST be identical across all three cases.
+
+## `AUTH-005` — Local-loopback exemption
+
+When the listener is loopback and `[auth] enabled = false`, the server MUST
+serve requests without credentials. This is the out-of-the-box default for
+local development and in-process embedding.
+
+---
+
+# 16b. Transport-layer security
+
+## `TLS-001` — TLS listener
+
+When `[tls] enabled = true` in `host.toml`, the server MUST serve the public
+API over HTTPS on a single listener. Version 1 MUST NOT run a parallel
+plaintext listener; the single listener is either HTTP or HTTPS, not both.
+
+TLS termination MUST use the certificate and key referenced by `[tls]
+certfile` and `[tls] keyfile`, resolved relative to the database root unless
+absolute. Paths MUST be inside the database root; absolute paths escaping the
+root MUST be rejected at startup.
+
+## `TLS-002` — TLS material portability
+
+Certificate and key files MUST reside inside the database root so that a copy
+of the root carries a working HTTPS listener. Operator responsibility for
+certificate validity (subject alternative names, issuer, expiry) across hosts
+is out of scope; Version 1 loads whatever PEM files are referenced and
+reports load failures through standard error envelopes.
+
+## `TLS-003` — Replication and TLS
+
+A remote endpoint `base_url` using the `https` scheme (`REPL-005`) MUST cause
+the source's outbound replication calls to use TLS. The source MUST validate
+the target certificate using the Erlang/OTP default CA store; pinning,
+custom CA bundles, and certificate mutual-authentication are not part of
+Version 1.
 
 ---
 
@@ -2223,13 +2375,20 @@ Replication creation MUST accept:
   "endpoint": {
     "kind": "remote",
     "base_url": "http://host:port",
-    "database_uuid": "database-uuid"
+    "database_uuid": "database-uuid",
+    "auth_token": "bearer-token"
   },
   "enabled": true,
   "batch": {},
   "retry": {}
 }
 ```
+
+The optional `auth_token` is the only credential field permitted on the
+endpoint; it MUST be omitted for local endpoints and for remote endpoints that
+do not require authentication, and MUST be present when the remote endpoint
+requires authentication (`AUTH-003`). It is stored as local, non-replicating
+job state.
 
 `persist: false` is valid only with `mode: "one_shot"` and starts an unpersisted worker immediately. A persistent job receives a server-generated lowercase UUID version 4 job ID.
 
@@ -2299,6 +2458,7 @@ Version 1 MUST define at least these public error codes and HTTP statuses:
 
 | Code                          | HTTP | Retryable          |
 | ----------------------------- | ---: | ------------------ |
+| `unauthorized`                | 401  | No                 |
 | `invalid_request`             | 400  | No                 |
 | `invalid_bookmark`            | 400  | No                 |
 | `database_not_registered`     | 404  | No                 |
@@ -2611,6 +2771,7 @@ The separate implementation plan SHALL define modules, files, function seams, ca
 * Replication ID, complete revision-chain, checkpoint, and worker-state models.
 * Versioned HTTP request, response, streaming-event, and error schemas.
 * Self-contained bookmark codec contract.
+* Host configuration file schema, authentication token-digest contract, and TLS option contract.
 * Language-neutral conformance fixtures.
 * Requirement-to-test mapping.
 
@@ -2779,6 +2940,10 @@ Fault injection at every transition MUST cause repetition at worst and MUST neve
 * Stable public error mapping.
 * Remote source and target endpoint adapters.
 * Request IDs, compression, deadlines, retry classification, and tracing.
+* Host configuration loading from `<database_root>/host.toml` with first-run template creation and field-level validation.
+* Bearer-token authentication plug and the `unauthorized` error code.
+* TLS listener when enabled, and the non-loopback failsafe guard.
+* Replication source presentation of `auth_token` to authenticated targets.
 
 ### Validation
 
@@ -2792,6 +2957,13 @@ Fault injection at every transition MUST cause repetition at worst and MUST neve
 * Slow source, slow target, and timeout followed by retry.
 * Malformed identities, revision chains, checkpoints, and oversized payloads.
 * Backend errors never leak through the public envelope.
+* First run in an empty root creates a fully commented `host.toml`; a subsequent run never overwrites it.
+* `host.toml` with unknown keys, wrong types, or out-of-range values fails startup with a field-level error.
+* The shipped template and compiled defaults hold identical values.
+* A valid bearer token succeeds; missing, malformed, and wrong tokens all return `unauthorized` with identical messages.
+* An authenticated target rejects a source that omits or sends the wrong `auth_token`, and accepts a source that sends the right one.
+* A non-loopback listener without authentication and without TLS fails to start, and the explicit override permits it.
+* TLS-enabled serving and outbound `https` replication both use TLS.
 
 ### Exit condition
 
@@ -2883,22 +3055,22 @@ Every accepted structured query MUST use a compatible index or permitted bounded
 
 ### Required end-to-end scenario
 
-1. Create and register two databases through the Version 1 HTTP API.
-2. Write documents independently and retry a mutation after losing its response.
-3. Create divergent revisions through replication.
-4. Replicate in both directions and verify active conflicts.
-5. Resolve one conflict to a surviving body and another by deleting all live branches.
-6. Verify changes entries contain the final physical leaf sets.
-7. Create structured and full-text indexes and exercise pointer-keyed projections.
-8. Execute paginated queries, mutate the database, and verify the old bookmark becomes stale.
-9. Restart both servers during continuous replication and resume through checkpoint reconciliation.
-10. Verify local configuration, index definitions, jobs, and checkpoints did not protocol-replicate.
-11. Cleanly stop both servers.
-12. Copy both database files using ordinary OS file copy.
-13. Restore them to new paths and verify they remain inert while unregistered.
-14. Explicitly register the restored files with fresh server instances.
-15. Open the registered databases and rebuild all derived indexes.
-16. Verify UUIDs, documents, histories, conflicts, queries, local jobs, and checkpoints.
+1. Start each server with an empty database root and confirm a fully commented `host.toml` is created on first run.
+2. Enable bearer-token authentication on the target, generate a token with `bin/elixir_db token`, and confirm replication into it succeeds only when the source endpoint carries the matching `auth_token`.
+3. Create and register two databases through the Version 1 HTTP API.
+4. Write documents independently and retry a mutation after losing its response.
+5. Create divergent revisions through replication.
+6. Replicate in both directions and verify active conflicts.
+7. Resolve one conflict to a surviving body and another by deleting all live branches.
+8. Verify changes entries contain the final physical leaf sets.
+9. Create structured and full-text indexes and exercise pointer-keyed projections.
+10. Execute paginated queries, mutate the database, and verify the old bookmark becomes stale.
+11. Restart both servers during continuous replication and resume through checkpoint reconciliation.
+12. Verify local configuration, index definitions, jobs, and checkpoints did not protocol-replicate.
+13. Cleanly stop both servers.
+14. Copy one database root directory, including `host.toml`, tokens, certificates, and database files, using ordinary OS file copy.
+15. On a fresh host, point `ELIXIR_DB_ROOT` at the copy and start the server with no further setup.
+16. Verify the relocated server serves authenticated, TLS-protected traffic using the copied material, and that its databases, UUIDs, documents, histories, conflicts, queries, local jobs, and checkpoints are intact.
 
 ### Release condition
 
@@ -2914,6 +3086,9 @@ Version 1 is ready only when:
 * Offline single-file portability and registration recovery pass.
 * Every derived structured and full-text index can be rebuilt from authoritative state.
 * The OTP release builds (`MIX_ENV=prod mix release.build`) and emits release metadata through `bin/elixir_db eval`.
+* Copying a populated database root to a fresh host and pointing `ELIXIR_DB_ROOT` at it yields a working server carrying its host configuration, tokens, and TLS material.
+* A non-loopback listener refuses to start without authentication or TLS unless the explicit override is set.
+* `bin/elixir_db token` produces token-plus-digest pairs, and authentication compares digests constant-time.
 * No ignored failure represents a product defect.
 * Every excluded upstream test has a documented scope reason.
 * All requirement IDs are mapped to validation.
@@ -2987,6 +3162,15 @@ Version 1 is ready only when:
 * Per-database admission is bounded and waiting changes requests do not retain a connection or transaction.
 * The registration manifest contains routing metadata only and can be rebuilt by re-registering files.
 * No central server database is required to restore or interpret an individual file.
+
+## Host configuration, authentication, and transport security
+
+* Host configuration lives in `<database_root>/host.toml`, is created from a template on first run, and is never overwritten once present.
+* Copying the database root carries host configuration, authentication tokens, and TLS material to another host with no further setup beyond `ELIXIR_DB_ROOT`.
+* A non-loopback listener without authentication and without TLS fails to start unless the operator sets the explicit override.
+* Authentication digests are SHA-256, constant-time compared, and the `bin/elixir_db token` command produces token-plus-digest pairs.
+* A replication source authenticates to an authenticated target via the endpoint `auth_token`, and outbound calls to `https` endpoints use TLS.
+* Authentication failures return `unauthorized` with an identical message regardless of cause.
 
 ---
 
@@ -3186,9 +3370,17 @@ A future migration specification MUST be storage-engine neutral at the domain le
 * Adapter-specific physical migration steps hidden behind the storage adapter.
 * Cross-engine migration behavior when moving away from SQLite.
 
-## `DEF-019` — Authentication, authorization, and secret handling
+## `DEF-019` — Extended authentication and authorization
 
-Version 1 defines no authentication, authorization, credential, token, key, or secret-management behavior.
+Version 1 provides single bearer-token authentication (`AUTH-001`) and
+single-certificate TLS (`TLS-001`). The following are deferred:
+
+* Usernames, roles, and fine-grained authorization.
+* Per-database or per-collection credentials.
+* Sessions, cookies, refresh tokens, and OAuth.
+* Certificate mutual-authentication (mTLS) for clients or replication peers.
+* Custom CA bundles, certificate pinning, and automatic certificate rotation.
+* A runtime token-revocation endpoint and a dedicated secret-management store.
 
 A future security specification MUST define these concerns independently from document, replication, and storage semantics.
 
@@ -3234,8 +3426,8 @@ Version 1 SHALL be:
 
 > A stateless Elixir document-database server packaged as an OTP release, with frozen storage-neutral domain and HTTP contracts plus a compartmentalized SQLite storage adapter. Each logical database is one SQLite file using rollback-journal `DELETE` mode. The system stores canonical revisioned JSON documents, preserves complete revision trees and tombstones, distinguishes active conflicts, provides atomic conflict resolution, maintains an exact local changes feed, and performs checkpointed Couch-inspired replication by transferring complete revision chains. Protocol replication transfers document revision state only; database configuration, logical indexes, replication jobs, checkpoints, and maintenance state remain local to each database file. Structured queries use RFC 6901 field references and deterministic bounded planning. Full-text search uses the fixed storage-neutral `unicode_words_v1` contract, implemented by the Version 1 SQLite adapter through FTS5. A cleanly closed database file can be copied, moved, renamed, backed up, and restored with ordinary operating-system file operations without an export command.
 
-The server provides explicit database registration, exclusive per-file ownership, bounded per-database admission, non-blocking changes waiters, supervised replication workers, and the versioned `/v1` HTTP protocol. Production hosts run the assembled release (`bin/elixir_db`); Mix is reserved for development and CI.
+The server provides explicit database registration, exclusive per-file ownership, bounded per-database admission, non-blocking changes waiters, supervised replication workers, the versioned `/v1` HTTP protocol, optional bearer-token authentication, and optional TLS. Production hosts run the assembled release (`bin/elixir_db`); Mix is reserved for development and CI.
 
-The registration manifest is reconstructible non-authoritative routing metadata. The database file remains the complete durable unit.
+Host configuration, authentication tokens, and TLS material live alongside the database files inside the database root in a single editable TOML file, so copying the root directory relocates a complete, working server. The registration manifest is reconstructible non-authoritative routing metadata. The database file remains the complete durable unit.
 
 SQLite provides Version 1 physical transactions and derived indexes behind the storage adapter. The project-owned contracts define document, revision, conflict, changes, query, full-text, replication, configuration, lifecycle, and protocol behavior independently of SQLite.
