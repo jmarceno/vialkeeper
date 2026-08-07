@@ -16,6 +16,16 @@ defmodule ElixirDB.HTTP.Router do
   plug(:match)
   plug(:dispatch)
 
+  # Plan §5.7: wrap the routing pipeline in the elixir_db.http.request server
+  # span. Overriding call/2 (rather than a plug in the pipeline) guarantees the
+  # span is ended — and the prior trace context restored — even when a
+  # downstream plug raises before any response is sent.
+  def call(conn, opts) do
+    ElixirDB.Observability.Instrumentation.HTTP.wrap(conn, fn conn ->
+      super(conn, opts)
+    end)
+  end
+
   # More specific database-scoped resources first so they are not swallowed by
   # the `/v1/databases` forward below.
   forward("/v1/databases/:uuid/documents", to: Documents)

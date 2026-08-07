@@ -207,3 +207,99 @@ Stable public error codes (see `ElixirDB.Error`) that operators hit most often:
 
 Backend exception names and SQL text are not part of the public contract; rely
 on the versioned error envelope (`code`, `message`, `retryable`, `details`).
+
+## Observability
+
+ElixirDB ships an OpenTelemetry (OTel) pipeline covering the Plan §11
+telemetry events: each event is emitted as an OTel span and/or metric, and
+trace context propagates across the HTTP boundary and into replication
+workers. Collection is **opt-in** — a host with no collector configured
+behaves exactly as before.
+
+### Enabling collection
+
+Set `ELIXIRDB_OTLP_ENDPOINT` in the environment before starting the release:
+
+```sh
+export ELIXIRDB_OTLP_ENDPOINT=http://localhost:4318
+/opt/elixir_db/bin/elixir_db daemon
+```
+
+The OTLP exporter uses the HTTP protobuf protocol (`:http_protobuf`) and
+sends traces and metrics to that endpoint. Spans are batched and exported
+asynchronously; a periodic metric reader exports every 30 seconds.
+Instrumentation never blocks the hot path.
+
+When `ELIXIRDB_OTLP_ENDPOINT` is unset, no exporter is wired and **no
+network connection to any collector is attempted** (`OBSV-004`). The app
+starts and serves traffic exactly as before; instrumentation calls are safe
+no-ops. The gate lives in `config/runtime.exs`.
+
+### Span and metric catalog
+
+Span and metric names come verbatim from Plan §11 and are part of the
+operational contract (`OBSV-003`):
+
+| Event | OTel span | Metric |
+| --- | --- | --- |
+| Database open | `elixir_db.database.open` | `elixir_db.database.open.count` (counter) |
+| Database command | `elixir_db.database.command` | `elixir_db.database.command.duration` (histogram) |
+| Admission overload | — (counter only) | `elixir_db.database.overload.count` (counter) |
+| Changes read | `elixir_db.changes.read` | `elixir_db.changes.read.duration` (histogram) |
+| Query execute | `elixir_db.query.execute` | `elixir_db.query.execute.duration` (histogram) |
+| Index build | `elixir_db.index.build` | `elixir_db.index.build.duration` (histogram) |
+| Replication batch | `elixir_db.replication.batch` | `elixir_db.replication.batch.duration` (histogram) |
+| Replication checkpoint | `elixir_db.replication.checkpoint` | `elixir_db.replication.checkpoint.count` (counter) |
+| HTTP request | `elixir_db.http.request` | `elixir_db.http.request.duration` (histogram) |
+
+`database.overload` is a counter increment, not a span: overload is not a
+unit of work. `error.code` attributes use the stable error code atom from
+`ElixirDB.Error` (e.g. `:revision_conflict`), never the backend message.
+
+### Attribute allow-list
+
+A single module (`ElixirDB.Observability.Attributes`) owns the allow-list;
+anything not listed here is never attached to a span or metric:
+
+* `db.uuid` — database UUID, never the filesystem path
+* `command.type` — normalized command atom (`:put`, `:get`, …)
+* `error.code` — stable error code atom from `ElixirDB.Error`
+* `outcome` — e.g. `:ok`, `:rejected`, `:replayed`
+* `http.method`, `http.route` (the route template, never the raw path),
+  `http.status_code`
+* `index_id`, `index_type`
+* `replication.id`, `endpoint` (`:source` | `:target`)
+* Bounded counts: `entries`, `examined`, `revisions_written`
+* `finch.duration` — set by the telemetry bridge only; the bounded numeric
+  duration of an outbound Finch request
+
+Document bodies, document IDs, search text, revision bodies, and full
+remote URLs are **never** recorded. Document IDs are excluded even though
+they are not secret: they are unbounded-cardinality customer data.
+
+### Error → span status policy
+
+| Error class | Span status | Notes |
+| --- | --- | --- |
+| `:internal_error` | ERROR | Surface real failures |
+| All other registered domain errors | UNSET | Expected application outcomes; rely on the `error.code` attribute |
+| Adapter error-normalization fallback | ERROR | Unknown backend failure |
+
+Expected domain errors (`revision_conflict`, `database_in_use`, …) never
+mark a span ERROR, so error-rate dashboards alert only on true internal
+failures.
+
+### Trace context propagation
+
+* **Inbound HTTP.** W3C `traceparent`/`tracestate` headers are extracted
+  on every request, so an external caller's trace continues into ElixirDB
+  as the parent of the `elixir_db.http.request` span.
+* **Outbound replication.** Requests to remote endpoints inject the
+  current span context, so a push job's trace spans both servers under a
+  single `trace_id`.
+* **Dependency bridge.** `:telemetry` events from Finch (HTTP client) are
+  bridged into OTel child spans (`finch.request`), giving outbound
+  replication request timing without extra instrumentation. Bandit (HTTP
+  server) is intentionally NOT bridged — the `elixir_db.http.request` server
+  span already covers inbound requests; bridging Bandit too would double-span
+  every request.

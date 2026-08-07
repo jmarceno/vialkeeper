@@ -59,3 +59,37 @@ listener_port =
 if System.get_env("ELIXIR_DB_IP") || System.get_env("ELIXIR_DB_PORT") do
   config :elixir_db, listener: [ip: listener_ip, port: listener_port]
 end
+
+# OpenTelemetry opt-in gate. The OTLP exporter and metric reader are wired ONLY
+# when ELIXIRDB_OTLP_ENDPOINT is present. Otherwise no exporter is configured
+# and no network connection to any collector is attempted (OBSV-004). The
+# Observability.Supervisor still starts the (no-op) tracer/meter providers so
+# instrumentation calls are safe no-ops.
+#
+# This gate is skipped in the test environment so test.exs can wire the
+# in-memory TestExporter without runtime.exs clobbering it.
+if config_env() != :test do
+  if System.get_env("ELIXIRDB_OTLP_ENDPOINT") do
+    config :opentelemetry_exporter,
+      otlp_protocol: :http_protobuf,
+      otlp_endpoint: System.fetch_env!("ELIXIRDB_OTLP_ENDPOINT")
+
+    config :opentelemetry,
+      traces_exporter: {:opentelemetry_exporter, %{}}
+
+    config :opentelemetry_experimental,
+      readers: [
+        %{
+          id: :elixir_db_otlp_metric_reader,
+          module: :otel_metric_reader,
+          config: %{
+            exporter: {:opentelemetry_exporter, %{}},
+            export_interval_ms: 30_000
+          }
+        }
+      ]
+  else
+    config :opentelemetry, traces_exporter: :none
+    config :opentelemetry_experimental, readers: []
+  end
+end

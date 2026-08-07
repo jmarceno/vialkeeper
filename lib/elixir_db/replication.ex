@@ -148,10 +148,16 @@ defmodule ElixirDB.Replication do
     with :ok <- phase_hook(options, :checkpoint_target, context),
          {:ok, prepared} <- prepare_checkpoint(source, target, context, options),
          {:ok, target_result} <-
-           endpoint_call(target, :put_checkpoint, [
+           ElixirDB.Observability.Instrumentation.Replication.checkpoint_span(
              context.replication_id,
-             prepared.target_request
-           ]) do
+             :target,
+             fn ->
+               endpoint_call(target, :put_checkpoint, [
+                 context.replication_id,
+                 prepared.target_request
+               ])
+             end
+           ) do
       context =
         Map.merge(context, %{
           checkpoint_prepared: prepared,
@@ -172,16 +178,16 @@ defmodule ElixirDB.Replication do
 
     with :ok <- phase_hook(options, :checkpoint_source, context),
          {:ok, source_result} <-
-           endpoint_call(source, :put_checkpoint, [
+           ElixirDB.Observability.Instrumentation.Replication.checkpoint_span(
              context.replication_id,
-             prepared.source_request
-           ]) do
-      :telemetry.execute(
-        [:elixir_db, :replication, :checkpoint],
-        %{documents: prepared.documents, revisions: prepared.revisions},
-        %{replication_id: context.replication_id, source_sequence: prepared.sequence}
-      )
-
+             :source,
+             fn ->
+               endpoint_call(source, :put_checkpoint, [
+                 context.replication_id,
+                 prepared.source_request
+               ])
+             end
+           ) do
       next = prepared.sequence
 
       context =

@@ -20,6 +20,6 @@ defmodule ElixirDB.Runtime.DiagnosticsTest do
 
   test "app_version/0 matches the loaded :elixir_db application vsn" do
     assert Diagnostics.app_version() ==
-             (:elixir_db |> Application.spec(:vsn) |> List.to_string())
+             :elixir_db |> Application.spec(:vsn) |> List.to_string()
   end
 end

@@ -20,8 +20,16 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   def unregister(uuid), do: GenServer.call(__MODULE__, {:unregister, uuid})
   def list, do: GenServer.call(__MODULE__, :list)
   def info(uuid), do: GenServer.call(__MODULE__, {:info, uuid})
-  def open(uuid), do: GenServer.call(__MODULE__, {:open, uuid}, 30_000)
   def close(uuid), do: GenServer.call(__MODULE__, {:close, uuid}, 30_000)
+
+  # Plan §5.1: the database.open span is created HERE, in the caller process,
+  # before the GenServer.call — so the span is a child of the caller's trace
+  # (e.g. the HTTP request that triggered the open) and covers call latency.
+  def open(uuid) do
+    ElixirDB.Observability.Instrumentation.Database.open(uuid, fn ->
+      GenServer.call(__MODULE__, {:open, uuid}, 30_000)
+    end)
+  end
 
   def command(uuid, command, timeout \\ 30_000),
     do: GenServer.call(__MODULE__, {:command, uuid, command}, timeout)
@@ -165,9 +173,12 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   @impl true
   def handle_call({:open, uuid}, _from, state) do
+    # The database.open span wraps this call in the CALLER process (see open/1),
+    # per Plan §5.1. Rejected opens (unavailable/in_use) become
+    # outcome: :rejected there but keep span status UNSET (expected outcomes).
     case open_runtime(state, uuid) do
-      {:ok, info, state} -> {:reply, {:ok, info}, state}
-      {:error, error, state} -> {:reply, {:error, error}, state}
+      {:ok, info, new_state} -> {:reply, {:ok, info}, new_state}
+      {:error, error, new_state} -> {:reply, {:error, error}, new_state}
     end
   end
 
@@ -187,15 +198,26 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   @impl true
   def handle_call({:command, uuid, command}, _from, state) do
-    case open_runtime(state, uuid) do
-      {:ok, _info, state} ->
-        {:reply, DatabaseAdmission.with_token(uuid, fn -> DatabaseOwner.command(uuid, command) end),
-         state}
+    # Plan §5.2: wrap the central command dispatch in the database.command span.
+    # command.type is derived from the command struct; expected domain errors
+    # keep span status UNSET, only :internal_error sets ERROR (policy §6.5).
+    result =
+      case open_runtime(state, uuid) do
+        {:ok, _info, state} ->
+          ElixirDB.Observability.Instrumentation.Database.command(uuid, command, fn ->
+            DatabaseAdmission.with_token(uuid, fn -> DatabaseOwner.command(uuid, command) end)
+          end)
+          |> command_reply(state)
 
-      {:error, error, state} ->
-        {:reply, {:error, error}, state}
-    end
+        {:error, error, state} ->
+          {:error, error}
+          |> command_reply(state)
+      end
+
+    result
   end
+
+  defp command_reply(result, state), do: {:reply, result, state}
 
   @impl true
   def handle_info(:resume_registered_jobs, state) do

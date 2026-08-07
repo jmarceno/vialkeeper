@@ -9,6 +9,8 @@ defmodule ElixirDB.Application do
     http_server = Bandit.child_spec([plug: ElixirDB.HTTP.Router, scheme: :http] ++ listener)
 
     children = [
+      # Starts the OpenTelemetry SDK + exporter if configured, else no-op.
+      ElixirDB.Observability.Supervisor,
       {Registry, keys: :unique, name: ElixirDB.Runtime.DatabaseRegistry},
       ElixirDB.Runtime.DatabaseSupervisor,
       {Registry, keys: :unique, name: ElixirDB.Replication.WorkerRegistry},

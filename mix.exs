@@ -12,7 +12,17 @@ defmodule ElixirDB.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      dialyzer: [plt_add_apps: [:ex_unit, :mix]],
+      dialyzer: [
+        plt_add_apps: [
+          :ex_unit,
+          :mix,
+          :opentelemetry_api,
+          :opentelemetry_api_experimental,
+          :opentelemetry,
+          :opentelemetry_experimental,
+          :opentelemetry_exporter
+        ]
+      ],
       releases: releases()
     ]
   end
@@ -35,6 +45,16 @@ defmodule ElixirDB.MixProject do
       {:bandit, "1.12.4"},
       {:req, "0.7.2"},
       {:telemetry, "1.4.2"},
+      # OpenTelemetry. runtime: false keeps the SDK/exporter apps from auto-starting;
+      # ElixirDB.Observability.Supervisor starts them only when an OTLP endpoint is
+      # configured (see config/runtime.exs). The lockfile pins exact versions.
+      {:opentelemetry_api, "~> 1.4", runtime: false},
+      {:opentelemetry, "~> 1.5", runtime: false},
+      {:opentelemetry_exporter, "~> 1.8", runtime: false},
+      # The stable opentelemetry SDK ships tracing only; the metrics signal
+      # (otel_meter/otel_counter/otel_histogram and the metric reader) lives in
+      # the experimental package as of opentelemetry 1.7.
+      {:opentelemetry_experimental, "~> 0.5.1", runtime: false},
       {:stream_data, "1.4.0", only: [:test, :dev]},
       {:dialyxir, "1.4.7", only: [:dev, :test], runtime: false}
     ]

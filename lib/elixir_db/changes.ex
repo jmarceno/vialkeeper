@@ -3,9 +3,11 @@ defmodule ElixirDB.Changes do
   alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
 
   def read(uuid, request \\ %{}) do
-    with {:ok, normalized} <- normalize_request(request) do
-      DatabaseCatalog.command(uuid, {:command, :read_changes, normalized})
-    end
+    ElixirDB.Observability.Instrumentation.Changes.read(uuid, 0, fn ->
+      with {:ok, normalized} <- normalize_request(request) do
+        DatabaseCatalog.command(uuid, {:command, :read_changes, normalized})
+      end
+    end)
   end
 
   def wait(uuid, request) do

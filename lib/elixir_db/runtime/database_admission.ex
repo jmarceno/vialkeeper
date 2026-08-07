@@ -8,7 +8,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   def via(uuid), do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid}}}
 
   def with_token(uuid, fun) when is_function(fun, 0) do
-    with {:ok, counter, limit} <- lookup(uuid), :ok <- acquire(counter, limit) do
+    with {:ok, counter, limit} <- lookup(uuid), :ok <- acquire(uuid, counter, limit) do
       try do
         fun.()
       after
@@ -45,14 +45,14 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     {:ok, %{uuid: uuid, limit: limit, counter: counter}}
   end
 
-  defp acquire(counter, limit) do
+  defp acquire(uuid, counter, limit) do
     count = :atomics.add_get(counter, 1, 1)
 
     if count <= limit do
       :ok
     else
       _ = :atomics.add_get(counter, 1, -1)
-      :telemetry.execute([:elixir_db, :database, :overload], %{count: count}, %{})
+      ElixirDB.Observability.Instrumentation.Database.overload(uuid)
       {:error, ElixirDB.Error.database_overloaded("database admission limit reached")}
     end
   end

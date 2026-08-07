@@ -242,8 +242,14 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: ReplicationJobs.delete_by_id(conn, job_id)
 
   @impl true
-  def create_index(%__MODULE__{conn: conn}, definition) do
-    transaction(%__MODULE__{conn: conn}, fn -> IndexCatalog.create_tx(conn, definition) end)
+  def create_index(%__MODULE__{conn: conn} = adapter, definition) do
+    uuid = adapter_identity_uuid(adapter)
+    index_id = definition[:index_id] || definition["index_id"]
+    index_type = definition[:type] || definition["type"]
+
+    ElixirDB.Observability.Instrumentation.Query.build_index(uuid, index_id, index_type, fn ->
+      transaction(%__MODULE__{conn: conn}, fn -> IndexCatalog.create_tx(conn, definition) end)
+    end)
   end
 
   @impl true
@@ -252,8 +258,12 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   @impl true
-  def rebuild_index(%__MODULE__{conn: conn}, index_id) do
-    transaction(%__MODULE__{conn: conn}, fn -> IndexCatalog.rebuild_tx(conn, index_id) end)
+  def rebuild_index(%__MODULE__{conn: conn} = adapter, index_id) do
+    uuid = adapter_identity_uuid(adapter)
+
+    ElixirDB.Observability.Instrumentation.Query.build_index(uuid, index_id, nil, fn ->
+      transaction(%__MODULE__{conn: conn}, fn -> IndexCatalog.rebuild_tx(conn, index_id) end)
+    end)
   end
 
   @impl true
@@ -261,9 +271,25 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def execute_query(%__MODULE__{} = adapter, request) when is_map(request) do
-    started = System.monotonic_time(:millisecond)
-    result = QueryRunner.execute(adapter, request)
-    elapsed = System.monotonic_time(:millisecond) - started
+    # Capture the start in native units for the span (OTel uses native), and in
+    # milliseconds for the overrun guard (config is in ms). Reusing one clock
+    # per plan §5.5.
+    started_native = System.monotonic_time()
+    started_ms = System.monotonic_time(:millisecond)
+
+    uuid = adapter_identity_uuid(adapter)
+
+    # Wrap the actual query execution in the span so its duration is real and
+    # errors flow through the error.code/status policy (§5.5, §6.5). The
+    # wrapper receives {result, examined_count} and returns the bare result
+    # after recording the examined attribute.
+    result =
+      ElixirDB.Observability.Instrumentation.Query.execute(uuid, 0, started_native, fn ->
+        res = QueryRunner.execute(adapter, request)
+        {res, examined_count(res)}
+      end)
+
+    elapsed = System.monotonic_time(:millisecond) - started_ms
     maximum = get_in(adapter_identity(adapter), [:config, "queries", "max_execution_ms"]) || 5_000
 
     if elapsed <= maximum,
@@ -348,6 +374,21 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       _ -> %{current_sequence: 0, config: ElixirDB.Config.defaults()}
     end
   end
+
+  # The database UUID from the adapter identity, used as db.uuid in
+  # instrumentation. Falls back to nil when the identity cannot be read so the
+  # span is still emitted without the attribute.
+  defp adapter_identity_uuid(adapter) do
+    case identity(adapter) do
+      {:ok, %{database_uuid: uuid}} when is_binary(uuid) -> uuid
+      _ -> nil
+    end
+  end
+
+  # The candidate count the query runner computes (plan §5.5), bound as
+  # `examined` on the span/metric. Returns 0 when unavailable.
+  defp examined_count({:ok, %{examined: examined}}) when is_integer(examined), do: examined
+  defp examined_count(_), do: 0
 
   defp decode_json(json), do: StrictDecoder.decode(json)
 

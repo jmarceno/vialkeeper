@@ -14,6 +14,8 @@ defmodule ElixirDB.Replication.Worker do
   """
   @behaviour :gen_statem
 
+  require OpenTelemetry.Tracer
+
   alias ElixirDB.Replication
 
   @active_states [
@@ -59,7 +61,15 @@ defmodule ElixirDB.Replication.Worker do
         error: nil,
         cancel_requested: false,
         context: nil,
-        task: nil
+        task: nil,
+        # OTel span context for the current replication batch (started in the
+        # worker process so phase tasks inherit it), or nil between batches.
+        batch_span_ctx: nil,
+        # monotonic time the current batch started (native), or nil.
+        batch_started: nil,
+        # revisions written in the current batch's import phase (captured
+        # before checkpoint_source resets context.imported).
+        batch_revisions: 0
       }
 
       # Notify the initial :idle state so observers see the full Plan §7.7 sequence from
@@ -151,6 +161,12 @@ defmodule ElixirDB.Replication.Worker do
   def terminate(_reason, state, _data) when state in @terminal_states, do: :ok
 
   def terminate(_reason, _state, data) do
+    # End any in-flight batch span so it doesn't leak.
+    if data.batch_span_ctx do
+      replication_id = data.options[:replication_id] || data.options["replication_id"]
+      _ = end_batch_span(data, replication_id, data.batch_revisions, :ok)
+    end
+
     state = if data.error, do: :failed, else: if(data.result, do: :completed, else: :failed)
     report(data, state, %{result: data.result, error: data.error})
     :ok
@@ -179,8 +195,19 @@ defmodule ElixirDB.Replication.Worker do
     target = options.target
     context = data.context
 
+    # Capture the current OTel context so the async phase task is a child of
+    # the worker's trace (plan §6.2). Without detach/attach the task would have
+    # no parent and the trace would break across the Task.Supervisor boundary.
+    ctx = OpenTelemetry.Ctx.get_current()
+
     Task.Supervisor.async_nolink(ElixirDB.TaskSupervisor, fn ->
-      run_phase(phase, source, target, context, options)
+      token = OpenTelemetry.Ctx.attach(ctx)
+
+      try do
+        run_phase(phase, source, target, context, options)
+      after
+        OpenTelemetry.Ctx.detach(token)
+      end
     end)
   end
 
@@ -212,8 +239,12 @@ defmodule ElixirDB.Replication.Worker do
     data = %{data | context: context, attempts: 0, error: nil}
 
     if Replication.caught_up?(context) do
+      # Even an already-caught-up run does a checkpoint cycle; start a batch
+      # span so that work is traced too.
+      data = start_batch_span(data)
       enter_phase(:checkpoint_target, data)
     else
+      data = start_batch_span(data)
       enter_phase(:read_changes, data)
     end
   end
@@ -228,12 +259,24 @@ defmodule ElixirDB.Replication.Worker do
     do: enter_phase(:import, %{data | context: context})
 
   defp handle_phase_result(:import, {:ok, context}, data),
-    do: enter_phase(:checkpoint_target, %{data | context: context})
+    do:
+      enter_phase(:checkpoint_target, %{
+        data
+        | context: context,
+          # Capture revisions written before checkpoint_source resets imported.
+          batch_revisions: context_imported_count(context)
+      })
 
   defp handle_phase_result(:checkpoint_target, {:ok, context}, data),
     do: enter_phase(:checkpoint_source, %{data | context: context})
 
   defp handle_phase_result(:checkpoint_source, {:ok, context}, data) do
+    # A batch just finished (success). End the batch span and record the
+    # duration/revisions_written metric. revisions are captured at the import
+    # phase (data.batch_revisions) since checkpoint_source resets imported.
+    replication_id = data.options[:replication_id] || data.options["replication_id"]
+
+    data = end_batch_span(data, replication_id, data.batch_revisions, :ok)
     data = %{data | context: context}
 
     case Replication.next_after_checkpoint(context, data.options) do
@@ -244,7 +287,8 @@ defmodule ElixirDB.Replication.Worker do
         enter_phase(:waiting, %{data | context: context})
 
       {:continue_batch, context} ->
-        enter_phase(:read_changes, %{data | context: context})
+        # Start a new batch span for the next batch.
+        enter_phase(:read_changes, start_batch_span(%{data | context: context}))
     end
   end
 
@@ -252,7 +296,7 @@ defmodule ElixirDB.Replication.Worker do
     if context.selected == [] and context.terminal <= context.since do
       enter_phase(:waiting, %{data | context: context})
     else
-      enter_phase(:read_changes, %{data | context: %{context | selected: []}})
+      enter_phase(:read_changes, start_batch_span(%{data | context: %{context | selected: []}}))
     end
   end
 
@@ -268,6 +312,11 @@ defmodule ElixirDB.Replication.Worker do
   end
 
   defp handle_failure(data, error) do
+    # Emit the batch span/metric on failure too (plan §5.6: success or
+    # retryable failure). Uses the revisions captured at import if any.
+    replication_id = data.options[:replication_id] || data.options["replication_id"]
+    data = end_batch_span(data, replication_id, data.batch_revisions, {:error, error})
+
     if data.cancel_requested do
       stop_cancelled(data)
     else
@@ -310,6 +359,76 @@ defmodule ElixirDB.Replication.Worker do
       _ -> :ok
     end
   end
+
+  # Starts a replication.batch span in the worker process and makes it current
+  # so async phase tasks inherit the trace context (plan §6.2). Returns updated
+  # data with the span ctx and a native monotonic start timestamp. No-op when
+  # the SDK is absent (start_span returns a non-recording span ctx).
+  defp start_batch_span(data) do
+    replication_id = data.options[:replication_id] || data.options["replication_id"]
+
+    span_ctx =
+      OpenTelemetry.Tracer.start_span("elixir_db.replication.batch", %{
+        kind: :internal,
+        attributes: ElixirDB.Observability.Attributes.build(replication_id: replication_id)
+      })
+
+    OpenTelemetry.Tracer.set_current_span(span_ctx)
+
+    %{
+      data
+      | batch_span_ctx: span_ctx,
+        batch_started: System.monotonic_time(),
+        batch_revisions: 0
+    }
+  end
+
+  # Ends the current batch span (if any), records the duration histogram and,
+  # on error, sets error.code + status per §6.5. Resets batch fields.
+  defp end_batch_span(%{batch_span_ctx: nil} = data, _replication_id, _revisions, _outcome),
+    do: data
+
+  defp end_batch_span(data, replication_id, revisions, outcome) do
+    span_ctx = data.batch_span_ctx
+    duration = System.monotonic_time() - (data.batch_started || System.monotonic_time())
+
+    OpenTelemetry.Tracer.set_current_span(span_ctx)
+
+    case outcome do
+      :ok ->
+        ElixirDB.Observability.Meters.record(:"elixir_db.replication.batch.duration", duration,
+          replication_id: replication_id,
+          revisions_written: revisions
+        )
+
+      {:error, %ElixirDB.Error{} = error} ->
+        ElixirDB.Observability.Meters.record(:"elixir_db.replication.batch.duration", duration,
+          replication_id: replication_id,
+          error_code: error.code
+        )
+
+        _ =
+          ElixirDB.Observability.Tracer.set_attributes(error_code: error.code)
+
+        _ = ElixirDB.Observability.Tracer.apply_error_status(error)
+    end
+
+    OpenTelemetry.Span.end_span(span_ctx)
+    # Reset current span to none so the worker process doesn't leak it.
+    OpenTelemetry.Tracer.set_current_span(:undefined)
+
+    %{data | batch_span_ctx: nil, batch_started: nil, batch_revisions: 0}
+  end
+
+  defp context_imported_count(%{imported: %{revisions_inserted: count}})
+       when is_integer(count),
+       do: count
+
+  defp context_imported_count(%{imported: %{"revisions_inserted" => count}})
+       when is_integer(count),
+       do: count
+
+  defp context_imported_count(_), do: 0
 
   defp normalize_options(options) when is_map(options) do
     session_id = options[:session_id] || options["session_id"] || ElixirDB.UUID.v4()

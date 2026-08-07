@@ -2,13 +2,20 @@ defmodule ElixirDB.Replication.RemoteTransport do
   @moduledoc false
 
   def request(base_url, method, path, body \\ nil) do
+    # Inject the current trace context into outgoing replication requests so a
+    # push job's trace spans both the local worker and the remote server
+    # (plan §6.2). The noop propagator (no SDK) returns the headers unchanged.
+    trace_headers =
+      ElixirDB.Observability.Tracer.inject([])
+      |> Enum.map(fn {k, v} -> {to_string(k), to_string(v)} end)
+
     options = [
       method: method,
       url: String.trim_trailing(base_url, "/") <> path,
       retry: false,
       receive_timeout: 30_000,
       connect_options: [timeout: 5_000],
-      headers: [{"accept", "application/json"}]
+      headers: [{"accept", "application/json"} | trace_headers]
     ]
 
     options =
@@ -17,11 +24,29 @@ defmodule ElixirDB.Replication.RemoteTransport do
         else:
           Keyword.merge(options,
             json: body,
-            headers: [{"accept", "application/json"}, {"content-type", "application/json"}]
+            headers: [
+              {"accept", "application/json"},
+              {"content-type", "application/json"} | trace_headers
+            ]
           )
 
     timeout = ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
-    task = Task.async(fn -> Req.request(options) end)
+
+    # Carry the trace context into the timeout-enforcement task so the Finch
+    # telemetry-bridge span for this request parents under the replication
+    # trace (plan §6.2); without it the span would be a parentless root.
+    otel_ctx = OpenTelemetry.Ctx.get_current()
+
+    task =
+      Task.async(fn ->
+        token = OpenTelemetry.Ctx.attach(otel_ctx)
+
+        try do
+          Req.request(options)
+        after
+          OpenTelemetry.Ctx.detach(token)
+        end
+      end)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, %{status: status, body: response} = result}} when status in 200..299 ->
