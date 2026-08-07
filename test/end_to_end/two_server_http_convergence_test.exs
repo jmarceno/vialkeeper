@@ -212,6 +212,248 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     _ = JobManager.disable(a_uuid, job_id)
   end
 
+  @tag :slow
+  test "continuous push starts while target is offline and converges after recovery" do
+    root = ElixirDB.Config.database_root()
+    prefix = "e2e-offline-start-#{System.unique_integer([:positive])}"
+    a_path = prefix <> "-a.db"
+    b_path = prefix <> "-b.db"
+
+    for path <- [a_path, b_path] do
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+    end
+
+    server_a = TestServer.start_supervised!()
+    holder_b = TestServer.start_supervised!()
+    port_b = holder_b.port
+    assert :ok = TestServer.stop(holder_b)
+
+    a_uuid = create_database!(server_a, a_path)
+
+    # Create B's database file while B is down by registering through A's process
+    # space via local catalog — B will open the same registered path when its
+    # server comes up. Use HTTP create on A only; B database is created locally
+    # so the remote UUID is known before B listens.
+    {:ok, b} = DatabaseCatalog.create(b_path)
+    b_uuid = b.database_uuid
+
+    on_exit(fn ->
+      _ = maybe_disable_jobs(a_uuid)
+      _ = DatabaseCatalog.close(a_uuid)
+      _ = DatabaseCatalog.close(b_uuid)
+      _ = DatabaseCatalog.unregister(a_uuid)
+      _ = DatabaseCatalog.unregister(b_uuid)
+      ElixirDB.TempDatabase.cleanup(Path.join(root, a_path))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, b_path))
+    end)
+
+    assert {:ok, %{"job_id" => job_id}} =
+             put_replication_job!(server_a, a_uuid, %{
+               "persist" => true,
+               "mode" => "continuous",
+               "direction" => "push",
+               "enabled" => true,
+               "wait_ms" => 100,
+               "retry" => %{
+                 "max_attempts" => 32,
+                 "base_delay_ms" => 50,
+                 "max_delay_ms" => 400,
+                 "jitter_ms" => 10
+               },
+               "endpoint" => %{
+                 "kind" => "remote",
+                 "database_uuid" => b_uuid,
+                 "base_url" => "http://127.0.0.1:#{port_b}"
+               }
+             })
+
+    ElixirDB.Eventual.eventually(
+      fn ->
+        case JobManager.get(a_uuid, job_id) do
+          {:ok, %{state: state}} when state in [:backoff, :handshake] -> true
+          _ -> false
+        end
+      end,
+      timeout: 15_000,
+      message: "continuous job never entered backoff/handshake while target was down"
+    )
+
+    assert {:ok, %{"revision" => rev}} =
+             put_document!(server_a, a_uuid, "offline-start", %{"n" => 1})
+
+    server_b = TestServer.start_supervised!(port: port_b)
+    assert server_b.port == port_b
+
+    wait_for_document!(server_b, b_uuid, "offline-start", rev, %{"n" => 1})
+
+    assert {:ok, replication_id} = Id.calculate(a_uuid, b_uuid, "push", "continuous")
+    final_sequence = source_sequence!(a_uuid)
+
+    ElixirDB.Eventual.eventually(
+      fn ->
+        case checkpoint_source_sequence(a_uuid, replication_id) do
+          {:ok, seq} when seq == final_sequence ->
+            case checkpoint_source_sequence(b_uuid, replication_id) do
+              {:ok, ^final_sequence} -> true
+              _ -> false
+            end
+
+          _ ->
+            false
+        end
+      end,
+      timeout: 15_000,
+      message: "checkpoints did not converge after offline-start recovery"
+    )
+
+    assert {:ok, _} = JobManager.cancel(a_uuid, job_id)
+  end
+
+  @tag :slow
+  test "continuous push resumes from checkpoint after mid-batch target drop" do
+    root = ElixirDB.Config.database_root()
+    prefix = "e2e-mid-batch-#{System.unique_integer([:positive])}"
+    a_path = prefix <> "-a.db"
+    b_path = prefix <> "-b.db"
+
+    for path <- [a_path, b_path] do
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+    end
+
+    server_a = TestServer.start_supervised!()
+    server_b = TestServer.start_supervised!()
+    port_b = server_b.port
+
+    a_uuid = create_database!(server_a, a_path)
+    b_uuid = create_database!(server_b, b_path)
+
+    on_exit(fn ->
+      _ = maybe_disable_jobs(a_uuid)
+      _ = DatabaseCatalog.close(a_uuid)
+      _ = DatabaseCatalog.close(b_uuid)
+      _ = DatabaseCatalog.unregister(a_uuid)
+      _ = DatabaseCatalog.unregister(b_uuid)
+      ElixirDB.TempDatabase.cleanup(Path.join(root, a_path))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, b_path))
+    end)
+
+    assert {:ok, %{"job_id" => job_id}} =
+             put_replication_job!(server_a, a_uuid, %{
+               "persist" => true,
+               "mode" => "continuous",
+               "direction" => "push",
+               "enabled" => true,
+               "wait_ms" => 50,
+               "retry" => %{
+                 "max_attempts" => 32,
+                 "base_delay_ms" => 50,
+                 "max_delay_ms" => 400,
+                 "jitter_ms" => 10
+               },
+               "endpoint" => %{
+                 "kind" => "remote",
+                 "database_uuid" => b_uuid,
+                 "base_url" => server_b.base_url
+               }
+             })
+
+    assert {:ok, %{"revision" => seed_rev}} =
+             put_document!(server_a, a_uuid, "seed", %{"n" => 0})
+
+    wait_for_document!(server_b, b_uuid, "seed", seed_rev, %{"n" => 0})
+
+    assert {:ok, replication_id} = Id.calculate(a_uuid, b_uuid, "push", "continuous")
+
+    ElixirDB.Eventual.eventually(
+      fn ->
+        case checkpoint_source_sequence(a_uuid, replication_id) do
+          {:ok, seq} when is_integer(seq) and seq >= 1 ->
+            case checkpoint_source_sequence(b_uuid, replication_id) do
+              {:ok, ^seq} -> true
+              _ -> false
+            end
+
+          _ ->
+            false
+        end
+      end,
+      timeout: 15_000,
+      message: "baseline checkpoints never caught up"
+    )
+
+    assert {:ok, cp0} = checkpoint_source_sequence(a_uuid, replication_id)
+    assert cp0 >= 1
+
+    for i <- 1..50 do
+      assert {:ok, _} =
+               put_document!(server_a, a_uuid, "batch-#{i}", %{"n" => i})
+    end
+
+    assert :ok = TestServer.stop(server_b)
+    assert {:error, _} = Req.get("http://127.0.0.1:#{port_b}/v1/databases", retry: false)
+
+    assert {:ok, _} = JobManager.disable(a_uuid, job_id)
+
+    ElixirDB.Eventual.eventually(
+      fn ->
+        case JobManager.get(a_uuid, job_id) do
+          {:ok, %{state: :disabled}} -> true
+          _ -> false
+        end
+      end,
+      timeout: 10_000,
+      message: "continuous job was not disabled after mid-batch drop"
+    )
+
+    for i <- 51..55 do
+      assert {:ok, %{revision: _}} =
+               ElixirDB.Documents.put(a_uuid, %{id: "batch-#{i}", body: %{"n" => i}})
+    end
+
+    server_b2 = TestServer.start_supervised!(port: port_b)
+    assert server_b2.port == port_b
+    assert {:ok, _} = JobManager.enable(a_uuid, job_id)
+
+    for i <- 1..55 do
+      ElixirDB.Eventual.eventually(
+        fn ->
+          case ElixirDB.Documents.get(b_uuid, %{id: "batch-#{i}"}) do
+            {:ok, %{body: %{"n" => ^i}}} -> true
+            _ -> false
+          end
+        end,
+        timeout: 30_000,
+        message: "document batch-#{i} did not arrive after mid-batch resume"
+      )
+    end
+
+    final_sequence = source_sequence!(a_uuid)
+
+    ElixirDB.Eventual.eventually(
+      fn ->
+        case checkpoint_source_sequence(a_uuid, replication_id) do
+          {:ok, seq} when seq == final_sequence ->
+            case checkpoint_source_sequence(b_uuid, replication_id) do
+              {:ok, ^final_sequence} -> true
+              _ -> false
+            end
+
+          _ ->
+            false
+        end
+      end,
+      timeout: 20_000,
+      message: "checkpoints did not reach final source sequence after mid-batch resume"
+    )
+
+    assert {:ok, recovered} = checkpoint_source_sequence(a_uuid, replication_id)
+    assert recovered > cp0
+    assert recovered == final_sequence
+
+    assert_leaf_sets_equal!(a_uuid, b_uuid)
+    _ = JobManager.disable(a_uuid, job_id)
+  end
+
   defp create_database!(server, path) do
     assert {:ok, %{status: 201, body: body}} =
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})

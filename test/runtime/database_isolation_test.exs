@@ -141,4 +141,44 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
 
     assert still_b == runtime_b
   end
+
+  @tag :slow
+  test "concurrent puts on one document yield exactly one winner through DatabaseOwner", %{
+    a: uuid_a
+  } do
+    assert {:ok, _} = DatabaseCatalog.open(uuid_a)
+
+    assert {:ok, %{revision: base}} =
+             ElixirDB.Documents.put(uuid_a, %{id: "doc", body: %{"n" => 0}})
+
+    n = 200
+
+    results =
+      1..n
+      |> Enum.map(fn i ->
+        Task.async(fn ->
+          ElixirDB.Documents.put(uuid_a, %{id: "doc", if_revision: base, body: %{"n" => i}})
+        end)
+      end)
+      |> Task.await_many(30_000)
+
+    {oks, errors} =
+      Enum.split_with(results, fn
+        {:ok, %{revision: _}} -> true
+        _ -> false
+      end)
+
+    assert [{:ok, %{revision: winner}}] = oks
+    assert Enum.count_until(errors, n) == n - 1
+
+    assert Enum.all?(errors, fn
+             {:error, %ElixirDB.Error{code: :revision_conflict}} -> true
+             _ -> false
+           end)
+
+    assert winner != base
+
+    assert {:ok, %{revision: ^winner, conflicts: []}} =
+             ElixirDB.Documents.get(uuid_a, %{id: "doc", include_conflicts: true})
+  end
 end

@@ -306,6 +306,115 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
     assert Enum.any?(docs, &(&1.id == "alpha"))
   end
 
+  @tag :slow
+  test "replicates a live leaf alongside a deleted conflict branch" do
+    alias ElixirDB.Revisions.Id, as: RevisionId
+    alias ElixirDB.Storage.AdapterCase
+
+    root = ElixirDB.Config.database_root()
+    prefix = "phase8-del-conflict-#{System.unique_integer([:positive])}"
+    a_path = prefix <> "-a.db"
+    b_path = prefix <> "-b.db"
+
+    for path <- [a_path, b_path] do
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+    end
+
+    {:ok, a} = DatabaseCatalog.create(a_path)
+    {:ok, b} = DatabaseCatalog.create(b_path)
+
+    on_exit(fn ->
+      for {identity, path} <- [{a, a_path}, {b, b_path}] do
+        _ = DatabaseCatalog.close(identity.database_uuid)
+        _ = DatabaseCatalog.unregister(identity.database_uuid)
+        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      end
+    end)
+
+    a_uuid = a.database_uuid
+    b_uuid = b.database_uuid
+    document_id = "deleted-conflict"
+
+    root_body = %{"role" => "root"}
+    left_body = %{"role" => "left"}
+    {:ok, root_rev} = RevisionId.calculate(document_id, nil, false, root_body)
+    {:ok, left} = RevisionId.calculate(document_id, root_rev, false, left_body)
+    {:ok, right_deleted} = RevisionId.calculate(document_id, root_rev, true, nil)
+
+    assert {:ok, _} =
+             DatabaseCatalog.command(a_uuid, {
+               :command,
+               :import_revision_chains,
+               %{
+                 chains: [
+                   %{
+                     document_id: document_id,
+                     leaf_revision: left,
+                     revisions: [
+                       AdapterCase.wire_revision(document_id, root_rev, nil, false, root_body),
+                       AdapterCase.wire_revision(document_id, left, root_rev, false, left_body)
+                     ]
+                   },
+                   %{
+                     document_id: document_id,
+                     leaf_revision: right_deleted,
+                     revisions: [
+                       AdapterCase.wire_revision(document_id, root_rev, nil, false, root_body),
+                       AdapterCase.wire_revision(document_id, right_deleted, root_rev, true, nil)
+                     ]
+                   }
+                 ]
+               }
+             })
+
+    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
+
+    assert {:ok, %{revision: ^left, conflicts: []}} =
+             ElixirDB.Documents.get(b_uuid, %{id: document_id, include_conflicts: true})
+
+    # Tombstone is a physical leaf, not a live conflict entry.
+    assert {:ok, %{revision: ^right_deleted, deleted: true}} =
+             ElixirDB.Documents.get(b_uuid, %{id: document_id, revision: right_deleted})
+
+    assert {:ok, %{results: changes}} = ElixirDB.Changes.read(b_uuid, %{since: 0, limit: 100})
+
+    change =
+      changes
+      |> Enum.filter(&(MapAccess.get(&1, :document_id) == document_id))
+      |> List.last()
+
+    assert change
+    assert MapAccess.get(change, :winning_revision) == left
+
+    assert Enum.any?(change.leaf_revisions, fn leaf ->
+             MapAccess.get(leaf, :revision) == left and MapAccess.get(leaf, :deleted) == false
+           end)
+
+    assert Enum.any?(change.leaf_revisions, fn leaf ->
+             MapAccess.get(leaf, :revision) == right_deleted and
+               MapAccess.get(leaf, :deleted) == true
+           end)
+
+    a_leaves_before = document_leaf_set(a_uuid, document_id)
+    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(b_uuid, a_uuid)
+    assert document_leaf_set(a_uuid, document_id) == a_leaves_before
+  end
+
+  defp document_leaf_set(uuid, document_id) do
+    assert {:ok, %{results: changes}} = ElixirDB.Changes.read(uuid, %{since: 0, limit: 100})
+
+    change =
+      changes
+      |> Enum.filter(&(MapAccess.get(&1, :document_id) == document_id))
+      |> List.last()
+
+    change.leaf_revisions
+    |> Enum.map(fn leaf ->
+      {MapAccess.get(leaf, :revision), MapAccess.get(leaf, :deleted)}
+    end)
+    |> MapSet.new()
+  end
+
   defp conflict_winner(uuid) do
     {:ok, %{revision: revision}} = ElixirDB.Documents.get(uuid, %{id: "shared"})
     revision

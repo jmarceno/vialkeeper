@@ -143,6 +143,55 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
     end
   end
 
+  test "import order of the same revision multiset does not change the resulting tree" do
+    document_id = "order-indep"
+    fixture = order_independence_fixture(document_id)
+
+    snapshots =
+      Enum.map(import_order_permutations(), fn order ->
+        {:ok, path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-order")
+        {:ok, adapter} = Adapter.create(path, %{})
+
+        try do
+          Enum.each(order, fn chain_key ->
+            chain = Map.fetch!(fixture.chains, chain_key)
+
+            assert {:ok, _} =
+                     Adapter.import_revision_chains(adapter, %{chains: [chain]})
+          end)
+
+          adapter_snapshot(adapter, document_id)
+        after
+          _ = Adapter.close(adapter)
+          ElixirDB.TempDatabase.cleanup(path)
+        end
+      end)
+
+    assert Enum.count_until(snapshots, 25) == 24
+    [first | rest] = snapshots
+
+    assert first.winner == fixture.expected_winner
+    assert first.winner_deleted == false
+    assert fixture.tombstone in first.tombstones
+    refute first.winner == fixture.tombstone
+
+    assert MapSet.new(first.leaf_set) ==
+             MapSet.new([
+               %{revision: fixture.left, deleted: false},
+               %{revision: fixture.right, deleted: false},
+               %{revision: fixture.tombstone, deleted: true}
+             ])
+
+    assert MapSet.new(first.live_leaf_set) == MapSet.new([fixture.left, fixture.right])
+
+    assert MapSet.new(first.conflicts) ==
+             MapSet.new([fixture.left, fixture.right] -- [fixture.expected_winner])
+
+    for snap <- rest do
+      assert_equivalent_snapshots(first, snap)
+    end
+  end
+
   defp sibling_history(mode) do
     StreamData.bind(ModelGenerators.document_id(), fn document_id ->
       StreamData.bind(
@@ -539,5 +588,96 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
 
   defp wire(document_id, revision_id, parent, deleted, body) do
     AdapterCase.wire_revision(document_id, revision_id, parent, deleted, body)
+  end
+
+  defp import_order_permutations do
+    # Four import units: root alone, then each leaf chain. 4! = 24 orders.
+    [:root, :left, :right, :tombstone]
+    |> permutations()
+  end
+
+  defp permutations([]), do: [[]]
+
+  defp permutations(list) do
+    for head <- list, tail <- permutations(list -- [head]), do: [head | tail]
+  end
+
+  defp order_independence_fixture(document_id) do
+    root_body = %{"role" => "root"}
+    left_body = %{"role" => "left"}
+    right_body = %{"role" => "right"}
+
+    {:ok, root} = Id.calculate(document_id, nil, false, root_body)
+    {:ok, left} = Id.calculate(document_id, root, false, left_body)
+    {:ok, right} = Id.calculate(document_id, root, false, right_body)
+    {:ok, tombstone} = Id.calculate(document_id, root, true, nil)
+
+    leaves = [
+      %ElixirDB.Domain.Revision{
+        document_id: document_id,
+        revision_id: left,
+        generation: 2,
+        parent_revision: root,
+        deleted: false,
+        body: left_body
+      },
+      %ElixirDB.Domain.Revision{
+        document_id: document_id,
+        revision_id: right,
+        generation: 2,
+        parent_revision: root,
+        deleted: false,
+        body: right_body
+      },
+      %ElixirDB.Domain.Revision{
+        document_id: document_id,
+        revision_id: tombstone,
+        generation: 2,
+        parent_revision: root,
+        deleted: true,
+        body: nil
+      }
+    ]
+
+    {:ok, winner} = Winner.select(leaves)
+
+    %{
+      root: root,
+      left: left,
+      right: right,
+      tombstone: tombstone,
+      expected_winner: winner.revision_id,
+      chains: %{
+        root: %{
+          document_id: document_id,
+          leaf_revision: root,
+          revisions: [wire(document_id, root, nil, false, root_body)]
+        },
+        left: %{
+          document_id: document_id,
+          leaf_revision: left,
+          revisions: [
+            wire(document_id, root, nil, false, root_body),
+            wire(document_id, left, root, false, left_body)
+          ]
+        },
+        right: %{
+          document_id: document_id,
+          leaf_revision: right,
+          revisions: [
+            wire(document_id, root, nil, false, root_body),
+            wire(document_id, right, root, false, right_body)
+          ]
+        },
+        tombstone: %{
+          document_id: document_id,
+          leaf_revision: tombstone,
+          revisions: [
+            wire(document_id, root, nil, false, root_body),
+            wire(document_id, tombstone, root, true, nil)
+          ]
+        }
+      }
+    }
   end
 end
