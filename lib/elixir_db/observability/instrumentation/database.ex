@@ -153,6 +153,12 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
   defp command_type_for_struct(%Commands.ListJobs{}), do: :list_jobs
   defp command_type_for_struct(%Commands.PutJob{}), do: :put_job
   defp command_type_for_struct(%Commands.DeleteJob{}), do: :delete_job
+  defp command_type_for_struct(%Commands.CompactRetention{}), do: :compact_retention
+  defp command_type_for_struct(%Commands.RetentionStatus{}), do: :retention_status
+  defp command_type_for_struct(%Commands.ListPeerPositions{}), do: :list_peer_positions
+  defp command_type_for_struct(%Commands.PutPeerPositionCas{}), do: :put_peer_position_cas
+  defp command_type_for_struct(%Commands.ReadBoundaryPages{}), do: :read_boundary_pages
+  defp command_type_for_struct(%Commands.InstallBoundaryPages{}), do: :install_boundary_pages
   defp command_type_for_struct(%Commands.Close{}), do: :close
   defp command_type_for_struct(_), do: :unknown
 end

@@ -234,7 +234,9 @@ defmodule ElixirDB.Runtime.ReplicationTest do
              :checkpoint_target,
              :after_checkpoint_target,
              :checkpoint_source,
-             :after_checkpoint_source
+             :after_checkpoint_source,
+             :report_peer,
+             :after_report_peer
            ]
 
     assert {:ok, %{body: %{"n" => 1}}} =

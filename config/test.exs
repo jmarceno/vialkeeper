@@ -30,7 +30,9 @@ config :elixir_db,
     max_open_databases: 64,
     max_replication_workers: 32,
     admission_limit: 128,
-    max_json_nesting_depth: 100
+    max_json_nesting_depth: 100,
+    max_peer_expiry_ms: 604_800_000,
+    max_retention_schedule_ms: 604_800_000
   ],
   listener: [ip: {127, 0, 0, 1}, port: 0],
   auth: [enabled: false, token_digests: []],

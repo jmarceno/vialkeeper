@@ -3,10 +3,19 @@ defmodule ElixirDB.Revisions.Wire do
 
   alias ElixirDB.Domain.Revision
 
-  @spec new(binary(), binary(), pos_integer(), binary() | nil, boolean(), map() | nil) :: map()
-  def new(document_id, revision_id, generation, parent_revision, deleted, body) do
+  @spec new(
+          binary(),
+          binary(),
+          binary(),
+          pos_integer(),
+          binary() | nil,
+          boolean(),
+          map() | nil
+        ) :: map()
+  def new(document_id, history_id, revision_id, generation, parent_revision, deleted, body) do
     %{
       document_id: document_id,
+      history_id: history_id,
       revision_id: revision_id,
       generation: generation,
       parent_revision: parent_revision,
@@ -20,6 +29,7 @@ defmodule ElixirDB.Revisions.Wire do
     do:
       new(
         document_id,
+        revision.history_id,
         revision.revision_id,
         revision.generation,
         revision.parent_revision,

@@ -14,12 +14,15 @@ defmodule ElixirDB.Replication.JobManager do
   @active_states [
     :idle,
     :handshake,
+    :install_boundaries,
+    :bootstrap,
     :read_changes,
     :diff,
     :fetch_chains,
     :import,
     :checkpoint_target,
     :checkpoint_source,
+    :report_peer,
     :waiting,
     :backoff
   ]

@@ -6,6 +6,7 @@ defmodule ElixirDB.Replication do
   alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationModule
   alias ElixirDB.Replication.{CheckpointReconciler, Id}
   alias ElixirDB.Replication.LocalEndpoint
+  alias ElixirDB.Retention.SafeReport
   @default_batch 100
 
   @doc "Ordered worker phase states from Plan §7.7 (excluding terminal idle entry)."
@@ -13,12 +14,15 @@ defmodule ElixirDB.Replication do
     [
       :idle,
       :handshake,
+      :install_boundaries,
+      :bootstrap,
       :read_changes,
       :diff,
       :fetch_chains,
       :import,
       :checkpoint_target,
       :checkpoint_source,
+      :report_peer,
       :waiting,
       :backoff,
       :completed,
@@ -59,26 +63,59 @@ defmodule ElixirDB.Replication do
              option(options, :mode, "one_shot")
            ),
          {:ok, source_checkpoint} <- endpoint_call(source, :get_checkpoint, [replication_id]),
-         {:ok, target_checkpoint} <- endpoint_call(target, :get_checkpoint, [replication_id]) do
-      since =
-        CheckpointReconciler.common_sequence(value(source_checkpoint), value(target_checkpoint))
-
-      terminal = get(source_identity, :current_sequence) || 0
-
+         {:ok, target_checkpoint} <- endpoint_call(target, :get_checkpoint, [replication_id]),
+         reconcile <-
+           CheckpointReconciler.reconcile(
+             value(source_checkpoint),
+             value(target_checkpoint),
+             source_identity
+           ),
+         terminal <- get(source_identity, :current_sequence) || 0 do
       context = %{
         session_id: option(options, :session_id, ElixirDB.UUID.v4()),
         replication_id: replication_id,
-        since: since,
+        since: reconcile.since,
         terminal: terminal,
+        bootstrap_required: reconcile.bootstrap_required,
+        reconcile_reason: reconcile.reason,
+        source_identity: source_identity,
+        target_identity: target_identity,
         source_checkpoint: source_checkpoint,
         target_checkpoint: target_checkpoint,
+        installed_source_compaction_epoch:
+          installed_compaction_epoch(target_checkpoint) ||
+            reconcile.source_compaction_epoch,
+        boundaries_installed_through: 0,
         selected: [],
         documents: [],
         chains: [],
-        imported: nil
+        imported: nil,
+        bootstrap_cursor: nil
       }
 
       with :ok <- phase_hook(options, :after_handshake, context) do
+        {:ok, context}
+      end
+    end
+  end
+
+  @doc "Install source retention boundaries on the target before acknowledging epochs."
+  def install_boundaries(source, target, context, options) do
+    with :ok <- phase_hook(options, :install_boundaries, context),
+         {:ok, installed_through} <- install_boundary_pages(source, target, context) do
+      context = %{context | boundaries_installed_through: installed_through}
+
+      with :ok <- phase_hook(options, :after_install_boundaries, context) do
+        {:ok, context}
+      end
+    end
+  end
+
+  @doc "Paginated snapshot/bootstrap transfer from source to target."
+  def bootstrap(source, target, context, options) do
+    with :ok <- phase_hook(options, :bootstrap, context),
+         {:ok, context} <- bootstrap_pages(source, target, context, options) do
+      with :ok <- phase_hook(options, :after_bootstrap, context) do
         {:ok, context}
       end
     end
@@ -92,14 +129,34 @@ defmodule ElixirDB.Replication do
     request = %Request{since: context.since, limit: limit, wait_ms: wait_ms}
 
     with :ok <- phase_hook(options, :read_changes, context),
-         {:ok, changes} <- endpoint_call(source, :read_changes, [request]),
-         {:ok, selected} <- take_batch_bytes(terminal_changes(changes, context.terminal), options),
-         :ok <- ensure_progress(selected, context.since, context.terminal) do
-      context = %{context | selected: selected}
+         changes_result <- endpoint_call(source, :read_changes, [request]),
+         {:ok, context} <- apply_read_changes_result(changes_result, context) do
+      finalize_read_changes(source, context, options)
+    end
+  end
 
-      with :ok <- phase_hook(options, :after_read_changes, context) do
-        {:ok, context}
-      end
+  defp finalize_read_changes(_source, %{bootstrap_required: true} = context, options) do
+    case phase_hook(options, :after_read_changes, context) do
+      :ok -> {:ok, context}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp finalize_read_changes(_source, context, options) do
+    with {:ok, selected} <-
+           take_batch_bytes(
+             terminal_changes(%{results: context.selected}, context.terminal),
+             options
+           ),
+         :ok <- ensure_progress(selected, context.since, context.terminal) do
+      after_read_changes(%{context | selected: selected}, options)
+    end
+  end
+
+  defp after_read_changes(context, options) do
+    case phase_hook(options, :after_read_changes, context) do
+      :ok -> {:ok, context}
+      {:error, error} -> {:error, error}
     end
   end
 
@@ -193,6 +250,7 @@ defmodule ElixirDB.Replication do
       context =
         context
         |> Map.put(:since, next)
+        |> Map.put(:safe_source_sequence, prepared.safe_source_sequence)
         |> Map.put(:source_checkpoint_result, source_result)
         |> Map.put(:selected, [])
         |> Map.put(:documents, [])
@@ -207,9 +265,28 @@ defmodule ElixirDB.Replication do
     end
   end
 
+  @doc "Report the target safe position and renew the peer lease on the source."
+  def report_peer(source, target, context, options) do
+    with :ok <- phase_hook(options, :report_peer, context),
+         {:ok, _result} <- report_peer_position(source, target, context, options) do
+      with :ok <- phase_hook(options, :after_report_peer, context) do
+        {:ok, context}
+      end
+    end
+  end
+
   @doc "Wait for source changes beyond the current checkpoint (continuous mode)."
   def wait_for_changes(source, context, options) do
     with :ok <- phase_hook(options, :waiting, context),
+         {:ok, source_identity} <- endpoint_call(source, :identity, []),
+         reconcile <-
+           CheckpointReconciler.reconcile(
+             value(context.source_checkpoint),
+             value(context.target_checkpoint),
+             source_identity
+           ),
+         context <-
+           maybe_mark_bootstrap(context, reconcile, source_identity),
          {:ok, changes} <-
            endpoint_call(source, :read_changes, [
              %Request{
@@ -226,7 +303,11 @@ defmodule ElixirDB.Replication do
           _ -> context.since
         end
 
-      context = %{context | terminal: terminal, selected: selected}
+      context =
+        context
+        |> Map.put(:terminal, terminal)
+        |> Map.put(:selected, selected)
+        |> Map.put(:source_identity, source_identity)
 
       with :ok <- phase_hook(options, :after_waiting, context) do
         {:ok, context}
@@ -239,6 +320,9 @@ defmodule ElixirDB.Replication do
     continuous? = option(options, :mode, "one_shot") in ["continuous", :continuous]
 
     cond do
+      context.bootstrap_required ->
+        {:bootstrap, context}
+
       context.since < context.terminal ->
         {:continue_batch, context}
 
@@ -256,19 +340,29 @@ defmodule ElixirDB.Replication do
   end
 
   @doc "Whether handshake found the source already caught up to the terminal sequence."
+  def caught_up?(%{since: since, terminal: terminal, bootstrap_required: false}),
+    do: since >= terminal
+
+  def caught_up?(%{bootstrap_required: true}), do: false
   def caught_up?(%{since: since, terminal: terminal}), do: since >= terminal
 
   defp process_from_handshake(source, target, context, options) do
-    if caught_up?(context) do
-      checkpoint_caught_up(source, target, context, options)
-    else
-      process_batches(source, target, context, options)
+    cond do
+      context.bootstrap_required ->
+        finish_bootstrap(source, target, context, options)
+
+      caught_up?(context) ->
+        checkpoint_caught_up(source, target, context, options)
+
+      true ->
+        process_batches(source, target, context, options)
     end
   end
 
   defp checkpoint_caught_up(source, target, context, options) do
     with {:ok, context} <- checkpoint_target(source, target, context, options),
-         {:ok, context} <- checkpoint_source(source, context, options) do
+         {:ok, context} <- checkpoint_source(source, context, options),
+         {:ok, context} <- report_peer(source, target, context, options) do
       continue_after_checkpoint(source, target, context, options)
     end
   end
@@ -277,40 +371,194 @@ defmodule ElixirDB.Replication do
     handle_next_after_checkpoint(source, target, context, options)
   end
 
+  defp handle_next_after_checkpoint(source, target, context, options) do
+    case next_after_checkpoint(context, options) do
+      {:completed, result} ->
+        {:ok, result}
+
+      {:waiting, context} ->
+        wait_loop(source, target, context, options)
+
+      {:continue_batch, context} ->
+        process_batches(source, target, context, options)
+
+      {:bootstrap, context} ->
+        finish_bootstrap(source, target, context, options)
+    end
+  end
+
   defp process_batches(source, target, context, options) do
-    with {:ok, context} <- read_changes(source, context, options),
-         {:ok, context} <- diff(target, context, options),
+    with {:ok, context} <- read_changes(source, context, options) do
+      if context.bootstrap_required do
+        bootstrap_after_read(source, target, context, options)
+      else
+        continue_batch_after_read(source, target, context, options)
+      end
+    end
+  end
+
+  defp continue_batch_after_read(source, target, context, options) do
+    with {:ok, context} <- diff(target, context, options),
          {:ok, context} <- fetch_chains(source, context, options),
          {:ok, context} <- import_chains(target, context, options),
          {:ok, context} <- checkpoint_target(source, target, context, options),
-         {:ok, context} <- checkpoint_source(source, context, options) do
+         {:ok, context} <- checkpoint_source(source, context, options),
+         {:ok, context} <- report_peer(source, target, context, options) do
       handle_next_after_checkpoint(source, target, context, options)
     end
   end
 
-  defp handle_next_after_checkpoint(source, target, context, options) do
-    case next_after_checkpoint(context, options) do
-      {:completed, result} -> {:ok, result}
-      {:waiting, context} -> wait_loop(source, target, context, options)
-      {:continue_batch, context} -> process_batches(source, target, context, options)
-    end
+  defp bootstrap_after_read(source, target, context, options) do
+    finish_bootstrap(source, target, context, options)
   end
 
   defp wait_loop(source, target, context, options) do
     case wait_for_changes(source, context, options) do
       {:ok, context} ->
-        if context.selected == [] and context.terminal <= context.since do
-          wait_loop(source, target, context, options)
-        else
-          process_batches(source, target, %{context | selected: []}, options)
-        end
+        continue_wait_loop(source, target, context, options)
 
       {:error, error} ->
         {:error, error}
     end
   end
 
-  defp prepare_checkpoint(source, target, context, _options) do
+  defp continue_wait_loop(source, target, %{bootstrap_required: true} = context, options) do
+    finish_bootstrap(source, target, context, options)
+  end
+
+  defp continue_wait_loop(source, target, context, options) do
+    if context.selected == [] and context.terminal <= context.since do
+      wait_loop(source, target, context, options)
+    else
+      process_batches(source, target, %{context | selected: []}, options)
+    end
+  end
+
+  defp finish_bootstrap(source, target, context, options) do
+    with {:ok, context} <- install_boundaries(source, target, context, options),
+         {:ok, context} <- bootstrap(source, target, context, options),
+         {:ok, context} <- checkpoint_target(source, target, context, options),
+         {:ok, context} <- checkpoint_source(source, context, options),
+         {:ok, context} <- report_peer(source, target, context, options) do
+      handle_next_after_checkpoint(
+        source,
+        target,
+        %{context | bootstrap_required: false},
+        options
+      )
+    end
+  end
+
+  defp bootstrap_pages(source, target, context, options) do
+    cursor = context.bootstrap_cursor
+
+    with {:ok, page} <-
+           endpoint_call(source, :get_revision_chains, [
+             %{bootstrap: true, cursor: cursor, limit: option(options, :batch, @default_batch)}
+           ]),
+         :ok <- verify_bootstrap_identity(context, page),
+         {:ok, imported} <-
+           endpoint_call(target, :import_revision_chains, [%{chains: get(page, :chains) || []}]),
+         {:ok, _confirmed} <-
+           endpoint_call(target, :confirm_durable_commit, [%{imported: imported}]) do
+      terminal = get(context.source_identity, :current_sequence) || context.terminal
+      next_cursor = get(page, :continuation_cursor)
+
+      context =
+        context
+        |> Map.put(:bootstrap_cursor, next_cursor)
+        |> Map.put(:since, get(page, :retention_floor) || context.since)
+        |> Map.put(:terminal, terminal)
+        |> Map.put(:imported, imported)
+        |> Map.put(
+          :installed_source_compaction_epoch,
+          get(page, :compaction_epoch) || context.installed_source_compaction_epoch
+        )
+        |> Map.put(
+          :boundaries_installed_through,
+          max(
+            context.boundaries_installed_through,
+            get(page, :compaction_epoch) || 0
+          )
+        )
+
+      if next_cursor do
+        bootstrap_pages(source, target, context, options)
+      else
+        {:ok, %{context | since: terminal, bootstrap_required: false}}
+      end
+    else
+      {:error, %ElixirDB.Error{code: :integrity_violation}} ->
+        {:error, ElixirDB.Error.rebase_required("bootstrap cannot merge local mutations safely")}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp verify_bootstrap_identity(context, page) do
+    source_epoch = get(context.source_identity, :history_epoch)
+    page_epoch = get(page, :source_history_epoch)
+
+    if is_binary(page_epoch) and page_epoch != source_epoch do
+      {:error,
+       ElixirDB.Error.source_history_reset("bootstrap page history epoch does not match source")}
+    else
+      :ok
+    end
+  end
+
+  defp install_boundary_pages(source, target, context) do
+    source_identity = context.source_identity
+    cursor = nil
+    compaction_epoch = get(source_identity, :compaction_epoch) || 0
+    history_epoch = get(source_identity, :history_epoch)
+
+    install_boundary_pages_loop(
+      source,
+      target,
+      history_epoch,
+      compaction_epoch,
+      cursor,
+      0
+    )
+  end
+
+  defp install_boundary_pages_loop(
+         source,
+         target,
+         history_epoch,
+         compaction_epoch,
+         cursor,
+         installed
+       ) do
+    request = %{
+      source_history_epoch: history_epoch,
+      compaction_epoch: compaction_epoch,
+      cursor: cursor
+    }
+
+    with {:ok, page} <- endpoint_call(source, :read_boundary_pages, [request]),
+         {:ok, install_result} <- endpoint_call(target, :install_boundary_pages, [page]),
+         next_cursor <- get(page, :next_page),
+         installed_through <-
+           max(installed, MapAccess.get(install_result, :compaction_epoch, compaction_epoch)) do
+      if next_cursor do
+        install_boundary_pages_loop(
+          source,
+          target,
+          history_epoch,
+          compaction_epoch,
+          next_cursor,
+          installed_through
+        )
+      else
+        {:ok, installed_through}
+      end
+    end
+  end
+
+  defp prepare_checkpoint(source, target, context, options) do
     sequence =
       case context.selected do
         [_ | _] = selected -> get(List.last(selected), :sequence)
@@ -319,6 +567,7 @@ defmodule ElixirDB.Replication do
 
     documents = length(context.selected)
     imported = context.imported
+    source_identity = context.source_identity || %{}
 
     with {:ok, source_current} <- endpoint_call(source, :get_checkpoint, [context.replication_id]),
          {:ok, target_current} <- endpoint_call(target, :get_checkpoint, [context.replication_id]),
@@ -328,13 +577,33 @@ defmodule ElixirDB.Replication do
          entry <-
            checkpoint_entry(source_value, target_value, session_id, sequence, documents, imported),
          history <- checkpoint_history(source_value, target_value, entry),
-         payload <- %{
-           "version" => 1,
-           "replication_id" => context.replication_id,
-           "session_id" => session_id,
-           "source_sequence" => sequence,
-           "history" => history
-         },
+         source_epoch <- get(source_identity, :history_epoch),
+         source_compaction <- get(source_identity, :compaction_epoch) || 0,
+         installed_compaction <- context.installed_source_compaction_epoch || source_compaction,
+         previous_safe <- int_field(target_value, :safe_source_sequence),
+         safe_report <-
+           safe_report_decision(
+             target,
+             source_identity,
+             target_value,
+             sequence,
+             previous_safe,
+             installed_compaction,
+             context,
+             options
+           ),
+         payload <-
+           %{
+             "version" => 1,
+             "replication_id" => context.replication_id,
+             "session_id" => session_id,
+             "source_sequence" => sequence,
+             "source_history_epoch" => source_epoch,
+             "source_compaction_epoch" => source_compaction,
+             "safe_source_sequence" => safe_report.safe_source_sequence,
+             "installed_source_compaction_epoch" => installed_compaction,
+             "history" => history
+           },
          target_payload <-
            Map.put(payload, "checkpoint_version", record_version(target_current) + 1),
          source_payload <-
@@ -344,6 +613,7 @@ defmodule ElixirDB.Replication do
          sequence: sequence,
          documents: documents,
          revisions: imported_count(imported),
+         safe_source_sequence: safe_report.safe_source_sequence,
          source_current: source_current,
          target_current: target_current,
          target_request: checkpoint_request(target_payload, target_current),
@@ -352,11 +622,109 @@ defmodule ElixirDB.Replication do
     end
   end
 
+  defp safe_report_decision(
+         target,
+         source_identity,
+         target_value,
+         sequence,
+         previous_safe,
+         installed_compaction,
+         context,
+         options
+       ) do
+    has_local = unacknowledged_local_mutations?(target, options)
+
+    SafeReport.decide(%{
+      source_history_epoch: get(source_identity, :history_epoch),
+      checkpoint_source_history_epoch: epoch_field(target_value),
+      source_sequence: sequence,
+      previous_safe_source_sequence: previous_safe,
+      proposed_safe_source_sequence: sequence,
+      source_compaction_epoch: get(source_identity, :compaction_epoch) || 0,
+      installed_source_compaction_epoch: installed_compaction,
+      boundaries_installed_through: context.boundaries_installed_through,
+      position_durably_applied: true,
+      has_unacknowledged_local_mutations: has_local,
+      checkpoint_only: imported_count(context.imported) == 0 and context.selected == []
+    })
+  end
+
+  defp report_peer_position(source, _target, context, _options) do
+    safe_sequence = Map.get(context, :safe_source_sequence)
+
+    if safe_sequence != nil do
+      source_identity = context.source_identity || %{}
+      target_identity = context.target_identity || %{}
+      peer_uuid = source_uuid(target_identity)
+      now = DateTime.utc_now()
+      expiry_ms = peer_expiry_ms(source_identity)
+
+      lease_expires_at =
+        DateTime.add(now, expiry_ms, :millisecond) |> DateTime.to_iso8601()
+
+      value = %{
+        "peer_database_uuid" => peer_uuid,
+        "peer_history_epoch" => get(target_identity, :history_epoch),
+        "source_database_uuid" => source_uuid(source_identity),
+        "source_history_epoch" => get(source_identity, :history_epoch),
+        "safe_source_sequence" => safe_sequence,
+        "installed_source_compaction_epoch" => context.installed_source_compaction_epoch || 0,
+        "last_seen_at" => DateTime.to_iso8601(now),
+        "lease_expires_at" => lease_expires_at,
+        "status" => "active"
+      }
+
+      expected =
+        case endpoint_call(source, :get_local_record, ["peer_ledger", peer_uuid]) do
+          {:ok, nil} -> 0
+          {:ok, %{version: version}} -> version
+          {:ok, %{"version" => version}} -> version
+          _ -> 0
+        end
+
+      endpoint_call(source, :put_peer_position, [
+        %{
+          peer_database_uuid: peer_uuid,
+          expected_version: expected,
+          value: value
+        }
+      ])
+    else
+      {:ok, %{skipped: true}}
+    end
+  end
+
+  defp peer_expiry_ms(identity) do
+    get_in(identity, [:config, "retention", "peer_expiry_ms"]) ||
+      get_in(identity, ["config", "retention", "peer_expiry_ms"]) || 86_400_000
+  end
+
+  defp apply_read_changes_result({:error, %ElixirDB.Error{code: :history_truncated}}, context) do
+    {:ok, %{context | bootstrap_required: true, selected: []}}
+  end
+
+  defp apply_read_changes_result({:ok, changes}, context) do
+    {:ok, %{context | selected: get(changes, :results) || []}}
+  end
+
+  defp apply_read_changes_result({:error, error}, _context), do: {:error, error}
+
+  defp maybe_mark_bootstrap(context, reconcile, source_identity) do
+    if reconcile.bootstrap_required do
+      %{
+        context
+        | bootstrap_required: true,
+          source_identity: source_identity,
+          since: reconcile.since
+      }
+    else
+      %{context | source_identity: source_identity}
+    end
+  end
+
   defp checkpoint_request(payload, current),
     do: Map.put(payload, "expected_checkpoint_version", record_version(current))
 
-  # REPL-007: retain at most the ten most recent completed sessions, keyed by
-  # session identity `{session_id, source_sequence}` (same key used by checkpoint_entry/6).
   defp checkpoint_history(source, target, entry) do
     (List.wrap(source && MapAccess.get(source, :history)) ++
        List.wrap(target && MapAccess.get(target, :history)) ++ [entry])
@@ -456,11 +824,19 @@ defmodule ElixirDB.Replication do
 
     with {:ok, result} <- endpoint_call(target, :diff_revisions, [request]) do
       {:ok,
-       Enum.map(get(result, :documents) || [], fn document ->
-         %{
-           document_id: get(document, :document_id),
-           leaf_revisions: get(document, :missing_revisions) || []
-         }
+       Enum.flat_map(get(result, :documents) || [], fn document ->
+         missing = get(document, :missing_revisions) || []
+
+         if missing == [] do
+           []
+         else
+           [
+             %{
+               document_id: get(document, :document_id),
+               leaf_revisions: missing
+             }
+           ]
+         end
        end)}
     end
   end
@@ -489,6 +865,26 @@ defmodule ElixirDB.Replication do
 
   defp imported_count(nil), do: 0
   defp imported_count(imported), do: get(imported, :revisions_inserted) || 0
+
+  defp installed_compaction_epoch(checkpoint) do
+    value(checkpoint)
+    |> case do
+      nil -> nil
+      map -> int_field(map, :installed_source_compaction_epoch)
+    end
+  end
+
+  defp int_field(map, key) when is_map(map) do
+    MapAccess.get(map, key) || MapAccess.get(map, Atom.to_string(key)) || 0
+  end
+
+  defp int_field(_map, _key), do: 0
+
+  defp epoch_field(map) when is_map(map) do
+    MapAccess.get(map, :source_history_epoch) || MapAccess.get(map, "source_history_epoch")
+  end
+
+  defp epoch_field(_), do: nil
 
   defp compatible(source, target) do
     source_uuid = source_uuid(source)
@@ -530,11 +926,24 @@ defmodule ElixirDB.Replication do
   defp value(%{value: value}), do: value
   defp value(%{"value" => value}), do: value
 
-  # SAFETY: checkpoints arrive from remote peers whose responses are untrusted. A
-  # malformed checkpoint whose stored value is a non-map (scalar/list) or a map without
-  # a "value" key would otherwise raise FunctionClauseError inside the worker task.
-  # Treat any unrecognized shape as an absent value.
   defp value(_other), do: nil
+
+  defp unacknowledged_local_mutations?(target, options) do
+    if explicit_local_mutations_option?(options) do
+      option(options, :has_unacknowledged_local_mutations, true)
+    else
+      case endpoint_call(target, :has_local_origin_changes?, []) do
+        {:ok, value} when is_boolean(value) -> value
+        _ -> true
+      end
+    end
+  end
+
+  defp explicit_local_mutations_option?(options) when is_map(options),
+    do: Map.has_key?(options, :has_unacknowledged_local_mutations)
+
+  defp explicit_local_mutations_option?(options) when is_list(options),
+    do: Keyword.has_key?(options, :has_unacknowledged_local_mutations)
 
   defp option(options, key, default) when is_map(options),
     do: MapAccess.get(options, key, default)

@@ -10,6 +10,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
 
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.ModelGenerators
+  alias ElixirDB.RevisionFixtures
   alias ElixirDB.RevisionHistoryModel
   alias ElixirDB.Revisions.{Id, Tree, Winner}
   alias ElixirDB.Storage.AdapterCase
@@ -175,11 +176,13 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
     assert fixture.tombstone in first.tombstones
     refute first.winner == fixture.tombstone
 
+    history_id = RevisionFixtures.shared_history_id()
+
     assert MapSet.new(first.leaf_set) ==
              MapSet.new([
-               %{revision: fixture.left, deleted: false},
-               %{revision: fixture.right, deleted: false},
-               %{revision: fixture.tombstone, deleted: true}
+               %{revision: fixture.left, history_id: history_id, deleted: false},
+               %{revision: fixture.right, history_id: history_id, deleted: false},
+               %{revision: fixture.tombstone, history_id: history_id, deleted: true}
              ])
 
     assert MapSet.new(first.live_leaf_set) == MapSet.new([fixture.left, fixture.right])
@@ -324,9 +327,10 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
 
   defp apply_adapter_op(adapter, %{op: :import_siblings} = op, _) do
     document_id = op.document_id
-    {:ok, root} = Id.calculate(document_id, nil, false, op.root_body)
-    {:ok, left} = Id.calculate(document_id, root, false, op.left_body)
-    {:ok, right} = Id.calculate(document_id, root, false, op.right_body)
+    history_id = RevisionFixtures.shared_history_id()
+    {:ok, root} = Id.calculate(document_id, history_id, nil, false, op.root_body)
+    {:ok, left} = Id.calculate(document_id, history_id, root, false, op.left_body)
+    {:ok, right} = Id.calculate(document_id, history_id, root, false, op.right_body)
 
     left_chain = %{
       document_id: document_id,
@@ -538,7 +542,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
       Connection.query(
         conn,
         """
-        SELECT revision_id, generation, parent_revision, deleted, body_json
+        SELECT revision_id, generation, parent_revision, history_id, deleted, body_json
         FROM revisions
         WHERE doc_key = ?
         ORDER BY revision_id
@@ -546,7 +550,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
         [doc_key]
       )
 
-    Enum.map(rows, fn [id, generation, parent, deleted, body_json] ->
+    Enum.map(rows, fn [id, generation, parent, history_id, deleted, body_json] ->
       body =
         if is_nil(body_json) do
           nil
@@ -557,6 +561,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
 
       %ElixirDB.Domain.Revision{
         document_id: document_id,
+        history_id: history_id,
         revision_id: id,
         generation: generation,
         parent_revision: parent,
@@ -582,7 +587,9 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
 
   defp encode_leaf_set(leaves) do
     leaves
-    |> Enum.map(fn leaf -> %{revision: leaf.revision_id, deleted: leaf.deleted} end)
+    |> Enum.map(fn leaf ->
+      %{revision: leaf.revision_id, history_id: leaf.history_id, deleted: leaf.deleted}
+    end)
     |> Enum.sort_by(& &1.revision)
   end
 
@@ -607,14 +614,17 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
     left_body = %{"role" => "left"}
     right_body = %{"role" => "right"}
 
-    {:ok, root} = Id.calculate(document_id, nil, false, root_body)
-    {:ok, left} = Id.calculate(document_id, root, false, left_body)
-    {:ok, right} = Id.calculate(document_id, root, false, right_body)
-    {:ok, tombstone} = Id.calculate(document_id, root, true, nil)
+    history_id = RevisionFixtures.shared_history_id()
+
+    {:ok, root} = Id.calculate(document_id, history_id, nil, false, root_body)
+    {:ok, left} = Id.calculate(document_id, history_id, root, false, left_body)
+    {:ok, right} = Id.calculate(document_id, history_id, root, false, right_body)
+    {:ok, tombstone} = Id.calculate(document_id, history_id, root, true, nil)
 
     leaves = [
       %ElixirDB.Domain.Revision{
         document_id: document_id,
+        history_id: history_id,
         revision_id: left,
         generation: 2,
         parent_revision: root,
@@ -623,6 +633,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
       },
       %ElixirDB.Domain.Revision{
         document_id: document_id,
+        history_id: history_id,
         revision_id: right,
         generation: 2,
         parent_revision: root,
@@ -631,6 +642,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
       },
       %ElixirDB.Domain.Revision{
         document_id: document_id,
+        history_id: history_id,
         revision_id: tombstone,
         generation: 2,
         parent_revision: root,

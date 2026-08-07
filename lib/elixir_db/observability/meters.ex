@@ -14,7 +14,10 @@ defmodule ElixirDB.Observability.Meters do
   | `elixir_db.database.open.count` | counter |
   | `elixir_db.database.command.duration` | histogram |
   | `elixir_db.database.overload.count` | counter |
+  | `elixir_db.database.compact.count` | counter |
+  | `elixir_db.database.compact.duration` | histogram |
   | `elixir_db.changes.read.duration` | histogram |
+  | `elixir_db.changes.history_truncated.count` | counter |
   | `elixir_db.query.execute.duration` | histogram |
   | `elixir_db.index.build.duration` | histogram |
   | `elixir_db.replication.batch.duration` | histogram |
@@ -28,11 +31,16 @@ defmodule ElixirDB.Observability.Meters do
     {:"elixir_db.database.open.count", :counter},
     {:"elixir_db.database.command.duration", :histogram},
     {:"elixir_db.database.overload.count", :counter},
+    {:"elixir_db.database.compact.count", :counter},
+    {:"elixir_db.database.compact.duration", :histogram},
     {:"elixir_db.changes.read.duration", :histogram},
+    {:"elixir_db.changes.history_truncated.count", :counter},
     {:"elixir_db.query.execute.duration", :histogram},
     {:"elixir_db.index.build.duration", :histogram},
     {:"elixir_db.replication.batch.duration", :histogram},
     {:"elixir_db.replication.checkpoint.count", :counter},
+    {:"elixir_db.replication.bootstrap.count", :counter},
+    {:"elixir_db.import.stale_fence.count", :counter},
     {:"elixir_db.http.request.duration", :histogram}
   ]
 

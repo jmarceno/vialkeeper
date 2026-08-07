@@ -8,8 +8,7 @@ defmodule ElixirDB.Storage.SQLite.LocalRecords do
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.MapAccess
-  alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.Connection
+  alias ElixirDB.Storage.SQLite.{Adapter, Checkpoints, Connection}
   @doc false
   def get(adapter, namespace, key),
     do: Adapter.get_local_record(adapter, namespace, key)
@@ -54,6 +53,7 @@ defmodule ElixirDB.Storage.SQLite.LocalRecords do
     with {:ok, current} <- fetch(conn, namespace, key),
          observed <- if(is_nil(current), do: 0, else: current.version),
          {:ok, json} <- Canonical.encode(value),
+         :ok <- validate_checkpoint(namespace, current, value),
          :ok <- validate_request(namespace, key, expected, observed, current, json),
          {:ok, next_version, replayed} <- next_version(expected, observed, current, json),
          :ok <-
@@ -67,6 +67,11 @@ defmodule ElixirDB.Storage.SQLite.LocalRecords do
       {:error, reason} -> {:error, normalize_error(reason)}
     end
   end
+
+  defp validate_checkpoint("checkpoints", current, value),
+    do: Checkpoints.validate_cas(current, value)
+
+  defp validate_checkpoint(_namespace, _current, _value), do: :ok
 
   defp validate_request(namespace, key, expected, _observed, _current, _json)
        when not is_binary(namespace) or not is_binary(key) or not is_integer(expected) or

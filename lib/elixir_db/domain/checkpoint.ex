@@ -15,7 +15,11 @@ defmodule ElixirDB.Domain.Checkpoint do
     :checkpoint_version,
     :session_id,
     :source_sequence,
-    :history
+    :history,
+    :source_history_epoch,
+    :source_compaction_epoch,
+    :safe_source_sequence,
+    :installed_source_compaction_epoch
   ]
 
   @type t :: %__MODULE__{
@@ -24,7 +28,11 @@ defmodule ElixirDB.Domain.Checkpoint do
           checkpoint_version: non_neg_integer(),
           session_id: binary(),
           source_sequence: non_neg_integer(),
-          history: list()
+          history: list(),
+          source_history_epoch: binary() | nil,
+          source_compaction_epoch: non_neg_integer() | nil,
+          safe_source_sequence: non_neg_integer() | nil,
+          installed_source_compaction_epoch: non_neg_integer() | nil
         }
 
   @known [
@@ -33,7 +41,11 @@ defmodule ElixirDB.Domain.Checkpoint do
     :checkpoint_version,
     :session_id,
     :source_sequence,
-    :history
+    :history,
+    :source_history_epoch,
+    :source_compaction_epoch,
+    :safe_source_sequence,
+    :installed_source_compaction_epoch
   ]
 
   @spec new(map()) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
@@ -53,7 +65,11 @@ defmodule ElixirDB.Domain.Checkpoint do
       "checkpoint_version",
       "session_id",
       "source_sequence",
-      "history"
+      "history",
+      "source_history_epoch",
+      "source_compaction_epoch",
+      "safe_source_sequence",
+      "installed_source_compaction_epoch"
     ]
 
     if Enum.any?(Map.keys(attrs), &(&1 not in allowed)) do
@@ -65,7 +81,11 @@ defmodule ElixirDB.Domain.Checkpoint do
         checkpoint_version: attrs["checkpoint_version"],
         session_id: attrs["session_id"],
         source_sequence: attrs["source_sequence"],
-        history: attrs["history"]
+        history: attrs["history"],
+        source_history_epoch: attrs["source_history_epoch"],
+        source_compaction_epoch: attrs["source_compaction_epoch"],
+        safe_source_sequence: attrs["safe_source_sequence"],
+        installed_source_compaction_epoch: attrs["installed_source_compaction_epoch"]
       })
     end
   end
@@ -86,7 +106,11 @@ defmodule ElixirDB.Domain.Checkpoint do
       &validate_checkpoint_version/1,
       &validate_session_id/1,
       &validate_source_sequence/1,
-      &validate_history/1
+      &validate_history/1,
+      &validate_source_history_epoch/1,
+      &validate_source_compaction_epoch/1,
+      &validate_safe_source_sequence/1,
+      &validate_installed_source_compaction_epoch/1
     ]
 
     Enum.find_value(validators, & &1.(attrs))
@@ -125,4 +149,45 @@ defmodule ElixirDB.Domain.Checkpoint do
 
   defp validate_history(_),
     do: ElixirDB.Error.invalid_request("checkpoint history must be an array")
+
+  defp validate_source_history_epoch(%{source_history_epoch: nil}), do: nil
+
+  defp validate_source_history_epoch(%{source_history_epoch: value})
+       when is_binary(value) and value != "",
+       do: nil
+
+  defp validate_source_history_epoch(_),
+    do: ElixirDB.Error.invalid_request("checkpoint source_history_epoch is invalid")
+
+  defp validate_source_compaction_epoch(%{source_compaction_epoch: nil}), do: nil
+
+  defp validate_source_compaction_epoch(%{source_compaction_epoch: value})
+       when is_integer(value) and value >= 0,
+       do: nil
+
+  defp validate_source_compaction_epoch(_),
+    do: ElixirDB.Error.invalid_request("source_compaction_epoch must be non-negative")
+
+  defp validate_safe_source_sequence(%{safe_source_sequence: nil}), do: nil
+
+  defp validate_safe_source_sequence(%{safe_source_sequence: value, source_sequence: source})
+       when is_integer(value) and value >= 0 and is_integer(source) and value <= source,
+       do: nil
+
+  defp validate_safe_source_sequence(%{safe_source_sequence: value})
+       when is_integer(value) and value >= 0,
+       do: nil
+
+  defp validate_safe_source_sequence(_),
+    do: ElixirDB.Error.invalid_request("safe_source_sequence is invalid")
+
+  defp validate_installed_source_compaction_epoch(%{installed_source_compaction_epoch: nil}),
+    do: nil
+
+  defp validate_installed_source_compaction_epoch(%{installed_source_compaction_epoch: value})
+       when is_integer(value) and value >= 0,
+       do: nil
+
+  defp validate_installed_source_compaction_epoch(_),
+    do: ElixirDB.Error.invalid_request("installed_source_compaction_epoch must be non-negative")
 end

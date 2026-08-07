@@ -38,6 +38,18 @@ defmodule ElixirDB.Observability.Instrumentation.Changes do
     :ok
   end
 
+  defp emit_read_result(uuid, duration, {:error, %ElixirDB.Error{code: :history_truncated} = error}) do
+    Meters.record(:"elixir_db.changes.read.duration", duration,
+      db_uuid: uuid,
+      error_code: error.code
+    )
+
+    Meters.add(:"elixir_db.changes.history_truncated.count", db_uuid: uuid)
+
+    _ = Tracer.record_error(error)
+    :ok
+  end
+
   defp emit_read_result(uuid, duration, {:error, %ElixirDB.Error{} = error}) do
     Meters.record(:"elixir_db.changes.read.duration", duration,
       db_uuid: uuid,

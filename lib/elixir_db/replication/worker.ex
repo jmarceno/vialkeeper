@@ -26,12 +26,15 @@ defmodule ElixirDB.Replication.Worker do
   @active_states [
     :idle,
     :handshake,
+    :install_boundaries,
+    :bootstrap,
     :read_changes,
     :diff,
     :fetch_chains,
     :import,
     :checkpoint_target,
     :checkpoint_source,
+    :report_peer,
     :waiting,
     :backoff
   ]
@@ -217,6 +220,12 @@ defmodule ElixirDB.Replication.Worker do
   defp run_phase(:handshake, source, target, _context, options),
     do: Replication.handshake(source, target, options)
 
+  defp run_phase(:install_boundaries, source, target, context, options),
+    do: Replication.install_boundaries(source, target, context, options)
+
+  defp run_phase(:bootstrap, source, target, context, options),
+    do: Replication.bootstrap(source, target, context, options)
+
   defp run_phase(:read_changes, source, _target, context, options),
     do: Replication.read_changes(source, context, options)
 
@@ -235,25 +244,48 @@ defmodule ElixirDB.Replication.Worker do
   defp run_phase(:checkpoint_source, source, _target, context, options),
     do: Replication.checkpoint_source(source, context, options)
 
+  defp run_phase(:report_peer, source, target, context, options),
+    do: Replication.report_peer(source, target, context, options)
+
   defp run_phase(:waiting, source, _target, context, options),
     do: Replication.wait_for_changes(source, context, options)
 
   defp handle_phase_result(:handshake, {:ok, context}, data) do
     data = %{data | context: context, attempts: 0, error: nil}
 
-    if Replication.caught_up?(context) do
-      # Even an already-caught-up run does a checkpoint cycle; start a batch
-      # span so that work is traced too.
-      data = start_batch_span(data)
-      enter_phase(:checkpoint_target, data)
-    else
-      data = start_batch_span(data)
-      enter_phase(:read_changes, data)
+    cond do
+      context.bootstrap_required ->
+        data = start_batch_span(data)
+        enter_phase(:install_boundaries, data)
+
+      Replication.caught_up?(context) ->
+        data = start_batch_span(data)
+        enter_phase(:checkpoint_target, data)
+
+      true ->
+        data = start_batch_span(data)
+        enter_phase(:read_changes, data)
     end
   end
 
-  defp handle_phase_result(:read_changes, {:ok, context}, data),
-    do: enter_phase(:diff, %{data | context: context})
+  defp handle_phase_result(:install_boundaries, {:ok, context}, data),
+    do: enter_phase(:bootstrap, %{data | context: context})
+
+  defp handle_phase_result(:bootstrap, {:ok, context}, data),
+    do:
+      enter_phase(:checkpoint_target, %{
+        data
+        | context: context,
+          batch_revisions: context_imported_count(context)
+      })
+
+  defp handle_phase_result(:read_changes, {:ok, context}, data) do
+    if context.bootstrap_required do
+      enter_phase(:install_boundaries, %{data | context: context})
+    else
+      enter_phase(:diff, %{data | context: context})
+    end
+  end
 
   defp handle_phase_result(:diff, {:ok, context}, data),
     do: enter_phase(:fetch_chains, %{data | context: context})
@@ -273,10 +305,10 @@ defmodule ElixirDB.Replication.Worker do
   defp handle_phase_result(:checkpoint_target, {:ok, context}, data),
     do: enter_phase(:checkpoint_source, %{data | context: context})
 
-  defp handle_phase_result(:checkpoint_source, {:ok, context}, data) do
-    # A batch just finished (success). End the batch span and record the
-    # duration/revisions_written metric. revisions are captured at the import
-    # phase (data.batch_revisions) since checkpoint_source resets imported.
+  defp handle_phase_result(:checkpoint_source, {:ok, context}, data),
+    do: enter_phase(:report_peer, %{data | context: context})
+
+  defp handle_phase_result(:report_peer, {:ok, context}, data) do
     replication_id = MapAccess.get(data.options, :replication_id)
 
     data = end_batch_span(data, replication_id, data.batch_revisions, :ok)

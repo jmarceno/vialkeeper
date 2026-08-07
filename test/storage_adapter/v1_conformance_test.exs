@@ -1,8 +1,8 @@
 defmodule ElixirDB.StorageAdapter.V1ConformanceTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
-  alias ElixirDB.Revisions.Id
   alias ElixirDB.Storage.SQLite.Connection
+  alias ElixirDB.TestRevisionId, as: Id
 
   test "bulk writes are atomic and allocate one change per affected document", %{adapter: adapter} do
     assert {:ok, %{revision: first}} =

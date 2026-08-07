@@ -9,8 +9,10 @@ defmodule ElixirDB.RevisionHistoryModel do
 
   alias ElixirDB.Domain.Revision
   alias ElixirDB.OperationFixtures
+  alias ElixirDB.RevisionFixtures
   alias ElixirDB.Revisions.{ConflictResolution, Id, Tree, Winner}
   alias ElixirDB.Revisions.Wire
+  alias ElixirDB.UUID
 
   @type state :: %{
           document_id: binary() | nil,
@@ -42,7 +44,7 @@ defmodule ElixirDB.RevisionHistoryModel do
     parent = resolve_parent(state, op[:if_revision])
     concrete = OperationFixtures.put(document_id, body, parent)
 
-    case build_revision(document_id, parent, false, body) do
+    case build_revision(state, document_id, parent, false, body) do
       {:ok, revision} ->
         cond do
           match_mutation?(state, parent, revision) ->
@@ -73,7 +75,7 @@ defmodule ElixirDB.RevisionHistoryModel do
     concrete = %{op: :delete, document_id: document_id, if_revision: parent}
 
     with true <- is_binary(parent),
-         {:ok, revision} <- build_revision(document_id, parent, true, nil) do
+         {:ok, revision} <- build_revision(state, document_id, parent, true, nil) do
       cond do
         match_mutation?(state, parent, revision) ->
           state
@@ -102,13 +104,49 @@ defmodule ElixirDB.RevisionHistoryModel do
     left_body = op.left_body
     right_body = op.right_body
 
-    {:ok, root_id} = Id.calculate(document_id, nil, false, root_body)
-    {:ok, left_id} = Id.calculate(document_id, root_id, false, left_body)
-    {:ok, right_id} = Id.calculate(document_id, root_id, false, right_body)
+    {:ok, root_id} =
+      Id.calculate(document_id, RevisionFixtures.shared_history_id(), nil, false, root_body)
 
-    root = revision!(document_id, root_id, nil, false, root_body)
-    left = revision!(document_id, left_id, root_id, false, left_body)
-    right = revision!(document_id, right_id, root_id, false, right_body)
+    {:ok, left_id} =
+      Id.calculate(
+        document_id,
+        RevisionFixtures.shared_history_id(),
+        root_id,
+        false,
+        left_body
+      )
+
+    {:ok, right_id} =
+      Id.calculate(
+        document_id,
+        RevisionFixtures.shared_history_id(),
+        root_id,
+        false,
+        right_body
+      )
+
+    root =
+      revision!(document_id, RevisionFixtures.shared_history_id(), root_id, nil, false, root_body)
+
+    left =
+      revision!(
+        document_id,
+        RevisionFixtures.shared_history_id(),
+        left_id,
+        root_id,
+        false,
+        left_body
+      )
+
+    right =
+      revision!(
+        document_id,
+        RevisionFixtures.shared_history_id(),
+        right_id,
+        root_id,
+        false,
+        right_body
+      )
 
     state =
       state
@@ -151,7 +189,7 @@ defmodule ElixirDB.RevisionHistoryModel do
   end
 
   defp build_resolution_result(state, document_id, live, concrete) do
-    case build_resolution_revisions(document_id, live, concrete) do
+    case build_resolution_revisions(state, document_id, live, concrete) do
       {:error, code} ->
         %{state | last_result: {:error, code}, last_concrete_op: concrete}
 
@@ -304,22 +342,24 @@ defmodule ElixirDB.RevisionHistoryModel do
     end
   end
 
-  defp build_resolution_revisions(document_id, live, op) do
+  defp build_resolution_revisions(_state, document_id, live, op) do
     case op.mode do
       :delete_all ->
         live
-        |> Enum.map(fn leaf -> build_revision(document_id, leaf.revision_id, true, nil) end)
+        |> Enum.map(fn leaf -> build_revision_from_leaf(document_id, leaf, true, nil) end)
         |> collect_ok()
 
       :surviving_body ->
         chosen = choose_parent(live, Map.get(op, :chosen_side, :winner), op)
+        chosen_leaf = Enum.find(live, &(&1.revision_id == chosen))
 
         with true <- chosen in Enum.map(live, & &1.revision_id),
-             {:ok, survivor} <- build_revision(document_id, chosen, false, op.body),
+             {:ok, survivor} <-
+               build_revision_from_leaf(document_id, chosen_leaf, false, op.body),
              {:ok, tombs} <-
                live
                |> Enum.reject(&(&1.revision_id == chosen))
-               |> Enum.map(&build_revision(document_id, &1.revision_id, true, nil))
+               |> Enum.map(&build_revision_from_leaf(document_id, &1, true, nil))
                |> collect_ok() do
           {:ok, [survivor | tombs]}
         else
@@ -396,20 +436,93 @@ defmodule ElixirDB.RevisionHistoryModel do
   defp same_revision?(a, b),
     do:
       a.revision_id == b.revision_id and a.parent_revision == b.parent_revision and
-        a.deleted == b.deleted and a.body == b.body and a.generation == b.generation
+        a.history_id == b.history_id and a.deleted == b.deleted and a.body == b.body and
+        a.generation == b.generation
 
-  defp build_revision(document_id, parent, deleted, body) do
-    with {:ok, revision_id} <- Id.calculate(document_id, parent, deleted, body),
+  defp revision_parent_and_history(state, nil, deleted, document_id) do
+    root_revision_parent_and_history(state, deleted, document_id)
+  end
+
+  defp revision_parent_and_history(state, parent_revision_id, deleted, document_id)
+       when is_binary(parent_revision_id) do
+    parent_revision_parent_and_history(state, parent_revision_id, deleted, document_id)
+  end
+
+  defp root_revision_parent_and_history(state, false, document_id) do
+    history_id =
+      if map_size(state.revisions) == 0 do
+        UUID.document_history_id(document_id)
+      else
+        case projection_winner(state) do
+          {:ok, winner} -> winner.history_id
+          _ -> UUID.document_history_id(document_id)
+        end
+      end
+
+    {nil, history_id}
+  end
+
+  defp root_revision_parent_and_history(_state, true, _document_id), do: {nil, UUID.v4()}
+
+  defp parent_revision_parent_and_history(state, parent_revision_id, false, _document_id) do
+    case Map.get(state.revisions, parent_revision_id) do
+      %{deleted: true} -> {nil, UUID.v4()}
+      %{history_id: history_id} -> {parent_revision_id, history_id}
+      _ -> {parent_revision_id, RevisionFixtures.shared_history_id()}
+    end
+  end
+
+  defp parent_revision_parent_and_history(state, parent_revision_id, true, document_id) do
+    history_id =
+      case Map.get(state.revisions, parent_revision_id) do
+        %{history_id: history_id} -> history_id
+        _ -> UUID.document_history_id(document_id)
+      end
+
+    {parent_revision_id, history_id}
+  end
+
+  defp build_revision(state, document_id, parent_revision_id, deleted, body) do
+    {parent, history_id} =
+      revision_parent_and_history(state, parent_revision_id, deleted, document_id)
+
+    with {:ok, revision_id} <- Id.calculate(document_id, history_id, parent, deleted, body),
          {:ok, generation} <- Id.generation(revision_id) do
-      Revision.new(Wire.new(document_id, revision_id, generation, parent, deleted, body))
+      Revision.new(
+        Wire.new(document_id, history_id, revision_id, generation, parent, deleted, body)
+      )
+    end
+  end
+
+  defp build_revision_from_leaf(document_id, leaf, deleted, body) do
+    with {:ok, revision_id} <-
+           Id.calculate(document_id, leaf.history_id, leaf.revision_id, deleted, body),
+         {:ok, generation} <- Id.generation(revision_id) do
+      Revision.new(
+        Wire.new(
+          document_id,
+          leaf.history_id,
+          revision_id,
+          generation,
+          leaf.revision_id,
+          deleted,
+          body
+        )
+      )
     end
   end
 
   defp operation_result(revision, replayed, conflicts),
     do: %{revision: revision, replayed: replayed, conflicts: conflicts}
 
-  defp revision!(document_id, revision_id, parent, deleted, body) do
-    {:ok, revision} = build_revision(document_id, parent, deleted, body)
+  defp revision!(document_id, history_id, revision_id, parent, deleted, body) do
+    {:ok, revision} =
+      with {:ok, generation} <- Id.generation(revision_id) do
+        Revision.new(
+          Wire.new(document_id, history_id, revision_id, generation, parent, deleted, body)
+        )
+      end
+
     true = revision.revision_id == revision_id
     revision
   end
@@ -441,7 +554,9 @@ defmodule ElixirDB.RevisionHistoryModel do
 
   defp encode_leaf_set(leaves) do
     leaves
-    |> Enum.map(fn leaf -> %{revision: leaf.revision_id, deleted: leaf.deleted} end)
+    |> Enum.map(fn leaf ->
+      %{revision: leaf.revision_id, history_id: leaf.history_id, deleted: leaf.deleted}
+    end)
     |> Enum.sort_by(& &1.revision)
   end
 

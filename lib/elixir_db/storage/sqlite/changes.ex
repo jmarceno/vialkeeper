@@ -90,6 +90,26 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   end
 
   @doc """
+  Returns whether any local-origin change-feed row exists.
+
+  Used by replication safe-report probing; storage errors surface as `{:error, _}`
+  so callers can treat uncertainty conservatively.
+  """
+  @spec has_local_origin_changes?(Connection.handle()) ::
+          {:ok, boolean()} | {:error, ElixirDB.Error.t()}
+  def has_local_origin_changes?(conn) do
+    case Connection.query(
+           conn,
+           "SELECT 1 FROM changes WHERE origin = 'local' LIMIT 1",
+           []
+         ) do
+      {:ok, []} -> {:ok, false}
+      {:ok, [_ | _]} -> {:ok, true}
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  @doc """
   Decodes ordered change-feed SQL rows into protocol maps.
   """
   @spec decode_rows([[term()]]) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}

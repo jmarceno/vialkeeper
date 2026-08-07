@@ -2,6 +2,7 @@ defmodule ElixirDB.Storage.SQLite.Schema do
   @moduledoc false
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.SQLite.Connection
+  alias ElixirDB.UUID
 
   @application_id 0x45584442
   @type storage_mode :: :disk | :memory
@@ -27,11 +28,16 @@ defmodule ElixirDB.Storage.SQLite.Schema do
     with :ok <- execute_script(conn, schema),
          :ok <- configure(conn, opts),
          {:ok, _} <-
-           Connection.query(conn, "INSERT INTO db_meta VALUES (1, ?, 1, 1, 1, 1, 1, 0, ?, ?)", [
-             database_uuid,
-             DateTime.utc_now() |> DateTime.to_iso8601(),
-             config_json
-           ]) do
+           Connection.query(
+             conn,
+             "INSERT INTO db_meta VALUES (1, ?, ?, 1, 1, 1, 1, 1, 0, 0, 0, NULL, ?, ?)",
+             [
+               database_uuid,
+               UUID.v4(),
+               DateTime.utc_now() |> DateTime.to_iso8601(),
+               config_json
+             ]
+           ) do
       :ok
     else
       {:error, reason} ->
@@ -55,7 +61,7 @@ defmodule ElixirDB.Storage.SQLite.Schema do
          {:ok, [meta]} <-
            Connection.query(
              conn,
-             "SELECT database_uuid, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, current_sequence, config_json FROM db_meta WHERE id = 1"
+             "SELECT database_uuid, history_epoch, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, current_sequence, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
            ) do
       validate_schema_metadata(
         application_id,
@@ -111,35 +117,125 @@ defmodule ElixirDB.Storage.SQLite.Schema do
          {:error,
           ElixirDB.Error.unsupported_format("SQLite file is not a Version 1 ElixirDB database")}
 
-  defp validate_metadata_row([
+  defp validate_metadata_row(row) do
+    case row do
+      [
+        _uuid,
+        _history_epoch,
+        _format,
+        _schema,
+        _revision,
+        _canonical,
+        _protocol,
+        _sequence,
+        _retention_floor,
+        _compaction_epoch,
+        _boundary_digest,
+        config_json
+      ] ->
+        with :ok <- validate_metadata_scalars(row) do
+          validate_config_json(config_json, metadata_identity(row))
+        end
+
+      _ ->
+        {:error, ElixirDB.Error.unsupported_format("SQLite database metadata is invalid")}
+    end
+  end
+
+  defp validate_metadata_scalars(row) do
+    [
+      uuid,
+      history_epoch,
+      format,
+      schema,
+      revision,
+      canonical,
+      protocol,
+      sequence,
+      retention_floor,
+      compaction_epoch,
+      boundary_digest,
+      _config_json
+    ] = row
+
+    validators = [
+      fn -> validate_metadata_uuid(uuid) end,
+      fn -> validate_metadata_uuid(history_epoch) end,
+      fn -> validate_metadata_versions(format, schema, revision, canonical, protocol) end,
+      fn -> validate_metadata_sequence(sequence) end,
+      fn -> validate_metadata_retention_floor(retention_floor) end,
+      fn -> validate_metadata_compaction_epoch(compaction_epoch) end,
+      fn -> validate_metadata_boundary_digest(boundary_digest) end
+    ]
+
+    case Enum.find_value(validators, & &1.()) do
+      nil -> :ok
+      error -> error
+    end
+  end
+
+  defp validate_metadata_uuid(value) do
+    if valid_uuid?(value), do: nil, else: metadata_invalid_error()
+  end
+
+  defp validate_metadata_versions(format, schema, revision, canonical, protocol) do
+    if format == 1 and schema == 1 and revision == 1 and canonical == 1 and protocol == 1,
+      do: nil,
+      else: metadata_invalid_error()
+  end
+
+  defp validate_metadata_sequence(sequence) do
+    if is_integer(sequence) and sequence >= 0, do: nil, else: metadata_invalid_error()
+  end
+
+  defp validate_metadata_retention_floor(retention_floor) do
+    if is_integer(retention_floor) and retention_floor >= 0, do: nil, else: metadata_invalid_error()
+  end
+
+  defp validate_metadata_compaction_epoch(compaction_epoch) do
+    if is_integer(compaction_epoch) and compaction_epoch >= 0,
+      do: nil,
+      else: metadata_invalid_error()
+  end
+
+  defp validate_metadata_boundary_digest(boundary_digest) do
+    if is_nil(boundary_digest) or is_binary(boundary_digest),
+      do: nil,
+      else: metadata_invalid_error()
+  end
+
+  defp metadata_invalid_error,
+    do: {:error, ElixirDB.Error.unsupported_format("SQLite database metadata is invalid")}
+
+  defp metadata_identity([
          uuid,
+         history_epoch,
          format,
          schema,
          revision,
          canonical,
          protocol,
          sequence,
+         retention_floor,
+         compaction_epoch,
+         boundary_digest,
          config_json
        ]) do
-    if valid_uuid?(uuid) and format == 1 and schema == 1 and revision == 1 and canonical == 1 and
-         protocol == 1 and is_integer(sequence) and sequence >= 0 do
-      validate_config_json(config_json, %{
-        database_uuid: uuid,
-        file_format_version: format,
-        logical_schema_version: schema,
-        revision_algorithm_version: revision,
-        canonicalization_version: canonical,
-        replication_protocol_major: protocol,
-        current_sequence: sequence,
-        config_json: config_json
-      })
-    else
-      {:error, ElixirDB.Error.unsupported_format("SQLite database metadata is invalid")}
-    end
+    %{
+      database_uuid: uuid,
+      history_epoch: history_epoch,
+      file_format_version: format,
+      logical_schema_version: schema,
+      revision_algorithm_version: revision,
+      canonicalization_version: canonical,
+      replication_protocol_major: protocol,
+      current_sequence: sequence,
+      retention_floor_sequence: retention_floor,
+      compaction_epoch: compaction_epoch,
+      retention_boundary_digest: boundary_digest,
+      config_json: config_json
+    }
   end
-
-  defp validate_metadata_row(_),
-    do: {:error, ElixirDB.Error.unsupported_format("SQLite database metadata is invalid")}
 
   defp validate_config_json(config_json, identity) do
     case StrictDecoder.decode(config_json) do

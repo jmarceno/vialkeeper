@@ -24,6 +24,13 @@ defmodule ElixirDB.Runtime.ChangeNotifier do
     end
   end
 
+  def publish_maintenance(uuid, %{new_floor: new_floor} = event) when is_integer(new_floor) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:notifier, uuid}) do
+      [{pid, _}] -> GenServer.cast(pid, {:publish_maintenance, event})
+      [] -> :ok
+    end
+  end
+
   def unsubscribe(uuid, ref) do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:notifier, uuid}) do
       [{pid, _}] -> GenServer.cast(pid, {:unsubscribe, ref})
@@ -81,6 +88,15 @@ defmodule ElixirDB.Runtime.ChangeNotifier do
     end)
 
     {:noreply, %{state | sequence: max(sequence, state.sequence)}}
+  end
+
+  @impl true
+  def handle_cast({:publish_maintenance, event}, state) do
+    Enum.each(state.subscribers, fn {_ref, %{pid: pid, since: since}} ->
+      if since < event.new_floor, do: send(pid, {:database_maintenance, state.uuid, event})
+    end)
+
+    {:noreply, state}
   end
 
   @impl true

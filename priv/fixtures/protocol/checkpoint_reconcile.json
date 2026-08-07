@@ -50,5 +50,51 @@
       ]
     },
     "expected_common_sequence": 40
+  },
+  {
+    "id": "epoch-mismatch-bootstrap",
+    "description": "Checkpoint history epoch mismatch requires bootstrap from retention floor even when sessions match",
+    "source": {
+      "source_history_epoch": "epoch-old",
+      "history": [{"session_id": "s1", "source_sequence": 50}]
+    },
+    "target": {
+      "source_history_epoch": "epoch-old",
+      "history": [{"session_id": "s1", "source_sequence": 50}]
+    },
+    "source_identity": {
+      "history_epoch": "epoch-new",
+      "compaction_epoch": 2,
+      "retention_floor_sequence": 15
+    },
+    "expected_common_sequence": 50,
+    "expected_reconcile": {
+      "bootstrap_required": true,
+      "reason": "epoch_mismatch",
+      "since": 15
+    }
+  },
+  {
+    "id": "checkpoint-below-floor-bootstrap",
+    "description": "Shared checkpoint sequence below retention floor requires bootstrap",
+    "source": {
+      "source_history_epoch": "epoch-a",
+      "history": [{"session_id": "s1", "source_sequence": 5}]
+    },
+    "target": {
+      "source_history_epoch": "epoch-a",
+      "history": [{"session_id": "s1", "source_sequence": 5}]
+    },
+    "source_identity": {
+      "history_epoch": "epoch-a",
+      "compaction_epoch": 1,
+      "retention_floor_sequence": 20
+    },
+    "expected_common_sequence": 5,
+    "expected_reconcile": {
+      "bootstrap_required": true,
+      "reason": "below_floor",
+      "since": 20
+    }
   }
 ]

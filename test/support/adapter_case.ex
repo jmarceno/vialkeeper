@@ -11,6 +11,7 @@ defmodule ElixirDB.Storage.AdapterCase do
   SQLite-only probes remain in dedicated tests.
   """
 
+  alias ElixirDB.RevisionFixtures
   alias ElixirDB.Revisions.Id
   alias ElixirDB.Revisions.Wire
 
@@ -54,11 +55,13 @@ defmodule ElixirDB.Storage.AdapterCase do
   @doc """
   Builds a wire revision map for import/replication chain fixtures.
   """
-  @spec wire_revision(binary(), binary(), binary() | nil, boolean(), map() | nil) :: map()
-  def wire_revision(document_id, revision_id, parent, deleted, body) do
+  @spec wire_revision(binary(), binary(), binary() | nil, boolean(), map() | nil, binary() | nil) ::
+          map()
+  def wire_revision(document_id, revision_id, parent, deleted, body, history_id \\ nil) do
+    history_id = history_id || RevisionFixtures.shared_history_id()
     {:ok, generation} = Id.generation(revision_id)
 
-    Wire.new(document_id, revision_id, generation, parent, deleted, body)
+    Wire.new(document_id, history_id, revision_id, generation, parent, deleted, body)
   end
 
   defp safe_close(adapter_mod, adapter) do

@@ -103,6 +103,11 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
       {:put, "/v1/databases/#{uuid}/config", %{}, 200, &assert_data_map/1},
       {:post, "/v1/databases/#{uuid}/integrity-check", %{}, 200,
        &assert_data(&1, fn data -> data["ok"] == true end)},
+      {:post, "/v1/databases/#{uuid}/compact", %{}, 200,
+       &assert_data(&1, fn data ->
+         is_integer(data["old_floor"]) and is_integer(data["new_floor"]) and
+           is_integer(data["removed_revisions"])
+       end)},
       {:post, "/v1/databases/#{uuid}/documents/get", %{"id" => "doc"}, 200,
        &assert_data(&1, fn data ->
          data["id"] == "doc" and data["revision"] == revision and is_map(data["body"])
@@ -171,7 +176,12 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
        &assert_ok_or_domain_error(&1, ["replication_job_not_found", "invalid_request"])},
       {:get, "/v1/databases/#{uuid}/replication/identity", nil, 200,
        &assert_data(&1, fn data ->
-         data["database_uuid"] == uuid and is_integer(data["current_sequence"])
+         data["database_uuid"] == uuid and is_integer(data["current_sequence"]) and
+           Map.has_key?(data, "retention_floor")
+       end)},
+      {:post, "/v1/databases/#{uuid}/replication/boundaries", %{}, 200,
+       &assert_data(&1, fn data ->
+         is_list(data["boundaries"]) and is_integer(data["compaction_epoch"])
        end)},
       {:post, "/v1/databases/#{uuid}/replication/changes",
        %{"since" => 0, "limit" => 10, "wait_ms" => 0}, 200,

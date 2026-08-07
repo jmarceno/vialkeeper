@@ -85,7 +85,8 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
           :fetch_chains,
           :import,
           :checkpoint_target,
-          :checkpoint_source
+          :checkpoint_source,
+          :report_peer
         ] do
       assert phase in states, "expected #{phase} in emitted state sequence: #{inspect(states)}"
     end

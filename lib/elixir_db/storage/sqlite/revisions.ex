@@ -31,11 +31,21 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   def find(conn, doc_key, revision_id) do
     case Connection.query(
            conn,
-           "SELECT revision_id, generation, parent_revision, digest, deleted, body_json, insertion_sequence FROM revisions WHERE doc_key = ? AND revision_id = ?",
+           "SELECT revision_id, generation, parent_revision, history_id, digest, deleted, body_json, insertion_sequence FROM revisions WHERE doc_key = ? AND revision_id = ?",
            [doc_key, revision_id]
          ) do
-      {:ok, [[id, generation, parent, digest_value, deleted, body_json, sequence]]} ->
-        {:ok, from_row(doc_key, id, generation, parent, digest_value, deleted, body_json, sequence)}
+      {:ok, [[id, generation, parent, history_id, digest_value, deleted, body_json, sequence]]} ->
+        {:ok,
+         from_row([
+           id,
+           generation,
+           parent,
+           history_id,
+           digest_value,
+           deleted,
+           body_json,
+           sequence
+         ])}
 
       {:ok, []} ->
         {:error, ElixirDB.Error.revision_not_found("revision not found", %{revision: revision_id})}
@@ -53,13 +63,31 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   def load_leaves(conn, doc_key) do
     case Connection.query(
            conn,
-           "SELECT revision_id, generation, parent_revision, digest, deleted, body_json, insertion_sequence FROM revisions WHERE doc_key = ? AND is_leaf = 1 ORDER BY revision_id",
+           "SELECT revision_id, generation, parent_revision, history_id, digest, deleted, body_json, insertion_sequence FROM revisions WHERE doc_key = ? AND is_leaf = 1 ORDER BY revision_id",
            [doc_key]
          ) do
       {:ok, rows} ->
         {:ok,
-         Enum.map(rows, fn [id, generation, parent, digest_value, deleted, body_json, sequence] ->
-           from_row(doc_key, id, generation, parent, digest_value, deleted, body_json, sequence)
+         Enum.map(rows, fn [
+                             id,
+                             generation,
+                             parent,
+                             history_id,
+                             digest_value,
+                             deleted,
+                             body_json,
+                             sequence
+                           ] ->
+           from_row([
+             id,
+             generation,
+             parent,
+             history_id,
+             digest_value,
+             deleted,
+             body_json,
+             sequence
+           ])
          end)}
 
       {:error, reason} ->
@@ -95,12 +123,13 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
          :ok <-
            Connection.execute(
              conn,
-             "INSERT INTO revisions(doc_key, revision_id, generation, parent_revision, digest, deleted, body_json, insertion_sequence, is_leaf) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1)",
+             "INSERT INTO revisions(doc_key, revision_id, generation, parent_revision, history_id, digest, deleted, body_json, insertion_sequence, is_leaf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
              [
                doc_key,
                revision.revision_id,
                revision.generation,
                revision.parent_revision,
+               revision.history_id,
                revision.digest,
                if(revision.deleted, do: 1, else: 0),
                body
@@ -159,7 +188,13 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   def encode_leaf_set(leaves),
     do:
       Canonical.encode(
-        Enum.map(leaves, fn leaf -> %{"revision" => leaf.revision_id, "deleted" => leaf.deleted} end)
+        Enum.map(leaves, fn leaf ->
+          %{
+            "revision" => leaf.revision_id,
+            "history_id" => leaf.history_id,
+            "deleted" => leaf.deleted
+          }
+        end)
       )
 
   @doc """
@@ -169,12 +204,23 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   def same?(a, b),
     do:
       a.revision_id == b.revision_id and a.generation == b.generation and
-        a.parent_revision == b.parent_revision and a.deleted == b.deleted and a.body == b.body
+        a.parent_revision == b.parent_revision and a.history_id == b.history_id and
+        a.deleted == b.deleted and a.body == b.body
 
   @doc false
-  def from_row(_doc_key, id, generation, parent, digest_value, deleted, body_json, sequence) do
+  def from_row([
+        id,
+        generation,
+        parent,
+        history_id,
+        digest_value,
+        deleted,
+        body_json,
+        sequence
+      ]) do
     %Revision{
       document_id: nil,
+      history_id: history_id,
       revision_id: id,
       generation: generation,
       parent_revision: parent,

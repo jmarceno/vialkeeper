@@ -133,6 +133,10 @@ defmodule ElixirDB.Changes do
         unsubscribe(uuid, ref)
         read(uuid, request)
 
+      {:database_maintenance, ^uuid, _event} ->
+        unsubscribe(uuid, ref)
+        read(uuid, request)
+
       {:database_closed, ^uuid} ->
         unsubscribe(uuid, ref)
 

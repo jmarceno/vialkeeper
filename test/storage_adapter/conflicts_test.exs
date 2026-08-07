@@ -1,7 +1,7 @@
 defmodule ElixirDB.StorageAdapter.ConflictsTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
-  alias ElixirDB.Revisions.Id
+  alias ElixirDB.TestRevisionId, as: Id
 
   test "sibling imports surface conflicts and resolve with live leaf CAS", %{adapter: adapter} do
     {:ok, root} = Id.calculate("doc", nil, false, %{"n" => 0})

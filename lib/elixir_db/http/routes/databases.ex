@@ -3,6 +3,7 @@ defmodule ElixirDB.HTTP.Routes.Databases do
   use Plug.Router
   alias ElixirDB.HTTP.{Request, Response}
   alias ElixirDB.HTTP.Schemas
+  alias ElixirDB.Replication.Wire
   alias ElixirDB.Runtime.DatabaseCatalog
   plug(:match)
   plug(:dispatch)
@@ -92,6 +93,19 @@ defmodule ElixirDB.HTTP.Routes.Databases do
     end
   end
 
+  post "/:uuid/compact" do
+    Request.call(
+      conn,
+      Schemas.opts(:compact_retention, "compact retention contains an unknown field"),
+      fn body, conn ->
+        Response.result(
+          conn,
+          compact_result(Request.uuid(conn), body || %{})
+        )
+      end
+    )
+  end
+
   match _ do
     not_found(conn)
   end
@@ -123,5 +137,12 @@ defmodule ElixirDB.HTTP.Routes.Databases do
       conn,
       ElixirDB.Error.invalid_request("route not found", %{path: conn.request_path})
     )
+  end
+
+  defp compact_result(uuid, request) do
+    case DatabaseCatalog.command(uuid, {:command, :compact_retention, request}) do
+      {:ok, stats} -> {:ok, Wire.compact_stats(stats)}
+      error -> error
+    end
   end
 end

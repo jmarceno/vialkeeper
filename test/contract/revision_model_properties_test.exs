@@ -52,7 +52,13 @@ defmodule ElixirDB.Contract.RevisionModelPropertiesTest do
     check all(revisions <- ModelGenerators.put_then_optional_delete()) do
       Enum.each(revisions, fn rev ->
         {:ok, calculated} =
-          Id.calculate(rev.document_id, rev.parent_revision, rev.deleted, rev.body)
+          Id.calculate(
+            rev.document_id,
+            rev.history_id,
+            rev.parent_revision,
+            rev.deleted,
+            rev.body
+          )
 
         assert calculated == rev.revision_id
         {:ok, generation} = Id.generation(rev.revision_id)

@@ -2,6 +2,7 @@ defmodule ElixirDB.Contract.JSONAndRevisionTest do
   use ExUnit.Case, async: true
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.RevisionFixtures
   alias ElixirDB.Revisions.Id
 
   test "strict decoder rejects duplicate keys and unsafe numbers" do
@@ -20,8 +21,9 @@ defmodule ElixirDB.Contract.JSONAndRevisionTest do
   end
 
   test "revision identity is independent of local sequence" do
-    assert {:ok, first} = Id.calculate("doc", nil, false, %{"x" => 1})
-    assert {:ok, second} = Id.calculate("doc", nil, false, %{"x" => 1})
+    history_id = RevisionFixtures.shared_history_id()
+    assert {:ok, first} = Id.calculate("doc", history_id, nil, false, %{"x" => 1})
+    assert {:ok, second} = Id.calculate("doc", history_id, nil, false, %{"x" => 1})
     assert first == second
     assert String.starts_with?(first, "1-")
   end

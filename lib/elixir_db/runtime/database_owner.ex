@@ -2,7 +2,9 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   @moduledoc false
   use GenServer
   alias ElixirDB.Commands
-  alias ElixirDB.Runtime.ChangeNotifier
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.Compact
+  alias ElixirDB.Runtime.{ChangeNotifier, RetentionScheduler}
   alias ElixirDB.Storage.Results
   alias ElixirDB.Storage.SQLite.Adapter
 
@@ -48,8 +50,16 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp handle_command(%Commands.Identity{}, _from, state),
     do: reply(Adapter.identity(state.adapter), state)
 
-  defp handle_command(%Commands.UpdateConfig{request: request}, _from, state),
-    do: reply(Adapter.update_config(state.adapter, request), state)
+  defp handle_command(%Commands.UpdateConfig{request: request}, _from, state) do
+    case Adapter.update_config(state.adapter, request) do
+      {:ok, _config} = ok ->
+        RetentionScheduler.reschedule(state.uuid)
+        {:reply, ok, state}
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
 
   defp handle_command(%Commands.IntegrityCheck{request: request}, _from, state),
     do: reply(Adapter.integrity_check(state.adapter, request), state)
@@ -141,6 +151,27 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp handle_command(%Commands.DeleteJob{job_id: job_id}, _from, state),
     do: reply(Adapter.delete_replication_job(state.adapter, job_id), state)
 
+  defp handle_command(%Commands.CompactRetention{request: request}, _from, state),
+    do: compact(request, state)
+
+  defp handle_command(%Commands.RetentionStatus{}, _from, state),
+    do: reply(Adapter.retention_state(state.adapter), state)
+
+  defp handle_command(%Commands.ListPeerPositions{}, _from, state),
+    do: reply(Adapter.list_peer_positions(state.adapter), state)
+
+  defp handle_command(%Commands.PutPeerPositionCas{request: request}, _from, state),
+    do: reply(Adapter.put_peer_position_cas(state.adapter, request), state)
+
+  defp handle_command(%Commands.ReadBoundaryPages{request: request}, _from, state),
+    do: reply(Adapter.read_boundary_pages(state.adapter, request), state)
+
+  defp handle_command(%Commands.InstallBoundaryPages{request: request}, _from, state),
+    do: reply(Adapter.install_boundary_pages(state.adapter, request), state)
+
+  defp handle_command(%Commands.HasLocalOriginChanges{}, _from, state),
+    do: reply(Adapter.has_local_origin_changes?(state.adapter), state)
+
   defp handle_command(%Commands.Close{}, _from, state),
     do: {:stop, :shutdown, :ok, state}
 
@@ -149,6 +180,52 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
 
   @impl true
   def terminate(_reason, %{adapter: adapter}), do: Adapter.close(adapter)
+
+  defp compact(request, state) do
+    trigger = compact_trigger(request)
+
+    result =
+      Compact.run(state.uuid, trigger, fn ->
+        Adapter.compact_retention(state.adapter, request)
+      end)
+
+    case result do
+      {:ok, stats} ->
+        maybe_publish_maintenance(state.uuid, stats)
+        {:reply, result, state}
+
+      {:error, _} ->
+        {:reply, result, state}
+    end
+  end
+
+  defp compact_trigger(request) when is_map(request) do
+    case MapAccess.get(request, :trigger) do
+      :scheduled -> :scheduled
+      "scheduled" -> :scheduled
+      _ -> :explicit
+    end
+  end
+
+  defp compact_trigger(_), do: :explicit
+
+  defp maybe_publish_maintenance(uuid, stats) do
+    old_floor = Map.get(stats, :old_floor, 0)
+    new_floor = Map.get(stats, :new_floor, 0)
+    old_epoch = Map.get(stats, :old_compaction_epoch, 0)
+    new_epoch = Map.get(stats, :new_compaction_epoch, 0)
+
+    if new_floor > old_floor or new_epoch > old_epoch do
+      ChangeNotifier.publish_maintenance(uuid, %{
+        database_uuid: uuid,
+        new_floor: new_floor,
+        new_compaction_epoch: new_epoch,
+        event_kind: :compaction
+      })
+    end
+
+    :ok
+  end
 
   defp mutate({:ok, %{sequence: sequence} = value}, state) do
     ChangeNotifier.publish(state.uuid, sequence)

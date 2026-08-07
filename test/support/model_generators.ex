@@ -9,6 +9,7 @@ defmodule ElixirDB.ModelGenerators do
 
   alias ElixirDB.Domain.Revision
   alias ElixirDB.OperationFixtures
+  alias ElixirDB.RevisionFixtures
   alias ElixirDB.Revisions.Id
   alias ElixirDB.Revisions.Wire
 
@@ -64,14 +65,52 @@ defmodule ElixirDB.ModelGenerators do
           left_body = distinct_left_body(left_body, right_body)
           right_body = Map.put(right_body, "_side", "right")
 
-          {:ok, root_id} = Id.calculate(document_id, nil, false, root_body)
-          {:ok, left_id} = Id.calculate(document_id, root_id, false, left_body)
-          {:ok, right_id} = Id.calculate(document_id, root_id, false, right_body)
+          {:ok, root_id} =
+            Id.calculate(document_id, RevisionFixtures.shared_history_id(), nil, false, root_body)
+
+          {:ok, left_id} =
+            Id.calculate(
+              document_id,
+              RevisionFixtures.shared_history_id(),
+              root_id,
+              false,
+              left_body
+            )
+
+          {:ok, right_id} =
+            Id.calculate(
+              document_id,
+              RevisionFixtures.shared_history_id(),
+              root_id,
+              false,
+              right_body
+            )
 
           revisions = [
-            revision!(document_id, root_id, nil, false, root_body),
-            revision!(document_id, left_id, root_id, false, left_body),
-            revision!(document_id, right_id, root_id, false, right_body)
+            revision!(
+              document_id,
+              RevisionFixtures.shared_history_id(),
+              root_id,
+              nil,
+              false,
+              root_body
+            ),
+            revision!(
+              document_id,
+              RevisionFixtures.shared_history_id(),
+              left_id,
+              root_id,
+              false,
+              left_body
+            ),
+            revision!(
+              document_id,
+              RevisionFixtures.shared_history_id(),
+              right_id,
+              root_id,
+              false,
+              right_body
+            )
           ]
 
           StreamData.constant(%{
@@ -94,13 +133,41 @@ defmodule ElixirDB.ModelGenerators do
     StreamData.bind(
       StreamData.tuple({document_id(), document_body(), StreamData.boolean()}),
       fn {document_id, body, delete?} ->
-        {:ok, root_id} = Id.calculate(document_id, nil, false, body)
-        root = revision!(document_id, root_id, nil, false, body)
+        {:ok, root_id} =
+          Id.calculate(document_id, RevisionFixtures.shared_history_id(), nil, false, body)
+
+        root =
+          revision!(
+            document_id,
+            RevisionFixtures.shared_history_id(),
+            root_id,
+            nil,
+            false,
+            body
+          )
 
         revisions =
           if delete? do
-            {:ok, tomb_id} = Id.calculate(document_id, root_id, true, nil)
-            [root, revision!(document_id, tomb_id, root_id, true, nil)]
+            {:ok, tomb_id} =
+              Id.calculate(
+                document_id,
+                RevisionFixtures.shared_history_id(),
+                root_id,
+                true,
+                nil
+              )
+
+            [
+              root,
+              revision!(
+                document_id,
+                RevisionFixtures.shared_history_id(),
+                tomb_id,
+                root_id,
+                true,
+                nil
+              )
+            ]
           else
             [root]
           end
@@ -290,18 +357,38 @@ defmodule ElixirDB.ModelGenerators do
   defp build_linear_history(document_id, bodies) do
     {revisions, _parent} =
       Enum.map_reduce(bodies, nil, fn body, parent ->
-        {:ok, revision_id} = Id.calculate(document_id, parent, false, body)
-        {revision!(document_id, revision_id, parent, false, body), revision_id}
+        {:ok, revision_id} =
+          Id.calculate(
+            document_id,
+            RevisionFixtures.shared_history_id(),
+            parent,
+            false,
+            body
+          )
+
+        {
+          revision!(
+            document_id,
+            RevisionFixtures.shared_history_id(),
+            revision_id,
+            parent,
+            false,
+            body
+          ),
+          revision_id
+        }
       end)
 
     revisions
   end
 
-  defp revision!(document_id, revision_id, parent, deleted, body) do
+  defp revision!(document_id, history_id, revision_id, parent, deleted, body) do
     {:ok, generation} = Id.generation(revision_id)
 
     {:ok, revision} =
-      Revision.new(Wire.new(document_id, revision_id, generation, parent, deleted, body))
+      Revision.new(
+        Wire.new(document_id, history_id, revision_id, generation, parent, deleted, body)
+      )
 
     revision
   end

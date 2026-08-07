@@ -4,7 +4,12 @@
     "description": "REPL-015 handshake identity payload",
     "shape": {
       "database_uuid": "database-uuid",
+      "history_epoch": "history-epoch",
       "current_sequence": 42,
+      "retention_floor": 17,
+      "compaction_epoch": 3,
+      "retention_boundary_digest": "sha256-digest",
+      "retention_mode": "stable_frontier",
       "replication_protocol_major": 1,
       "revision_algorithm_version": 1,
       "canonicalization_version": 1
@@ -19,6 +24,10 @@
       "checkpoint_version": 7,
       "session_id": "session-uuid",
       "source_sequence": 42,
+      "source_history_epoch": "history-epoch",
+      "source_compaction_epoch": 3,
+      "safe_source_sequence": 40,
+      "installed_source_compaction_epoch": 3,
       "history": [
         {
           "session_id": "session-uuid",
@@ -43,6 +52,10 @@
         "checkpoint_version": 8,
         "session_id": "session-uuid",
         "source_sequence": 50,
+        "source_history_epoch": "history-epoch",
+        "source_compaction_epoch": 3,
+        "safe_source_sequence": 48,
+        "installed_source_compaction_epoch": 3,
         "history": []
       }
     }
@@ -52,6 +65,7 @@
     "description": "REPL-016 transferred revision wire shape",
     "shape": {
       "document_id": "document-id",
+      "history_id": "history-id",
       "revision_id": "3-digest",
       "generation": 3,
       "parent_revision": "2-parent-digest",
@@ -63,17 +77,53 @@
     "id": "diff-revisions-request",
     "description": "Target missing-revision probe",
     "shape": {
-      "candidates": [
-        {"document_id": "document-id", "leaf_revisions": ["3-digest"]}
+      "documents": [
+        {
+          "document_id": "document-id",
+          "leaf_revisions": [
+            {
+              "revision": "3-digest",
+              "history_id": "history-id"
+            }
+          ]
+        }
       ]
     }
   },
   {
     "id": "diff-revisions-response",
-    "description": "Missing leaf revision IDs reported by target",
+    "description": "Missing and compacted leaf revision IDs reported by target",
     "shape": {
-      "missing": [
-        {"document_id": "document-id", "leaf_revisions": ["3-digest"]}
+      "documents": [
+        {
+          "document_id": "document-id",
+          "missing_revisions": [
+            {
+              "revision": "3-digest",
+              "history_id": "history-id"
+            }
+          ],
+          "compacted_revisions": []
+        }
+      ]
+    }
+  },
+  {
+    "id": "boundary-page-response",
+    "description": "API-015 compact-history-boundary page",
+    "shape": {
+      "source_history_epoch": "history-epoch",
+      "compaction_epoch": 3,
+      "boundary_digest": "sha256-digest",
+      "next_page": null,
+      "boundaries": [
+        {
+          "document_id": "document-id",
+          "history_id": "history-id",
+          "minimum_retained_generation": 3,
+          "retired": false,
+          "retired_branch_roots": ["3-removed-branch-root"]
+        }
       ]
     }
   }

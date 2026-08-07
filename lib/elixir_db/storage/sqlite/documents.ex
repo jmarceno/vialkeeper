@@ -98,6 +98,40 @@ defmodule ElixirDB.Storage.SQLite.Documents do
   end
 
   @doc """
+  Lists document ids in stable order for paginated bootstrap pages.
+  """
+  @spec list_page(Connection.handle(), binary() | nil, pos_integer()) ::
+          {:ok, {list(binary()), binary() | nil}} | {:error, ElixirDB.Error.t()}
+  def list_page(conn, cursor, limit) when is_integer(limit) and limit > 0 do
+    query =
+      case cursor do
+        nil ->
+          {"SELECT document_id FROM documents ORDER BY document_id LIMIT ?", [limit + 1]}
+
+        cursor when is_binary(cursor) ->
+          {"SELECT document_id FROM documents WHERE document_id > ? ORDER BY document_id LIMIT ?",
+           [cursor, limit + 1]}
+      end
+
+    case Connection.query(conn, elem(query, 0), elem(query, 1)) do
+      {:ok, rows} ->
+        ids = Enum.map(rows, fn [id] -> id end)
+        page = Enum.take(ids, limit)
+
+        next_cursor =
+          case Enum.drop(ids, limit) do
+            [next | _] -> next
+            _ -> nil
+          end
+
+        {:ok, {page, next_cursor}}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  @doc """
   Shapes a document + revision (+ optional conflict leaves) into the adapter result map.
   """
   @spec to_result(map(), Revision.t(), [Revision.t()]) :: map()

@@ -9,12 +9,16 @@ PRAGMA trusted_schema = OFF;
 CREATE TABLE IF NOT EXISTS db_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   database_uuid TEXT NOT NULL UNIQUE,
+  history_epoch TEXT NOT NULL,
   file_format_version INTEGER NOT NULL CHECK (file_format_version = 1),
   logical_schema_version INTEGER NOT NULL CHECK (logical_schema_version = 1),
   revision_algorithm_version INTEGER NOT NULL CHECK (revision_algorithm_version = 1),
   canonicalization_version INTEGER NOT NULL CHECK (canonicalization_version = 1),
   replication_protocol_major INTEGER NOT NULL CHECK (replication_protocol_major = 1),
   current_sequence INTEGER NOT NULL CHECK (current_sequence >= 0),
+  retention_floor_sequence INTEGER NOT NULL CHECK (retention_floor_sequence >= 0),
+  compaction_epoch INTEGER NOT NULL CHECK (compaction_epoch >= 0),
+  retention_boundary_digest TEXT,
   created_at TEXT NOT NULL,
   config_json TEXT NOT NULL
 ) STRICT;
@@ -38,6 +42,7 @@ CREATE TABLE IF NOT EXISTS revisions (
   revision_id TEXT NOT NULL,
   generation INTEGER NOT NULL CHECK (generation > 0),
   parent_revision TEXT,
+  history_id TEXT NOT NULL,
   digest TEXT NOT NULL,
   deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
   body_json TEXT,

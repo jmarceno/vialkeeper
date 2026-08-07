@@ -14,6 +14,10 @@ defmodule ElixirDB.Replication.LocalEndpoint do
     do: DatabaseCatalog.command(uuid, {:command, :identity, %{}})
 
   @impl true
+  def has_local_origin_changes?(%__MODULE__{database_uuid: uuid}),
+    do: DatabaseCatalog.command(uuid, {:command, :has_local_origin_changes})
+
+  @impl true
   def read_changes(%__MODULE__{database_uuid: uuid}, request),
     do:
       if(MapAccess.get(request, :wait_ms, 0) > 0,
@@ -50,6 +54,10 @@ defmodule ElixirDB.Replication.LocalEndpoint do
     do: DatabaseCatalog.command(uuid, {:command, :get_local_record, "checkpoints", replication_id})
 
   @impl true
+  def get_local_record(%__MODULE__{database_uuid: uuid}, namespace, key),
+    do: DatabaseCatalog.command(uuid, {:command, :get_local_record, namespace, key})
+
+  @impl true
   def put_checkpoint(%__MODULE__{database_uuid: uuid}, replication_id, checkpoint),
     do:
       DatabaseCatalog.command(
@@ -64,4 +72,20 @@ defmodule ElixirDB.Replication.LocalEndpoint do
              |> Map.delete(:expected_checkpoint_version)
          }}
       )
+
+  @impl true
+  def read_boundary_pages(%__MODULE__{database_uuid: uuid}, request),
+    do: DatabaseCatalog.command(uuid, {:command, :read_boundary_pages, request})
+
+  @impl true
+  def install_boundary_pages(%__MODULE__{database_uuid: uuid}, request),
+    do: DatabaseCatalog.command(uuid, {:command, :install_boundary_pages, request})
+
+  @impl true
+  def put_peer_position(%__MODULE__{database_uuid: uuid}, request),
+    do: DatabaseCatalog.command(uuid, {:command, :put_peer_position_cas, request})
+
+  @impl true
+  def list_peer_positions(%__MODULE__{database_uuid: uuid}),
+    do: DatabaseCatalog.command(uuid, {:command, :list_peer_positions, %{}})
 end

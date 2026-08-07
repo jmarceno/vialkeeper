@@ -13,6 +13,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   alias ElixirDB.Revisions.{Id, Winner}
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.{Changes, Documents, IndexCatalog, Revisions}
+  alias ElixirDB.UUID
 
   @doc """
   Applies one local put/delete mutation inside an open transaction.
@@ -217,7 +218,16 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     if is_nil(current) and not is_nil(if_revision) do
       {:error, ElixirDB.Error.revision_conflict("document does not have the expected parent")}
     else
-      with {:ok, revision} <- build_revision(document_id, if_revision, deleted, body) do
+      with {:ok, {parent, history_id}} <-
+             revision_parent_and_history(
+               adapter,
+               doc,
+               document_id,
+               current,
+               if_revision,
+               deleted
+             ),
+           {:ok, revision} <- build_revision(document_id, history_id, parent, deleted, body) do
         candidate_from_revision(adapter, doc, if_revision, current, revision)
       end
     end
@@ -588,16 +598,26 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
         {:error, ElixirDB.Error.revision_conflict("document has no current live leaves")}
 
       delete_all ->
-        Enum.map(live, fn leaf -> build_revision(document_id, leaf.revision_id, true, nil) end)
+        Enum.map(live, fn leaf ->
+          build_revision(document_id, leaf.history_id, leaf.revision_id, true, nil)
+        end)
         |> collect_ok()
 
       true ->
         with true <- chosen in Enum.map(live, & &1.revision_id),
-             {:ok, survivor} <- build_revision(document_id, chosen, false, body),
+             chosen_leaf = Enum.find(live, &(&1.revision_id == chosen)),
+             {:ok, survivor} <-
+               build_revision(
+                 document_id,
+                 chosen_leaf.history_id,
+                 chosen,
+                 false,
+                 body
+               ),
              {:ok, tombstones} <-
                live
                |> Enum.reject(&(&1.revision_id == chosen))
-               |> Enum.map(&build_revision(document_id, &1.revision_id, true, nil))
+               |> Enum.map(&build_revision(document_id, &1.history_id, &1.revision_id, true, nil))
                |> collect_ok() do
           {:ok, [survivor | tombstones]}
         else
@@ -610,13 +630,45 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
-  defp build_revision(document_id, parent, deleted, body) do
-    with {:ok, id} <- Id.calculate(document_id, parent, deleted, body),
+  defp revision_parent_and_history(_adapter, nil, document_id, nil, nil, _deleted) do
+    {:ok, {nil, UUID.document_history_id(document_id)}}
+  end
+
+  defp revision_parent_and_history(_adapter, _doc, _document_id, current, nil, false)
+       when not current.deleted do
+    {:ok, {nil, current.history_id}}
+  end
+
+  defp revision_parent_and_history(_adapter, _doc, _document_id, current, _if_revision, false)
+       when not is_nil(current) and current.deleted do
+    {:ok, {nil, fresh_history_id()}}
+  end
+
+  defp revision_parent_and_history(adapter, doc, _document_id, _current, if_revision, _deleted)
+       when is_binary(if_revision) do
+    case Revisions.find(adapter.conn, doc.doc_key, if_revision) do
+      {:ok, parent} ->
+        {:ok, {if_revision, parent.history_id}}
+
+      {:error, %ElixirDB.Error{code: :revision_not_found}} ->
+        {:error, ElixirDB.Error.revision_conflict("document does not have the expected parent")}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp revision_parent_and_history(_adapter, _doc, _document_id, _current, _if_revision, _deleted),
+    do: {:error, ElixirDB.Error.revision_conflict("document does not have the expected parent")}
+
+  defp build_revision(document_id, history_id, parent, deleted, body) do
+    with {:ok, id} <- Id.calculate(document_id, history_id, parent, deleted, body),
          {:ok, generation} <- Id.generation(id),
          do:
            {:ok,
             %Revision{
               document_id: document_id,
+              history_id: history_id,
               revision_id: id,
               generation: generation,
               parent_revision: parent,
@@ -625,6 +677,8 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
               body: body
             }}
   end
+
+  defp fresh_history_id, do: UUID.v4()
 
   defp collect_ok(values) do
     Enum.reduce_while(values, {:ok, []}, fn

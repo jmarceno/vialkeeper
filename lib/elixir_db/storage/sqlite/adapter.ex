@@ -26,17 +26,20 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     Mutations,
     QueryRunner,
     ReplicationJobs,
+    Retention,
     Revisions,
     Schema
   }
 
-  defstruct [:path, :conn, :identity, storage_mode: :disk]
+  defstruct [:path, :conn, :identity, storage_mode: :disk, retention_fault: nil]
   @type storage_mode :: :disk | :memory
+  @type retention_fault :: (atom() -> :ok | {:error, ElixirDB.Error.t()}) | nil
   @type t :: %__MODULE__{
           path: binary(),
           conn: Connection.handle(),
           identity: map(),
-          storage_mode: storage_mode()
+          storage_mode: storage_mode(),
+          retention_fault: retention_fault()
         }
 
   @impl true
@@ -86,14 +89,24 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def identity(%__MODULE__{conn: conn, identity: identity}) do
-    case Connection.query(conn, "SELECT current_sequence, config_json FROM db_meta WHERE id = 1") do
-      {:ok, [[sequence, config_json]]} ->
+    case Connection.query(
+           conn,
+           "SELECT current_sequence, history_epoch, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
+         ) do
+      {:ok, [[sequence, history_epoch, floor, compaction_epoch, boundary_digest, config_json]]} ->
+        config = decode_json!(config_json)
+
         {:ok,
          %{
            identity
            | current_sequence: sequence,
-             config: decode_json!(config_json),
-             config_json: config_json
+             history_epoch: history_epoch,
+             retention_floor_sequence: floor,
+             compaction_epoch: compaction_epoch,
+             retention_boundary_digest: boundary_digest,
+             config: config,
+             config_json: config_json,
+             retention_mode: get_in(config, ["retention", "mode"]) || "disabled"
          }}
 
       {:error, reason} ->
@@ -188,10 +201,12 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     limit = MapAccess.get(request, :limit, 100)
 
     with :ok <- validate_non_negative_integer(since, "since"),
+         {:ok, identity} <- identity(adapter),
+         :ok <- validate_changes_since_floor(since, identity),
          :ok <-
            validate_changes_limit(
              limit,
-             get_in(adapter_identity(adapter), [:config, "changes", "max_batch"])
+             get_in(identity, [:config, "changes", "max_batch"])
            ),
          {:ok, rows} <- Changes.fetch_after(conn, since, limit),
          {:ok, results} <- Changes.decode_rows(rows),
@@ -210,6 +225,10 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   def read_changes(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("changes request must be an object")}
+
+  @impl true
+  def has_local_origin_changes?(%__MODULE__{conn: conn}),
+    do: Changes.has_local_origin_changes?(conn)
 
   @impl true
   def diff_revisions(%__MODULE__{} = adapter, request) when is_map(request),
@@ -245,6 +264,47 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   def put_local_record_cas(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("local record request must be an object")}
+
+  @impl true
+  def retention_state(%__MODULE__{conn: conn} = adapter) do
+    case identity(adapter) do
+      {:ok, %{config: config}} -> Retention.retention_state(conn, config)
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @impl true
+  def list_peer_positions(%__MODULE__{conn: conn}), do: Retention.list_peer_positions(conn)
+
+  @impl true
+  def put_peer_position_cas(%__MODULE__{} = adapter, request) when is_map(request),
+    do: transaction(adapter, fn -> Retention.put_peer_position_cas(adapter, request) end)
+
+  def put_peer_position_cas(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("peer position request must be an object")}
+
+  @impl true
+  def read_boundary_pages(%__MODULE__{conn: conn}, request) when is_map(request),
+    do: Retention.read_boundary_pages(conn, request)
+
+  def read_boundary_pages(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("boundary page request must be an object")}
+
+  @impl true
+  def install_boundary_pages(%__MODULE__{} = adapter, request) when is_map(request),
+    do: transaction(adapter, fn -> Retention.install_boundary_pages(adapter.conn, request) end)
+
+  def install_boundary_pages(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("boundary page request must be an object")}
+
+  @impl true
+  def compact_retention(%__MODULE__{} = adapter, request \\ %{}) when is_map(request),
+    do:
+      transaction(adapter, fn ->
+        with :ok <- retention_fault_check(adapter.retention_fault, :compact_retention_mid_tx) do
+          Retention.compact(adapter, request)
+        end
+      end)
 
   @impl true
   def list_replication_jobs(%__MODULE__{conn: conn}), do: ReplicationJobs.list_all(conn)
@@ -404,6 +464,31 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   defp validate_non_negative_integer(_value, label),
     do: {:error, ElixirDB.Error.invalid_request("#{label} must be a non-negative integer")}
 
+  defp validate_changes_since_floor(since, identity) do
+    floor = Map.get(identity, :retention_floor_sequence, 0) || 0
+
+    if since < floor do
+      {:error,
+       ElixirDB.Error.history_truncated("changes feed is below the retention floor", %{
+         database_uuid: identity.database_uuid,
+         history_epoch: identity.history_epoch,
+         retention_floor: floor,
+         compaction_epoch: Map.get(identity, :compaction_epoch, 0)
+       })}
+    else
+      :ok
+    end
+  end
+
+  defp retention_fault_check(nil, _point), do: :ok
+
+  defp retention_fault_check(fun, point) when is_function(fun, 1) do
+    case fun.(point) do
+      :ok -> :ok
+      {:error, %ElixirDB.Error{} = error} -> {:error, error}
+    end
+  end
+
   defp adapter_identity(adapter) do
     case identity(adapter) do
       {:ok, value} -> value
@@ -437,7 +522,13 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   defp decode_identity(identity) do
     config = decode_json!(identity.config_json)
-    Map.put(identity, :config, config)
+
+    identity
+    |> Map.put(:config, config)
+    |> Map.put(:retention_floor, Map.get(identity, :retention_floor_sequence))
+    |> Map.put(:retention_floor_sequence, Map.get(identity, :retention_floor_sequence, 0))
+    |> Map.put(:compaction_epoch, Map.get(identity, :compaction_epoch, 0))
+    |> Map.put(:retention_mode, get_in(config, ["retention", "mode"]) || "disabled")
   end
 
   defp normalize_error(%ElixirDB.Error{} = error), do: error

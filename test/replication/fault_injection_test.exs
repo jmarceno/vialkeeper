@@ -7,14 +7,17 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   """
   use ExUnit.Case, async: false
 
+  alias ElixirDB.Changes
+  alias ElixirDB.Documents
+  alias ElixirDB.Error
+  alias ElixirDB.Eventual
   alias ElixirDB.FaultAdapter
   alias ElixirDB.FaultEndpoint
   alias ElixirDB.MapAccess
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Replication.Worker
-  alias ElixirDB.Revisions.Id
+  alias ElixirDB.Replication.{Id, LocalEndpoint, Worker}
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Storage.AdapterCase
+  alias ElixirDB.TestRevisionId, as: RevisionId
 
   @phases [
     :handshake,
@@ -143,7 +146,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
         end
 
       assert {:ok, replication_id} =
-               ElixirDB.Replication.Id.calculate(
+               Id.calculate(
                  a.database_uuid,
                  b.database_uuid,
                  "push",
@@ -199,7 +202,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       target = FaultEndpoint.wrap(local_target)
 
       assert {:ok, replication_id} =
-               ElixirDB.Replication.Id.calculate(
+               Id.calculate(
                  a.database_uuid,
                  b.database_uuid,
                  "push",
@@ -221,7 +224,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       ref = Process.monitor(pid)
       :gen_statem.cast(pid, :start)
 
-      ElixirDB.Eventual.eventually(
+      Eventual.eventually(
         fn ->
           observed = Agent.get(seen, & &1)
           point in observed and Enum.count(observed, &(&1 == point)) >= 2
@@ -231,16 +234,16 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       )
 
       assert {:ok, %{revision: revision}} =
-               ElixirDB.Documents.put(a.database_uuid, %{
+               Documents.put(a.database_uuid, %{
                  id: "after-#{point}",
                  body: %{"n" => 99, "point" => Atom.to_string(point)}
                })
 
       expected_sequence = source_sequence!(a.database_uuid)
 
-      ElixirDB.Eventual.eventually(
+      Eventual.eventually(
         fn ->
-          case ElixirDB.Documents.get(b.database_uuid, %{id: "after-#{point}"}) do
+          case Documents.get(b.database_uuid, %{id: "after-#{point}"}) do
             {:ok, %{revision: ^revision, body: %{"n" => 99}}} -> true
             _ -> false
           end
@@ -252,7 +255,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       assert {:ok, target_ep} = LocalEndpoint.new(b.database_uuid)
       assert {:ok, source_ep} = LocalEndpoint.new(a.database_uuid)
 
-      ElixirDB.Eventual.eventually(
+      Eventual.eventually(
         fn ->
           with {:ok, %{value: target_cp}} <-
                  LocalEndpoint.get_checkpoint(target_ep, replication_id),
@@ -307,7 +310,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       )
 
     assert {:ok, replication_id} =
-             ElixirDB.Replication.Id.calculate(
+             Id.calculate(
                a.database_uuid,
                b.database_uuid,
                "push",
@@ -342,13 +345,13 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
   test "worker enters real :completed gen_statem state before stop", %{a: a, b: b} do
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "terminal", body: %{"ok" => true}})
+             Documents.put(a.database_uuid, %{id: "terminal", body: %{"ok" => true}})
 
     assert {:ok, source} = LocalEndpoint.new(a.database_uuid)
     assert {:ok, target} = LocalEndpoint.new(b.database_uuid)
 
     assert {:ok, replication_id} =
-             ElixirDB.Replication.Id.calculate(
+             Id.calculate(
                a.database_uuid,
                b.database_uuid,
                "push",
@@ -374,19 +377,19 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
 
     assert {:ok, %{revision: ^revision, body: %{"ok" => true}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "terminal"})
+             Documents.get(b.database_uuid, %{id: "terminal"})
   end
 
   test "worker enters real :failed gen_statem state when retries exhausted", %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "fail-doc", body: %{"n" => 1}})
+             Documents.put(a.database_uuid, %{id: "fail-doc", body: %{"n" => 1}})
 
     {:ok, faults} =
       Agent.start_link(fn ->
         FaultAdapter.wrap(:replication)
         |> FaultAdapter.inject(
           :handshake,
-          ElixirDB.Error.database_closed("persistent handshake fault")
+          Error.database_closed("persistent handshake fault")
         )
       end)
 
@@ -394,7 +397,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     assert {:ok, target} = LocalEndpoint.new(b.database_uuid)
 
     assert {:ok, replication_id} =
-             ElixirDB.Replication.Id.calculate(
+             Id.calculate(
                a.database_uuid,
                b.database_uuid,
                "push",
@@ -429,7 +432,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
 
     assert {:error, %{code: :document_not_found}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "fail-doc"})
+             Documents.get(b.database_uuid, %{id: "fail-doc"})
   end
 
   defp build_history(uuid, seed, point) do
@@ -437,7 +440,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     conflict_id = "conflict-#{point}-#{seed}"
 
     assert {:ok, %{revision: primary_rev}} =
-             ElixirDB.Documents.put(uuid, %{
+             Documents.put(uuid, %{
                id: primary_id,
                body: %{"seed" => seed, "n" => 1, "role" => "primary"}
              })
@@ -446,9 +449,9 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     root_body = %{"seed" => seed, "role" => "root"}
     left_body = %{"seed" => seed, "side" => "left"}
     right_body = %{"seed" => seed, "side" => "right"}
-    {:ok, root} = Id.calculate(conflict_id, nil, false, root_body)
-    {:ok, left} = Id.calculate(conflict_id, root, false, left_body)
-    {:ok, right} = Id.calculate(conflict_id, root, false, right_body)
+    {:ok, root} = RevisionId.calculate(conflict_id, nil, false, root_body)
+    {:ok, left} = RevisionId.calculate(conflict_id, root, false, left_body)
+    {:ok, right} = RevisionId.calculate(conflict_id, root, false, right_body)
 
     assert {:ok, _} =
              DatabaseCatalog.command(uuid, {
@@ -532,7 +535,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   end
 
   defp source_revision_snapshot(uuid) do
-    assert {:ok, %{results: results}} = ElixirDB.Changes.read(uuid, %{since: 0, limit: 200})
+    assert {:ok, %{results: results}} = Changes.read(uuid, %{since: 0, limit: 200})
     assert {:ok, ep} = LocalEndpoint.new(uuid)
 
     Map.new(results, fn change ->
@@ -603,7 +606,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       assert MapSet.subset?(source_meta.revision_ids, target_meta.revision_ids),
              "target missing revisions for #{document_id}: missing=#{inspect(MapSet.difference(source_meta.revision_ids, target_meta.revision_ids) |> MapSet.to_list())}"
 
-      assert {:ok, doc} = ElixirDB.Documents.get(target_uuid, %{id: document_id})
+      assert {:ok, doc} = Documents.get(target_uuid, %{id: document_id})
 
       assert MapSet.member?(source_meta.leaves, doc.revision),
              "target winner #{doc.revision} for #{document_id} not in source leaves"
@@ -647,6 +650,6 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   end
 
   defp retryable_fault(point) do
-    ElixirDB.Error.database_closed("injected retryable fault at #{point}")
+    Error.database_closed("injected retryable fault at #{point}")
   end
 end

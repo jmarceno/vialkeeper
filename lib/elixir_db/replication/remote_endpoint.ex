@@ -32,6 +32,20 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
     do: call(endpoint, :get, "/v1/databases/#{endpoint.database_uuid}/replication/identity")
 
   @impl true
+  def has_local_origin_changes?(endpoint) do
+    case call(endpoint, :get, "/v1/databases/#{endpoint.database_uuid}/replication/local-origin") do
+      {:ok, %{"has_local_origin_changes" => value}} when is_boolean(value) ->
+        {:ok, value}
+
+      {:ok, %{has_local_origin_changes: value}} when is_boolean(value) ->
+        {:ok, value}
+
+      other ->
+        other
+    end
+  end
+
+  @impl true
   def read_changes(endpoint, request),
     do:
       call(endpoint, :post, "/v1/databases/#{endpoint.database_uuid}/replication/changes", request)
@@ -88,6 +102,18 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
       )
 
   @impl true
+  def get_local_record(endpoint, namespace, key) do
+    path =
+      if namespace == "peer_ledger" do
+        "/v1/databases/#{endpoint.database_uuid}/replication/peers/#{key}"
+      else
+        "/v1/databases/#{endpoint.database_uuid}/replication/local-records/#{namespace}/#{key}"
+      end
+
+    call(endpoint, :get, path)
+  end
+
+  @impl true
   def put_checkpoint(endpoint, replication_id, checkpoint),
     do:
       call(
@@ -96,6 +122,45 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
         "/v1/databases/#{endpoint.database_uuid}/replication/checkpoints/#{replication_id}",
         checkpoint
       )
+
+  @impl true
+  def read_boundary_pages(endpoint, request),
+    do:
+      call(
+        endpoint,
+        :post,
+        "/v1/databases/#{endpoint.database_uuid}/replication/boundaries",
+        request
+      )
+
+  @impl true
+  def install_boundary_pages(endpoint, request),
+    do:
+      call(
+        endpoint,
+        :post,
+        "/v1/databases/#{endpoint.database_uuid}/replication/boundaries/install",
+        request
+      )
+
+  @impl true
+  def put_peer_position(endpoint, request) do
+    peer_uuid =
+      MapAccess.get(request, :peer_database_uuid) ||
+        get_in(request, [:value, :peer_database_uuid]) ||
+        get_in(request, ["value", "peer_database_uuid"])
+
+    call(
+      endpoint,
+      :put,
+      "/v1/databases/#{endpoint.database_uuid}/replication/peers/#{peer_uuid}",
+      request
+    )
+  end
+
+  @impl true
+  def list_peer_positions(endpoint),
+    do: call(endpoint, :get, "/v1/databases/#{endpoint.database_uuid}/replication/peers")
 
   defp call(endpoint, method, path, body \\ nil) do
     with {:ok, response} <-

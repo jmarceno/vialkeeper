@@ -18,7 +18,8 @@ defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
       {ElixirDB.Runtime.FileLease, path},
       {ElixirDB.Runtime.DatabaseOwner, {uuid, path}},
       {ElixirDB.Runtime.DatabaseAdmission, {uuid, limit}},
-      {ElixirDB.Runtime.ChangeNotifier, uuid}
+      {ElixirDB.Runtime.ChangeNotifier, uuid},
+      {ElixirDB.Runtime.RetentionScheduler, uuid}
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)

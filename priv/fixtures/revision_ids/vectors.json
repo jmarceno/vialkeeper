@@ -1,1 +1,125 @@
-[{"body":{"x":1},"canonical_payload":"{\"body\":{\"x\":1},\"deleted\":false,\"document_id\":\"doc\",\"parent_revision\":null,\"version\":1}","deleted":false,"document_id":"doc","expected_revision_id":"1-92d6582b55d9b2a872a6d5db2b2739ef6eee35fdcf2e2c6e0c723785f9753969","id":"root-put","parent_revision":null},{"body":{},"canonical_payload":"{\"body\":{},\"deleted\":false,\"document_id\":\"doc\",\"parent_revision\":null,\"version\":1}","deleted":false,"document_id":"doc","expected_revision_id":"1-714d29c1cb669e31dd80c28c8ee7e85d29b65d38628e414b9139d6b05db8bd96","id":"empty-body","parent_revision":null},{"body":{"a":1,"b":2},"canonical_payload":"{\"body\":{\"a\":1,\"b\":2},\"deleted\":false,\"document_id\":\"doc\",\"parent_revision\":null,\"version\":1}","deleted":false,"document_id":"doc","expected_revision_id":"1-e411b0a1146974a772216369dd071e3bcc4b0a8f9d4ce1930c294a895b9f2cc4","id":"key-order-independent","parent_revision":null},{"body":{"ok":true},"canonical_payload":"{\"body\":{\"ok\":true},\"deleted\":false,\"document_id\":\"café/文档\",\"parent_revision\":null,\"version\":1}","deleted":false,"document_id":"café/文档","expected_revision_id":"1-9e9be2abc7db4fed4473be8099d914e6ac8497a0a0a2bf7d75ab68b852ac18d4","id":"unicode-doc-id","parent_revision":null},{"body":{"value":1},"canonical_payload":"{\"body\":{\"value\":1},\"deleted\":false,\"document_id\":\"doc\",\"parent_revision\":\"1-ca47eb9dbced2abb3b48d4a389f49aed2cc166628661654932b373712601d51c\",\"version\":1}","deleted":false,"document_id":"doc","expected_revision_id":"2-74482da5502a4ecd0565e53573a0c528a5057f9b40a0e63d12bd35e5fffc1ec3","id":"child-of-root","parent_revision":"1-ca47eb9dbced2abb3b48d4a389f49aed2cc166628661654932b373712601d51c"},{"body":null,"canonical_payload":"{\"body\":null,\"deleted\":true,\"document_id\":\"doc\",\"parent_revision\":\"2-74482da5502a4ecd0565e53573a0c528a5057f9b40a0e63d12bd35e5fffc1ec3\",\"version\":1}","deleted":true,"document_id":"doc","expected_revision_id":"3-9615573eca7aca8dedea7a67b140402e6a1ea2bb1e85d4d0d6b0421dd1349624","id":"tombstone","parent_revision":"2-74482da5502a4ecd0565e53573a0c528a5057f9b40a0e63d12bd35e5fffc1ec3"},{"body":{"value":2},"canonical_payload":"{\"body\":{\"value\":2},\"deleted\":false,\"document_id\":\"doc\",\"parent_revision\":\"3-9615573eca7aca8dedea7a67b140402e6a1ea2bb1e85d4d0d6b0421dd1349624\",\"version\":1}","deleted":false,"document_id":"doc","expected_revision_id":"4-98f046f67c72874112e93a32db21ce0b6d862037c7782a5b340d1c707c719e5d","id":"recreate-after-tombstone","parent_revision":"3-9615573eca7aca8dedea7a67b140402e6a1ea2bb1e85d4d0d6b0421dd1349624"},{"body":{"value":1},"canonical_payload":"{\"body\":{\"value\":1},\"deleted\":false,\"document_id\":\"doc\",\"parent_revision\":\"1-ca47eb9dbced2abb3b48d4a389f49aed2cc166628661654932b373712601d51c\",\"version\":1}","deleted":false,"document_id":"doc","expected_revision_id":"2-74482da5502a4ecd0565e53573a0c528a5057f9b40a0e63d12bd35e5fffc1ec3","id":"sibling-left","parent_revision":"1-ca47eb9dbced2abb3b48d4a389f49aed2cc166628661654932b373712601d51c"},{"body":{"value":2},"canonical_payload":"{\"body\":{\"value\":2},\"deleted\":false,\"document_id\":\"doc\",\"parent_revision\":\"1-ca47eb9dbced2abb3b48d4a389f49aed2cc166628661654932b373712601d51c\",\"version\":1}","deleted":false,"document_id":"doc","expected_revision_id":"2-e245b8c869440ed2522b7de31194350859c4b0de643331d2c095f454fba61b17","id":"sibling-right","parent_revision":"1-ca47eb9dbced2abb3b48d4a389f49aed2cc166628661654932b373712601d51c"}]
+[
+  {
+    "id": "root-put",
+    "document_id": "doc",
+    "history_id": "11111111-1111-4111-8111-111111111111",
+    "parent_revision": null,
+    "deleted": false,
+    "body": {"x": 1},
+    "canonical_payload": "{\"body\":{\"x\":1},\"deleted\":false,\"document_id\":\"doc\",\"history_id\":\"11111111-1111-4111-8111-111111111111\",\"parent_revision\":null,\"version\":1}",
+    "expected_revision_id": "1-fe90f578c8ef7dc773b1f5d86adccc0f3bf9ed382a9c2943d847954a153ec10e"
+  },
+  {
+    "id": "empty-body",
+    "document_id": "doc",
+    "history_id": "11111111-1111-4111-8111-111111111111",
+    "parent_revision": null,
+    "deleted": false,
+    "body": {},
+    "canonical_payload": "{\"body\":{},\"deleted\":false,\"document_id\":\"doc\",\"history_id\":\"11111111-1111-4111-8111-111111111111\",\"parent_revision\":null,\"version\":1}",
+    "expected_revision_id": "1-689c27450e3f25db9993f96ab396d52fd9885a0ed6681801436cc5943e55eebf"
+  },
+  {
+    "id": "key-order-independent",
+    "document_id": "doc",
+    "history_id": "11111111-1111-4111-8111-111111111111",
+    "parent_revision": null,
+    "deleted": false,
+    "body": {"a": 1, "b": 2},
+    "canonical_payload": "{\"body\":{\"a\":1,\"b\":2},\"deleted\":false,\"document_id\":\"doc\",\"history_id\":\"11111111-1111-4111-8111-111111111111\",\"parent_revision\":null,\"version\":1}",
+    "expected_revision_id": "1-7213e14434a8fc1b5f789789aafdbc6dee99aef85a4c6f69956e930a7aa8426d"
+  },
+  {
+    "id": "unicode-doc-id",
+    "document_id": "café/文档",
+    "history_id": "11111111-1111-4111-8111-111111111111",
+    "parent_revision": null,
+    "deleted": false,
+    "body": {"ok": true},
+    "canonical_payload": "{\"body\":{\"ok\":true},\"deleted\":false,\"document_id\":\"café/文档\",\"history_id\":\"11111111-1111-4111-8111-111111111111\",\"parent_revision\":null,\"version\":1}",
+    "expected_revision_id": "1-6a4940f371535dc32c81c41f0a526f3ef741e3b681436c4797c88578e4684d20"
+  },
+  {
+    "id": "chain-root",
+    "document_id": "doc",
+    "history_id": "11111111-1111-4111-8111-111111111111",
+    "parent_revision": null,
+    "deleted": false,
+    "body": {"seed": true},
+    "canonical_payload": "{\"body\":{\"seed\":true},\"deleted\":false,\"document_id\":\"doc\",\"history_id\":\"11111111-1111-4111-8111-111111111111\",\"parent_revision\":null,\"version\":1}",
+    "expected_revision_id": "1-f8683fa4f58634048d3162ad9fbaa6eb81ca3d14693b6909d7e2aa896da7d04c"
+  },
+  {
+    "id": "child-of-root",
+    "document_id": "doc",
+    "history_id": "11111111-1111-4111-8111-111111111111",
+    "parent_revision": "1-f8683fa4f58634048d3162ad9fbaa6eb81ca3d14693b6909d7e2aa896da7d04c",
+    "deleted": false,
+    "body": {"value": 1},
+    "canonical_payload": "{\"body\":{\"value\":1},\"deleted\":false,\"document_id\":\"doc\",\"history_id\":\"11111111-1111-4111-8111-111111111111\",\"parent_revision\":\"1-f8683fa4f58634048d3162ad9fbaa6eb81ca3d14693b6909d7e2aa896da7d04c\",\"version\":1}",
+    "expected_revision_id": "2-005fce1cb326a60d1b69a55fe0ca25ea8e450915ff56ed623389b252c4ce7b36"
+  },
+  {
+    "id": "tombstone",
+    "document_id": "doc",
+    "history_id": "11111111-1111-4111-8111-111111111111",
+    "parent_revision": "2-005fce1cb326a60d1b69a55fe0ca25ea8e450915ff56ed623389b252c4ce7b36",
+    "deleted": true,
+    "body": null,
+    "canonical_payload": "{\"body\":null,\"deleted\":true,\"document_id\":\"doc\",\"history_id\":\"11111111-1111-4111-8111-111111111111\",\"parent_revision\":\"2-005fce1cb326a60d1b69a55fe0ca25ea8e450915ff56ed623389b252c4ce7b36\",\"version\":1}",
+    "expected_revision_id": "3-e4c9f9da66173bf52c83fc25e407f095876b39d4c56599446ae156e40a78287f"
+  },
+  {
+    "id": "recreate-after-tombstone",
+    "description": "DOC-002: fresh history root after deleted winner; not a child of the tombstone",
+    "document_id": "doc",
+    "history_id": "22222222-2222-4222-8222-222222222222",
+    "parent_revision": null,
+    "deleted": false,
+    "body": {"value": 2},
+    "canonical_payload": "{\"body\":{\"value\":2},\"deleted\":false,\"document_id\":\"doc\",\"history_id\":\"22222222-2222-4222-8222-222222222222\",\"parent_revision\":null,\"version\":1}",
+    "expected_revision_id": "1-75d3579216563c2100d753e5b777f8d207816d4eb7ed2c68ab5e412238a67228"
+  },
+  {
+    "id": "sibling-left",
+    "document_id": "doc",
+    "history_id": "11111111-1111-4111-8111-111111111111",
+    "parent_revision": "1-f8683fa4f58634048d3162ad9fbaa6eb81ca3d14693b6909d7e2aa896da7d04c",
+    "deleted": false,
+    "body": {"value": 1},
+    "canonical_payload": "{\"body\":{\"value\":1},\"deleted\":false,\"document_id\":\"doc\",\"history_id\":\"11111111-1111-4111-8111-111111111111\",\"parent_revision\":\"1-f8683fa4f58634048d3162ad9fbaa6eb81ca3d14693b6909d7e2aa896da7d04c\",\"version\":1}",
+    "expected_revision_id": "2-005fce1cb326a60d1b69a55fe0ca25ea8e450915ff56ed623389b252c4ce7b36"
+  },
+  {
+    "id": "sibling-right",
+    "document_id": "doc",
+    "history_id": "11111111-1111-4111-8111-111111111111",
+    "parent_revision": "1-f8683fa4f58634048d3162ad9fbaa6eb81ca3d14693b6909d7e2aa896da7d04c",
+    "deleted": false,
+    "body": {"value": 2},
+    "canonical_payload": "{\"body\":{\"value\":2},\"deleted\":false,\"document_id\":\"doc\",\"history_id\":\"11111111-1111-4111-8111-111111111111\",\"parent_revision\":\"1-f8683fa4f58634048d3162ad9fbaa6eb81ca3d14693b6909d7e2aa896da7d04c\",\"version\":1}",
+    "expected_revision_id": "2-ee7ac047ba1a7b9abc15b9ddbbde6cf3cdc1ee005fe50d096f627a688a847676"
+  },
+  {
+    "id": "independent-history-same-body",
+    "description": "Same document_id and body with a different history_id yields a different root revision ID",
+    "document_id": "doc",
+    "history_id": "33333333-3333-4333-8333-333333333333",
+    "parent_revision": null,
+    "deleted": false,
+    "body": {"x": 1},
+    "canonical_payload": "{\"body\":{\"x\":1},\"deleted\":false,\"document_id\":\"doc\",\"history_id\":\"33333333-3333-4333-8333-333333333333\",\"parent_revision\":null,\"version\":1}",
+    "expected_revision_id": "1-a55aef8ba8fb140b7058ec51fa3c825e92535934b7062631fbe909f0c8e6e618"
+  },
+  {
+    "id": "legacy-payload-without-history-id",
+    "description": "Pre-history-id payloads are rejected; expected_revision_id is absent and calculate must not match a silently reinterpreted digest",
+    "document_id": "doc",
+    "history_id": null,
+    "parent_revision": null,
+    "deleted": false,
+    "body": {"x": 1},
+    "canonical_payload": "{\"body\":{\"x\":1},\"deleted\":false,\"document_id\":\"doc\",\"parent_revision\":null,\"version\":1}",
+    "expect_error": "invalid_request"
+  }
+]

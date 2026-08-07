@@ -1,8 +1,8 @@
 defmodule ElixirDB.StorageAdapter.RevisionTransferTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
-  alias ElixirDB.Revisions.Id
   alias ElixirDB.Storage.SQLite.Connection
+  alias ElixirDB.TestRevisionId, as: Id
 
   test "diff and import transfer a root-to-leaf chain", %{adapter: source} do
     {:ok, dest_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-dest")

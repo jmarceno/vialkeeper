@@ -164,6 +164,44 @@ defmodule ElixirDB.Commands do
     defstruct [:job_id]
   end
 
+  defmodule CompactRetention do
+    @moduledoc false
+    defstruct request: %{}
+  end
+
+  defmodule RetentionStatus do
+    @moduledoc false
+    defstruct request: %{}
+  end
+
+  defmodule ListPeerPositions do
+    @moduledoc false
+    defstruct request: %{}
+  end
+
+  defmodule PutPeerPositionCas do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule ReadBoundaryPages do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule InstallBoundaryPages do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule HasLocalOriginChanges do
+    @moduledoc false
+    defstruct []
+  end
+
   defmodule Close do
     @moduledoc false
     defstruct []
@@ -213,6 +251,32 @@ defmodule ElixirDB.Commands do
   def normalize({:command, :list_jobs, request}), do: %ListJobs{request: request || %{}}
   def normalize({:command, :put_job, request}), do: %PutJob{request: request}
   def normalize({:command, :delete_job, job_id}), do: %DeleteJob{job_id: job_id}
+
+  def normalize({:command, :compact_retention, request}),
+    do: %CompactRetention{request: request || %{}}
+
+  def normalize({:command, :compact, request}), do: %CompactRetention{request: request || %{}}
+
+  def normalize({:command, :retention_status, request}),
+    do: %RetentionStatus{request: request || %{}}
+
+  def normalize({:command, :get_retention_state, request}),
+    do: %RetentionStatus{request: request || %{}}
+
+  def normalize({:command, :list_peer_positions, request}),
+    do: %ListPeerPositions{request: request || %{}}
+
+  def normalize({:command, :put_peer_position_cas, request}),
+    do: %PutPeerPositionCas{request: request}
+
+  def normalize({:command, :read_boundary_pages, request}),
+    do: %ReadBoundaryPages{request: request}
+
+  def normalize({:command, :install_boundary_pages, request}),
+    do: %InstallBoundaryPages{request: request}
+
+  def normalize({:command, :has_local_origin_changes}), do: %HasLocalOriginChanges{}
+
   def normalize({:command, :close}), do: %Close{}
   def normalize(other), do: other
 end

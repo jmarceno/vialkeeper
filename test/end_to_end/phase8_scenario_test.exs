@@ -308,6 +308,7 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
 
   @tag :slow
   test "replicates a live leaf alongside a deleted conflict branch" do
+    alias ElixirDB.RevisionFixtures
     alias ElixirDB.Revisions.Id, as: RevisionId
     alias ElixirDB.Storage.AdapterCase
 
@@ -337,9 +338,10 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
 
     root_body = %{"role" => "root"}
     left_body = %{"role" => "left"}
-    {:ok, root_rev} = RevisionId.calculate(document_id, nil, false, root_body)
-    {:ok, left} = RevisionId.calculate(document_id, root_rev, false, left_body)
-    {:ok, right_deleted} = RevisionId.calculate(document_id, root_rev, true, nil)
+    history_id = RevisionFixtures.shared_history_id()
+    {:ok, root_rev} = RevisionId.calculate(document_id, history_id, nil, false, root_body)
+    {:ok, left} = RevisionId.calculate(document_id, history_id, root_rev, false, left_body)
+    {:ok, right_deleted} = RevisionId.calculate(document_id, history_id, root_rev, true, nil)
 
     assert {:ok, _} =
              DatabaseCatalog.command(a_uuid, {

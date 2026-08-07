@@ -9,8 +9,9 @@ defmodule ElixirDB.Storage.SQLite.Import do
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.Import, as: ImportInstrumentation
   alias ElixirDB.Revisions.{Id, Winner}
-  alias ElixirDB.Storage.SQLite.{Changes, Documents, IndexCatalog, Revisions}
+  alias ElixirDB.Storage.SQLite.{Changes, Documents, IndexCatalog, RetentionRecords, Revisions}
 
   @doc """
   Validates host limits for a replication chain batch.
@@ -31,11 +32,15 @@ defmodule ElixirDB.Storage.SQLite.Import do
           Map.keys(chain),
           &(&1 in [
               :document_id,
+              :history_id,
               :leaf_revision,
               :revisions,
+              :truncated,
               "document_id",
+              "history_id",
               "leaf_revision",
-              "revisions"
+              "revisions",
+              "truncated"
             ])
         )
       end) ->
@@ -77,20 +82,10 @@ defmodule ElixirDB.Storage.SQLite.Import do
     document_id = MapAccess.get(chain, :document_id)
     leaf_revision = MapAccess.get(chain, :leaf_revision)
     revisions = MapAccess.get(chain, :revisions, [])
+    truncated = MapAccess.get(chain, :truncated, false)
 
     if valid_chain_shape?(chain, document_id, leaf_revision, revisions) do
-      case validate_chain_revisions(document_id, revisions) do
-        {:ok, ^leaf_revision, built} ->
-          {:cont, {:ok, Enum.reverse(built, acc)}}
-
-        {:ok, _parent, _built} ->
-          {:halt,
-           {:error,
-            ElixirDB.Error.integrity_violation("revision chain leaf does not match payload")}}
-
-        {:error, error} ->
-          {:halt, {:error, error}}
-      end
+      append_validated_chain(document_id, leaf_revision, revisions, truncated, acc)
     else
       {:halt,
        {:error,
@@ -101,30 +96,56 @@ defmodule ElixirDB.Storage.SQLite.Import do
   defp validate_chain_entry(_chain, _acc),
     do: {:halt, {:error, ElixirDB.Error.invalid_request("revision chains must be objects")}}
 
+  defp append_validated_chain(document_id, leaf_revision, revisions, truncated, acc) do
+    case validate_chain_revisions(document_id, revisions, truncated) do
+      {:ok, ^leaf_revision, built} ->
+        entries =
+          built
+          |> Enum.reverse()
+          |> Enum.with_index()
+          |> Enum.map(fn {revision, index} -> {revision, truncated and index == 0} end)
+
+        {:cont, {:ok, acc ++ entries}}
+
+      {:ok, _parent, _built} ->
+        {:halt,
+         {:error, ElixirDB.Error.integrity_violation("revision chain leaf does not match payload")}}
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
   defp valid_chain_shape?(chain, document_id, leaf_revision, revisions) do
     allowed_keys = [
       :document_id,
+      :history_id,
       :leaf_revision,
       :revisions,
+      :truncated,
       "document_id",
+      "history_id",
       "leaf_revision",
-      "revisions"
+      "revisions",
+      "truncated"
     ]
 
     Enum.all?(Map.keys(chain), &(&1 in allowed_keys)) and is_binary(document_id) and
       document_id != "" and is_binary(leaf_revision) and is_list(revisions) and revisions != []
   end
 
-  defp validate_chain_revisions(document_id, revisions) do
+  defp validate_chain_revisions(document_id, revisions, truncated) do
     Enum.reduce_while(revisions, {:ok, :root, []}, fn raw, {:ok, expected_parent, built} ->
-      validate_revision_order(document_id, raw, expected_parent, built)
+      allow_any_parent = truncated and built == []
+      validate_revision_order(document_id, raw, expected_parent, built, allow_any_parent)
     end)
   end
 
-  defp validate_revision_order(document_id, raw, expected_parent, built) do
+  defp validate_revision_order(document_id, raw, expected_parent, built, allow_any_parent) do
     with {:ok, revision} <- imported_revision(document_id, raw),
          true <-
-           (expected_parent == :root and is_nil(revision.parent_revision)) or
+           allow_any_parent or
+             (expected_parent == :root and is_nil(revision.parent_revision)) or
              revision.parent_revision == expected_parent do
       {:cont, {:ok, revision.revision_id, [revision | built]}}
     else
@@ -146,12 +167,14 @@ defmodule ElixirDB.Storage.SQLite.Import do
       :revision_id,
       :generation,
       :parent_revision,
+      :history_id,
       :deleted,
       :body,
       "document_id",
       "revision_id",
       "generation",
       "parent_revision",
+      "history_id",
       "deleted",
       "body"
     ]
@@ -160,10 +183,12 @@ defmodule ElixirDB.Storage.SQLite.Import do
       generation_value = MapAccess.get(raw, :generation)
       revision_id = MapAccess.get(raw, :revision_id)
       parent = MapAccess.get(raw, :parent_revision)
+      history_id = MapAccess.get(raw, :history_id)
       deleted = MapAccess.get(raw, :deleted, false)
       body = MapAccess.get(raw, :body)
 
-      with {:ok, calculated} <- Id.calculate(document_id, parent, deleted, body),
+      with :ok <- validate_import_history_id(history_id),
+           {:ok, calculated} <- Id.calculate(document_id, history_id, parent, deleted, body),
            true <- calculated == revision_id,
            {:ok, generation} <- Id.generation(revision_id),
            true <- generation_value == generation,
@@ -173,6 +198,7 @@ defmodule ElixirDB.Storage.SQLite.Import do
         {:ok,
          %Revision{
            document_id: document_id,
+           history_id: history_id,
            revision_id: revision_id,
            generation: generation,
            parent_revision: parent,
@@ -189,6 +215,13 @@ defmodule ElixirDB.Storage.SQLite.Import do
     end
   end
 
+  defp validate_import_history_id(history_id)
+       when is_binary(history_id) and history_id != "",
+       do: :ok
+
+  defp validate_import_history_id(_),
+    do: {:error, ElixirDB.Error.invalid_request("revision chain history_id is required")}
+
   defp body_size_within_limit?(body) do
     case Canonical.encode(body) do
       {:ok, json} ->
@@ -200,47 +233,112 @@ defmodule ElixirDB.Storage.SQLite.Import do
   end
 
   defp insert_imported_revisions(adapter, revisions) do
-    Enum.reduce_while(revisions, {:ok, MapSet.new(), 0}, fn revision, {:ok, affected, inserted} ->
-      insert_imported_revision(adapter, revision, affected, inserted)
-    end)
-    |> case do
-      {:ok, affected, inserted} -> {:ok, %{affected: affected, inserted: inserted}}
-      {:error, _} = error -> error
+    with {:ok, boundaries} <- RetentionRecords.list_boundaries(adapter.conn) do
+      import_revision_batch(adapter, revisions, boundaries)
     end
   end
 
-  defp insert_imported_revision(adapter, revision, affected, inserted) do
+  defp import_revision_batch(adapter, revisions, boundaries) do
+    uuid = Map.get(adapter.identity, :database_uuid)
+
+    Enum.reduce_while(revisions, {:ok, MapSet.new(), 0, 0}, fn {revision, allow_dangling_parent},
+                                                               {:ok, affected, inserted, stale} ->
+      import_revision_entry(
+        adapter,
+        revision,
+        allow_dangling_parent,
+        boundaries,
+        affected,
+        inserted,
+        stale
+      )
+    end)
+    |> finalize_import_batch(uuid)
+  end
+
+  defp import_revision_entry(
+         adapter,
+         revision,
+         allow_dangling_parent,
+         boundaries,
+         affected,
+         inserted,
+         stale
+       ) do
+    if compacted_stale?(revision, boundaries),
+      do: {:cont, {:ok, affected, inserted, stale + 1}},
+      else:
+        insert_imported_revision(
+          adapter,
+          revision,
+          allow_dangling_parent,
+          affected,
+          inserted,
+          stale
+        )
+  end
+
+  defp finalize_import_batch({:ok, affected, inserted, stale}, uuid) do
+    ImportInstrumentation.stale_fence_noop(uuid, stale)
+    {:ok, %{affected: affected, inserted: inserted}}
+  end
+
+  defp finalize_import_batch({:error, _} = error, _uuid), do: error
+
+  defp insert_imported_revision(adapter, revision, allow_dangling_parent, affected, inserted, stale) do
     case Documents.find(adapter.conn, revision.document_id) do
       {:ok, nil} ->
-        insert_new_revision(adapter, revision, affected, inserted)
+        insert_new_revision(adapter, revision, allow_dangling_parent, affected, inserted, stale)
 
       {:error, %ElixirDB.Error{code: :document_not_found}} ->
-        insert_new_revision(adapter, revision, affected, inserted)
+        insert_new_revision(adapter, revision, allow_dangling_parent, affected, inserted, stale)
 
       {:ok, doc} ->
-        insert_existing_revision(adapter, doc, revision, affected, inserted)
+        insert_existing_revision(
+          adapter,
+          doc,
+          revision,
+          allow_dangling_parent,
+          affected,
+          inserted,
+          stale
+        )
 
       {:error, error} ->
         {:halt, {:error, error}}
     end
   end
 
-  defp insert_new_revision(adapter, revision, affected, inserted) do
+  defp insert_new_revision(adapter, revision, allow_dangling_parent, affected, inserted, stale) do
     with {:ok, doc_key} <- Documents.insert(adapter.conn, revision.document_id),
+         :ok <- ensure_import_parent(adapter, doc_key, revision, allow_dangling_parent),
          :ok <- Revisions.insert(adapter.conn, doc_key, revision) do
-      {:cont, {:ok, MapSet.put(affected, {doc_key, revision.document_id}), inserted + 1}}
+      {:cont, {:ok, MapSet.put(affected, {doc_key, revision.document_id}), inserted + 1, stale}}
+    else
+      {:error, error} -> {:halt, {:error, error}}
     end
   end
 
-  defp insert_existing_revision(adapter, doc, revision, affected, inserted) do
+  defp insert_existing_revision(
+         adapter,
+         doc,
+         revision,
+         allow_dangling_parent,
+         affected,
+         inserted,
+         stale
+       ) do
     case Revisions.find(adapter.conn, doc.doc_key, revision.revision_id) do
       {:ok, existing} ->
-        existing_revision_result(existing, revision, affected, inserted)
+        existing_revision_result(existing, revision, affected, inserted, stale)
 
       {:error, %ElixirDB.Error{code: :revision_not_found}} ->
-        with :ok <- Revisions.ensure_parent(adapter.conn, doc.doc_key, revision.parent_revision),
+        with :ok <- ensure_import_parent(adapter, doc.doc_key, revision, allow_dangling_parent),
              :ok <- Revisions.insert(adapter.conn, doc.doc_key, revision) do
-          {:cont, {:ok, MapSet.put(affected, {doc.doc_key, revision.document_id}), inserted + 1}}
+          {:cont,
+           {:ok, MapSet.put(affected, {doc.doc_key, revision.document_id}), inserted + 1, stale}}
+        else
+          {:error, error} -> {:halt, {:error, error}}
         end
 
       {:error, error} ->
@@ -248,14 +346,44 @@ defmodule ElixirDB.Storage.SQLite.Import do
     end
   end
 
-  defp existing_revision_result(existing, revision, affected, inserted) do
+  defp existing_revision_result(existing, revision, affected, inserted, stale) do
     if Revisions.same?(existing, revision) do
-      {:cont, {:ok, affected, inserted}}
+      {:cont, {:ok, affected, inserted, stale}}
     else
       {:halt,
        {:error,
         ElixirDB.Error.integrity_violation("existing revision differs from imported revision")}}
     end
+  end
+
+  defp ensure_import_parent(_adapter, _doc_key, %Revision{parent_revision: nil}, _allow_dangling),
+    do: :ok
+
+  defp ensure_import_parent(adapter, doc_key, revision, true) do
+    case revision.parent_revision do
+      nil -> :ok
+      parent -> parent_present_or_allowed(adapter, doc_key, parent)
+    end
+  end
+
+  defp ensure_import_parent(adapter, doc_key, revision, false),
+    do: Revisions.ensure_parent(adapter.conn, doc_key, revision.parent_revision)
+
+  defp parent_present_or_allowed(adapter, doc_key, parent) do
+    case Revisions.find(adapter.conn, doc_key, parent) do
+      {:ok, _} -> :ok
+      {:error, %ElixirDB.Error{code: :revision_not_found}} -> :ok
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp compacted_stale?(revision, boundaries) do
+    Enum.any?(boundaries, fn %{boundary: boundary} ->
+      boundary.document_id == revision.document_id and boundary.history_id == revision.history_id and
+        (boundary.retired or
+           (is_integer(boundary.minimum_retained_generation) and
+              revision.generation < boundary.minimum_retained_generation))
+    end)
   end
 
   defp finalize_imports(adapter, affected, inserted) do
@@ -265,38 +393,42 @@ defmodule ElixirDB.Storage.SQLite.Import do
       affected,
       {:ok, %{documents_changed: 0, revisions_inserted: inserted, last_sequence: 0}},
       fn {doc_key, document_id}, {:ok, acc} ->
-        with {:ok, leaves_now} <- Revisions.load_leaves(adapter.conn, doc_key),
-             {:ok, winner} <- Winner.select(leaves_now),
-             {:ok, leaf_json} <- Revisions.encode_leaf_set(leaves_now),
-             :ok <- Documents.update(adapter.conn, doc_key, winner, 0),
-             :ok <- IndexCatalog.refresh_ready(adapter.conn, doc_key, winner),
-             {:ok, sequence} <- Changes.allocate_sequence(adapter.conn),
-             :ok <- Documents.update(adapter.conn, doc_key, winner, sequence),
-             :ok <-
-               Changes.insert(
-                 adapter.conn,
-                 sequence,
-                 doc_key,
-                 document_id,
-                 winner,
-                 leaf_json,
-                 "replication"
-               ) do
-          {:cont,
-           {:ok,
-            %{
-              acc
-              | documents_changed: acc.documents_changed + 1,
-                last_sequence: max(acc.last_sequence, sequence)
-            }}}
-        else
-          {:error, error} -> {:halt, {:error, error}}
-        end
+        finalize_import_document(adapter, doc_key, document_id, acc)
       end
     )
     |> case do
       {:ok, result} -> {:ok, result}
       error -> error
+    end
+  end
+
+  defp finalize_import_document(adapter, doc_key, document_id, acc) do
+    with {:ok, leaves_now} <- Revisions.load_leaves(adapter.conn, doc_key),
+         {:ok, winner} <- Winner.select(leaves_now),
+         {:ok, leaf_json} <- Revisions.encode_leaf_set(leaves_now),
+         :ok <- Documents.update(adapter.conn, doc_key, winner, 0),
+         :ok <- IndexCatalog.refresh_ready(adapter.conn, doc_key, winner),
+         {:ok, sequence} <- Changes.allocate_sequence(adapter.conn),
+         :ok <- Documents.update(adapter.conn, doc_key, winner, sequence),
+         :ok <-
+           Changes.insert(
+             adapter.conn,
+             sequence,
+             doc_key,
+             document_id,
+             winner,
+             leaf_json,
+             "replication"
+           ) do
+      {:cont,
+       {:ok,
+        %{
+          acc
+          | documents_changed: acc.documents_changed + 1,
+            last_sequence: max(acc.last_sequence, sequence)
+        }}}
+    else
+      {:error, error} -> {:halt, {:error, error}}
     end
   end
 

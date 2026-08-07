@@ -13,6 +13,10 @@
           "checkpoint_version": 1,
           "session_id": "sess-a",
           "source_sequence": 3,
+          "source_history_epoch": "epoch-a",
+          "source_compaction_epoch": 1,
+          "safe_source_sequence": 3,
+          "installed_source_compaction_epoch": 1,
           "history": []
         },
         "expect": {"ok": true, "version": 1, "replayed": false}
@@ -26,6 +30,10 @@
           "checkpoint_version": 1,
           "session_id": "sess-a",
           "source_sequence": 3,
+          "source_history_epoch": "epoch-a",
+          "source_compaction_epoch": 1,
+          "safe_source_sequence": 3,
+          "installed_source_compaction_epoch": 1,
           "history": []
         },
         "expect": {"ok": true, "version": 1, "replayed": true}
@@ -39,6 +47,10 @@
           "checkpoint_version": 2,
           "session_id": "sess-a",
           "source_sequence": 7,
+          "source_history_epoch": "epoch-a",
+          "source_compaction_epoch": 2,
+          "safe_source_sequence": 7,
+          "installed_source_compaction_epoch": 2,
           "history": [
             {
               "session_id": "sess-a",
@@ -84,6 +96,10 @@
       "checkpoint_version": 7,
       "session_id": "session-uuid",
       "source_sequence": 42,
+      "source_history_epoch": "history-epoch",
+      "source_compaction_epoch": 3,
+      "safe_source_sequence": 40,
+      "installed_source_compaction_epoch": 3,
       "history": []
     },
     "expect": {"ok": true}

@@ -3,6 +3,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   use Plug.Router
   alias ElixirDB.HTTP.{Request, Response}
   alias ElixirDB.HTTP.Schemas
+  alias ElixirDB.Replication.Wire
   alias ElixirDB.Runtime.DatabaseCatalog
   plug(:match)
   plug(:dispatch)
@@ -13,21 +14,95 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
            {:command, :identity, %{}}
          ) do
       {:ok, identity} ->
-        Response.result(
-          conn,
-          {:ok,
-           %{
-             "database_uuid" => identity.database_uuid,
-             "current_sequence" => identity.current_sequence,
-             "replication_protocol_major" => identity.replication_protocol_major,
-             "revision_algorithm_version" => identity.revision_algorithm_version,
-             "canonicalization_version" => identity.canonicalization_version
-           }}
-        )
+        Response.ok(conn, Wire.identity(identity))
 
       {:error, error} ->
         Response.error(conn, error)
     end
+  end
+
+  post "/boundaries" do
+    Request.call(
+      conn,
+      Schemas.opts(:wire_boundaries, "boundary page request contains an unknown field"),
+      fn body, conn ->
+        request =
+          body
+          |> Map.new(fn {k, v} -> {to_string(k), v} end)
+          |> boundary_request()
+
+        Response.result(
+          conn,
+          boundary_page_result(Request.uuid(conn), request)
+        )
+      end
+    )
+  end
+
+  post "/boundaries/install" do
+    Request.call(
+      conn,
+      Schemas.opts(:wire_boundaries, "boundary install request contains an unknown field"),
+      fn body, conn ->
+        Response.result(
+          conn,
+          DatabaseCatalog.command(
+            Request.uuid(conn),
+            {:command, :install_boundary_pages, body}
+          )
+        )
+      end
+    )
+  end
+
+  get "/peers" do
+    Response.result(
+      conn,
+      DatabaseCatalog.command(Request.uuid(conn), {:command, :list_peer_positions, %{}})
+    )
+  end
+
+  get "/local-origin" do
+    case DatabaseCatalog.command(Request.uuid(conn), {:command, :has_local_origin_changes}) do
+      {:ok, has_local?} when is_boolean(has_local?) ->
+        Response.ok(conn, %{"has_local_origin_changes" => has_local?})
+
+      {:error, error} ->
+        Response.error(conn, error)
+    end
+  end
+
+  get "/peers/:peer_database_uuid" do
+    with_path_id(conn, fn conn, peer_id ->
+      Response.result(
+        conn,
+        DatabaseCatalog.command(
+          Request.uuid(conn),
+          {:command, :get_local_record, "peer_ledger", peer_id}
+        )
+      )
+    end)
+  end
+
+  put "/peers/:peer_database_uuid" do
+    Request.call(conn, fn body, conn ->
+      with_path_id(conn, fn conn, _ ->
+        peer_id = conn.path_params["peer_database_uuid"]
+
+        request =
+          body
+          |> Map.new(fn {k, v} -> {to_string(k), v} end)
+          |> Map.put("peer_database_uuid", peer_id)
+
+        Response.result(
+          conn,
+          DatabaseCatalog.command(
+            Request.uuid(conn),
+            {:command, :put_peer_position_cas, request}
+          )
+        )
+      end)
+    end)
   end
 
   post "/changes" do
@@ -171,6 +246,26 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     do: is_integer(body["source_sequence"]) and body["source_sequence"] >= 0
 
   defp valid_history?(body), do: is_list(body["history"])
+
+  defp boundary_request(body) when is_map(body) do
+    cursor = body["page_cursor"] || body["cursor"]
+
+    %{
+      "source_history_epoch" => body["source_history_epoch"],
+      "compaction_epoch" => body["compaction_epoch"],
+      "cursor" => cursor,
+      "limit" => body["limit"]
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp boundary_page_result(uuid, request) do
+    case DatabaseCatalog.command(uuid, {:command, :read_boundary_pages, request}) do
+      {:ok, page} -> {:ok, Wire.boundary_page(page)}
+      error -> error
+    end
+  end
 
   # SAFETY: bounds-check the :replication_id path parameter before it is used as a storage
   # key. See Request.validate_path_id/1.

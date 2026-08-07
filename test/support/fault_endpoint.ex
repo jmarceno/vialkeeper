@@ -56,6 +56,10 @@ defmodule ElixirDB.FaultEndpoint do
     do: invoke(endpoint, :identity, &LocalEndpoint.identity/1)
 
   @impl true
+  def has_local_origin_changes?(%__MODULE__{} = endpoint),
+    do: invoke(endpoint, :has_local_origin_changes?, &LocalEndpoint.has_local_origin_changes?/1)
+
+  @impl true
   def read_changes(%__MODULE__{} = endpoint, request),
     do: invoke(endpoint, :read_changes, &LocalEndpoint.read_changes(&1, request))
 
@@ -82,6 +86,10 @@ defmodule ElixirDB.FaultEndpoint do
     do: invoke(endpoint, :get_checkpoint, &LocalEndpoint.get_checkpoint(&1, replication_id))
 
   @impl true
+  def get_local_record(%__MODULE__{} = endpoint, namespace, key),
+    do: invoke(endpoint, :get_local_record, &LocalEndpoint.get_local_record(&1, namespace, key))
+
+  @impl true
   def put_checkpoint(%__MODULE__{} = endpoint, replication_id, checkpoint),
     do:
       invoke(
@@ -89,6 +97,23 @@ defmodule ElixirDB.FaultEndpoint do
         :put_checkpoint,
         &LocalEndpoint.put_checkpoint(&1, replication_id, checkpoint)
       )
+
+  @impl true
+  def read_boundary_pages(%__MODULE__{} = endpoint, request),
+    do: invoke(endpoint, :read_boundary_pages, &LocalEndpoint.read_boundary_pages(&1, request))
+
+  @impl true
+  def install_boundary_pages(%__MODULE__{} = endpoint, request),
+    do:
+      invoke(endpoint, :install_boundary_pages, &LocalEndpoint.install_boundary_pages(&1, request))
+
+  @impl true
+  def put_peer_position(%__MODULE__{} = endpoint, request),
+    do: invoke(endpoint, :put_peer_position, &LocalEndpoint.put_peer_position(&1, request))
+
+  @impl true
+  def list_peer_positions(%__MODULE__{} = endpoint),
+    do: invoke(endpoint, :list_peer_positions, &LocalEndpoint.list_peer_positions/1)
 
   defp invoke(%__MODULE__{agent: agent}, point, fun) when is_function(fun, 1) do
     Agent.get_and_update(agent, &invoke_with_fault(&1, point, fun))

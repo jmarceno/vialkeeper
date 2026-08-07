@@ -13,12 +13,20 @@ defmodule ElixirDB.Storage.Adapter do
   @callback apply_bulk_mutation(term(), map()) :: {:ok, list()} | {:error, ElixirDB.Error.t()}
   @callback resolve_conflict(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback read_changes(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback has_local_origin_changes?(term()) ::
+              {:ok, boolean()} | {:error, ElixirDB.Error.t()}
   @callback diff_revisions(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback get_revision_chains(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback import_revision_chains(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback get_local_record(term(), binary(), binary()) ::
               {:ok, map() | nil} | {:error, ElixirDB.Error.t()}
   @callback put_local_record_cas(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback retention_state(term()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback list_peer_positions(term()) :: {:ok, list()} | {:error, ElixirDB.Error.t()}
+  @callback put_peer_position_cas(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback read_boundary_pages(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback install_boundary_pages(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback compact_retention(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback list_replication_jobs(term()) :: {:ok, list()} | {:error, ElixirDB.Error.t()}
   @callback put_replication_job(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback delete_replication_job(term(), binary()) :: :ok | {:error, ElixirDB.Error.t()}

@@ -21,6 +21,12 @@ defmodule ElixirDB.Config do
         "max_delay_ms" => 30_000,
         "jitter_ms" => 250
       }
+    },
+    "retention" => %{
+      "mode" => "disabled",
+      "history_depth" => 0,
+      "peer_expiry_ms" => 86_400_000,
+      "schedule" => "disabled"
     }
   }
 
@@ -116,7 +122,9 @@ defmodule ElixirDB.Config do
              ["replication", "retry", "max_delay_ms"],
              limits[:max_replication_delay_ms]
            ),
-         :ok <- validate_retry_order(merged) do
+         :ok <- validate_retry_order(merged),
+         :ok <- bound_retention_peer_expiry(merged, limits),
+         :ok <- bound_retention_schedule(merged, limits) do
       {:ok, merged}
     end
   end
@@ -141,7 +149,7 @@ defmodule ElixirDB.Config do
   end
 
   defp validate_shape(config) do
-    known = ["version", "documents", "queries", "changes", "replication"]
+    known = ["version", "documents", "queries", "changes", "replication", "retention"]
 
     if Enum.all?(Map.keys(config), &(&1 in known)) do
       validate_nested_shape(config)
@@ -156,6 +164,7 @@ defmodule ElixirDB.Config do
       "queries" => ["default_limit", "max_limit", "scan_threshold", "max_execution_ms"],
       "changes" => ["default_batch", "max_batch", "max_wait_ms"],
       "replication" => ["batch_documents", "batch_bytes", "retry"],
+      "retention" => ["mode", "history_depth", "peer_expiry_ms", "schedule"],
       "retry" => ["max_attempts", "base_delay_ms", "max_delay_ms", "jitter_ms"]
     }
 
@@ -192,6 +201,12 @@ defmodule ElixirDB.Config do
   end
 
   defp validate_values(config) do
+    with :ok <- validate_positive_integer_limits(config) do
+      validate_retention_values(config)
+    end
+  end
+
+  defp validate_positive_integer_limits(config) do
     values = [
       ["documents", "max_document_bytes"],
       ["documents", "max_document_id_bytes"],
@@ -223,6 +238,80 @@ defmodule ElixirDB.Config do
             })}}
       end
     end)
+  end
+
+  defp validate_retention_values(config) do
+    retention = Map.get(config, "retention", @defaults["retention"])
+
+    validators = [
+      fn -> validate_retention_mode(Map.get(retention, "mode")) end,
+      fn -> validate_retention_history_depth(Map.get(retention, "history_depth")) end,
+      fn -> validate_retention_peer_expiry(Map.get(retention, "peer_expiry_ms")) end,
+      fn -> validate_retention_schedule(Map.get(retention, "schedule")) end
+    ]
+
+    case Enum.find_value(validators, & &1.()) do
+      nil -> :ok
+      error -> error
+    end
+  end
+
+  defp validate_retention_mode(mode) when mode in ["disabled", "stable_frontier"], do: nil
+
+  defp validate_retention_mode(_),
+    do: {:error, ElixirDB.Error.invalid_request("retention mode is invalid")}
+
+  defp validate_retention_history_depth(depth) when is_integer(depth) and depth >= 0, do: nil
+
+  defp validate_retention_history_depth(_),
+    do: {:error, ElixirDB.Error.invalid_request("retention history_depth must be non-negative")}
+
+  defp validate_retention_peer_expiry(ms) when is_integer(ms) and ms > 0, do: nil
+
+  defp validate_retention_peer_expiry(_),
+    do: {:error, ElixirDB.Error.invalid_request("retention peer_expiry_ms must be positive")}
+
+  defp validate_retention_schedule("disabled"), do: nil
+  defp validate_retention_schedule(schedule) when is_integer(schedule) and schedule > 0, do: nil
+
+  defp validate_retention_schedule(_),
+    do: {:error, ElixirDB.Error.invalid_request("retention schedule is invalid")}
+
+  defp bound_retention_peer_expiry(config, limits) do
+    maximum = limits[:max_peer_expiry_ms]
+
+    if is_integer(maximum) do
+      current = get_in(config, ["retention", "peer_expiry_ms"])
+
+      if is_integer(current) and current > 0 and current <= maximum,
+        do: :ok,
+        else:
+          {:error,
+           ElixirDB.Error.resource_limit("configuration exceeds host limit", %{
+             path: ["retention", "peer_expiry_ms"],
+             maximum: maximum
+           })}
+    else
+      :ok
+    end
+  end
+
+  defp bound_retention_schedule(config, limits) do
+    maximum = limits[:max_retention_schedule_ms]
+    schedule = get_in(config, ["retention", "schedule"])
+
+    if is_integer(maximum) and is_integer(schedule) and schedule > 0 do
+      if schedule <= maximum,
+        do: :ok,
+        else:
+          {:error,
+           ElixirDB.Error.resource_limit("configuration exceeds host limit", %{
+             path: ["retention", "schedule"],
+             maximum: maximum
+           })}
+    else
+      :ok
+    end
   end
 
   defp ensure_integer_limit(value, path, maximum) when is_integer(maximum) do

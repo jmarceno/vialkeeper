@@ -61,18 +61,45 @@ defmodule ElixirDB.Contract.FixturesTest do
     assert [_ | _] = fixtures
 
     for fixture <- fixtures do
-      assert {:ok, actual} =
-               RevisionId.calculate(
-                 fixture["document_id"],
-                 fixture["parent_revision"],
-                 fixture["deleted"],
-                 fixture["body"]
-               )
+      case fixture do
+        %{"expect_error" => code} ->
+          assert {:error, %ElixirDB.Error{code: actual_code}} =
+                   RevisionId.calculate(%{
+                     document_id: fixture["document_id"],
+                     history_id: fixture["history_id"],
+                     parent_revision: fixture["parent_revision"],
+                     deleted: fixture["deleted"],
+                     body: fixture["body"]
+                   })
 
-      assert actual == fixture["expected_revision_id"],
-             "revision id mismatch for #{fixture["id"]}"
+          assert Atom.to_string(actual_code) == code
 
-      assert String.match?(actual, ~r/^\d+-[0-9a-f]{64}$/)
+        %{"history_id" => history_id, "expected_revision_id" => expected} ->
+          assert {:ok, actual} =
+                   RevisionId.calculate(
+                     fixture["document_id"],
+                     history_id,
+                     fixture["parent_revision"],
+                     fixture["deleted"],
+                     fixture["body"]
+                   )
+
+          assert actual == expected, "revision id mismatch for #{fixture["id"]}"
+          assert String.match?(actual, ~r/^\d+-[0-9a-f]{64}$/)
+
+          {:ok, canonical} =
+            Canonical.encode(%{
+              "version" => 1,
+              "document_id" => fixture["document_id"],
+              "history_id" => history_id,
+              "parent_revision" => fixture["parent_revision"],
+              "deleted" => fixture["deleted"],
+              "body" => fixture["body"]
+            })
+
+          assert canonical == fixture["canonical_payload"],
+                 "canonical payload mismatch for #{fixture["id"]}"
+      end
     end
   end
 
@@ -129,6 +156,8 @@ defmodule ElixirDB.Contract.FixturesTest do
     assert Enum.any?(replication, &(&1["id"] == "handshake-identity"))
     assert Enum.any?(replication, &(&1["id"] == "checkpoint"))
     assert Enum.any?(replication, &(&1["id"] == "transferred-revision"))
+    assert Enum.any?(replication, &(&1["id"] == "boundary-page-response"))
+    assert Enum.any?(replication, &(&1["id"] == "diff-revisions-response"))
   end
 
   test "replication ID fixtures match ElixirDB.Replication.Id (REPL-006)" do
@@ -162,11 +191,35 @@ defmodule ElixirDB.Contract.FixturesTest do
     assert [_ | _] = fixtures
 
     for fixture <- fixtures do
-      actual =
-        CheckpointReconciler.common_sequence(fixture["source"], fixture["target"])
+      if Map.has_key?(fixture, "expected_common_sequence") do
+        actual =
+          CheckpointReconciler.common_sequence(fixture["source"], fixture["target"])
 
-      assert actual == fixture["expected_common_sequence"],
-             "common_sequence mismatch for #{fixture["id"]}"
+        assert actual == fixture["expected_common_sequence"],
+               "common_sequence mismatch for #{fixture["id"]}"
+      end
+
+      case Map.get(fixture, "expected_reconcile") do
+        %{} = expected ->
+          reconcile =
+            CheckpointReconciler.reconcile(
+              fixture["source"],
+              fixture["target"],
+              fixture["source_identity"]
+            )
+
+          assert reconcile.bootstrap_required == expected["bootstrap_required"],
+                 "bootstrap_required mismatch for #{fixture["id"]}"
+
+          assert reconcile.reason == String.to_existing_atom(expected["reason"]),
+                 "reason mismatch for #{fixture["id"]}"
+
+          assert reconcile.since == expected["since"],
+                 "since mismatch for #{fixture["id"]}"
+
+        _ ->
+          :ok
+      end
     end
   end
 
