@@ -39,7 +39,7 @@ defmodule ElixirDB.StorageAdapter.RevisionTransferTest do
              })
 
     assert chain.leaf_revision == leaf
-    assert length(chain.revisions) == 2
+    assert [_, _] = chain.revisions
 
     assert {:ok, %{revisions_inserted: 2, documents_changed: 1}} =
              @adapter.import_revision_chains(dest, %{chains: [chain]})

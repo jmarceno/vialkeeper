@@ -1,4 +1,5 @@
 defmodule ElixirDB.StorageAdapter.StructuredIndexesTest do
+  alias ElixirDB.Storage.SQLite.QueryCompiler
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
   test "structured index creation, query selection, and delete", %{adapter: adapter} do
@@ -55,7 +56,7 @@ defmodule ElixirDB.StorageAdapter.StructuredIndexesTest do
     # QueryCompiler.sqlite_path/1 (consumed by index DDL and query SQL) instead of a bare
     # match that would raise MatchError on storage-layer misuse.
     assert {:error, %ElixirDB.Error{code: :invalid_request}} =
-             ElixirDB.Storage.SQLite.QueryCompiler.sqlite_path("no-leading-slash")
+             QueryCompiler.sqlite_path("no-leading-slash")
   end
 
   test "$and selector compiles against structured index fields without raising", %{adapter: adapter} do

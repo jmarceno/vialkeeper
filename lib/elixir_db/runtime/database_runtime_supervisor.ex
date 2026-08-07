@@ -1,17 +1,13 @@
 defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
   @moduledoc false
   use Supervisor
+  alias ElixirDB.Runtime.ChildSpec
 
   def start_link(%{uuid: uuid} = args), do: Supervisor.start_link(__MODULE__, args, name: via(uuid))
   def via(uuid), do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid}}}
 
   def child_spec(%{uuid: uuid} = args) do
-    %{
-      id: {:database_runtime, uuid},
-      start: {__MODULE__, :start_link, [args]},
-      restart: :transient,
-      type: :supervisor
-    }
+    ChildSpec.supervisor({:database_runtime, uuid}, {__MODULE__, :start_link, [args]}, :transient)
   end
 
   @impl true

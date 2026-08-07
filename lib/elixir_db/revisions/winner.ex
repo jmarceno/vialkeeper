@@ -1,4 +1,6 @@
 defmodule ElixirDB.Revisions.Winner do
+  @moduledoc "Deterministic winner and conflict selection for revision leaves."
+
   alias ElixirDB.Domain.Revision
 
   @spec select([Revision.t()]) :: {:ok, Revision.t()} | {:error, ElixirDB.Error.t()}

@@ -76,7 +76,7 @@ defmodule ElixirDB.Runtime.ManifestAtomicityTest do
              ])
 
     assert {:ok, entries} = RegistrationManifest.read()
-    assert length(entries) == 2
+    assert [_, _] = entries
     assert Enum.any?(entries, &(&1.path == "stable.db"))
     assert Enum.any?(entries, &(&1.path == "added.db"))
   end

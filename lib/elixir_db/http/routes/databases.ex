@@ -2,14 +2,15 @@ defmodule ElixirDB.HTTP.Routes.Databases do
   @moduledoc false
   use Plug.Router
   alias ElixirDB.HTTP.{Request, Response}
-
+  alias ElixirDB.HTTP.Schemas
+  alias ElixirDB.Runtime.DatabaseCatalog
   plug(:match)
   plug(:dispatch)
 
   post "/" do
     Request.call(
       conn,
-      ElixirDB.HTTP.Schemas.opts(:database_create, "database creation contains an unknown field"),
+      Schemas.opts(:database_create, "database creation contains an unknown field"),
       fn body, conn ->
         path = body["path"] || "#{ElixirDB.UUID.v4()}.db"
 
@@ -18,7 +19,7 @@ defmodule ElixirDB.HTTP.Routes.Databases do
         else
           case body["config"] do
             config when is_map(config) or is_nil(config) ->
-              case ElixirDB.Runtime.DatabaseCatalog.create(
+              case DatabaseCatalog.create(
                      path,
                      if(config, do: %{config: config}, else: %{})
                    ) do
@@ -38,21 +39,21 @@ defmodule ElixirDB.HTTP.Routes.Databases do
   end
 
   get "/" do
-    case ElixirDB.Runtime.DatabaseCatalog.list() do
+    case DatabaseCatalog.list() do
       {:ok, data} -> Response.ok(conn, data)
       {:error, error} -> Response.error(conn, error)
     end
   end
 
   get "/:uuid" do
-    case ElixirDB.Runtime.DatabaseCatalog.info(Request.uuid(conn)) do
+    case DatabaseCatalog.info(Request.uuid(conn)) do
       {:ok, data} -> Response.ok(conn, data)
       {:error, error} -> Response.error(conn, error)
     end
   end
 
   get "/:uuid/config" do
-    case ElixirDB.Runtime.DatabaseCatalog.info(Request.uuid(conn)) do
+    case DatabaseCatalog.info(Request.uuid(conn)) do
       {:ok, data} -> Response.ok(conn, data.config || %{})
       {:error, error} -> Response.error(conn, error)
     end
@@ -64,7 +65,7 @@ defmodule ElixirDB.HTTP.Routes.Databases do
         do:
           Response.result(
             conn,
-            ElixirDB.Runtime.DatabaseCatalog.command(
+            DatabaseCatalog.command(
               Request.uuid(conn),
               {:command, :update_config, body}
             )
@@ -75,14 +76,14 @@ defmodule ElixirDB.HTTP.Routes.Databases do
   end
 
   post "/:uuid/close" do
-    case ElixirDB.Runtime.DatabaseCatalog.close(Request.uuid(conn)) do
+    case DatabaseCatalog.close(Request.uuid(conn)) do
       :ok -> Response.ok(conn, %{})
       {:error, error} -> Response.error(conn, error)
     end
   end
 
   post "/:uuid/integrity-check" do
-    case ElixirDB.Runtime.DatabaseCatalog.command(
+    case DatabaseCatalog.command(
            Request.uuid(conn),
            {:command, :integrity_check, %{}}
          ) do
@@ -99,9 +100,9 @@ defmodule ElixirDB.HTTP.Routes.Databases do
   def register(conn) do
     Request.call(
       conn,
-      ElixirDB.HTTP.Schemas.opts(:database_register, "registration contains an unknown field"),
+      Schemas.opts(:database_register, "registration contains an unknown field"),
       fn body, conn ->
-        case ElixirDB.Runtime.DatabaseCatalog.register(body["path"]) do
+        case DatabaseCatalog.register(body["path"]) do
           {:ok, info} -> Response.ok(conn, info, 201)
           {:error, error} -> Response.error(conn, error)
         end
@@ -111,7 +112,7 @@ defmodule ElixirDB.HTTP.Routes.Databases do
 
   @doc false
   def unregister(conn) do
-    case ElixirDB.Runtime.DatabaseCatalog.unregister(Request.uuid(conn)) do
+    case DatabaseCatalog.unregister(Request.uuid(conn)) do
       :ok -> Response.ok(conn, %{})
       {:error, error} -> Response.error(conn, error)
     end

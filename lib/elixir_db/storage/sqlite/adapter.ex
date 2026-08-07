@@ -11,6 +11,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @behaviour ElixirDB.Storage.Adapter
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.Query
 
   alias ElixirDB.Storage.SQLite.{
     Chains,
@@ -35,8 +37,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   def create(path, options \\ %{}) do
     options = if is_map(options), do: options, else: %{}
     File.mkdir_p!(Path.dirname(path))
-    uuid = Map.get(options, :database_uuid, Map.get(options, "database_uuid", ElixirDB.UUID.v4()))
-    config = Map.get(options, :config, ElixirDB.Config.defaults())
+    uuid = MapAccess.get(options, :database_uuid, ElixirDB.UUID.v4())
+    config = MapAccess.get(options, :config, ElixirDB.Config.defaults())
 
     with true <- valid_uuid?(uuid),
          {:ok, bounded_config} <- ElixirDB.Config.merge_and_bound(config),
@@ -110,9 +112,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def get_document(%__MODULE__{} = adapter, request) when is_map(request) do
-    with {:ok, doc} <- Documents.find(adapter.conn, request[:document_id] || request["document_id"]),
-         {:ok, revision} <- choose_revision(adapter, doc, request[:revision] || request["revision"]) do
-      include_conflicts = request[:include_conflicts] || request["include_conflicts"] || false
+    with {:ok, doc} <- Documents.find(adapter.conn, MapAccess.get(request, :document_id)),
+         {:ok, revision} <- choose_revision(adapter, doc, MapAccess.get(request, :revision)) do
+      include_conflicts = MapAccess.get(request, :include_conflicts, false)
 
       {:ok,
        Documents.to_result(
@@ -128,8 +130,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def get_revision(%__MODULE__{} = adapter, request) when is_map(request) do
-    document_id = request[:document_id] || request["document_id"]
-    revision_id = request[:revision_id] || request["revision_id"]
+    document_id = MapAccess.get(request, :document_id)
+    revision_id = MapAccess.get(request, :revision_id)
 
     with {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, revision} <- Revisions.find(adapter.conn, doc.doc_key, revision_id) do
@@ -169,8 +171,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def read_changes(%__MODULE__{conn: conn} = adapter, request) when is_map(request) do
-    since = request[:since] || request["since"] || 0
-    limit = request[:limit] || request["limit"] || 100
+    since = MapAccess.get(request, :since, 0)
+    limit = MapAccess.get(request, :limit, 100)
 
     with :ok <- validate_non_negative_integer(since, "since"),
          :ok <-
@@ -212,7 +214,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def import_revision_chains(adapter, request) when is_map(request) do
-    with :ok <- Import.validate_chain_batch(request[:chains] || request["chains"] || []) do
+    with :ok <- Import.validate_chain_batch(MapAccess.get(request, :chains, [])) do
       transaction(adapter, fn -> Import.import_tx(adapter, request) end)
     end
   end
@@ -244,10 +246,10 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @impl true
   def create_index(%__MODULE__{conn: conn} = adapter, definition) do
     uuid = adapter_identity_uuid(adapter)
-    index_id = definition[:index_id] || definition["index_id"]
-    index_type = definition[:type] || definition["type"]
+    index_id = MapAccess.get(definition, :index_id)
+    index_type = MapAccess.get(definition, :type)
 
-    ElixirDB.Observability.Instrumentation.Query.build_index(uuid, index_id, index_type, fn ->
+    Query.build_index(uuid, index_id, index_type, fn ->
       transaction(%__MODULE__{conn: conn}, fn -> IndexCatalog.create_tx(conn, definition) end)
     end)
   end
@@ -261,7 +263,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   def rebuild_index(%__MODULE__{conn: conn} = adapter, index_id) do
     uuid = adapter_identity_uuid(adapter)
 
-    ElixirDB.Observability.Instrumentation.Query.build_index(uuid, index_id, nil, fn ->
+    Query.build_index(uuid, index_id, nil, fn ->
       transaction(%__MODULE__{conn: conn}, fn -> IndexCatalog.rebuild_tx(conn, index_id) end)
     end)
   end
@@ -284,7 +286,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     # wrapper receives {result, examined_count} and returns the bare result
     # after recording the examined attribute.
     result =
-      ElixirDB.Observability.Instrumentation.Query.execute(uuid, 0, started_native, fn ->
+      Query.execute(uuid, 0, started_native, fn ->
         res = QueryRunner.execute(adapter, request)
         {res, examined_count(res)}
       end)
@@ -313,25 +315,46 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: {:error, ElixirDB.Error.invalid_request("query explanation must be an object")}
 
   defp transaction(%__MODULE__{conn: conn}, fun) do
-    with :ok <- Connection.execute(conn, "BEGIN IMMEDIATE") do
-      try do
-        case fun.() do
-          {:ok, value} ->
-            case Connection.execute(conn, "COMMIT") do
-              :ok -> {:ok, value}
-              {:error, reason} -> {:error, normalize_error(reason)}
-            end
+    case Connection.execute(conn, "BEGIN IMMEDIATE") do
+      :ok ->
+        transaction_body(conn, fun)
 
-          {:error, error} ->
-            _ = Connection.execute(conn, "ROLLBACK")
-            {:error, error}
-        end
-      rescue
-        exception ->
-          _ = Connection.execute(conn, "ROLLBACK")
-          reraise exception, __STACKTRACE__
-      end
-    else
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  rescue
+    exception in [
+      ArgumentError,
+      ArithmeticError,
+      BadMapError,
+      CaseClauseError,
+      ErlangError,
+      FunctionClauseError,
+      KeyError,
+      MatchError,
+      Protocol.UndefinedError,
+      RuntimeError,
+      UndefinedFunctionError,
+      WithClauseError
+    ] ->
+      _ = Connection.execute(conn, "ROLLBACK")
+      reraise exception, __STACKTRACE__
+  end
+
+  defp transaction_body(conn, fun) do
+    case fun.() do
+      {:ok, value} ->
+        commit_transaction(conn, value)
+
+      {:error, error} ->
+        _ = Connection.execute(conn, "ROLLBACK")
+        {:error, error}
+    end
+  end
+
+  defp commit_transaction(conn, value) do
+    case Connection.execute(conn, "COMMIT") do
+      :ok -> {:ok, value}
       {:error, reason} -> {:error, normalize_error(reason)}
     end
   end

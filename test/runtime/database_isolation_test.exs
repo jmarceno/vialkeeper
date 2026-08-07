@@ -7,6 +7,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
   """
   use ExUnit.Case, async: false
 
+  alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.DatabaseCatalog
 
   setup do
@@ -48,7 +49,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
              ElixirDB.Documents.put(uuid_b, %{id: "b-doc", body: %{"side" => "b"}})
 
     assert {:ok, identity_b_before} = DatabaseCatalog.command(uuid_b, {:command, :identity, %{}})
-    seq_b_before = identity_b_before[:current_sequence] || identity_b_before["current_sequence"]
+    seq_b_before = MapAccess.get(identity_b_before, :current_sequence)
 
     assert [{runtime_a, _}] =
              Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid_a})
@@ -79,7 +80,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     assert {:ok, %{results: b_changes}} = ElixirDB.Changes.read(uuid_b, %{since: 0, limit: 100})
 
     refute Enum.any?(b_changes, fn change ->
-             (change.document_id || change["document_id"]) == "a-doc"
+             MapAccess.get(change, :document_id) == "a-doc"
            end)
 
     assert {:ok, %{revision: _}} =
@@ -93,7 +94,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
              ElixirDB.Documents.get(uuid_b, %{id: "b-doc"})
 
     assert {:ok, identity_b_after} = DatabaseCatalog.command(uuid_b, {:command, :identity, %{}})
-    seq_b_after = identity_b_after[:current_sequence] || identity_b_after["current_sequence"]
+    seq_b_after = MapAccess.get(identity_b_after, :current_sequence)
     assert seq_b_after == seq_b_before + 1
 
     # Victim may be restarted by DynamicSupervisor (:transient + abnormal exit).

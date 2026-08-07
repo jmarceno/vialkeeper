@@ -3,13 +3,11 @@ defmodule ElixirDB.JSON.Canonical do
 
   @spec encode(term()) :: {:ok, binary()} | {:error, ElixirDB.Error.t()}
   def encode(value) do
-    try do
-      {:ok, encode_value(value)}
-    rescue
-      ArgumentError -> {:error, ElixirDB.Error.invalid_request("value is not canonical JSON")}
-      ArithmeticError -> {:error, ElixirDB.Error.invalid_request("value is not canonical JSON")}
-      FunctionClauseError -> {:error, ElixirDB.Error.invalid_request("value is not canonical JSON")}
-    end
+    {:ok, encode_value(value)}
+  rescue
+    ArgumentError -> {:error, ElixirDB.Error.invalid_request("value is not canonical JSON")}
+    ArithmeticError -> {:error, ElixirDB.Error.invalid_request("value is not canonical JSON")}
+    FunctionClauseError -> {:error, ElixirDB.Error.invalid_request("value is not canonical JSON")}
   end
 
   @spec encode!(term()) :: binary()
@@ -56,12 +54,14 @@ defmodule ElixirDB.JSON.Canonical do
   defp utf16_key(key), do: :unicode.characters_to_binary(key, :utf8, {:utf16, :big})
 
   defp encode_float(value) when is_float(value) do
+    truncated = trunc(value)
+
     cond do
       value == 0.0 ->
         "0"
 
-      value == trunc(value) and abs(value) < 1.0e21 ->
-        Integer.to_string(trunc(value))
+      value == truncated and abs(value) < 1.0e21 ->
+        Integer.to_string(truncated)
 
       true ->
         value
@@ -71,52 +71,66 @@ defmodule ElixirDB.JSON.Canonical do
   end
 
   defp normalize_float(value) do
-    {mantissa, exponent} =
-      case String.split(value, "e", parts: 2) do
-        [mantissa] -> {mantissa, 0}
-        [mantissa, exponent] -> {mantissa, String.to_integer(exponent)}
-      end
-
-    sign = if String.starts_with?(mantissa, "-"), do: "-", else: ""
+    {mantissa, exponent} = split_exponent(value)
+    sign = sign_for(mantissa)
     unsigned = String.trim_leading(mantissa, "-")
-
-    {integer, fraction} =
-      case String.split(unsigned, ".", parts: 2) do
-        [integer] -> {integer, ""}
-        [integer, fraction] -> {integer, fraction}
-      end
-
+    {integer, fraction} = split_decimal(unsigned)
     digits = String.trim_trailing(integer <> fraction, "0")
     digits = if digits == "", do: "0", else: digits
     decimal_position = byte_size(integer) + exponent
 
-    if decimal_position >= -5 and decimal_position < 22 do
-      decimal =
-        cond do
-          decimal_position <= 0 ->
-            "0." <> String.duplicate("0", -decimal_position) <> digits
+    format_float_parts(sign, digits, decimal_position)
+  end
 
-          decimal_position >= byte_size(digits) ->
-            digits <> String.duplicate("0", decimal_position - byte_size(digits))
-
-          true ->
-            binary_part(digits, 0, decimal_position) <>
-              "." <> binary_part(digits, decimal_position, byte_size(digits) - decimal_position)
-        end
-
-      sign <> decimal
-    else
-      exponent_value = decimal_position - 1
-
-      coefficient =
-        binary_part(digits, 0, 1) <>
-          if(byte_size(digits) > 1,
-            do: "." <> binary_part(digits, 1, byte_size(digits) - 1),
-            else: ""
-          )
-
-      exponent_sign = if exponent_value >= 0, do: "+", else: "-"
-      sign <> coefficient <> "e" <> exponent_sign <> Integer.to_string(abs(exponent_value))
+  defp split_exponent(value) do
+    case String.split(value, "e", parts: 2) do
+      [mantissa] -> {mantissa, 0}
+      [mantissa, exponent] -> {mantissa, String.to_integer(exponent)}
     end
+  end
+
+  defp sign_for(mantissa), do: if(String.starts_with?(mantissa, "-"), do: "-", else: "")
+
+  defp split_decimal(unsigned) do
+    case String.split(unsigned, ".", parts: 2) do
+      [integer] -> {integer, ""}
+      [integer, fraction] -> {integer, fraction}
+    end
+  end
+
+  defp format_float_parts(sign, digits, decimal_position) do
+    if decimal_position >= -5 and decimal_position < 22 do
+      sign <> decimal_notation(digits, decimal_position)
+    else
+      sign <> scientific_notation(digits, decimal_position)
+    end
+  end
+
+  defp decimal_notation(digits, decimal_position) do
+    cond do
+      decimal_position <= 0 ->
+        "0." <> String.duplicate("0", -decimal_position) <> digits
+
+      decimal_position >= byte_size(digits) ->
+        digits <> String.duplicate("0", decimal_position - byte_size(digits))
+
+      true ->
+        binary_part(digits, 0, decimal_position) <>
+          "." <> binary_part(digits, decimal_position, byte_size(digits) - decimal_position)
+    end
+  end
+
+  defp scientific_notation(digits, decimal_position) do
+    exponent_value = decimal_position - 1
+
+    coefficient =
+      binary_part(digits, 0, 1) <>
+        if(byte_size(digits) > 1,
+          do: "." <> binary_part(digits, 1, byte_size(digits) - 1),
+          else: ""
+        )
+
+    exponent_sign = if exponent_value >= 0, do: "+", else: "-"
+    coefficient <> "e" <> exponent_sign <> Integer.to_string(abs(exponent_value))
   end
 end

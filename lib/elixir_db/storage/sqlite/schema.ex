@@ -1,5 +1,6 @@
 defmodule ElixirDB.Storage.SQLite.Schema do
   @moduledoc false
+  alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.SQLite.Connection
 
   @application_id 0x45584442
@@ -9,9 +10,8 @@ defmodule ElixirDB.Storage.SQLite.Schema do
     with :ok <- Connection.execute(conn, "PRAGMA journal_mode = DELETE"),
          :ok <- Connection.execute(conn, "PRAGMA synchronous = EXTRA"),
          :ok <- Connection.execute(conn, "PRAGMA foreign_keys = ON"),
-         :ok <- Connection.execute(conn, "PRAGMA locking_mode = NORMAL"),
-         :ok <- Connection.execute(conn, "PRAGMA trusted_schema = OFF") do
-      :ok
+         :ok <- Connection.execute(conn, "PRAGMA locking_mode = NORMAL") do
+      Connection.execute(conn, "PRAGMA trusted_schema = OFF")
     end
   end
 
@@ -51,47 +51,15 @@ defmodule ElixirDB.Storage.SQLite.Schema do
              conn,
              "SELECT database_uuid, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, current_sequence, config_json FROM db_meta WHERE id = 1"
            ) do
-      if application_id == @application_id and user_version == 1 and
-           String.downcase(to_string(journal_mode)) == "delete" and synchronous in [3, "3"] and
-           String.downcase(to_string(locking_mode)) == "normal" and trusted_schema in [0, "0"] do
-        [uuid, format, schema, revision, canonical, protocol, sequence, config_json] = meta
-
-        if valid_uuid?(uuid) and format == 1 and schema == 1 and revision == 1 and
-             canonical == 1 and protocol == 1 and is_integer(sequence) and sequence >= 0 do
-          case ElixirDB.JSON.StrictDecoder.decode(config_json) do
-            {:ok, config} when is_map(config) ->
-              case ElixirDB.Config.validate(config) do
-                {:ok, _} ->
-                  {:ok,
-                   %{
-                     database_uuid: uuid,
-                     file_format_version: format,
-                     logical_schema_version: schema,
-                     revision_algorithm_version: revision,
-                     canonicalization_version: canonical,
-                     replication_protocol_major: protocol,
-                     current_sequence: sequence,
-                     config_json: config_json
-                   }}
-
-                {:error, error} ->
-                  {:error,
-                   ElixirDB.Error.unsupported_format("SQLite database configuration is invalid", %{
-                     cause: error.code
-                   })}
-              end
-
-            _ ->
-              {:error,
-               ElixirDB.Error.unsupported_format("SQLite database configuration is invalid")}
-          end
-        else
-          {:error, ElixirDB.Error.unsupported_format("SQLite database metadata is invalid")}
-        end
-      else
-        {:error,
-         ElixirDB.Error.unsupported_format("SQLite file is not a Version 1 ElixirDB database")}
-      end
+      validate_schema_metadata(
+        application_id,
+        user_version,
+        journal_mode,
+        synchronous,
+        locking_mode,
+        trusted_schema,
+        meta
+      )
     else
       {:ok, []} ->
         {:error, ElixirDB.Error.unsupported_format("SQLite file has no ElixirDB metadata")}
@@ -100,6 +68,87 @@ defmodule ElixirDB.Storage.SQLite.Schema do
         {:error,
          ElixirDB.Error.unsupported_format("SQLite schema validation failed", %{
            cause: inspect(reason)
+         })}
+    end
+  end
+
+  defp validate_schema_metadata(
+         @application_id,
+         1,
+         journal_mode,
+         synchronous,
+         locking_mode,
+         trusted_schema,
+         meta
+       ) do
+    if String.downcase(to_string(journal_mode)) == "delete" and synchronous in [3, "3"] and
+         String.downcase(to_string(locking_mode)) == "normal" and trusted_schema in [0, "0"] do
+      validate_metadata_row(meta)
+    else
+      {:error,
+       ElixirDB.Error.unsupported_format("SQLite file is not a Version 1 ElixirDB database")}
+    end
+  end
+
+  defp validate_schema_metadata(
+         _application_id,
+         _user_version,
+         _journal_mode,
+         _synchronous,
+         _locking_mode,
+         _trusted_schema,
+         _meta
+       ),
+       do:
+         {:error,
+          ElixirDB.Error.unsupported_format("SQLite file is not a Version 1 ElixirDB database")}
+
+  defp validate_metadata_row([
+         uuid,
+         format,
+         schema,
+         revision,
+         canonical,
+         protocol,
+         sequence,
+         config_json
+       ]) do
+    if valid_uuid?(uuid) and format == 1 and schema == 1 and revision == 1 and canonical == 1 and
+         protocol == 1 and is_integer(sequence) and sequence >= 0 do
+      validate_config_json(config_json, %{
+        database_uuid: uuid,
+        file_format_version: format,
+        logical_schema_version: schema,
+        revision_algorithm_version: revision,
+        canonicalization_version: canonical,
+        replication_protocol_major: protocol,
+        current_sequence: sequence,
+        config_json: config_json
+      })
+    else
+      {:error, ElixirDB.Error.unsupported_format("SQLite database metadata is invalid")}
+    end
+  end
+
+  defp validate_metadata_row(_),
+    do: {:error, ElixirDB.Error.unsupported_format("SQLite database metadata is invalid")}
+
+  defp validate_config_json(config_json, identity) do
+    case StrictDecoder.decode(config_json) do
+      {:ok, config} when is_map(config) -> validate_database_config(config, identity)
+      _ -> {:error, ElixirDB.Error.unsupported_format("SQLite database configuration is invalid")}
+    end
+  end
+
+  defp validate_database_config(config, identity) do
+    case ElixirDB.Config.validate(config) do
+      {:ok, _} ->
+        {:ok, identity}
+
+      {:error, error} ->
+        {:error,
+         ElixirDB.Error.unsupported_format("SQLite database configuration is invalid", %{
+           cause: error.code
          })}
     end
   end

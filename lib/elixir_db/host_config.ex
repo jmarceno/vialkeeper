@@ -36,6 +36,26 @@ defmodule ElixirDB.HostConfig do
     "max_json_nesting_depth" => 100
   }
 
+  @limit_key_atoms %{
+    "max_document_bytes" => :max_document_bytes,
+    "max_request_bytes" => :max_request_bytes,
+    "max_document_id_bytes" => :max_document_id_bytes,
+    "max_bulk_operations" => :max_bulk_operations,
+    "max_query_results" => :max_query_results,
+    "max_changes_batch" => :max_changes_batch,
+    "max_replication_batch_documents" => :max_replication_batch_documents,
+    "max_replication_batch_bytes" => :max_replication_batch_bytes,
+    "max_replication_attempts" => :max_replication_attempts,
+    "max_replication_delay_ms" => :max_replication_delay_ms,
+    "max_full_scan_documents" => :max_full_scan_documents,
+    "max_query_execution_ms" => :max_query_execution_ms,
+    "max_wait_ms" => :max_wait_ms,
+    "max_open_databases" => :max_open_databases,
+    "max_replication_workers" => :max_replication_workers,
+    "admission_limit" => :admission_limit,
+    "max_json_nesting_depth" => :max_json_nesting_depth
+  }
+
   @default_auth %{"enabled" => false, "tokens" => []}
   @default_tls %{"enabled" => false, "certfile" => "cert.pem", "keyfile" => "key.pem"}
   @default_security %{"allow_insecure_remote" => false}
@@ -100,9 +120,8 @@ defmodule ElixirDB.HostConfig do
          path = Path.join(root, @filename),
          :ok <- maybe_create_template(path),
          {:ok, contents} <- read_file(path),
-         {:ok, raw} <- parse(contents),
-         {:ok, config} <- validate(raw, root) do
-      {:ok, config}
+         {:ok, raw} <- parse(contents) do
+      validate(raw, root)
     end
   end
 
@@ -166,7 +185,7 @@ defmodule ElixirDB.HostConfig do
       # so atom-table growth is not a concern here.
       host_limits =
         limits
-        |> Enum.map(fn {key, value} -> {String.to_atom(key), value} end)
+        |> Enum.map(fn {key, value} -> {@limit_key_atoms[key], value} end)
 
       config =
         []
@@ -228,11 +247,7 @@ defmodule ElixirDB.HostConfig do
     with :ok <- allow_only(limits, Map.keys(@default_limits), "limits") do
       limits
       |> Enum.reduce_while(:ok, fn {key, value}, :ok ->
-        cond do
-          not is_integer(value) -> {:halt, {:error, "host.toml: limits.#{key} must be an integer"}}
-          value <= 0 -> {:halt, {:error, "host.toml: limits.#{key} must be positive"}}
-          true -> {:cont, :ok}
-        end
+        validate_limit_entry(key, value)
       end)
       |> case do
         :ok -> {:ok, Map.merge(@default_limits, limits)}
@@ -242,6 +257,14 @@ defmodule ElixirDB.HostConfig do
   end
 
   defp validate_limits(_), do: {:error, "host.toml: [limits] must be a table"}
+
+  defp validate_limit_entry(key, value) when not is_integer(value),
+    do: {:halt, {:error, "host.toml: limits.#{key} must be an integer"}}
+
+  defp validate_limit_entry(key, value) when value <= 0,
+    do: {:halt, {:error, "host.toml: limits.#{key} must be positive"}}
+
+  defp validate_limit_entry(_key, _value), do: {:cont, :ok}
 
   defp validate_auth(nil), do: {:ok, [enabled: false, token_digests: []]}
 
@@ -294,20 +317,23 @@ defmodule ElixirDB.HostConfig do
       certfile = tls["certfile"] || "cert.pem"
       keyfile = tls["keyfile"] || "key.pem"
 
-      if tls["enabled"] == true do
-        with :ok <- validate_path_inside_root(certfile, root, "tls.certfile"),
-             :ok <- validate_path_inside_root(keyfile, root, "tls.keyfile"),
-             :ok <- readable?(resolve_path(root, certfile), "tls.certfile"),
-             :ok <- readable?(resolve_path(root, keyfile), "tls.keyfile") do
-          {:ok, [enabled: true, certfile: certfile, keyfile: keyfile]}
-        end
-      else
-        {:ok, [enabled: false, certfile: certfile, keyfile: keyfile]}
-      end
+      validate_tls_state(tls["enabled"], certfile, keyfile, root)
     end
   end
 
   defp validate_tls(_, _root), do: {:error, "host.toml: [tls] must be a table"}
+
+  defp validate_tls_state(true, certfile, keyfile, root) do
+    with :ok <- validate_path_inside_root(certfile, root, "tls.certfile"),
+         :ok <- validate_path_inside_root(keyfile, root, "tls.keyfile"),
+         :ok <- readable?(resolve_path(root, certfile), "tls.certfile"),
+         :ok <- readable?(resolve_path(root, keyfile), "tls.keyfile") do
+      {:ok, [enabled: true, certfile: certfile, keyfile: keyfile]}
+    end
+  end
+
+  defp validate_tls_state(_enabled, certfile, keyfile, _root),
+    do: {:ok, [enabled: false, certfile: certfile, keyfile: keyfile]}
 
   defp validate_security(nil), do: {:ok, [allow_insecure_remote: false]}
 

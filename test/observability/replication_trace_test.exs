@@ -16,6 +16,10 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
 
   alias ElixirDB.Eventual
   alias ElixirDB.Observability.{TestExporter, TestMetricExporter}
+  alias ElixirDB.Replication.Id
+  alias ElixirDB.Replication.JobManager
+  alias ElixirDB.Replication.LocalEndpoint
+  alias ElixirDB.Replication.Worker
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.TestServer
 
@@ -45,10 +49,10 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
   end
 
   defp disable_jobs(uuid) do
-    case ElixirDB.Replication.JobManager.list(uuid) do
+    case JobManager.list(uuid) do
       {:ok, jobs} ->
         Enum.each(jobs, fn job ->
-          _ = ElixirDB.Replication.JobManager.disable(uuid, job.job_id)
+          _ = JobManager.disable(uuid, job.job_id)
         end)
 
       _ ->
@@ -59,11 +63,11 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
   test "local one-shot replication: batch and checkpoint spans share one trace", %{a: a, b: b} do
     assert {:ok, _} = ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
-    {:ok, source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-    {:ok, target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+    {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    {:ok, target} = LocalEndpoint.new(b.database_uuid)
 
     {:ok, replication_id} =
-      ElixirDB.Replication.Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
+      Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
     options = %{
       source: source,
@@ -73,7 +77,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
       direction: "push"
     }
 
-    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    assert {:ok, pid} = Worker.start_link(options)
     ref = Process.monitor(pid)
     :gen_statem.cast(pid, :start)
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
@@ -90,14 +94,14 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
         TestExporter.span_attr(s, :"replication.id") == replication_id
       end)
 
-    assert length(batch_spans) == 1,
+    assert [_] = batch_spans,
            "expected exactly one batch span, got: #{inspect(Enum.map(TestExporter.spans_named("elixir_db.replication.batch"), & &1[:span_id]))}"
 
     batch = hd(batch_spans)
 
     # Both checkpoints (target + source CAS writes) are children of the batch
     # span in the same trace (§6.2 single trace_id).
-    assert length(checkpoint_spans) == 2
+    assert [_, _] = checkpoint_spans
 
     for span <- checkpoint_spans do
       assert span[:trace_id] == batch[:trace_id],
@@ -134,7 +138,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     assert {:ok, _} = ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     {:ok, replication_id} =
-      ElixirDB.Replication.Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
+      Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
     assert {:ok, %{status: 201, body: %{"data" => %{"job_id" => _job_id}}}} =
              Req.post(server_a.base_url <> "/v1/databases/#{a.database_uuid}/replications",

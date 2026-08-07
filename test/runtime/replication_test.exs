@@ -1,4 +1,9 @@
 defmodule ElixirDB.Runtime.ReplicationTest do
+  alias ElixirDB.Replication.Id
+  alias ElixirDB.Replication.JobManager
+  alias ElixirDB.Replication.LocalEndpoint
+  alias ElixirDB.Replication.Worker
+  alias ElixirDB.Runtime.DatabaseCatalog
   use ExUnit.Case, async: false
 
   setup do
@@ -7,13 +12,13 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     b_path = prefix <> "-b.db"
     ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), a_path))
     ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), b_path))
-    {:ok, a} = ElixirDB.Runtime.DatabaseCatalog.create(a_path)
-    {:ok, b} = ElixirDB.Runtime.DatabaseCatalog.create(b_path)
+    {:ok, a} = DatabaseCatalog.create(a_path)
+    {:ok, b} = DatabaseCatalog.create(b_path)
 
     on_exit(fn ->
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
-        _ = ElixirDB.Runtime.DatabaseCatalog.close(identity.database_uuid)
-        _ = ElixirDB.Runtime.DatabaseCatalog.unregister(identity.database_uuid)
+        _ = DatabaseCatalog.close(identity.database_uuid)
+        _ = DatabaseCatalog.unregister(identity.database_uuid)
         ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
       end
     end)
@@ -31,7 +36,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     assert {:ok, %{revision: ^revision, body: %{"n" => 1}}} =
              ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})
 
-    assert :ok = ElixirDB.Runtime.DatabaseCatalog.close(a.database_uuid)
+    assert :ok = DatabaseCatalog.close(a.database_uuid)
   end
 
   @tag :slow
@@ -66,7 +71,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
              ElixirDB.Documents.put(a.database_uuid, %{id: "job-doc", body: %{"ok" => true}})
 
     assert {:ok, %{job_id: job_id, state: state}} =
-             ElixirDB.Replication.JobManager.put(a.database_uuid, %{
+             JobManager.put(a.database_uuid, %{
                "persist" => true,
                "mode" => "one_shot",
                "direction" => "push",
@@ -85,7 +90,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
   test "continuous job state survives the caller process exiting", %{a: a, b: b} do
     task =
       Task.async(fn ->
-        ElixirDB.Replication.JobManager.put(a.database_uuid, %{
+        JobManager.put(a.database_uuid, %{
           "persist" => true,
           "mode" => "continuous",
           "direction" => "push",
@@ -99,7 +104,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
     ElixirDB.Eventual.eventually(
       fn ->
-        case ElixirDB.Replication.JobManager.get(a.database_uuid, job_id) do
+        case JobManager.get(a.database_uuid, job_id) do
           {:ok, %{state: state}} when state in [:waiting, :backoff] -> true
           _ -> false
         end
@@ -108,16 +113,16 @@ defmodule ElixirDB.Runtime.ReplicationTest do
       message: "continuous job state was lost when its caller exited"
     )
 
-    assert {:ok, %{state: state}} = ElixirDB.Replication.JobManager.get(a.database_uuid, job_id)
+    assert {:ok, %{state: state}} = JobManager.get(a.database_uuid, job_id)
     assert state in [:waiting, :backoff]
 
     assert {:ok, %{state: :disabled}} =
-             ElixirDB.Replication.JobManager.disable(a.database_uuid, job_id)
+             JobManager.disable(a.database_uuid, job_id)
   end
 
   test "disabling a continuous job waits for its worker before close", %{a: a, b: b} do
     assert {:ok, %{job_id: job_id}} =
-             ElixirDB.Replication.JobManager.put(a.database_uuid, %{
+             JobManager.put(a.database_uuid, %{
                "persist" => true,
                "mode" => "continuous",
                "direction" => "push",
@@ -128,7 +133,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
     ElixirDB.Eventual.eventually(
       fn ->
-        case ElixirDB.Replication.JobManager.get(a.database_uuid, job_id) do
+        case JobManager.get(a.database_uuid, job_id) do
           {:ok, %{state: state}} when state in [:waiting, :backoff] -> true
           _ -> false
         end
@@ -138,17 +143,17 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     )
 
     assert {:ok, %{state: :disabled}} =
-             ElixirDB.Replication.JobManager.disable(a.database_uuid, job_id)
+             JobManager.disable(a.database_uuid, job_id)
 
     assert {:ok, %{state: :disabled}} =
-             ElixirDB.Replication.JobManager.get(a.database_uuid, job_id)
+             JobManager.get(a.database_uuid, job_id)
 
-    assert :ok = ElixirDB.Runtime.DatabaseCatalog.close(a.database_uuid)
+    assert :ok = DatabaseCatalog.close(a.database_uuid)
   end
 
   test "cancelling a continuous job waits for its worker before close", %{a: a, b: b} do
     assert {:ok, %{job_id: job_id}} =
-             ElixirDB.Replication.JobManager.put(a.database_uuid, %{
+             JobManager.put(a.database_uuid, %{
                "persist" => true,
                "mode" => "continuous",
                "direction" => "push",
@@ -159,7 +164,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
     ElixirDB.Eventual.eventually(
       fn ->
-        case ElixirDB.Replication.JobManager.get(a.database_uuid, job_id) do
+        case JobManager.get(a.database_uuid, job_id) do
           {:ok, %{state: state}} when state in [:waiting, :backoff] -> true
           _ -> false
         end
@@ -169,10 +174,10 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     )
 
     assert {:ok, %{state: :failed}} =
-             ElixirDB.Replication.JobManager.cancel(job_id)
+             JobManager.cancel(job_id)
 
-    assert {:ok, %{state: :failed}} = ElixirDB.Replication.JobManager.get(a.database_uuid, job_id)
-    assert :ok = ElixirDB.Runtime.DatabaseCatalog.close(a.database_uuid)
+    assert {:ok, %{state: :failed}} = JobManager.get(a.database_uuid, job_id)
+    assert :ok = DatabaseCatalog.close(a.database_uuid)
   end
 
   test "worker reports mandated phase transitions through completed", %{a: a, b: b} do
@@ -181,11 +186,11 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
     {:ok, agent} = Agent.start_link(fn -> [] end)
 
-    assert {:ok, source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-    assert {:ok, target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+    assert {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    assert {:ok, target} = LocalEndpoint.new(b.database_uuid)
 
     assert {:ok, replication_id} =
-             ElixirDB.Replication.Id.calculate(
+             Id.calculate(
                a.database_uuid,
                b.database_uuid,
                "push",
@@ -207,7 +212,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
       end
     }
 
-    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    assert {:ok, pid} = Worker.start_link(options)
     ref = Process.monitor(pid)
     :gen_statem.cast(pid, :start)
 
@@ -240,11 +245,11 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     assert {:ok, _} =
              ElixirDB.Documents.put(a.database_uuid, %{id: "cancel-doc", body: %{"n" => 1}})
 
-    assert {:ok, source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-    assert {:ok, target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+    assert {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    assert {:ok, target} = LocalEndpoint.new(b.database_uuid)
 
     assert {:ok, replication_id} =
-             ElixirDB.Replication.Id.calculate(
+             Id.calculate(
                a.database_uuid,
                b.database_uuid,
                "push",
@@ -277,7 +282,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
       end
     }
 
-    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    assert {:ok, pid} = Worker.start_link(options)
     ref = Process.monitor(pid)
     :gen_statem.cast(pid, :start)
 
@@ -305,7 +310,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
   end
 
   defp wait_for_job(uuid, job_id, attempts) when attempts > 0 do
-    case ElixirDB.Replication.JobManager.get(uuid, job_id) do
+    case JobManager.get(uuid, job_id) do
       {:ok, %{state: state}} when state in [:completed, :failed] ->
         state
 

@@ -1,6 +1,8 @@
 defmodule ElixirDB.Observability.DashboardTest do
   use ExUnit.Case, async: false
 
+  alias ElixirDB.HTTP.Router
+  alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Observability.Dashboard
 
   setup do
@@ -57,7 +59,7 @@ defmodule ElixirDB.Observability.DashboardTest do
 
     disabled =
       Plug.Test.conn(:get, "/v1/observability/snapshot")
-      |> ElixirDB.HTTP.Router.call([])
+      |> Router.call([])
 
     assert disabled.status == 400
 
@@ -65,12 +67,12 @@ defmodule ElixirDB.Observability.DashboardTest do
 
     enabled =
       Plug.Test.conn(:get, "/v1/observability/snapshot")
-      |> ElixirDB.HTTP.Router.call([])
+      |> Router.call([])
 
     assert enabled.status == 200
 
     assert {:ok, %{"data" => %{"runtime" => runtime}}} =
-             ElixirDB.JSON.StrictDecoder.decode(enabled.resp_body)
+             StrictDecoder.decode(enabled.resp_body)
 
     assert is_integer(runtime["memory_bytes"])
   end

@@ -11,6 +11,9 @@ defmodule ElixirDB.Storage.AdapterCase do
   SQLite-only probes remain in dedicated tests.
   """
 
+  alias ElixirDB.Revisions.Id
+  alias ElixirDB.Revisions.Wire
+
   use ExUnit.CaseTemplate
 
   using opts do
@@ -18,15 +21,16 @@ defmodule ElixirDB.Storage.AdapterCase do
 
     quote do
       use ExUnit.Case, async: false
+      alias ElixirDB.Storage.AdapterCase, as: AdapterCaseModule
 
       @adapter unquote(adapter)
 
       setup context do
-        ElixirDB.Storage.AdapterCase.open_temp_adapter(@adapter, context)
+        AdapterCaseModule.open_temp_adapter(@adapter, context)
       end
 
       defp wire(document_id, revision_id, parent, deleted, body) do
-        ElixirDB.Storage.AdapterCase.wire_revision(document_id, revision_id, parent, deleted, body)
+        AdapterCaseModule.wire_revision(document_id, revision_id, parent, deleted, body)
       end
     end
   end
@@ -52,25 +56,16 @@ defmodule ElixirDB.Storage.AdapterCase do
   """
   @spec wire_revision(binary(), binary(), binary() | nil, boolean(), map() | nil) :: map()
   def wire_revision(document_id, revision_id, parent, deleted, body) do
-    {:ok, generation} = ElixirDB.Revisions.Id.generation(revision_id)
+    {:ok, generation} = Id.generation(revision_id)
 
-    %{
-      document_id: document_id,
-      revision_id: revision_id,
-      generation: generation,
-      parent_revision: parent,
-      deleted: deleted,
-      body: body
-    }
+    Wire.new(document_id, revision_id, generation, parent, deleted, body)
   end
 
   defp safe_close(adapter_mod, adapter) do
-    try do
-      adapter_mod.close(adapter)
-    rescue
-      _ -> :ok
-    catch
-      _, _ -> :ok
-    end
+    adapter_mod.close(adapter)
+  rescue
+    [ArgumentError, ErlangError, RuntimeError, UndefinedFunctionError] -> :ok
+  catch
+    _, _ -> :ok
   end
 end

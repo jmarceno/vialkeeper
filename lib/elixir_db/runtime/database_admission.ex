@@ -1,5 +1,6 @@
 defmodule ElixirDB.Runtime.DatabaseAdmission do
   @moduledoc false
+  alias ElixirDB.Observability.Instrumentation.Database
   use GenServer
 
   def start_link({uuid, limit}),
@@ -52,7 +53,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
       :ok
     else
       _ = :atomics.add_get(counter, 1, -1)
-      ElixirDB.Observability.Instrumentation.Database.overload(uuid)
+      Database.overload(uuid)
       {:error, ElixirDB.Error.database_overloaded("database admission limit reached")}
     end
   end

@@ -1,4 +1,8 @@
 defmodule ElixirDB.Runtime.RegistrationManifest do
+  alias ElixirDB.JSON.Canonical
+  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.Runtime.AtomicWrite
+  alias ElixirDB.Runtime.PathSafety
   @moduledoc "Atomic, routing-only registration manifest."
 
   @spec path() :: binary()
@@ -14,9 +18,7 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
         {:ok, []}
 
       {:ok, body} ->
-        with {:ok, map} <- ElixirDB.JSON.StrictDecoder.decode(body),
-             {:ok, entries} <- validate(map),
-             do: {:ok, entries}
+        with {:ok, map} <- StrictDecoder.decode(body), do: validate(map)
 
       {:error, reason} ->
         {:error,
@@ -29,8 +31,8 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
   @spec write(list()) :: :ok | {:error, ElixirDB.Error.t()}
   def write(entries) do
     with {:ok, normalized} <- normalize_entries(entries),
-         {:ok, json} <- ElixirDB.JSON.Canonical.encode(%{"version" => 1, "databases" => normalized}),
-         :ok <- ElixirDB.Runtime.AtomicWrite.write(path(), json) do
+         {:ok, json} <- Canonical.encode(%{"version" => 1, "databases" => normalized}),
+         :ok <- AtomicWrite.write(path(), json) do
       :ok
     else
       {:error, %ElixirDB.Error{} = error} ->
@@ -73,25 +75,12 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
     is_binary(relative) and Path.type(relative) != :absolute and relative != ".." and
       not Enum.any?(Path.split(relative), &(&1 == "..")) and not String.contains?(relative, "\\") and
       relative != "" and
-      no_symlink_components?(Path.join(ElixirDB.Config.database_root(), relative))
+      PathSafety.no_symlink_components?(Path.join(ElixirDB.Config.database_root(), relative))
   end
 
   defp normalize_entries(entries) when is_list(entries) do
     Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
-      if is_map(entry) do
-        uuid = Map.get(entry, "uuid", Map.get(entry, :uuid))
-        relative = Map.get(entry, "path", Map.get(entry, :path))
-
-        if is_binary(uuid) and is_binary(relative) and valid_uuid?(uuid) and safe_entry?(relative),
-          do: {:cont, {:ok, [%{"uuid" => uuid, "path" => relative} | acc]}},
-          else:
-            {:halt,
-             {:error,
-              ElixirDB.Error.invalid_request("registration manifest contains an invalid entry")}}
-      else
-        {:halt,
-         {:error, ElixirDB.Error.invalid_request("registration manifest contains an invalid entry")}}
-      end
+      normalize_entry(entry, acc)
     end)
     |> case do
       {:ok, values} -> {:ok, Enum.reverse(values)}
@@ -101,6 +90,22 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
 
   defp normalize_entries(_),
     do: {:error, ElixirDB.Error.invalid_request("registration manifest databases must be an array")}
+
+  defp normalize_entry(entry, acc) when is_map(entry) do
+    uuid = Map.get(entry, "uuid", Map.get(entry, :uuid))
+    relative = Map.get(entry, "path", Map.get(entry, :path))
+
+    if is_binary(uuid) and is_binary(relative) and valid_uuid?(uuid) and safe_entry?(relative),
+      do: {:cont, {:ok, [%{"uuid" => uuid, "path" => relative} | acc]}},
+      else: invalid_entry(acc)
+  end
+
+  defp normalize_entry(_entry, acc), do: invalid_entry(acc)
+
+  defp invalid_entry(_acc),
+    do:
+      {:halt,
+       {:error, ElixirDB.Error.invalid_request("registration manifest contains an invalid entry")}}
 
   defp ensure_unique(entries) do
     uuids = Enum.map(entries, & &1["uuid"])
@@ -119,23 +124,4 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
         ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
         uuid
       )
-
-  defp no_symlink_components?(path) do
-    path
-    |> Path.split()
-    |> Enum.reduce_while("", fn component, current ->
-      next = Path.join(current, component)
-
-      case File.lstat(next) do
-        {:ok, %File.Stat{type: :symlink}} -> {:halt, false}
-        {:ok, _} -> {:cont, next}
-        {:error, :enoent} -> {:halt, true}
-        {:error, _} -> {:halt, false}
-      end
-    end)
-    |> case do
-      false -> false
-      _ -> true
-    end
-  end
 end

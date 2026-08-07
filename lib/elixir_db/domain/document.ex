@@ -1,4 +1,6 @@
 defmodule ElixirDB.Domain.Document do
+  @moduledoc "Validated document state and revision metadata."
+
   @enforce_keys [:id, :revision, :deleted]
   defstruct [:id, :revision, :deleted, :body, :conflicts, :sequence]
 
@@ -20,24 +22,42 @@ defmodule ElixirDB.Domain.Document do
   end
 
   defp build(attrs) do
-    cond do
-      not is_binary(attrs[:id]) or attrs[:id] == "" ->
-        {:error, ElixirDB.Error.invalid_request("document id is required")}
-
-      not is_binary(attrs[:revision]) ->
-        {:error, ElixirDB.Error.invalid_request("document revision is required")}
-
-      not is_boolean(attrs[:deleted]) ->
-        {:error, ElixirDB.Error.invalid_request("document deleted must be boolean")}
-
-      not attrs[:deleted] and not is_map(attrs[:body]) ->
-        {:error, ElixirDB.Error.invalid_request("live document body must be an object")}
-
-      attrs[:deleted] and not is_nil(attrs[:body]) ->
-        {:error, ElixirDB.Error.invalid_request("deleted document body must be null")}
-
-      true ->
-        {:ok, struct(__MODULE__, attrs)}
+    case validation_error(attrs) do
+      nil -> {:ok, struct(__MODULE__, attrs)}
+      error -> {:error, error}
     end
   end
+
+  defp validation_error(attrs) do
+    validators = [
+      &validate_id/1,
+      &validate_revision/1,
+      &validate_deleted/1,
+      &validate_live_body/1,
+      &validate_deleted_body/1
+    ]
+
+    Enum.find_value(validators, & &1.(attrs))
+  end
+
+  defp validate_id(%{id: value}) when is_binary(value) and value != "", do: nil
+  defp validate_id(_), do: ElixirDB.Error.invalid_request("document id is required")
+
+  defp validate_revision(%{revision: value}) when is_binary(value), do: nil
+  defp validate_revision(_), do: ElixirDB.Error.invalid_request("document revision is required")
+
+  defp validate_deleted(%{deleted: value}) when is_boolean(value), do: nil
+  defp validate_deleted(_), do: ElixirDB.Error.invalid_request("document deleted must be boolean")
+
+  defp validate_live_body(%{deleted: false, body: body}) when is_map(body), do: nil
+  defp validate_live_body(%{deleted: true}), do: nil
+
+  defp validate_live_body(_),
+    do: ElixirDB.Error.invalid_request("live document body must be an object")
+
+  defp validate_deleted_body(%{deleted: true, body: nil}), do: nil
+  defp validate_deleted_body(%{deleted: false}), do: nil
+
+  defp validate_deleted_body(_),
+    do: ElixirDB.Error.invalid_request("deleted document body must be null")
 end

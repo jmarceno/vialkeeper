@@ -58,7 +58,15 @@ defmodule ElixirDB.MixProject do
       # the experimental package as of opentelemetry 1.7.
       {:opentelemetry_experimental, "~> 0.5.1", runtime: false},
       {:stream_data, "1.4.0", only: [:test, :dev]},
-      {:dialyxir, "1.4.7", only: [:dev, :test], runtime: false}
+      {:dialyxir, "1.4.7", only: [:dev, :test], runtime: false},
+      # Development-only quality and agent tooling. None of these packages are
+      # reachable from the assembled production release.
+      {:credo, "1.7.19", only: [:dev, :test], runtime: false},
+      {:ex_slop, "0.4.4", only: [:dev, :test], runtime: false},
+      {:ex_dna, "1.5.4", only: [:dev, :test], runtime: false},
+      # Reach 2.8 currently requires the 0.12 ExAST API line.
+      {:ex_ast, "0.12.10", only: [:dev, :test], runtime: false},
+      {:reach, "2.8.2", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -77,12 +85,17 @@ defmodule ElixirDB.MixProject do
       "check.fast": [
         "format --check-formatted",
         "compile --warnings-as-errors",
+        "credo --strict",
+        "ex_dna --max-clones 0",
         "test --warnings-as-errors --exclude slow"
       ],
       "check.full": [
         "format --check-formatted",
         "compile --warnings-as-errors",
         "xref graph --format cycles --label compile-connected --fail-above 0",
+        "credo --strict",
+        "ex_dna --max-clones 0",
+        "reach.check --arch --smells --strict",
         "test --warnings-as-errors",
         "dialyzer"
       ],

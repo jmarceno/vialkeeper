@@ -1,4 +1,5 @@
 defmodule ElixirDB.HTTP.BodyReader do
+  alias ElixirDB.JSON.StrictDecoder
   @moduledoc false
 
   @doc """
@@ -88,7 +89,7 @@ defmodule ElixirDB.HTTP.BodyReader do
     if byte_size(body) > max do
       {:error, ElixirDB.Error.payload_too_large("request body exceeds the configured limit")}
     else
-      case ElixirDB.JSON.StrictDecoder.decode(body, max_bytes: max) do
+      case StrictDecoder.decode(body, max_bytes: max) do
         {:ok, value} when is_map(value) or is_list(value) ->
           {:ok, value, conn}
 

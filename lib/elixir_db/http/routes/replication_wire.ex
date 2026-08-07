@@ -2,12 +2,13 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   @moduledoc false
   use Plug.Router
   alias ElixirDB.HTTP.{Request, Response}
-
+  alias ElixirDB.HTTP.Schemas
+  alias ElixirDB.Runtime.DatabaseCatalog
   plug(:match)
   plug(:dispatch)
 
   get "/identity" do
-    case ElixirDB.Runtime.DatabaseCatalog.command(
+    case DatabaseCatalog.command(
            Request.uuid(conn),
            {:command, :identity, %{}}
          ) do
@@ -32,7 +33,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   post "/changes" do
     Request.call(
       conn,
-      ElixirDB.HTTP.Schemas.opts(:wire_changes, "replication changes contains an unknown field"),
+      Schemas.opts(:wire_changes, "replication changes contains an unknown field"),
       fn body, conn ->
         Response.result(conn, ElixirDB.Changes.wait(Request.uuid(conn), body))
       end
@@ -42,11 +43,11 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   post "/revisions/diff" do
     Request.call(
       conn,
-      ElixirDB.HTTP.Schemas.opts(:wire_diff, "revision diff contains an unknown field"),
+      Schemas.opts(:wire_diff, "revision diff contains an unknown field"),
       fn body, conn ->
         Response.result(
           conn,
-          ElixirDB.Runtime.DatabaseCatalog.command(
+          DatabaseCatalog.command(
             Request.uuid(conn),
             {:command, :diff_revisions, body}
           )
@@ -58,11 +59,11 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   post "/revisions/get" do
     Request.call(
       conn,
-      ElixirDB.HTTP.Schemas.opts(:wire_get_chains, "revision get contains an unknown field"),
+      Schemas.opts(:wire_get_chains, "revision get contains an unknown field"),
       fn body, conn ->
         Response.result(
           conn,
-          ElixirDB.Runtime.DatabaseCatalog.command(
+          DatabaseCatalog.command(
             Request.uuid(conn),
             {:command, :get_revision_chains, body}
           )
@@ -74,11 +75,11 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   post "/revisions/put" do
     Request.call(
       conn,
-      ElixirDB.HTTP.Schemas.opts(:wire_put_chains, "revision put contains an unknown field"),
+      Schemas.opts(:wire_put_chains, "revision put contains an unknown field"),
       fn body, conn ->
         Response.result(
           conn,
-          ElixirDB.Runtime.DatabaseCatalog.command(
+          DatabaseCatalog.command(
             Request.uuid(conn),
             {:command, :import_revision_chains, body}
           )
@@ -91,7 +92,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     with_path_id(conn, fn conn, replication_id ->
       Response.result(
         conn,
-        ElixirDB.Runtime.DatabaseCatalog.command(
+        DatabaseCatalog.command(
           Request.uuid(conn),
           {:command, :get_local_record, "checkpoints", replication_id}
         )
@@ -102,14 +103,14 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   put "/checkpoints/:replication_id" do
     Request.call(
       conn,
-      ElixirDB.HTTP.Schemas.opts(:wire_checkpoint, "checkpoint PUT has an invalid replacement"),
+      Schemas.opts(:wire_checkpoint, "checkpoint PUT has an invalid replacement"),
       fn body, conn ->
         if valid_checkpoint_put?(body),
           do:
             with_path_id(conn, fn conn, replication_id ->
               Response.result(
                 conn,
-                ElixirDB.Runtime.DatabaseCatalog.command(
+                DatabaseCatalog.command(
                   Request.uuid(conn),
                   {:command, :put_local_record,
                    %{
@@ -138,17 +139,38 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   end
 
   defp valid_checkpoint_put?(body) when is_map(body) do
-    is_integer(body["expected_checkpoint_version"]) and
-      body["expected_checkpoint_version"] >= 0 and
-      body["version"] == 1 and
-      is_integer(body["checkpoint_version"]) and body["checkpoint_version"] > 0 and
-      is_binary(body["replication_id"]) and body["replication_id"] != "" and
-      is_binary(body["session_id"]) and body["session_id"] != "" and
-      is_integer(body["source_sequence"]) and body["source_sequence"] >= 0 and
-      is_list(body["history"])
+    validators = [
+      &valid_expected_checkpoint_version?/1,
+      &valid_checkpoint_version?/1,
+      &valid_replication_id?/1,
+      &valid_session_id?/1,
+      &valid_source_sequence?/1,
+      &valid_history?/1
+    ]
+
+    Enum.all?(validators, & &1.(body))
   end
 
   defp valid_checkpoint_put?(_), do: false
+
+  defp valid_expected_checkpoint_version?(body),
+    do: is_integer(body["expected_checkpoint_version"]) and body["expected_checkpoint_version"] >= 0
+
+  defp valid_checkpoint_version?(body),
+    do:
+      body["version"] == 1 and is_integer(body["checkpoint_version"]) and
+        body["checkpoint_version"] > 0
+
+  defp valid_replication_id?(body),
+    do: is_binary(body["replication_id"]) and body["replication_id"] != ""
+
+  defp valid_session_id?(body),
+    do: is_binary(body["session_id"]) and body["session_id"] != ""
+
+  defp valid_source_sequence?(body),
+    do: is_integer(body["source_sequence"]) and body["source_sequence"] >= 0
+
+  defp valid_history?(body), do: is_list(body["history"])
 
   # SAFETY: bounds-check the :replication_id path parameter before it is used as a storage
   # key. See Request.validate_path_id/1.

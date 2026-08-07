@@ -7,9 +7,12 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
   """
   use ExUnit.Case, async: false
 
+  alias ElixirDB.HTTP.Router
+  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Replication.Id
   alias ElixirDB.Runtime.DatabaseCatalog
   alias Plug.Conn
-
   @tag :slow
   test "Architecture §21 Phase 8 scenario with local endpoints" do
     root = ElixirDB.Config.database_root()
@@ -80,8 +83,8 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
     assert {:ok, %{conflicts: b_conflicts}} =
              ElixirDB.Documents.get(b_uuid, %{id: "shared", include_conflicts: true})
 
-    assert length(a_conflicts) == 1
-    assert length(b_conflicts) == 1
+    assert [_] = a_conflicts
+    assert [_] = b_conflicts
 
     assert MapSet.new([left, right]) ==
              MapSet.new([hd(a_conflicts), conflict_winner(a_uuid)])
@@ -159,12 +162,12 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
     assert doomed_change.winning_revision == deleted
 
     assert Enum.any?(shared_change.leaf_revisions, fn leaf ->
-             (leaf["revision"] || leaf[:revision]) == resolved
+             MapAccess.get(leaf, :revision) == resolved
            end)
 
     assert Enum.any?(doomed_change.leaf_revisions, fn leaf ->
-             (leaf["revision"] || leaf[:revision]) == deleted and
-               (leaf["deleted"] || leaf[:deleted]) == true
+             MapAccess.get(leaf, :revision) == deleted and
+               MapAccess.get(leaf, :deleted) == true
            end)
 
     # Step 7 — structured + full-text indexes and pointer-keyed projections.
@@ -212,7 +215,7 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
              })
 
     assert is_binary(page1.bookmark)
-    assert length(page1.documents) == 1
+    assert [_] = page1.documents
 
     assert {:ok, _} =
              ElixirDB.Documents.put(a_uuid, %{
@@ -232,7 +235,7 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
     assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
 
     assert {:ok, replication_id} =
-             ElixirDB.Replication.Id.calculate(a_uuid, b_uuid, "push", "one_shot")
+             Id.calculate(a_uuid, b_uuid, "push", "one_shot")
 
     assert {:ok, %{version: a_cp_version, value: a_checkpoint}} =
              DatabaseCatalog.command(
@@ -313,8 +316,8 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
 
     Plug.Test.conn(method, path, payload)
     |> Conn.put_req_header("content-type", "application/json")
-    |> ElixirDB.HTTP.Router.call([])
+    |> Router.call([])
   end
 
-  defp decode(%Conn{resp_body: body}), do: ElixirDB.JSON.StrictDecoder.decode(body)
+  defp decode(%Conn{resp_body: body}), do: StrictDecoder.decode(body)
 end

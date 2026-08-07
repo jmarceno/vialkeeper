@@ -18,9 +18,10 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
 
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.HTTP.Router
-
+  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.Observability.Instrumentation.HTTP
+  alias ElixirDB.Runtime.DatabaseCatalog
   # ==========================================================================
   # Catalog dispatch net
   # ==========================================================================
@@ -90,7 +91,7 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
       conn = Plug.Test.conn(:get, "/v1/databases", nil)
 
       result_conn =
-        ElixirDB.Observability.Instrumentation.HTTP.wrap(conn, fn _conn ->
+        HTTP.wrap(conn, fn _conn ->
           raise "simulated handler failure"
         end)
 
@@ -109,7 +110,7 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
       assert conn.state == :set
 
       result_conn =
-        ElixirDB.Observability.Instrumentation.HTTP.wrap(conn, fn _conn ->
+        HTTP.wrap(conn, fn _conn ->
           raise "simulated handler failure"
         end)
 
@@ -171,5 +172,5 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
   end
 
   defp encode(term), do: IO.iodata_to_binary(JSON.encode_to_iodata!(term))
-  defp decode(body), do: ElixirDB.JSON.StrictDecoder.decode(body)
+  defp decode(body), do: StrictDecoder.decode(body)
 end

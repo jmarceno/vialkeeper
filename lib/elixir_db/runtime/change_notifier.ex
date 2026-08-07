@@ -1,14 +1,10 @@
 defmodule ElixirDB.Runtime.ChangeNotifier do
   @moduledoc false
   use GenServer
+  alias ElixirDB.Runtime.ChildSpec
 
   def child_spec(uuid) do
-    %{
-      id: {__MODULE__, uuid},
-      start: {__MODULE__, :start_link, [uuid]},
-      restart: :temporary,
-      type: :worker
-    }
+    ChildSpec.worker({__MODULE__, uuid}, {__MODULE__, :start_link, [uuid]}, :temporary)
   end
 
   def start_link(uuid), do: GenServer.start_link(__MODULE__, uuid, name: via(uuid))

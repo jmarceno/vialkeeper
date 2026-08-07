@@ -1,5 +1,9 @@
 defmodule ElixirDB.Replication.RemoteEndpoint do
+  @moduledoc "Replication endpoint backed by a remote HTTP server."
+
   @behaviour ElixirDB.Replication.Endpoint
+  alias ElixirDB.Domain.ReplicationEndpoint
+  alias ElixirDB.MapAccess
   alias ElixirDB.Replication.RemoteTransport
 
   defstruct [:base_url, :database_uuid, :auth_token]
@@ -7,7 +11,7 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
   def new(attrs) when is_map(attrs) do
     normalized = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 
-    case ElixirDB.Domain.ReplicationEndpoint.new(Map.put(normalized, "kind", "remote")) do
+    case ReplicationEndpoint.new(Map.put(normalized, "kind", "remote")) do
       {:ok, endpoint} ->
         {:ok,
          %__MODULE__{
@@ -69,7 +73,7 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
       {:ok,
        %{
          "confirmed" => true,
-         "current_sequence" => identity["current_sequence"] || identity[:current_sequence] || 0
+         "current_sequence" => MapAccess.get(identity, :current_sequence, 0)
        }}
     end
   end

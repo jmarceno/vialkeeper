@@ -21,7 +21,7 @@ defmodule ElixirDB.Observability.TelemetryBridgeTest do
     end
 
     parents = TestExporter.spans_named("bridge-parent")
-    assert length(parents) == 1
+    assert [_] = parents
     parent = hd(parents)
 
     finch_spans = TestExporter.spans_named("finch.request")

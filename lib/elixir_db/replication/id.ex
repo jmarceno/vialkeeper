@@ -1,4 +1,6 @@
 defmodule ElixirDB.Replication.Id do
+  @moduledoc "Stable identifiers for replication jobs and sessions."
+
   alias ElixirDB.JSON.Canonical
 
   def calculate(source_uuid, target_uuid, direction, mode, filter \\ nil) do

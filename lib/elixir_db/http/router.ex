@@ -9,10 +9,12 @@ defmodule ElixirDB.HTTP.Router do
     Databases,
     Documents,
     Indexes,
-    ReplicationWire,
-    Replications
+    Replications,
+    ReplicationWire
   }
 
+  alias ElixirDB.Observability.Dashboard
+  alias ElixirDB.Observability.Instrumentation.HTTP
   # Authentication runs before route matching on every request, so it is the
   # single chokepoint for all `/v1` traffic (AUTH-001) and unauthenticated
   # probes cannot learn which routes exist.
@@ -25,7 +27,7 @@ defmodule ElixirDB.HTTP.Router do
   # span is ended — and the prior trace context restored — even when a
   # downstream plug raises before any response is sent.
   def call(conn, opts) do
-    ElixirDB.Observability.Instrumentation.HTTP.wrap(conn, fn conn ->
+    HTTP.wrap(conn, fn conn ->
       super(conn, opts)
     end)
   end
@@ -58,7 +60,7 @@ defmodule ElixirDB.HTTP.Router do
 
   get "/v1/observability/snapshot" do
     if Application.get_env(:elixir_db, :observability_dashboard, false) do
-      Response.ok(conn, ElixirDB.Observability.Dashboard.snapshot())
+      Response.ok(conn, Dashboard.snapshot())
     else
       Response.error(
         conn,

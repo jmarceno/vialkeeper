@@ -1,4 +1,6 @@
 defmodule ElixirDB.Revisions.ConflictResolution do
+  @moduledoc "Validation for conflict-resolution revision sets."
+
   alias ElixirDB.Domain.Revision
 
   @spec validate_leaf_set([Revision.t()], [binary()]) :: :ok | {:error, ElixirDB.Error.t()}

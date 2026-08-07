@@ -1,5 +1,6 @@
 defmodule ElixirDB.Config do
   @moduledoc "Host and database configuration with host-enforced safety limits."
+  alias ElixirDB.JSON.Stringify
 
   @defaults %{
     "version" => 1,
@@ -44,7 +45,7 @@ defmodule ElixirDB.Config do
 
   @spec merge_and_bound(map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def merge_and_bound(config) when is_map(config) do
-    config = stringify_keys(config)
+    config = Stringify.keys(config)
 
     with :ok <- validate_shape(config),
          merged <- deep_merge(@defaults, config),
@@ -139,12 +140,6 @@ defmodule ElixirDB.Config do
     end)
   end
 
-  defp stringify_keys(value) when is_map(value),
-    do: Map.new(value, fn {key, child} -> {to_string(key), stringify_keys(child)} end)
-
-  defp stringify_keys(value) when is_list(value), do: Enum.map(value, &stringify_keys/1)
-  defp stringify_keys(value), do: value
-
   defp validate_shape(config) do
     known = ["version", "documents", "queries", "changes", "replication"]
 
@@ -165,31 +160,35 @@ defmodule ElixirDB.Config do
     }
 
     Enum.reduce_while(config, :ok, fn {section, value}, :ok ->
-      if section == "version" do
-        if value == 1,
-          do: {:cont, :ok},
-          else:
-            {:halt, {:error, ElixirDB.Error.invalid_request("unsupported configuration version")}}
-      else
-        keys = if is_map(value), do: Map.keys(value), else: []
-        accepted = Map.get(allowed, section, [])
-
-        if is_map(value) and Enum.all?(keys, &(&1 in accepted)) do
-          if section == "replication" and is_map(value["retry"]) do
-            if Enum.all?(Map.keys(value["retry"]), &(&1 in allowed["retry"])),
-              do: {:cont, :ok},
-              else:
-                {:halt,
-                 {:error, ElixirDB.Error.invalid_request("configuration contains an unknown field")}}
-          else
-            {:cont, :ok}
-          end
-        else
-          {:halt,
-           {:error, ElixirDB.Error.invalid_request("configuration sections must be objects")}}
-        end
-      end
+      validate_section_shape(section, value, allowed)
     end)
+  end
+
+  defp validate_section_shape("version", 1, _allowed), do: {:cont, :ok}
+
+  defp validate_section_shape("version", _value, _allowed),
+    do: {:halt, {:error, ElixirDB.Error.invalid_request("unsupported configuration version")}}
+
+  defp validate_section_shape(section, value, allowed) do
+    accepted = Map.get(allowed, section, [])
+
+    if is_map(value) and Enum.all?(Map.keys(value), &(&1 in accepted)) do
+      validate_retry_shape(section, value, allowed)
+    else
+      {:halt, {:error, ElixirDB.Error.invalid_request("configuration sections must be objects")}}
+    end
+  end
+
+  defp validate_retry_shape("replication", %{"retry" => retry}, allowed) when is_map(retry) do
+    if Enum.all?(Map.keys(retry), &(&1 in allowed["retry"])),
+      do: {:cont, :ok},
+      else: unknown_configuration_field()
+  end
+
+  defp validate_retry_shape(_section, _value, _allowed), do: {:cont, :ok}
+
+  defp unknown_configuration_field do
+    {:halt, {:error, ElixirDB.Error.invalid_request("configuration contains an unknown field")}}
   end
 
   defp validate_values(config) do

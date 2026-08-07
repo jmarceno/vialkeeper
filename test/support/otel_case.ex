@@ -8,23 +8,26 @@ defmodule ElixirDB.Observability.OtelCase do
   This case clears the recorder between tests so assertions are isolated.
   """
 
+  alias ElixirDB.Observability.{OtelCase, TestExporter}
+  alias ElixirDB.Observability.TestMetricExporter
   use ExUnit.CaseTemplate
 
   using do
     quote do
       alias ElixirDB.Observability.{OtelCase, TestExporter}
+      alias ElixirDB.Observability.TestMetricExporter
     end
   end
 
   setup _tags do
-    ElixirDB.Observability.TestExporter.start()
-    ElixirDB.Observability.TestExporter.reset()
-    ElixirDB.Observability.TestMetricExporter.start()
-    ElixirDB.Observability.TestMetricExporter.reset()
+    TestExporter.start()
+    TestExporter.reset()
+    TestMetricExporter.start()
+    TestMetricExporter.reset()
 
     on_exit(fn ->
-      ElixirDB.Observability.TestExporter.reset()
-      ElixirDB.Observability.TestMetricExporter.reset()
+      TestExporter.reset()
+      TestMetricExporter.reset()
     end)
 
     :ok

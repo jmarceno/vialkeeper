@@ -67,7 +67,20 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
     try do
       fun.(conn)
     rescue
-      error ->
+      error in [
+        ArgumentError,
+        ArithmeticError,
+        BadMapError,
+        CaseClauseError,
+        ErlangError,
+        FunctionClauseError,
+        KeyError,
+        MatchError,
+        Protocol.UndefinedError,
+        RuntimeError,
+        UndefinedFunctionError,
+        WithClauseError
+      ] ->
         # No response was (or will be) sent: before_send never fires, so end
         # the span here with the effective 500.
         finish_raised(span_ctx, conn, route, db_uuid, started)
@@ -118,22 +131,21 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
 
     # Guards the raise-after-send case: the span may already be ended.
     if OpenTelemetry.Span.is_recording(span_ctx) do
-      if conn.status do
-        _ =
-          OpenTelemetry.Span.set_attributes(
-            span_ctx,
-            Attributes.build(http_status_code: conn.status)
-          )
-
-        if conn.status >= 500 do
-          OpenTelemetry.Span.set_status(span_ctx, :opentelemetry.status(:error))
-        end
-      end
-
+      record_http_status(span_ctx, conn.status)
       OpenTelemetry.Span.end_span(span_ctx)
     end
 
     :ok
+  end
+
+  defp record_http_status(_span_ctx, nil), do: :ok
+
+  defp record_http_status(span_ctx, status) do
+    _ = OpenTelemetry.Span.set_attributes(span_ctx, Attributes.build(http_status_code: status))
+
+    if status >= 500 do
+      OpenTelemetry.Span.set_status(span_ctx, :opentelemetry.status(:error))
+    end
   end
 
   # The pipeline raised before a response: the request failed with a 500 by

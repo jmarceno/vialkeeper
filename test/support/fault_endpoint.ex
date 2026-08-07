@@ -15,12 +15,12 @@ defmodule ElixirDB.FaultEndpoint do
 
   defstruct [:inner, :agent]
 
-  @type t :: %__MODULE__{inner: %LocalEndpoint{}, agent: pid()}
+  @type t :: %__MODULE__{inner: LocalEndpoint.t(), agent: pid()}
 
   @doc """
   Wraps a `LocalEndpoint` with an empty fault schedule held in an Agent.
   """
-  @spec wrap(%LocalEndpoint{}) :: t()
+  @spec wrap(LocalEndpoint.t()) :: t()
   def wrap(%LocalEndpoint{} = inner) do
     {:ok, agent} = Agent.start_link(fn -> FaultAdapter.wrap(inner) end)
     %__MODULE__{inner: inner, agent: agent}
@@ -91,26 +91,28 @@ defmodule ElixirDB.FaultEndpoint do
       )
 
   defp invoke(%__MODULE__{agent: agent}, point, fun) when is_function(fun, 1) do
-    Agent.get_and_update(agent, fn adapter ->
-      case FaultAdapter.maybe_fail(adapter, point) do
-        {:error, error, adapter} ->
-          {{:error, error}, adapter}
+    Agent.get_and_update(agent, &invoke_with_fault(&1, point, fun))
+  end
 
-        {:ok, adapter} ->
-          result = fun.(adapter.inner)
+  defp invoke_with_fault(adapter, point, fun) do
+    case FaultAdapter.maybe_fail(adapter, point) do
+      {:error, error, adapter} -> {{:error, error}, adapter}
+      {:ok, adapter} -> invoke_success(adapter, point, fun)
+    end
+  end
 
-          case result do
-            {:ok, _} = ok ->
-              case FaultAdapter.maybe_fail(adapter, after_point(point)) do
-                {:ok, adapter} -> {ok, adapter}
-                {:error, error, adapter} -> {{:error, error}, adapter}
-              end
+  defp invoke_success(adapter, point, fun) do
+    case fun.(adapter.inner) do
+      {:ok, _} = ok -> invoke_after_success(adapter, point, ok)
+      other -> {other, adapter}
+    end
+  end
 
-            other ->
-              {other, adapter}
-          end
-      end
-    end)
+  defp invoke_after_success(adapter, point, ok) do
+    case FaultAdapter.maybe_fail(adapter, after_point(point)) do
+      {:ok, adapter} -> {ok, adapter}
+      {:error, error, adapter} -> {{:error, error}, adapter}
+    end
   end
 
   defp after_point(point), do: :"after_#{point}"

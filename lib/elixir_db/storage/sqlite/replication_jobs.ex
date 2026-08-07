@@ -7,37 +7,39 @@ defmodule ElixirDB.Storage.SQLite.ReplicationJobs do
   """
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.Connection
-
   @doc false
-  def list(adapter), do: ElixirDB.Storage.SQLite.Adapter.list_replication_jobs(adapter)
+  def list(adapter), do: Adapter.list_replication_jobs(adapter)
 
   def put(adapter, request),
-    do: ElixirDB.Storage.SQLite.Adapter.put_replication_job(adapter, request)
+    do: Adapter.put_replication_job(adapter, request)
 
-  def delete(adapter, id), do: ElixirDB.Storage.SQLite.Adapter.delete_replication_job(adapter, id)
+  def delete(adapter, id), do: Adapter.delete_replication_job(adapter, id)
 
   @doc """
   Lists all persisted replication jobs ordered by job id.
   """
   @spec list_all(Connection.handle()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
   def list_all(conn) do
-    with {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT job_id, definition_json, enabled, last_diagnostic_json FROM replication_jobs ORDER BY job_id"
-           ) do
-      {:ok,
-       Enum.map(rows, fn [id, definition, enabled, diagnostic] ->
-         %{
-           job_id: id,
-           definition: decode_json!(definition),
-           enabled: enabled == 1,
-           diagnostic: if(diagnostic, do: decode_json!(diagnostic))
-         }
-       end)}
-    else
-      {:error, reason} -> {:error, normalize_error(reason)}
+    case Connection.query(
+           conn,
+           "SELECT job_id, definition_json, enabled, last_diagnostic_json FROM replication_jobs ORDER BY job_id"
+         ) do
+      {:ok, rows} ->
+        {:ok,
+         Enum.map(rows, fn [id, definition, enabled, diagnostic] ->
+           %{
+             job_id: id,
+             definition: StrictDecoder.decode_or_nil(definition),
+             enabled: enabled == 1,
+             diagnostic: if(diagnostic, do: StrictDecoder.decode_or_nil(diagnostic))
+           }
+         end)}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
     end
   end
 
@@ -46,9 +48,9 @@ defmodule ElixirDB.Storage.SQLite.ReplicationJobs do
   """
   @spec upsert(Connection.handle(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def upsert(conn, job) do
-    id = job[:job_id] || job["job_id"]
-    definition = job[:definition] || job["definition"] || job
-    enabled = if(job[:enabled] || job["enabled"], do: 1, else: 0)
+    id = MapAccess.get(job, :job_id)
+    definition = MapAccess.get(job, :definition, job)
+    enabled = if(MapAccess.get(job, :enabled, false), do: 1, else: 0)
 
     with {:ok, definition_json} <- Canonical.encode(definition),
          :ok <-
@@ -71,13 +73,6 @@ defmodule ElixirDB.Storage.SQLite.ReplicationJobs do
     case Connection.execute(conn, "DELETE FROM replication_jobs WHERE job_id = ?", [job_id]) do
       :ok -> :ok
       {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
-
-  defp decode_json!(json) do
-    case StrictDecoder.decode(json) do
-      {:ok, value} -> value
-      _ -> nil
     end
   end
 

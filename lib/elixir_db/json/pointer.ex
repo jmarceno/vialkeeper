@@ -11,7 +11,8 @@ defmodule ElixirDB.JSON.Pointer do
       do: {:error, ElixirDB.Error.invalid_request("invalid JSON Pointer escape")},
       else: {:ok, Enum.map(tokens, &decode_token/1)}
   rescue
-    _ -> {:error, ElixirDB.Error.invalid_request("invalid JSON Pointer")}
+    _error in [ArgumentError, ErlangError, FunctionClauseError, MatchError, Protocol.UndefinedError] ->
+      {:error, ElixirDB.Error.invalid_request("invalid JSON Pointer")}
   end
 
   def parse(_), do: {:error, ElixirDB.Error.invalid_request("JSON Pointer must begin with /")}
@@ -38,7 +39,10 @@ defmodule ElixirDB.JSON.Pointer do
   defp descend(value, [token | rest]) when is_list(value) do
     case Integer.parse(token) do
       {index, ""} when index >= 0 ->
-        if index < length(value), do: descend(Enum.at(value, index), rest), else: :missing
+        case Enum.fetch(value, index) do
+          {:ok, next} -> descend(next, rest)
+          :error -> :missing
+        end
 
       _ ->
         :missing

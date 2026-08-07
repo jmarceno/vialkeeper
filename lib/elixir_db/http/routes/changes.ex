@@ -1,15 +1,17 @@
 defmodule ElixirDB.HTTP.Routes.Changes do
   @moduledoc false
   use Plug.Router
+  alias ElixirDB.Changes.Request, as: ChangesRequest
   alias ElixirDB.HTTP.{Request, Response}
-
+  alias ElixirDB.HTTP.Schemas
+  alias ElixirDB.Runtime.ChangeNotifier
   plug(:match)
   plug(:dispatch)
 
   post "/" do
     Request.call(
       conn,
-      ElixirDB.HTTP.Schemas.opts(:changes, "changes request contains an unknown field"),
+      Schemas.opts(:changes, "changes request contains an unknown field"),
       fn body, conn ->
         Response.result(conn, ElixirDB.Changes.wait(Request.uuid(conn), body))
       end
@@ -19,7 +21,7 @@ defmodule ElixirDB.HTTP.Routes.Changes do
   post "/stream" do
     Request.call(
       conn,
-      ElixirDB.HTTP.Schemas.opts(:changes_stream, "changes stream contains an unknown field"),
+      Schemas.opts(:changes_stream, "changes stream contains an unknown field"),
       fn body, conn ->
         with :ok <- validate_stream_request(body),
              {:ok, changes} <- stream_read(Request.uuid(conn), body),
@@ -42,35 +44,58 @@ defmodule ElixirDB.HTTP.Routes.Changes do
   end
 
   defp validate_stream_request(body) when is_map(body) do
-    since = body["since"] || 0
-    limit = body["limit"] || 100
-    heartbeat = body["heartbeat_ms"] || 0
-    max_batch = ElixirDB.Config.host_limits()[:max_changes_batch] || 500
-    max_wait = ElixirDB.Config.host_limits()[:max_wait_ms] || 30_000
+    values = %{
+      since: body["since"] || 0,
+      limit: body["limit"] || 100,
+      heartbeat: body["heartbeat_ms"] || 0
+    }
 
-    cond do
-      not is_integer(since) or since < 0 ->
-        {:error, ElixirDB.Error.invalid_request("since must be a non-negative integer")}
-
-      not is_integer(limit) or limit <= 0 ->
-        {:error, ElixirDB.Error.invalid_request("limit must be a positive integer")}
-
-      limit > max_batch ->
-        {:error, ElixirDB.Error.resource_limit("changes stream limit exceeds the host limit")}
-
-      not is_integer(heartbeat) or heartbeat < 0 ->
-        {:error, ElixirDB.Error.invalid_request("heartbeat_ms must be a non-negative integer")}
-
-      heartbeat > max_wait ->
-        {:error, ElixirDB.Error.resource_limit("heartbeat_ms exceeds the host limit")}
-
-      true ->
-        :ok
-    end
+    validate_stream_values(values)
   end
 
   defp validate_stream_request(_),
     do: {:error, ElixirDB.Error.invalid_request("changes stream request must be an object")}
+
+  defp validate_stream_values(%{since: since, limit: limit, heartbeat: heartbeat}) do
+    max_batch = ElixirDB.Config.host_limits()[:max_changes_batch] || 500
+    max_wait = ElixirDB.Config.host_limits()[:max_wait_ms] || 30_000
+
+    validators = [
+      fn -> valid_stream_since(since) end,
+      fn -> valid_stream_limit(limit) end,
+      fn -> valid_stream_limit_max(limit, max_batch) end,
+      fn -> valid_heartbeat(heartbeat) end,
+      fn -> valid_heartbeat_max(heartbeat, max_wait) end
+    ]
+
+    case Enum.find_value(validators, & &1.()) do
+      nil -> :ok
+      error -> {:error, error}
+    end
+  end
+
+  defp valid_stream_since(value) when is_integer(value) and value >= 0, do: nil
+
+  defp valid_stream_since(_),
+    do: ElixirDB.Error.invalid_request("since must be a non-negative integer")
+
+  defp valid_stream_limit(value) when is_integer(value) and value > 0, do: nil
+  defp valid_stream_limit(_), do: ElixirDB.Error.invalid_request("limit must be a positive integer")
+
+  defp valid_stream_limit_max(value, max) when value <= max, do: nil
+
+  defp valid_stream_limit_max(_value, _max),
+    do: ElixirDB.Error.resource_limit("changes stream limit exceeds the host limit")
+
+  defp valid_heartbeat(value) when is_integer(value) and value >= 0, do: nil
+
+  defp valid_heartbeat(_),
+    do: ElixirDB.Error.invalid_request("heartbeat_ms must be a non-negative integer")
+
+  defp valid_heartbeat_max(value, max) when value <= max, do: nil
+
+  defp valid_heartbeat_max(_value, _max),
+    do: ElixirDB.Error.resource_limit("heartbeat_ms exceeds the host limit")
 
   defp start_stream(conn) do
     {:ok,
@@ -80,12 +105,9 @@ defmodule ElixirDB.HTTP.Routes.Changes do
   end
 
   defp stream_read(uuid, body) do
-    request = %{since: body["since"] || 0, limit: body["limit"] || 100, wait_ms: 0}
+    request = %ChangesRequest{since: body["since"] || 0, limit: body["limit"] || 100, wait_ms: 0}
 
-    case ElixirDB.Changes.read(uuid, request) do
-      {:ok, changes} -> {:ok, changes}
-      {:error, error} -> {:error, error}
-    end
+    ElixirDB.Changes.read(uuid, request)
   end
 
   defp stream_events(conn, changes) do
@@ -107,36 +129,50 @@ defmodule ElixirDB.HTTP.Routes.Changes do
     if heartbeat_ms == 0 do
       conn
     else
-      with {:ok, ref, current} <- ElixirDB.Runtime.ChangeNotifier.subscribe(uuid, since) do
-        if current > since do
-          ElixirDB.Runtime.ChangeNotifier.unsubscribe(uuid, ref)
-          stream_next_batch(uuid, conn, since, body)
-        else
-          receive do
-            {:database_changed, ^uuid, _sequence} ->
-              ElixirDB.Runtime.ChangeNotifier.unsubscribe(uuid, ref)
-              stream_next_batch(uuid, conn, since, body)
+      subscribe_and_follow(uuid, conn, since, body, heartbeat_ms)
+    end
+  end
 
-            {:database_closed, ^uuid} ->
-              ElixirDB.Runtime.ChangeNotifier.unsubscribe(uuid, ref)
-              _ = Plug.Conn.chunk(conn, [JSON.encode_to_iodata!(%{"type" => "closed"}), "\n"])
-              conn
-          after
-            heartbeat_ms ->
-              ElixirDB.Runtime.ChangeNotifier.unsubscribe(uuid, ref)
+  defp subscribe_and_follow(uuid, conn, since, body, heartbeat_ms) do
+    case ChangeNotifier.subscribe(uuid, since) do
+      {:ok, ref, current} ->
+        follow_subscription(uuid, conn, since, body, heartbeat_ms, ref, current)
 
-              case Plug.Conn.chunk(conn, [
-                     JSON.encode_to_iodata!(%{"type" => "heartbeat"}),
-                     "\n"
-                   ]) do
-                {:ok, conn} -> stream_follow(uuid, conn, since, body)
-                {:error, _} -> conn
-              end
-          end
-        end
-      else
-        {:error, error} -> stream_error(conn, error)
-      end
+      {:error, error} ->
+        stream_error(conn, error)
+    end
+  end
+
+  defp follow_subscription(uuid, conn, since, body, heartbeat_ms, ref, current) do
+    if current > since do
+      ChangeNotifier.unsubscribe(uuid, ref)
+      stream_next_batch(uuid, conn, since, body)
+    else
+      receive_stream_event(uuid, conn, since, body, heartbeat_ms, ref)
+    end
+  end
+
+  defp receive_stream_event(uuid, conn, since, body, heartbeat_ms, ref) do
+    receive do
+      {:database_changed, ^uuid, _sequence} ->
+        ChangeNotifier.unsubscribe(uuid, ref)
+        stream_next_batch(uuid, conn, since, body)
+
+      {:database_closed, ^uuid} ->
+        ChangeNotifier.unsubscribe(uuid, ref)
+        _ = Plug.Conn.chunk(conn, [JSON.encode_to_iodata!(%{"type" => "closed"}), "\n"])
+        conn
+    after
+      heartbeat_ms ->
+        ChangeNotifier.unsubscribe(uuid, ref)
+        stream_heartbeat(uuid, conn, since, body)
+    end
+  end
+
+  defp stream_heartbeat(uuid, conn, since, body) do
+    case Plug.Conn.chunk(conn, [JSON.encode_to_iodata!(%{"type" => "heartbeat"}), "\n"]) do
+      {:ok, conn} -> stream_follow(uuid, conn, since, body)
+      {:error, _} -> conn
     end
   end
 

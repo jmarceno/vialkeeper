@@ -1,5 +1,8 @@
 defmodule ElixirDB.Domain.Change do
+  @moduledoc "Validated change-feed entries and their revision leaves."
+
   @enforce_keys [:sequence, :document_id, :winning_revision, :deleted, :leaf_revisions]
+  alias ElixirDB.Domain.Leaf
   defstruct [:sequence, :document_id, :winning_revision, :deleted, :leaf_revisions, :origin]
 
   @type t :: %__MODULE__{
@@ -7,7 +10,7 @@ defmodule ElixirDB.Domain.Change do
           document_id: binary(),
           winning_revision: binary(),
           deleted: boolean(),
-          leaf_revisions: [ElixirDB.Domain.Leaf.t()],
+          leaf_revisions: [Leaf.t()],
           origin: binary() | nil
         }
 
@@ -43,19 +46,7 @@ defmodule ElixirDB.Domain.Change do
 
   defp normalize_leaves(leaves) when is_list(leaves) do
     Enum.reduce_while(leaves, {:ok, []}, fn leaf, {:ok, acc} ->
-      result =
-        case leaf do
-          %ElixirDB.Domain.Leaf{} = value ->
-            {:ok, value}
-
-          %{} = value ->
-            if Enum.any?(Map.keys(value), &is_atom/1),
-              do: ElixirDB.Domain.Leaf.new(value),
-              else: ElixirDB.Domain.Leaf.from_wire(value)
-
-          _ ->
-            {:error, ElixirDB.Error.invalid_request("leaf_revisions entries must be objects")}
-        end
+      result = normalize_leaf(leaf)
 
       case result do
         {:ok, value} -> {:cont, {:ok, [value | acc]}}
@@ -70,6 +61,15 @@ defmodule ElixirDB.Domain.Change do
 
   defp normalize_leaves(_),
     do: {:error, ElixirDB.Error.invalid_request("leaf_revisions must be an array")}
+
+  defp normalize_leaf(%Leaf{} = value), do: {:ok, value}
+
+  defp normalize_leaf(%{} = value) do
+    if Enum.any?(Map.keys(value), &is_atom/1), do: Leaf.new(value), else: Leaf.from_wire(value)
+  end
+
+  defp normalize_leaf(_),
+    do: {:error, ElixirDB.Error.invalid_request("leaf_revisions entries must be objects")}
 
   defp require_positive(value, _label) when is_integer(value) and value > 0, do: :ok
 

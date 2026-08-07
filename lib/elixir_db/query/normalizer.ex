@@ -1,7 +1,7 @@
 defmodule ElixirDB.Query.Normalizer do
   @moduledoc "Validates and canonicalizes the storage-neutral query request."
 
-  alias ElixirDB.JSON.{Canonical, Pointer}
+  alias ElixirDB.JSON.{Canonical, Pointer, Stringify}
 
   @known [:selector, :sort, :fields, :limit, :bookmark, :index, :search]
 
@@ -16,10 +16,10 @@ defmodule ElixirDB.Query.Normalizer do
          {:ok, fingerprint_json} <-
            Canonical.encode(%{
              "selector" => selector,
-             "sort" => Enum.map(sort, &stringify/1),
+             "sort" => Enum.map(sort, &Stringify.keys/1),
              "fields" => fields,
              "index" => index,
-             "search" => if(search, do: stringify(search), else: nil)
+             "search" => if(search, do: Stringify.keys(search), else: nil)
            }) do
       {:ok,
        %{
@@ -47,44 +47,47 @@ defmodule ElixirDB.Query.Normalizer do
 
   defp normalize_selector(selector) when is_map(selector) do
     Enum.reduce_while(selector, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      key = if is_atom(key), do: Atom.to_string(key), else: key
-
-      cond do
-        key == "$and" ->
-          with true <- is_list(value) and value != [],
-               {:ok, clauses} <- normalize_selector_list(value) do
-            {:cont, {:ok, Map.put(acc, key, clauses)}}
-          else
-            false ->
-              {:halt, {:error, ElixirDB.Error.invalid_request("$and must be a non-empty array")}}
-
-            {:error, error} ->
-              {:halt, {:error, error}}
-          end
-
-        is_binary(key) ->
-          with {:ok, [_ | _]} <- Pointer.parse(key),
-               {:ok, condition} <- normalize_condition(value) do
-            {:cont, {:ok, Map.put(acc, key, condition)}}
-          else
-            {:ok, []} ->
-              {:halt, {:error, ElixirDB.Error.invalid_request("selector paths must not be empty")}}
-
-            {:error, error} ->
-              {:halt, {:error, error}}
-
-            _ ->
-              {:halt, {:error, ElixirDB.Error.invalid_request("selector path is invalid")}}
-          end
-
-        true ->
-          {:halt, {:error, ElixirDB.Error.invalid_request("selector field must be a string")}}
-      end
+      normalize_selector_entry(stringify_key(key), value, acc)
     end)
   end
 
   defp normalize_selector(_),
     do: {:error, ElixirDB.Error.invalid_request("selector must be an object")}
+
+  defp normalize_selector_entry("$and", value, acc),
+    do: normalize_and_entry(value, acc)
+
+  defp normalize_selector_entry(key, value, acc) when is_binary(key),
+    do: normalize_path_entry(key, value, acc)
+
+  defp normalize_selector_entry(_key, _value, _acc),
+    do: {:halt, {:error, ElixirDB.Error.invalid_request("selector field must be a string")}}
+
+  defp normalize_and_entry(value, acc) when is_list(value) and value != [] do
+    case normalize_selector_list(value) do
+      {:ok, clauses} -> {:cont, {:ok, Map.put(acc, "$and", clauses)}}
+      {:error, error} -> {:halt, {:error, error}}
+    end
+  end
+
+  defp normalize_and_entry(_value, _acc),
+    do: {:halt, {:error, ElixirDB.Error.invalid_request("$and must be a non-empty array")}}
+
+  defp normalize_path_entry(key, value, acc) do
+    with {:ok, [_ | _]} <- Pointer.parse(key),
+         {:ok, condition} <- normalize_condition(value) do
+      {:cont, {:ok, Map.put(acc, key, condition)}}
+    else
+      {:ok, []} ->
+        {:halt, {:error, ElixirDB.Error.invalid_request("selector paths must not be empty")}}
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+
+      _ ->
+        {:halt, {:error, ElixirDB.Error.invalid_request("selector path is invalid")}}
+    end
+  end
 
   defp normalize_selector_list(values) do
     Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
@@ -101,22 +104,7 @@ defmodule ElixirDB.Query.Normalizer do
 
   defp normalize_condition(condition) when is_map(condition) do
     Enum.reduce_while(condition, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      key = if is_atom(key), do: Atom.to_string(key), else: key
-
-      cond do
-        not is_binary(key) or Map.has_key?(acc, key) ->
-          {:halt,
-           {:error, ElixirDB.Error.invalid_request("selector operator keys must be unique strings")}}
-
-        key in ["$eq", "$gt", "$gte", "$lt", "$lte", "$exists", "$in"] ->
-          case validate_condition_value(key, value) do
-            :ok -> {:cont, {:ok, Map.put(acc, key, stringify(value))}}
-            {:error, error} -> {:halt, {:error, error}}
-          end
-
-        true ->
-          {:halt, {:error, ElixirDB.Error.invalid_request("unsupported selector operator")}}
-      end
+      normalize_condition_entry(stringify_key(key), value, acc)
     end)
     |> case do
       {:ok, values} when map_size(values) > 0 ->
@@ -134,6 +122,28 @@ defmodule ElixirDB.Query.Normalizer do
     if scalar?(value),
       do: {:ok, value},
       else: {:error, ElixirDB.Error.invalid_request("selector values must be JSON scalars")}
+  end
+
+  defp normalize_condition_entry(key, _value, _acc) when not is_binary(key),
+    do: invalid_operator_keys()
+
+  defp normalize_condition_entry(key, _value, acc) when is_map_key(acc, key),
+    do: invalid_operator_keys()
+
+  defp normalize_condition_entry(key, value, acc)
+       when key in ["$eq", "$gt", "$gte", "$lt", "$lte", "$exists", "$in"] do
+    case validate_condition_value(key, value) do
+      :ok -> {:cont, {:ok, Map.put(acc, key, Stringify.keys(value))}}
+      {:error, error} -> {:halt, {:error, error}}
+    end
+  end
+
+  defp normalize_condition_entry(_key, _value, _acc),
+    do: {:halt, {:error, ElixirDB.Error.invalid_request("unsupported selector operator")}}
+
+  defp invalid_operator_keys do
+    {:halt,
+     {:error, ElixirDB.Error.invalid_request("selector operator keys must be unique strings")}}
   end
 
   defp validate_condition_value("$exists", value) when is_boolean(value), do: :ok
@@ -196,24 +206,28 @@ defmodule ElixirDB.Query.Normalizer do
     if values == [] do
       {:error, ElixirDB.Error.invalid_request("fields must be a non-empty array")}
     else
-      Enum.reduce_while(values, {:ok, []}, fn path, {:ok, acc} ->
-        with true <- is_binary(path),
-             {:ok, [_ | _]} <- Pointer.parse(path) do
-          {:cont, {:ok, [path | acc]}}
-        else
-          _ ->
-            {:halt,
-             {:error, ElixirDB.Error.invalid_request("fields require non-empty JSON Pointers")}}
-        end
-      end)
-      |> then(fn
-        {:ok, values} -> {:ok, Enum.reverse(values)}
-        error -> error
-      end)
+      normalize_field_list(values)
     end
   end
 
   defp normalize_fields(_), do: {:error, ElixirDB.Error.invalid_request("fields must be an array")}
+
+  defp normalize_field_list(values) do
+    Enum.reduce_while(values, {:ok, []}, fn path, {:ok, acc} ->
+      with true <- is_binary(path),
+           {:ok, [_ | _]} <- Pointer.parse(path) do
+        {:cont, {:ok, [path | acc]}}
+      else
+        _ ->
+          {:halt,
+           {:error, ElixirDB.Error.invalid_request("fields require non-empty JSON Pointers")}}
+      end
+    end)
+    |> then(fn
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end)
+  end
 
   defp normalize_index_name(nil), do: {:ok, nil}
   defp normalize_index_name(value) when is_binary(value) and value != "", do: {:ok, value}
@@ -245,11 +259,8 @@ defmodule ElixirDB.Query.Normalizer do
   defp scalar?(value),
     do: is_nil(value) or is_boolean(value) or is_number(value) or is_binary(value)
 
-  defp stringify(value) when is_map(value),
-    do: Map.new(value, fn {key, child} -> {to_string(key), stringify(child)} end)
-
-  defp stringify(value) when is_list(value), do: Enum.map(value, &stringify/1)
-  defp stringify(value), do: value
+  defp stringify_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp stringify_key(key), do: key
 
   defp get(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
   defp get(_, _key), do: nil

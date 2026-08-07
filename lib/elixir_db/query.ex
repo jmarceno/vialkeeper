@@ -2,6 +2,8 @@ defmodule ElixirDB.Query do
   @moduledoc "Query service and logical index lifecycle."
 
   alias ElixirDB.JSON.{Canonical, Pointer}
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Query.BookmarkCodec
   alias ElixirDB.Query.Normalizer
   alias ElixirDB.Runtime.DatabaseCatalog
 
@@ -174,29 +176,46 @@ defmodule ElixirDB.Query do
     do: Map.put(definition, "tokenization", tokenization)
 
   defp validate_query(request) do
-    limit = request[:limit] || request["limit"] || 50
+    limit = get(request, :limit) || 50
     max = ElixirDB.Config.host_limits()[:max_query_results] || 500
 
-    cond do
-      not is_integer(limit) or limit <= 0 ->
-        {:error, ElixirDB.Error.invalid_request("query limit must be a positive integer")}
+    validators = [
+      fn -> validate_limit(limit, max) end,
+      fn -> validate_projection(request, max) end,
+      fn -> validate_bookmark_type(request) end
+    ]
 
-      limit > max ->
-        {:error, ElixirDB.Error.resource_limit("query limit is outside the configured range")}
-
-      not is_nil(request[:fields]) and length(request[:fields]) > max ->
-        {:error, ElixirDB.Error.resource_limit("query projection exceeds the configured limit")}
-
-      not is_nil(request[:bookmark]) and not is_binary(request[:bookmark]) ->
-        {:error, ElixirDB.Error.invalid_bookmark("bookmark must be a string")}
-
-      true ->
-        :ok
+    case Enum.find_value(validators, & &1.()) do
+      nil -> :ok
+      error -> {:error, error}
     end
   end
 
+  defp validate_limit(limit, max) when is_integer(limit) and limit > 0 do
+    if limit <= max,
+      do: nil,
+      else: ElixirDB.Error.resource_limit("query limit is outside the configured range")
+  end
+
+  defp validate_limit(_limit, _max),
+    do: ElixirDB.Error.invalid_request("query limit must be a positive integer")
+
+  defp validate_projection(%{fields: nil}, _max), do: nil
+
+  defp validate_projection(request, max) do
+    if length(get(request, :fields)) <= max,
+      do: nil,
+      else: ElixirDB.Error.resource_limit("query projection exceeds the configured limit")
+  end
+
+  defp validate_bookmark_type(%{bookmark: nil}), do: nil
+  defp validate_bookmark_type(%{bookmark: bookmark}) when is_binary(bookmark), do: nil
+
+  defp validate_bookmark_type(_),
+    do: ElixirDB.Error.invalid_bookmark("bookmark must be a string")
+
   defp validate_database_query(request, identity) do
-    limit = request[:limit] || request["limit"] || 50
+    limit = get(request, :limit) || 50
     max = get_in(identity, [:config, "queries", "max_limit"]) || 500
 
     if limit <= max,
@@ -206,23 +225,18 @@ defmodule ElixirDB.Query do
   end
 
   defp prepare_bookmark(request, identity, indexes) do
-    case request[:bookmark] || request["bookmark"] do
+    case get(request, :bookmark) do
       nil ->
         {:ok, request}
 
       bookmark ->
         with {:ok, decoded} <-
-               ElixirDB.Query.BookmarkCodec.decode(bookmark, %{
+               BookmarkCodec.decode(bookmark, %{
                  "query_fingerprint" => request.fingerprint
                }),
              sequence <- decoded.sequence,
-             current <- identity[:current_sequence] || identity["current_sequence"],
-             :ok <-
-               if(sequence == current,
-                 do: :ok,
-                 else:
-                   {:error, ElixirDB.Error.bookmark_stale("bookmark sequence is no longer current")}
-               ),
+             current <- get(identity, :current_sequence),
+             :ok <- validate_bookmark_sequence(sequence, current),
              :ok <- validate_bookmark_index(decoded, request, indexes) do
           {:ok,
            request
@@ -235,82 +249,98 @@ defmodule ElixirDB.Query do
 
   defp validate_bookmark_index(decoded, request, indexes) do
     bookmark_index = decoded.index_id
-    requested_index = request[:index] || request["index"]
+    requested_index = get(request, :index)
 
-    requested_matches_bookmark? =
-      case requested_index do
-        nil ->
-          true
+    if requested_index_matches_bookmark?(requested_index, bookmark_index, indexes) do
+      validate_bookmark_definition(bookmark_index, decoded.index_digest, indexes)
+    else
+      {:error, ElixirDB.Error.invalid_bookmark("bookmark is bound to another index")}
+    end
+  end
 
-        value ->
-          case Enum.find(indexes, &(&1["name"] == value or &1["index_id"] == value)) do
-            %{"index_id" => ^bookmark_index} -> true
-            _ -> false
-          end
-      end
+  defp validate_bookmark_sequence(sequence, sequence), do: :ok
 
-    cond do
-      not requested_matches_bookmark? ->
-        {:error, ElixirDB.Error.invalid_bookmark("bookmark is bound to another index")}
+  defp validate_bookmark_sequence(_sequence, _current),
+    do: {:error, ElixirDB.Error.bookmark_stale("bookmark sequence is no longer current")}
 
-      is_nil(bookmark_index) ->
+  defp requested_index_matches_bookmark?(nil, _bookmark_index, _indexes), do: true
+
+  defp requested_index_matches_bookmark?(requested_index, bookmark_index, indexes) do
+    Enum.any?(indexes, fn index ->
+      (index["name"] == requested_index or index["index_id"] == requested_index) and
+        index["index_id"] == bookmark_index
+    end)
+  end
+
+  defp validate_bookmark_definition(nil, _digest, _indexes), do: :ok
+
+  defp validate_bookmark_definition(bookmark_index, digest, indexes) do
+    case Enum.find(indexes, &(&1["index_id"] == bookmark_index)) do
+      %{"definition_digest" => ^digest} ->
         :ok
 
-      true ->
-        case Enum.find(indexes, &(&1["index_id"] == bookmark_index)) do
-          %{"definition_digest" => digest} ->
-            if digest == decoded.index_digest,
-              do: :ok,
-              else: {:error, ElixirDB.Error.invalid_bookmark("bookmark index definition changed")}
+      %{"definition_digest" => _} ->
+        {:error, ElixirDB.Error.invalid_bookmark("bookmark index definition changed")}
 
-          nil ->
-            {:error, ElixirDB.Error.invalid_bookmark("bookmark index no longer exists")}
-        end
+      nil ->
+        {:error, ElixirDB.Error.invalid_bookmark("bookmark index no longer exists")}
     end
   end
 
   defp add_bookmark(result, request, identity) do
-    has_more = result[:has_more] || result["has_more"] || false
+    if get(result, :has_more) || false,
+      do: add_next_bookmark(result, request, identity),
+      else: without_bookmark(result)
+  end
 
-    if has_more do
-      values =
-        result[:results] || result["results"] || result[:documents] || result["documents"] || []
+  defp add_next_bookmark(result, request, identity) do
+    values = get(result, :results) || get(result, :documents) || []
+    last = List.last(values)
+    last_id = get(last, :id)
+    sequence = get(result, :sequence) || get(identity, :current_sequence) || 0
+    selected_index = get(result, :selected_index) || get(request, :index)
+    index_digest = get(result, :index_digest)
+    sort_direction = sort_direction(request)
+    ordering_key = get(result, :last_ordering_key) || last_id
+    response = Map.delete(result, :last_ordering_key) |> Map.delete("last_ordering_key")
 
-      last = List.last(values)
-      last_id = last[:id] || last["id"]
-      sequence = result[:sequence] || result["sequence"] || identity[:current_sequence] || 0
-      selected_index = result[:selected_index] || result["selected_index"] || request[:index]
-      index_digest = result[:index_digest] || result["index_digest"]
-      sort = request[:sort] || request["sort"] || []
-      directions = Enum.map(sort, &(&1[:direction] || &1["direction"] || "asc")) |> Enum.uniq()
-      sort_direction = if directions == ["desc"], do: "desc", else: "asc"
-      ordering_key = result[:last_ordering_key] || result["last_ordering_key"] || last_id
+    encode_bookmark(response, %{
+      "query_fingerprint" => request.fingerprint,
+      "sequence" => sequence,
+      "last_id" => last_id,
+      "index_id" => selected_index,
+      "index_digest" => index_digest,
+      "sort_direction" => sort_direction,
+      "ordering_key" => ordering_key
+    })
+  end
 
-      response = Map.delete(result, :last_ordering_key) |> Map.delete("last_ordering_key")
+  defp sort_direction(request) do
+    directions =
+      (get(request, :sort) || [])
+      |> Enum.map(&(get(&1, :direction) || "asc"))
+      |> Enum.uniq()
 
-      case ElixirDB.Query.BookmarkCodec.encode(%{
-             "query_fingerprint" => request.fingerprint,
-             "sequence" => sequence,
-             "last_id" => last_id,
-             "index_id" => selected_index,
-             "index_digest" => index_digest,
-             "sort_direction" => sort_direction,
-             "ordering_key" => ordering_key
-           }) do
-        {:ok, bookmark} -> Map.put(response, :bookmark, bookmark)
-        _ -> response
-      end
-    else
-      result
-      |> Map.delete(:last_ordering_key)
-      |> Map.delete("last_ordering_key")
-      |> Map.put(:bookmark, nil)
+    if directions == ["desc"], do: "desc", else: "asc"
+  end
+
+  defp encode_bookmark(response, payload) do
+    case BookmarkCodec.encode(payload) do
+      {:ok, bookmark} -> Map.put(response, :bookmark, bookmark)
+      _ -> response
     end
+  end
+
+  defp without_bookmark(result) do
+    result
+    |> Map.delete(:last_ordering_key)
+    |> Map.delete("last_ordering_key")
+    |> Map.put(:bookmark, nil)
   end
 
   defp reverse_result({:ok, values}), do: {:ok, Enum.reverse(values)}
   defp reverse_result(error), do: error
 
-  defp get(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+  defp get(map, key) when is_map(map), do: MapAccess.get(map, key)
   defp get(_, _key), do: nil
 end

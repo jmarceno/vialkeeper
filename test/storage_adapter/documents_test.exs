@@ -66,7 +66,7 @@ defmodule ElixirDB.StorageAdapter.DocumentsTest do
              Adapter.get_revision(adapter, %{document_id: "doc", revision_id: tombstone})
 
     assert {:ok, %{results: results}} = Adapter.read_changes(adapter, %{since: 0, limit: 10})
-    assert length(results) == 3
+    assert [_, _, _] = results
   end
 
   test "stale local writes are rejected", %{adapter: adapter} do

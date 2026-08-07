@@ -8,10 +8,10 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   """
 
   alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.Connection
-
   @doc false
-  def read(adapter, request), do: ElixirDB.Storage.SQLite.Adapter.read_changes(adapter, request)
+  def read(adapter, request), do: Adapter.read_changes(adapter, request)
 
   @doc """
   Allocates the next monotonic change sequence for the open connection.

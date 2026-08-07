@@ -8,12 +8,13 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
   use ExUnit.Case, async: false
   use ExUnitProperties
 
+  alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.ModelGenerators
   alias ElixirDB.RevisionHistoryModel
   alias ElixirDB.Revisions.{Id, Tree, Winner}
+  alias ElixirDB.Storage.AdapterCase
   alias ElixirDB.Storage.SQLite.{Adapter, Connection, Documents}
-  alias ElixirDB.JSON.StrictDecoder
-
+  alias ElixirDB.Storage.SQLite.Revisions
   @moduletag :property
 
   property "adapter and pure model agree on trees, winners, conflicts, tombstones, and replay" do
@@ -152,33 +153,37 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
           ModelGenerators.document_body(),
           StreamData.member_of([:left, :right, :winner])
         }),
-        fn {root, left, right, body, side} ->
-          left = if left == right, do: Map.put(left, "_side", "left"), else: left
-          right = Map.put(right, "_side", "right")
-
-          StreamData.constant(%{
-            document_id: document_id,
-            operations: [
-              %{
-                op: :import_siblings,
-                document_id: document_id,
-                root_body: root,
-                left_body: left,
-                right_body: right
-              },
-              %{
-                op: :resolve,
-                document_id: document_id,
-                mode: mode,
-                chosen_side: side,
-                body: body,
-                expected: :current_live
-              }
-            ]
-          })
+        fn tuple ->
+          sibling_history_case(document_id, tuple, mode)
         end
       )
     end)
+  end
+
+  defp sibling_history_case(document_id, {root, left, right, body, side}, mode) do
+    left = distinct_left_body(left, right)
+    right = Map.put(right, "_side", "right")
+
+    StreamData.constant(%{
+      document_id: document_id,
+      operations: [
+        %{
+          op: :import_siblings,
+          document_id: document_id,
+          root_body: root,
+          left_body: left,
+          right_body: right
+        },
+        %{
+          op: :resolve,
+          document_id: document_id,
+          mode: mode,
+          chosen_side: side,
+          body: body,
+          expected: :current_live
+        }
+      ]
+    })
   end
 
   defp run_history(operations, model, adapter, last_request) do
@@ -304,45 +309,42 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
     leaves = current_adapter_leaves(adapter, op.document_id)
     live = Winner.live_leaves(leaves)
 
-    expected =
-      case op[:expected] do
-        list when is_list(list) -> list
-        :current_live -> Enum.map(live, & &1.revision_id)
-        _ -> Enum.map(live, & &1.revision_id)
-      end
-
-    chosen =
-      cond do
-        is_binary(op[:chosen_parent_revision]) ->
-          op[:chosen_parent_revision]
-
-        op.mode == :delete_all ->
-          nil
-
-        op[:chosen_side] == :left ->
-          live |> Enum.map(& &1.revision_id) |> Enum.min()
-
-        op[:chosen_side] == :right ->
-          live |> Enum.map(& &1.revision_id) |> Enum.max()
-
-        true ->
-          {:ok, winner} = Winner.select(live)
-          winner.revision_id
-      end
-
-    request =
-      %{
-        document_id: op.document_id,
-        expected_live_revisions: expected,
-        delete_all: op.mode == :delete_all
-      }
-      |> then(fn req ->
-        if op.mode == :delete_all,
-          do: req,
-          else: Map.merge(req, %{chosen_parent_revision: chosen, body: op.body})
-      end)
+    expected = expected_adapter_revisions(live, op[:expected])
+    chosen = chosen_adapter_revision(op, live)
+    request = resolution_request(op, expected, chosen)
 
     normalize_adapter_result(Adapter.resolve_conflict(adapter, request))
+  end
+
+  defp expected_adapter_revisions(_live, expected) when is_list(expected), do: expected
+  defp expected_adapter_revisions(live, _expected), do: Enum.map(live, & &1.revision_id)
+
+  defp chosen_adapter_revision(%{chosen_parent_revision: chosen}, _live) when is_binary(chosen),
+    do: chosen
+
+  defp chosen_adapter_revision(%{mode: :delete_all}, _live), do: nil
+
+  defp chosen_adapter_revision(%{chosen_side: :left}, live),
+    do: live |> Enum.map(& &1.revision_id) |> Enum.min()
+
+  defp chosen_adapter_revision(%{chosen_side: :right}, live),
+    do: live |> Enum.map(& &1.revision_id) |> Enum.max()
+
+  defp chosen_adapter_revision(_op, live) do
+    {:ok, winner} = Winner.select(live)
+    winner.revision_id
+  end
+
+  defp resolution_request(op, expected, chosen) do
+    request = %{
+      document_id: op.document_id,
+      expected_live_revisions: expected,
+      delete_all: op.mode == :delete_all
+    }
+
+    if op.mode == :delete_all,
+      do: request,
+      else: Map.merge(request, %{chosen_parent_revision: chosen, body: op.body})
   end
 
   defp normalize_adapter_result({:ok, result}) when is_map(result) do
@@ -406,26 +408,31 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
       {:ok, doc} ->
         assert doc.revision == model_snap.winner
         assert doc.deleted == model_snap.winner_deleted
-
-        if model_snap.winner_deleted do
-          assert is_nil(doc.body) or doc.body == %{}
-        else
-          model_body =
-            model_snap.tree
-            |> Enum.find(fn rev -> rev.revision_id == model_snap.winner end)
-            |> case do
-              nil -> nil
-              rev -> rev.body
-            end
-
-          assert doc.body == model_body
-        end
+        assert_document_body(doc, model_snap)
 
       {:error, %ElixirDB.Error{code: :document_not_found}} ->
         # Adapter may surface deleted winners as document_not_found.
         assert is_nil(model_snap.winner) or model_snap.winner_deleted == true
     end
   end
+
+  defp assert_document_body(%{body: body}, %{winner_deleted: true}),
+    do: assert(is_nil(body) or body == %{})
+
+  defp assert_document_body(%{body: body}, model_snap),
+    do: assert(body == model_body(model_snap))
+
+  defp model_body(%{tree: tree, winner: winner}) do
+    case Enum.find(tree, fn rev -> rev.revision_id == winner end) do
+      nil -> nil
+      rev -> rev.body
+    end
+  end
+
+  defp distinct_left_body(left, right) when left == right,
+    do: Map.put(left, "_side", "left")
+
+  defp distinct_left_body(left, _right), do: left
 
   defp adapter_snapshot(adapter, document_id) do
     case Documents.find(adapter.conn, document_id) do
@@ -467,7 +474,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
   defp current_adapter_leaves(adapter, document_id) do
     case Documents.find(adapter.conn, document_id) do
       {:ok, %{doc_key: doc_key}} ->
-        case ElixirDB.Storage.SQLite.Revisions.load_leaves(adapter.conn, doc_key) do
+        case Revisions.load_leaves(adapter.conn, doc_key) do
           {:ok, leaves} -> leaves
           _ -> []
         end
@@ -492,13 +499,11 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
 
     Enum.map(rows, fn [id, generation, parent, deleted, body_json] ->
       body =
-        cond do
-          is_nil(body_json) ->
-            nil
-
-          true ->
-            {:ok, decoded} = StrictDecoder.decode(body_json)
-            decoded
+        if is_nil(body_json) do
+          nil
+        else
+          {:ok, decoded} = StrictDecoder.decode(body_json)
+          decoded
         end
 
       %ElixirDB.Domain.Revision{
@@ -533,6 +538,6 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
   end
 
   defp wire(document_id, revision_id, parent, deleted, body) do
-    ElixirDB.Storage.AdapterCase.wire_revision(document_id, revision_id, parent, deleted, body)
+    AdapterCase.wire_revision(document_id, revision_id, parent, deleted, body)
   end
 end

@@ -3,8 +3,12 @@ defmodule ElixirDB.Replication.JobManager do
   use GenServer
 
   alias ElixirDB.Domain.ReplicationEndpoint
+  alias ElixirDB.JSON.Stringify
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Replication.Id
+  alias ElixirDB.Replication.LocalEndpoint
+  alias ElixirDB.Replication.RemoteEndpoint
   alias ElixirDB.Runtime.DatabaseCatalog
-
   @table :elixir_db_replication_jobs
 
   @active_states [
@@ -39,18 +43,20 @@ defmodule ElixirDB.Replication.JobManager do
   def resume(uuid) do
     case DatabaseCatalog.command(uuid, {:command, :list_jobs, %{}}) do
       {:ok, jobs} ->
-        Enum.each(jobs, fn job ->
-          definition = job.definition
-
-          if job.enabled and option(definition, :mode, "one_shot") in ["continuous", :continuous],
-            do: start(uuid, job.job_id)
-        end)
+        Enum.each(jobs, &resume_job(uuid, &1))
 
         :ok
 
       {:error, _} ->
         :ok
     end
+  end
+
+  defp resume_job(uuid, job) do
+    definition = job.definition
+
+    if job.enabled and option(definition, :mode, "one_shot") in ["continuous", :continuous],
+      do: start(uuid, job.job_id)
   end
 
   def get(uuid, job_id) do
@@ -81,23 +87,27 @@ defmodule ElixirDB.Replication.JobManager do
       job_id = option(normalized, :job_id, ElixirDB.UUID.v4())
       normalized = Map.put(normalized, "job_id", job_id)
 
-      if persist do
-        enabled = option(normalized, :enabled, false)
-
-        with {:ok, _} <-
-               DatabaseCatalog.command(
-                 uuid,
-                 {:command, :put_job, %{job_id: job_id, definition: normalized, enabled: enabled}}
-               ) do
-          if enabled,
-            do: start(uuid, job_id),
-            else: {:ok, %{job_id: job_id, state: :disabled}}
-        end
-      else
-        start_unpersisted(uuid, normalized)
-      end
+      persist_or_start(uuid, normalized, job_id, persist)
     end
   end
+
+  defp persist_or_start(uuid, normalized, job_id, true) do
+    enabled = option(normalized, :enabled, false)
+
+    with {:ok, _} <-
+           DatabaseCatalog.command(
+             uuid,
+             {:command, :put_job, job_record(job_id, normalized, enabled)}
+           ) do
+      persisted_result(uuid, job_id, enabled)
+    end
+  end
+
+  defp persist_or_start(uuid, normalized, _job_id, false),
+    do: start_unpersisted(uuid, normalized)
+
+  defp persisted_result(uuid, job_id, true), do: start(uuid, job_id)
+  defp persisted_result(_uuid, job_id, false), do: {:ok, %{job_id: job_id, state: :disabled}}
 
   def start(uuid, job_id) do
     table = ensure_table()
@@ -119,27 +129,32 @@ defmodule ElixirDB.Replication.JobManager do
   end
 
   def cancel(uuid, job_id) do
-    table = ensure_table()
+    cancel_entry(uuid, job_id, :ets.lookup(ensure_table(), job_id))
+  end
 
-    case :ets.lookup(table, job_id) do
-      [{^job_id, state, _pid, entry_uuid, _replication_id, _details}]
-      when (is_nil(uuid) or uuid == entry_uuid) and state in @active_states ->
-        case cancel_if_active(entry_uuid, job_id) do
-          :ok -> {:ok, %{job_id: job_id, state: :failed}}
-          {:error, _} = error -> error
-        end
-
-      [{^job_id, state, _pid, entry_uuid, _replication_id, details}]
-      when is_nil(uuid) or uuid == entry_uuid ->
-        case await_worker_termination(entry_uuid, job_id) do
-          :ok -> {:ok, Map.merge(%{job_id: job_id, state: state}, details || %{})}
-          {:error, _} = error -> error
-        end
-
-      [] ->
-        {:error, ElixirDB.Error.replication_job_not_found("replication job is not running")}
+  defp cancel_entry(uuid, job_id, [
+         {entry_job_id, state, _pid, entry_uuid, _replication_id, _details}
+       ])
+       when entry_job_id == job_id and (is_nil(uuid) or uuid == entry_uuid) and
+              state in @active_states do
+    case cancel_if_active(entry_uuid, job_id) do
+      :ok -> {:ok, %{job_id: job_id, state: :failed}}
+      {:error, _} = error -> error
     end
   end
+
+  defp cancel_entry(uuid, job_id, [
+         {entry_job_id, state, _pid, entry_uuid, _replication_id, details}
+       ])
+       when entry_job_id == job_id and (is_nil(uuid) or uuid == entry_uuid) do
+    case await_worker_termination(entry_uuid, job_id) do
+      :ok -> {:ok, Map.merge(%{job_id: job_id, state: state}, details || %{})}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp cancel_entry(_uuid, _job_id, []),
+    do: {:error, ElixirDB.Error.replication_job_not_found("replication job is not running")}
 
   def cancel(job_id), do: cancel(nil, job_id)
 
@@ -186,7 +201,7 @@ defmodule ElixirDB.Replication.JobManager do
 
   defp start_unpersisted(uuid, definition) do
     job_id = definition["job_id"]
-    job = %{job_id: job_id, definition: definition, enabled: true}
+    job = job_record(job_id, definition, true)
 
     with {:ok, options} <- worker_options(uuid, job),
          :ok <- ensure_worker_available(options.replication_id),
@@ -269,9 +284,8 @@ defmodule ElixirDB.Replication.JobManager do
     ref = Process.monitor(pid)
     if state in @active_states, do: send_cancel(pid)
 
-    with :ok <- await_worker_exit(ref, pid, job_id),
-         :ok <- await_worker_registry_release(replication_id, pid) do
-      :ok
+    with :ok <- await_worker_exit(ref, pid, job_id) do
+      await_worker_registry_release(replication_id, pid)
     end
   end
 
@@ -335,8 +349,11 @@ defmodule ElixirDB.Replication.JobManager do
     do:
       DatabaseCatalog.command(
         uuid,
-        {:command, :put_job, %{job_id: job_id, definition: definition, enabled: enabled}}
+        {:command, :put_job, job_record(job_id, definition, enabled)}
       )
+
+  defp job_record(job_id, definition, enabled),
+    do: %{job_id: job_id, definition: definition, enabled: enabled}
 
   defp find_job(jobs, job_id) do
     case Enum.find(jobs, &(&1.job_id == job_id)) do
@@ -351,11 +368,11 @@ defmodule ElixirDB.Replication.JobManager do
     direction = option(definition, :direction, "push")
     mode = option(definition, :mode, "continuous")
 
-    with {:ok, local} <- ElixirDB.Replication.LocalEndpoint.new(uuid),
+    with {:ok, local} <- LocalEndpoint.new(uuid),
          {:ok, counterpart} <- endpoint_from_definition(endpoint),
          {:ok, source_target} <- endpoints_for_direction(local, counterpart, direction),
          {:ok, replication_id} <-
-           ElixirDB.Replication.Id.calculate(
+           Id.calculate(
              source_uuid(source_target.source),
              source_uuid(source_target.target),
              direction,
@@ -388,10 +405,10 @@ defmodule ElixirDB.Replication.JobManager do
   defp endpoint_from_definition(definition) do
     case ReplicationEndpoint.new(definition) do
       {:ok, %{kind: :local, database_uuid: uuid}} ->
-        ElixirDB.Replication.LocalEndpoint.new(uuid)
+        LocalEndpoint.new(uuid)
 
       {:ok, %{kind: :remote} = endpoint} ->
-        ElixirDB.Replication.RemoteEndpoint.new(%{
+        RemoteEndpoint.new(%{
           database_uuid: endpoint.database_uuid,
           base_url: endpoint.base_url,
           auth_token: endpoint.auth_token
@@ -423,7 +440,7 @@ defmodule ElixirDB.Replication.JobManager do
     ]
 
     if Enum.all?(Map.keys(definition), &(&1 in allowed)) do
-      normalized = stringify(definition)
+      normalized = Stringify.keys(definition)
       endpoint = normalized["endpoint"]
 
       with true <- normalized["mode"] in ["one_shot", "continuous"],
@@ -503,13 +520,7 @@ defmodule ElixirDB.Replication.JobManager do
   end
 
   defp option(map, key, default) when is_map(map),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+    do: MapAccess.get(map, key, default)
 
   defp option(_map, _key, default), do: default
-
-  defp stringify(value) when is_map(value),
-    do: Map.new(value, fn {key, child} -> {to_string(key), stringify(child)} end)
-
-  defp stringify(value) when is_list(value), do: Enum.map(value, &stringify/1)
-  defp stringify(value), do: value
 end

@@ -1,4 +1,6 @@
 defmodule ElixirDB.Revisions.Tree do
+  @moduledoc "Revision-tree construction and projection helpers."
+
   alias ElixirDB.Domain.Revision
   alias ElixirDB.Revisions.Winner
 

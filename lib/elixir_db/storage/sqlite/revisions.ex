@@ -9,16 +9,16 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
 
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.Connection
-
   @doc false
-  def get(adapter, request), do: ElixirDB.Storage.SQLite.Adapter.get_revision(adapter, request)
+  def get(adapter, request), do: Adapter.get_revision(adapter, request)
 
   def import(adapter, request),
-    do: ElixirDB.Storage.SQLite.Adapter.import_revision_chains(adapter, request)
+    do: Adapter.import_revision_chains(adapter, request)
 
   def chains(adapter, request),
-    do: ElixirDB.Storage.SQLite.Adapter.get_revision_chains(adapter, request)
+    do: Adapter.get_revision_chains(adapter, request)
 
   @doc """
   Loads one revision by document key and revision id.

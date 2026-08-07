@@ -8,6 +8,7 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
   """
   use ExUnit.Case, async: false
 
+  alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Runtime.FileLease
   alias ElixirDB.Storage.SQLite.Adapter
 
@@ -46,20 +47,20 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
     ElixirDB.TempDatabase.cleanup(absolute)
 
-    assert {:ok, identity} = ElixirDB.Runtime.DatabaseCatalog.create(relative)
+    assert {:ok, identity} = DatabaseCatalog.create(relative)
 
     on_exit(fn ->
-      _ = ElixirDB.Runtime.DatabaseCatalog.close(identity.database_uuid)
-      _ = ElixirDB.Runtime.DatabaseCatalog.unregister(identity.database_uuid)
+      _ = DatabaseCatalog.close(identity.database_uuid)
+      _ = DatabaseCatalog.unregister(identity.database_uuid)
       ElixirDB.TempDatabase.cleanup(absolute)
     end)
 
-    assert {:ok, _} = ElixirDB.Runtime.DatabaseCatalog.open(identity.database_uuid)
+    assert {:ok, _} = DatabaseCatalog.open(identity.database_uuid)
 
     assert {:error, %ElixirDB.Error{code: :database_in_use}} =
              GenServer.start(FileLease, absolute)
 
-    assert :ok = ElixirDB.Runtime.DatabaseCatalog.close(identity.database_uuid)
+    assert :ok = DatabaseCatalog.close(identity.database_uuid)
 
     assert {:ok, lease} = GenServer.start(FileLease, absolute)
     assert :ok = GenServer.stop(lease)

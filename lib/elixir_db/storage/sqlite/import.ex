@@ -8,6 +8,7 @@ defmodule ElixirDB.Storage.SQLite.Import do
 
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.Canonical
+  alias ElixirDB.MapAccess
   alias ElixirDB.Revisions.{Id, Winner}
   alias ElixirDB.Storage.SQLite.{Changes, Documents, IndexCatalog, Revisions}
 
@@ -53,71 +54,18 @@ defmodule ElixirDB.Storage.SQLite.Import do
   """
   @spec import_tx(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def import_tx(adapter, request) do
-    chains = request[:chains] || request["chains"] || []
+    chains = MapAccess.get(request, :chains, [])
 
     with {:ok, revisions} <- validate_chains(chains),
          {:ok, %{affected: affected, inserted: inserted}} <-
-           insert_imported_revisions(adapter, revisions),
-         {:ok, result} <- finalize_imports(adapter, affected, inserted) do
-      {:ok, result}
+           insert_imported_revisions(adapter, revisions) do
+      finalize_imports(adapter, affected, inserted)
     end
   end
 
   defp validate_chains(chains) do
     Enum.reduce_while(chains, {:ok, []}, fn chain, {:ok, acc} ->
-      if is_map(chain) do
-        document_id = chain[:document_id] || chain["document_id"]
-        leaf_revision = chain[:leaf_revision] || chain["leaf_revision"]
-        revisions = chain[:revisions] || chain["revisions"] || []
-
-        allowed_keys = [
-          :document_id,
-          :leaf_revision,
-          :revisions,
-          "document_id",
-          "leaf_revision",
-          "revisions"
-        ]
-
-        if Enum.all?(Map.keys(chain), &(&1 in allowed_keys)) and is_binary(document_id) and
-             document_id != "" and is_binary(leaf_revision) and is_list(revisions) and
-             revisions != [] do
-          case Enum.reduce_while(revisions, {:ok, :root, []}, fn raw,
-                                                                 {:ok, expected_parent, built} ->
-                 with {:ok, revision} <- imported_revision(document_id, raw),
-                      true <-
-                        (expected_parent == :root and is_nil(revision.parent_revision)) or
-                          revision.parent_revision == expected_parent do
-                   {:cont, {:ok, revision.revision_id, [revision | built]}}
-                 else
-                   false ->
-                     {:halt,
-                      {:error,
-                       ElixirDB.Error.integrity_violation("revision chain is not parent ordered")}}
-
-                   {:error, error} ->
-                     {:halt, {:error, error}}
-                 end
-               end) do
-            {:ok, parent, built} when parent == leaf_revision ->
-              {:cont, {:ok, Enum.reverse(built) ++ acc}}
-
-            {:ok, _parent, _built} ->
-              {:halt,
-               {:error,
-                ElixirDB.Error.integrity_violation("revision chain leaf does not match payload")}}
-
-            {:error, error} ->
-              {:halt, {:error, error}}
-          end
-        else
-          {:halt,
-           {:error,
-            ElixirDB.Error.invalid_request("revision chain requires document, leaf, and revisions")}}
-        end
-      else
-        {:halt, {:error, ElixirDB.Error.invalid_request("revision chains must be objects")}}
-      end
+      validate_chain_entry(chain, acc)
     end)
     |> case do
       {:ok, revisions} -> {:ok, revisions}
@@ -125,56 +73,119 @@ defmodule ElixirDB.Storage.SQLite.Import do
     end
   end
 
-  defp imported_revision(document_id, raw) do
-    if not is_map(raw) do
-      {:error, ElixirDB.Error.invalid_request("revision chain entries must be objects")}
-    else
-      allowed_keys = [
-        :document_id,
-        :revision_id,
-        :generation,
-        :parent_revision,
-        :deleted,
-        :body,
-        "document_id",
-        "revision_id",
-        "generation",
-        "parent_revision",
-        "deleted",
-        "body"
-      ]
+  defp validate_chain_entry(chain, acc) when is_map(chain) do
+    document_id = MapAccess.get(chain, :document_id)
+    leaf_revision = MapAccess.get(chain, :leaf_revision)
+    revisions = MapAccess.get(chain, :revisions, [])
 
-      if Enum.all?(Map.keys(raw), &(&1 in allowed_keys)) do
-        generation_value = raw[:generation] || raw["generation"]
-        revision_id = raw[:revision_id] || raw["revision_id"]
-        parent = raw[:parent_revision] || raw["parent_revision"]
-        deleted = Map.get(raw, :deleted, Map.get(raw, "deleted", false))
-        body = Map.get(raw, :body, Map.get(raw, "body"))
+    if valid_chain_shape?(chain, document_id, leaf_revision, revisions) do
+      case validate_chain_revisions(document_id, revisions) do
+        {:ok, ^leaf_revision, built} ->
+          {:cont, {:ok, Enum.reverse(built, acc)}}
 
-        with {:ok, calculated} <- Id.calculate(document_id, parent, deleted, body),
-             true <- calculated == revision_id,
-             {:ok, generation} <- Id.generation(revision_id),
-             true <- generation_value == generation,
-             true <- is_boolean(deleted),
-             true <- deleted or is_map(body),
-             true <- deleted or body_size_within_limit?(body) do
-          {:ok,
-           %Revision{
-             document_id: document_id,
-             revision_id: revision_id,
-             generation: generation,
-             parent_revision: parent,
-             digest: digest(revision_id),
-             deleted: deleted,
-             body: body
-           }}
-        else
-          false -> {:error, ElixirDB.Error.integrity_violation("revision chain validation failed")}
-          {:error, error} -> {:error, error}
-        end
-      else
-        {:error, ElixirDB.Error.invalid_request("revision chain entry contains an unknown field")}
+        {:ok, _parent, _built} ->
+          {:halt,
+           {:error,
+            ElixirDB.Error.integrity_violation("revision chain leaf does not match payload")}}
+
+        {:error, error} ->
+          {:halt, {:error, error}}
       end
+    else
+      {:halt,
+       {:error,
+        ElixirDB.Error.invalid_request("revision chain requires document, leaf, and revisions")}}
+    end
+  end
+
+  defp validate_chain_entry(_chain, _acc),
+    do: {:halt, {:error, ElixirDB.Error.invalid_request("revision chains must be objects")}}
+
+  defp valid_chain_shape?(chain, document_id, leaf_revision, revisions) do
+    allowed_keys = [
+      :document_id,
+      :leaf_revision,
+      :revisions,
+      "document_id",
+      "leaf_revision",
+      "revisions"
+    ]
+
+    Enum.all?(Map.keys(chain), &(&1 in allowed_keys)) and is_binary(document_id) and
+      document_id != "" and is_binary(leaf_revision) and is_list(revisions) and revisions != []
+  end
+
+  defp validate_chain_revisions(document_id, revisions) do
+    Enum.reduce_while(revisions, {:ok, :root, []}, fn raw, {:ok, expected_parent, built} ->
+      validate_revision_order(document_id, raw, expected_parent, built)
+    end)
+  end
+
+  defp validate_revision_order(document_id, raw, expected_parent, built) do
+    with {:ok, revision} <- imported_revision(document_id, raw),
+         true <-
+           (expected_parent == :root and is_nil(revision.parent_revision)) or
+             revision.parent_revision == expected_parent do
+      {:cont, {:ok, revision.revision_id, [revision | built]}}
+    else
+      false ->
+        {:halt,
+         {:error, ElixirDB.Error.integrity_violation("revision chain is not parent ordered")}}
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
+  defp imported_revision(_document_id, raw) when not is_map(raw),
+    do: {:error, ElixirDB.Error.invalid_request("revision chain entries must be objects")}
+
+  defp imported_revision(document_id, raw) do
+    allowed_keys = [
+      :document_id,
+      :revision_id,
+      :generation,
+      :parent_revision,
+      :deleted,
+      :body,
+      "document_id",
+      "revision_id",
+      "generation",
+      "parent_revision",
+      "deleted",
+      "body"
+    ]
+
+    if Enum.all?(Map.keys(raw), &(&1 in allowed_keys)) do
+      generation_value = MapAccess.get(raw, :generation)
+      revision_id = MapAccess.get(raw, :revision_id)
+      parent = MapAccess.get(raw, :parent_revision)
+      deleted = MapAccess.get(raw, :deleted, false)
+      body = MapAccess.get(raw, :body)
+
+      with {:ok, calculated} <- Id.calculate(document_id, parent, deleted, body),
+           true <- calculated == revision_id,
+           {:ok, generation} <- Id.generation(revision_id),
+           true <- generation_value == generation,
+           true <- is_boolean(deleted),
+           true <- deleted or is_map(body),
+           true <- deleted or body_size_within_limit?(body) do
+        {:ok,
+         %Revision{
+           document_id: document_id,
+           revision_id: revision_id,
+           generation: generation,
+           parent_revision: parent,
+           digest: digest(revision_id),
+           deleted: deleted,
+           body: body
+         }}
+      else
+        false -> {:error, ElixirDB.Error.integrity_violation("revision chain validation failed")}
+        {:error, error} -> {:error, error}
+      end
+    else
+      {:error, ElixirDB.Error.invalid_request("revision chain entry contains an unknown field")}
     end
   end
 
@@ -190,50 +201,60 @@ defmodule ElixirDB.Storage.SQLite.Import do
 
   defp insert_imported_revisions(adapter, revisions) do
     Enum.reduce_while(revisions, {:ok, MapSet.new(), 0}, fn revision, {:ok, affected, inserted} ->
-      case Documents.find(adapter.conn, revision.document_id) do
-        {:ok, nil} ->
-          with {:ok, doc_key} <- Documents.insert(adapter.conn, revision.document_id),
-               :ok <- Revisions.insert(adapter.conn, doc_key, revision) do
-            {:cont, {:ok, MapSet.put(affected, {doc_key, revision.document_id}), inserted + 1}}
-          end
-
-        {:error, %ElixirDB.Error{code: :document_not_found}} ->
-          with {:ok, doc_key} <- Documents.insert(adapter.conn, revision.document_id),
-               :ok <- Revisions.insert(adapter.conn, doc_key, revision) do
-            {:cont, {:ok, MapSet.put(affected, {doc_key, revision.document_id}), inserted + 1}}
-          end
-
-        {:ok, doc} ->
-          case Revisions.find(adapter.conn, doc.doc_key, revision.revision_id) do
-            {:ok, existing} ->
-              if Revisions.same?(existing, revision),
-                do: {:cont, {:ok, affected, inserted}},
-                else:
-                  {:halt,
-                   {:error,
-                    ElixirDB.Error.integrity_violation(
-                      "existing revision differs from imported revision"
-                    )}}
-
-            {:error, %ElixirDB.Error{code: :revision_not_found}} ->
-              with :ok <-
-                     Revisions.ensure_parent(adapter.conn, doc.doc_key, revision.parent_revision),
-                   :ok <- Revisions.insert(adapter.conn, doc.doc_key, revision),
-                   do:
-                     {:cont,
-                      {:ok, MapSet.put(affected, {doc.doc_key, revision.document_id}), inserted + 1}}
-
-            {:error, error} ->
-              {:halt, {:error, error}}
-          end
-
-        {:error, error} ->
-          {:halt, {:error, error}}
-      end
+      insert_imported_revision(adapter, revision, affected, inserted)
     end)
     |> case do
       {:ok, affected, inserted} -> {:ok, %{affected: affected, inserted: inserted}}
       {:error, _} = error -> error
+    end
+  end
+
+  defp insert_imported_revision(adapter, revision, affected, inserted) do
+    case Documents.find(adapter.conn, revision.document_id) do
+      {:ok, nil} ->
+        insert_new_revision(adapter, revision, affected, inserted)
+
+      {:error, %ElixirDB.Error{code: :document_not_found}} ->
+        insert_new_revision(adapter, revision, affected, inserted)
+
+      {:ok, doc} ->
+        insert_existing_revision(adapter, doc, revision, affected, inserted)
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
+  defp insert_new_revision(adapter, revision, affected, inserted) do
+    with {:ok, doc_key} <- Documents.insert(adapter.conn, revision.document_id),
+         :ok <- Revisions.insert(adapter.conn, doc_key, revision) do
+      {:cont, {:ok, MapSet.put(affected, {doc_key, revision.document_id}), inserted + 1}}
+    end
+  end
+
+  defp insert_existing_revision(adapter, doc, revision, affected, inserted) do
+    case Revisions.find(adapter.conn, doc.doc_key, revision.revision_id) do
+      {:ok, existing} ->
+        existing_revision_result(existing, revision, affected, inserted)
+
+      {:error, %ElixirDB.Error{code: :revision_not_found}} ->
+        with :ok <- Revisions.ensure_parent(adapter.conn, doc.doc_key, revision.parent_revision),
+             :ok <- Revisions.insert(adapter.conn, doc.doc_key, revision) do
+          {:cont, {:ok, MapSet.put(affected, {doc.doc_key, revision.document_id}), inserted + 1}}
+        end
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
+  defp existing_revision_result(existing, revision, affected, inserted) do
+    if Revisions.same?(existing, revision) do
+      {:cont, {:ok, affected, inserted}}
+    else
+      {:halt,
+       {:error,
+        ElixirDB.Error.integrity_violation("existing revision differs from imported revision")}}
     end
   end
 

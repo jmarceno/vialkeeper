@@ -8,6 +8,7 @@ defmodule ElixirDB.Domain.ReplicationEndpoint do
   never appears in the URL. Local endpoints MUST NOT carry an auth token.
   """
 
+  alias ElixirDB.JSON.Stringify
   @max_token_bytes 4096
 
   @enforce_keys [:kind, :database_uuid]
@@ -21,7 +22,7 @@ defmodule ElixirDB.Domain.ReplicationEndpoint do
         }
 
   def new(attrs) when is_map(attrs) do
-    attrs = stringify_keys(attrs)
+    attrs = Stringify.keys(attrs)
 
     case attrs do
       %{"kind" => "local", "database_uuid" => uuid} when is_binary(uuid) ->
@@ -44,19 +45,8 @@ defmodule ElixirDB.Domain.ReplicationEndpoint do
   defp new_remote(attrs, uuid, url) do
     uri = URI.parse(url)
 
-    cond do
-      Map.keys(attrs) -- ["kind", "database_uuid", "base_url", "auth_token"] != [] ->
-        {:error, ElixirDB.Error.invalid_request("unknown remote endpoint field")}
-
-      not valid_uuid?(uuid) or uri.scheme not in ["http", "https"] or is_nil(uri.host) or
-        uri.userinfo != nil or uri.query != nil or uri.fragment != nil or
-          uri.path not in [nil, "", "/"] ->
-        {:error, ElixirDB.Error.invalid_request("invalid remote endpoint URL")}
-
-      not valid_auth_token?(Map.get(attrs, "auth_token")) ->
-        {:error, ElixirDB.Error.invalid_request("invalid remote endpoint auth_token")}
-
-      true ->
+    case validate_remote(attrs, uuid, uri) do
+      nil ->
         {:ok,
          struct(__MODULE__, %{
            kind: :remote,
@@ -64,7 +54,43 @@ defmodule ElixirDB.Domain.ReplicationEndpoint do
            base_url: String.trim_trailing(url, "/"),
            auth_token: Map.get(attrs, "auth_token")
          })}
+
+      error ->
+        {:error, error}
     end
+  end
+
+  defp validate_remote(attrs, uuid, uri) do
+    validators = [
+      fn -> validate_remote_fields(attrs) end,
+      fn -> validate_remote_url(uuid, uri) end,
+      fn -> validate_remote_auth_token(attrs) end
+    ]
+
+    Enum.find_value(validators, fn validate -> validate.() end)
+  end
+
+  defp validate_remote_fields(attrs) do
+    if Map.keys(attrs) -- ["kind", "database_uuid", "base_url", "auth_token"] == [] do
+      nil
+    else
+      ElixirDB.Error.invalid_request("unknown remote endpoint field")
+    end
+  end
+
+  defp validate_remote_url(uuid, uri) do
+    valid? =
+      valid_uuid?(uuid) and uri.scheme in ["http", "https"] and not is_nil(uri.host) and
+        is_nil(uri.userinfo) and is_nil(uri.query) and is_nil(uri.fragment) and
+        uri.path in [nil, "", "/"]
+
+    if valid?, do: nil, else: ElixirDB.Error.invalid_request("invalid remote endpoint URL")
+  end
+
+  defp validate_remote_auth_token(attrs) do
+    if valid_auth_token?(Map.get(attrs, "auth_token")),
+      do: nil,
+      else: ElixirDB.Error.invalid_request("invalid remote endpoint auth_token")
   end
 
   # auth_token is optional. When present it must be a non-empty bounded binary
@@ -82,9 +108,4 @@ defmodule ElixirDB.Domain.ReplicationEndpoint do
         ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
         uuid
       )
-
-  defp stringify_keys(value) when is_map(value),
-    do: Map.new(value, fn {key, child} -> {to_string(key), stringify_keys(child)} end)
-
-  defp stringify_keys(value), do: value
 end

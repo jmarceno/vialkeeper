@@ -10,8 +10,8 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
   never inside the SQLite adapter.
   """
 
+  alias ElixirDB.Commands
   alias ElixirDB.Observability.{Meters, Tracer}
-  alias ElixirDB.Storage.Commands
 
   @open_span "elixir_db.database.open"
   @command_span "elixir_db.database.command"
@@ -123,7 +123,7 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
   def command_type(command) do
     # Normalize tagged tuples to their struct form so the type matches the
     # owner's dispatch (Commands.normalize/1 is the single source of truth).
-    normalized = ElixirDB.Storage.Commands.normalize(command)
+    normalized = Commands.normalize(command)
     command_type_for_struct(normalized)
   end
 

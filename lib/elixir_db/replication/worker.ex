@@ -16,7 +16,12 @@ defmodule ElixirDB.Replication.Worker do
 
   require OpenTelemetry.Tracer
 
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Attributes
+  alias ElixirDB.Observability.Meters
   alias ElixirDB.Replication
+  alias ElixirDB.Replication.JobManager
+  alias ElixirDB.Runtime.ChildSpec
 
   @active_states [
     :idle,
@@ -36,13 +41,11 @@ defmodule ElixirDB.Replication.Worker do
   def start_link(options), do: :gen_statem.start_link(__MODULE__, options, [])
 
   def child_spec(options) do
-    %{
-      id:
-        {:replication_worker, options[:replication_id] || options["replication_id"] || make_ref()},
-      start: {__MODULE__, :start_link, [options]},
-      restart: :temporary,
-      type: :worker
-    }
+    ChildSpec.worker(
+      {:replication_worker, MapAccess.get(options, :replication_id, make_ref())},
+      {__MODULE__, :start_link, [options]},
+      :temporary
+    )
   end
 
   @impl true
@@ -50,7 +53,7 @@ defmodule ElixirDB.Replication.Worker do
 
   @impl true
   def init(options) do
-    replication_id = options[:replication_id] || options["replication_id"]
+    replication_id = MapAccess.get(options, :replication_id)
 
     with true <- is_binary(replication_id),
          {:ok, _} <- Registry.register(ElixirDB.Replication.WorkerRegistry, replication_id, %{}) do
@@ -163,7 +166,7 @@ defmodule ElixirDB.Replication.Worker do
   def terminate(_reason, _state, data) do
     # End any in-flight batch span so it doesn't leak.
     if data.batch_span_ctx do
-      replication_id = data.options[:replication_id] || data.options["replication_id"]
+      replication_id = MapAccess.get(data.options, :replication_id)
       _ = end_batch_span(data, replication_id, data.batch_revisions, :ok)
     end
 
@@ -274,7 +277,7 @@ defmodule ElixirDB.Replication.Worker do
     # A batch just finished (success). End the batch span and record the
     # duration/revisions_written metric. revisions are captured at the import
     # phase (data.batch_revisions) since checkpoint_source resets imported.
-    replication_id = data.options[:replication_id] || data.options["replication_id"]
+    replication_id = MapAccess.get(data.options, :replication_id)
 
     data = end_batch_span(data, replication_id, data.batch_revisions, :ok)
     data = %{data | context: context}
@@ -314,7 +317,7 @@ defmodule ElixirDB.Replication.Worker do
   defp handle_failure(data, error) do
     # Emit the batch span/metric on failure too (plan §5.6: success or
     # retryable failure). Uses the revisions captured at import if any.
-    replication_id = data.options[:replication_id] || data.options["replication_id"]
+    replication_id = MapAccess.get(data.options, :replication_id)
     data = end_batch_span(data, replication_id, data.batch_revisions, {:error, error})
 
     if data.cancel_requested do
@@ -348,13 +351,13 @@ defmodule ElixirDB.Replication.Worker do
     do: ElixirDB.Error.database_closed("replication was cancelled")
 
   defp report(data, state, details \\ %{}) do
-    job_id = data.options[:job_id] || data.options["job_id"]
-    if job_id, do: ElixirDB.Replication.JobManager.report(job_id, state, details)
+    job_id = MapAccess.get(data.options, :job_id)
+    if job_id, do: JobManager.report(job_id, state, details)
     :ok
   end
 
   defp notify_state(data, state) do
-    case data.options[:state_notify] || data.options["state_notify"] do
+    case MapAccess.get(data.options, :state_notify) do
       pid when is_pid(pid) -> send(pid, {:replication_worker_state, state})
       _ -> :ok
     end
@@ -365,12 +368,12 @@ defmodule ElixirDB.Replication.Worker do
   # data with the span ctx and a native monotonic start timestamp. No-op when
   # the SDK is absent (start_span returns a non-recording span ctx).
   defp start_batch_span(data) do
-    replication_id = data.options[:replication_id] || data.options["replication_id"]
+    replication_id = MapAccess.get(data.options, :replication_id)
 
     span_ctx =
       OpenTelemetry.Tracer.start_span("elixir_db.replication.batch", %{
         kind: :internal,
-        attributes: ElixirDB.Observability.Attributes.build(replication_id: replication_id)
+        attributes: Attributes.build(replication_id: replication_id)
       })
 
     OpenTelemetry.Tracer.set_current_span(span_ctx)
@@ -396,13 +399,13 @@ defmodule ElixirDB.Replication.Worker do
 
     case outcome do
       :ok ->
-        ElixirDB.Observability.Meters.record(:"elixir_db.replication.batch.duration", duration,
+        Meters.record(:"elixir_db.replication.batch.duration", duration,
           replication_id: replication_id,
           revisions_written: revisions
         )
 
       {:error, %ElixirDB.Error{} = error} ->
-        ElixirDB.Observability.Meters.record(:"elixir_db.replication.batch.duration", duration,
+        Meters.record(:"elixir_db.replication.batch.duration", duration,
           replication_id: replication_id,
           error_code: error.code
         )
@@ -431,7 +434,7 @@ defmodule ElixirDB.Replication.Worker do
   defp context_imported_count(_), do: 0
 
   defp normalize_options(options) when is_map(options) do
-    session_id = options[:session_id] || options["session_id"] || ElixirDB.UUID.v4()
+    session_id = MapAccess.get(options, :session_id) || ElixirDB.UUID.v4()
     Map.put(options, :session_id, session_id)
   end
 
@@ -441,8 +444,8 @@ defmodule ElixirDB.Replication.Worker do
   end
 
   defp retry_option(options, key, default) do
-    retry = options[:retry] || options["retry"] || %{}
-    retry[key] || retry[Atom.to_string(key)] || default
+    retry = MapAccess.get(options, :retry, %{})
+    MapAccess.get(retry, key) || default
   end
 
   defp retry_delay(options, attempt) do

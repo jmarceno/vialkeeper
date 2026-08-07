@@ -1,4 +1,6 @@
 defmodule ElixirDB.Observability.Dashboard do
+  alias ElixirDB.Runtime.DatabaseCatalog
+
   @moduledoc """
   Local OpenTelemetry metric exporter and compact runtime snapshot.
 
@@ -55,7 +57,21 @@ defmodule ElixirDB.Observability.Dashboard do
   rescue
     # Exporters must not take down the SDK reader because a future SDK version
     # changed a private metric tuple shape.
-    _ -> :ok
+    _error in [
+      ArgumentError,
+      ArithmeticError,
+      BadMapError,
+      CaseClauseError,
+      ErlangError,
+      FunctionClauseError,
+      KeyError,
+      MatchError,
+      Protocol.UndefinedError,
+      RuntimeError,
+      UndefinedFunctionError,
+      WithClauseError
+    ] ->
+      :ok
   end
 
   @doc false
@@ -129,7 +145,21 @@ defmodule ElixirDB.Observability.Dashboard do
       datapoints: datapoints_for(data)
     }
   rescue
-    _ -> nil
+    _error in [
+      ArgumentError,
+      ArithmeticError,
+      BadMapError,
+      CaseClauseError,
+      ErlangError,
+      FunctionClauseError,
+      KeyError,
+      MatchError,
+      Protocol.UndefinedError,
+      RuntimeError,
+      UndefinedFunctionError,
+      WithClauseError
+    ] ->
+      nil
   end
 
   defp metric_view(_), do: nil
@@ -203,15 +233,25 @@ defmodule ElixirDB.Observability.Dashboard do
   defp merge_delta(_existing, incoming), do: incoming
 
   defp merge_datapoints(existing, incoming, merge_fun) do
-    Enum.reduce(incoming, existing, fn datapoint, acc ->
-      case Enum.find_index(acc, &same_attributes?(&1, datapoint)) do
-        nil -> acc ++ [datapoint]
-        index -> List.update_at(acc, index, &merge_fun.(&1, datapoint))
-      end
-    end)
-  end
+    existing_keys = Enum.map(existing, & &1[:attributes])
+    existing_values = Map.new(existing, fn datapoint -> {datapoint[:attributes], datapoint} end)
 
-  defp same_attributes?(left, right), do: left[:attributes] == right[:attributes]
+    {new_keys, values} =
+      Enum.reduce(incoming, {[], existing_values}, fn datapoint, {new_keys, values} ->
+        key = datapoint[:attributes]
+
+        case Map.fetch(values, key) do
+          {:ok, current} ->
+            {new_keys, Map.put(values, key, merge_fun.(current, datapoint))}
+
+          :error ->
+            {[key | new_keys], Map.put(values, key, datapoint)}
+        end
+      end)
+
+    (existing_keys ++ Enum.reverse(new_keys))
+    |> Enum.map(&Map.fetch!(values, &1))
+  end
 
   defp merge_number(left, right),
     do: %{left | value: numeric(left[:value]) + numeric(right[:value])}
@@ -229,15 +269,20 @@ defmodule ElixirDB.Observability.Dashboard do
 
   defp merge_buckets(left, right) do
     length = max(length(left), length(right))
+    left = List.to_tuple(left)
+    right = List.to_tuple(right)
 
     if length == 0 do
       []
     else
       for index <- 0..(length - 1) do
-        non_negative(Enum.at(left, index)) + non_negative(Enum.at(right, index))
+        non_negative(tuple_value(left, index)) + non_negative(tuple_value(right, index))
       end
     end
   end
+
+  defp tuple_value(tuple, index) when index < tuple_size(tuple), do: elem(tuple, index)
+  defp tuple_value(_tuple, _index), do: nil
 
   defp merge_min(left, right) do
     [left, right]
@@ -330,41 +375,44 @@ defmodule ElixirDB.Observability.Dashboard do
     target = max(1, trunc(Float.ceil(count * quantile)))
 
     buckets =
-      Enum.reduce(datapoints, %{}, fn datapoint, acc ->
-        bounds = datapoint[:explicit_bounds]
-        counts = datapoint[:bucket_counts]
+      Enum.reduce(datapoints, %{}, &accumulate_histogram_buckets/2)
 
-        if is_list(bounds) and is_list(counts) do
-          bounded =
-            Enum.zip(bounds, counts)
-            |> Enum.reduce(acc, fn {bound, bucket_count}, bucket_acc ->
-              Map.update(
-                bucket_acc,
-                bound,
-                non_negative(bucket_count),
-                &(&1 + non_negative(bucket_count))
-              )
-            end)
-
-          tail_count =
-            counts
-            |> Enum.drop(length(bounds))
-            |> Enum.reduce(0, &(&1 + non_negative(&2)))
-
-          Map.update(bounded, :infinity, tail_count, &(&1 + tail_count))
-        else
-          acc
-        end
-      end)
-
-    case Enum.reduce_while(sorted_buckets(buckets), 0, fn {bound, bucket_count}, running ->
-           next = running + bucket_count
-
-           if next >= target, do: {:halt, {:found, bound}}, else: {:cont, next}
-         end) do
+    case Enum.reduce_while(sorted_buckets(buckets), 0, &percentile_step(&1, &2, target)) do
       {:found, :infinity} -> if(observed_max, do: round_ms(observed_max), else: nil)
       {:found, bound} when is_number(bound) -> round_ms(bound)
       _ -> if(observed_max, do: round_ms(observed_max), else: nil)
+    end
+  end
+
+  defp percentile_step({bound, bucket_count}, running, target) do
+    next = running + bucket_count
+    if next >= target, do: {:halt, {:found, bound}}, else: {:cont, next}
+  end
+
+  defp accumulate_histogram_buckets(datapoint, acc) do
+    bounds = datapoint[:explicit_bounds]
+    counts = datapoint[:bucket_counts]
+
+    if is_list(bounds) and is_list(counts) do
+      bounded =
+        Enum.zip(bounds, counts)
+        |> Enum.reduce(acc, fn {bound, bucket_count}, bucket_acc ->
+          Map.update(
+            bucket_acc,
+            bound,
+            non_negative(bucket_count),
+            &(&1 + non_negative(bucket_count))
+          )
+        end)
+
+      tail_count =
+        counts
+        |> Enum.drop(length(bounds))
+        |> Enum.reduce(0, &(&1 + non_negative(&2)))
+
+      Map.update(bounded, :infinity, tail_count, &(&1 + tail_count))
+    else
+      acc
     end
   end
 
@@ -395,25 +443,21 @@ defmodule ElixirDB.Observability.Dashboard do
   end
 
   defp database_counts do
-    try do
-      case ElixirDB.Runtime.DatabaseCatalog.list() do
-        {:ok, entries} when is_list(entries) ->
-          %{registered: length(entries), open: Enum.count(entries, &(&1[:state] == :open))}
+    case DatabaseCatalog.list() do
+      {:ok, entries} when is_list(entries) ->
+        %{registered: length(entries), open: Enum.count(entries, &(&1[:state] == :open))}
 
-        _ ->
-          %{registered: 0, open: 0}
-      end
-    catch
-      _kind, _reason -> %{registered: 0, open: 0}
+      _ ->
+        %{registered: 0, open: 0}
     end
+  catch
+    _kind, _reason -> %{registered: 0, open: 0}
   end
 
   defp safe_registry_count(registry) do
-    try do
-      Registry.count(registry)
-    catch
-      :error, _reason -> 0
-    end
+    Registry.count(registry)
+  catch
+    :error, _reason -> 0
   end
 
   defp sampled_at(nil), do: nil

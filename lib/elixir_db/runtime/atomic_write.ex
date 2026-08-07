@@ -40,15 +40,16 @@ defmodule ElixirDB.Runtime.AtomicWrite do
 
     case File.ls(root) do
       {:ok, entries} ->
-        Enum.each(entries, fn entry ->
-          if String.starts_with?(entry, Path.basename(path) <> ".tmp.") do
-            _ = File.rm(Path.join(root, entry))
-          end
-        end)
+        prefix = Path.basename(path) <> ".tmp."
+        Enum.each(entries, &cleanup_temp_entry(root, prefix, &1))
 
       {:error, _} ->
         :ok
     end
+  end
+
+  defp cleanup_temp_entry(root, prefix, entry) do
+    if String.starts_with?(entry, prefix), do: File.rm(Path.join(root, entry))
   end
 
   defp sync(file) do

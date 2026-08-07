@@ -1,6 +1,9 @@
 defmodule ElixirDB.HTTP.V1HTTPContractTest do
   use ExUnit.Case, async: false
 
+  alias ElixirDB.HTTP.Router
+  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.Runtime.DatabaseCatalog
   alias Plug.Conn
 
   test "HTTP rejects unknown fields and returns the stable error envelope" do
@@ -13,7 +16,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
            |> Enum.any?(fn {key, value} -> key == "x-request-id" and value != "" end)
 
     assert {:ok, %{"error" => %{"code" => "invalid_request", "retryable" => false}}} =
-             ElixirDB.JSON.StrictDecoder.decode(response.resp_body)
+             StrictDecoder.decode(response.resp_body)
   end
 
   test "database, query, integrity, and NDJSON changes routes follow V1 envelopes" do
@@ -22,11 +25,11 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
     assert created.status == 201
 
     {:ok, %{"data" => %{"database_uuid" => uuid}}} =
-      ElixirDB.JSON.StrictDecoder.decode(created.resp_body)
+      StrictDecoder.decode(created.resp_body)
 
     on_exit(fn ->
-      _ = ElixirDB.Runtime.DatabaseCatalog.close(uuid)
-      _ = ElixirDB.Runtime.DatabaseCatalog.unregister(uuid)
+      _ = DatabaseCatalog.close(uuid)
+      _ = DatabaseCatalog.unregister(uuid)
       ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
     end)
 
@@ -60,7 +63,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
     assert query.status == 200
 
     {:ok, %{"data" => %{"documents" => [%{"id" => "doc"}]}}} =
-      ElixirDB.JSON.StrictDecoder.decode(query.resp_body)
+      StrictDecoder.decode(query.resp_body)
 
     integrity = request(:post, "/v1/databases/#{uuid}/integrity-check", %{})
     assert integrity.status == 200
@@ -83,6 +86,6 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
 
     Plug.Test.conn(method, path, payload)
     |> Conn.put_req_header("content-type", "application/json")
-    |> ElixirDB.HTTP.Router.call([])
+    |> Router.call([])
   end
 end

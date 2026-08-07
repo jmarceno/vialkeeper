@@ -5,6 +5,8 @@ defmodule ElixirDB.Storage.Results do
   HTTP still maps these to plain JSON envelopes via `to_public/1`.
   """
 
+  alias ElixirDB.MapAccess
+
   defmodule GetDocument do
     @moduledoc false
     @enforce_keys [:id, :revision, :deleted, :body, :sequence]
@@ -55,12 +57,12 @@ defmodule ElixirDB.Storage.Results do
   """
   def get_document(map) when is_map(map) do
     %GetDocument{
-      id: map[:id] || map["id"],
-      revision: map[:revision] || map["revision"],
-      deleted: map[:deleted] || map["deleted"] || false,
-      body: map[:body] || map["body"],
-      sequence: map[:sequence] || map["sequence"] || 0,
-      conflicts: map[:conflicts] || map["conflicts"]
+      id: MapAccess.get(map, :id),
+      revision: MapAccess.get(map, :revision),
+      deleted: MapAccess.get(map, :deleted, false),
+      body: MapAccess.get(map, :body),
+      sequence: MapAccess.get(map, :sequence, 0),
+      conflicts: MapAccess.get(map, :conflicts)
     }
   end
 
@@ -69,12 +71,12 @@ defmodule ElixirDB.Storage.Results do
   """
   def put_document(map) when is_map(map) do
     %PutDocument{
-      id: map[:id] || map["id"],
-      revision: map[:revision] || map["revision"],
-      deleted: Map.get(map, :deleted, Map.get(map, "deleted")),
-      body: Map.get(map, :body, Map.get(map, "body")),
-      sequence: map[:sequence] || map["sequence"] || 0,
-      replayed: map[:replayed] || map["replayed"] || false
+      id: MapAccess.get(map, :id),
+      revision: MapAccess.get(map, :revision),
+      deleted: MapAccess.get(map, :deleted),
+      body: MapAccess.get(map, :body),
+      sequence: MapAccess.get(map, :sequence, 0),
+      replayed: MapAccess.get(map, :replayed, false)
     }
   end
 
@@ -83,9 +85,9 @@ defmodule ElixirDB.Storage.Results do
   """
   def read_changes(map) when is_map(map) do
     %ReadChanges{
-      results: map[:results] || map["results"] || [],
-      last_sequence: map[:last_sequence] || map["last_sequence"] || 0,
-      has_more: map[:has_more] || map["has_more"] || false
+      results: MapAccess.get(map, :results, []),
+      last_sequence: MapAccess.get(map, :last_sequence, 0),
+      has_more: MapAccess.get(map, :has_more, false)
     }
   end
 

@@ -26,33 +26,18 @@ defmodule ElixirDB.Observability.Instrumentation.Query do
   @spec execute(binary() | nil, non_neg_integer(), term(), (-> term())) :: term()
   def execute(uuid, _initial_examined, started, fun)
       when (is_binary(uuid) or is_nil(uuid)) and is_function(fun, 0) do
-    start_attrs = if(uuid, do: [db_uuid: uuid], else: [])
+    start_attrs = start_attrs(uuid)
 
     Tracer.with_span(@query_span, start_attrs, fn ->
-      fun_result = fun.()
-
-      {result, examined} =
-        case fun_result do
-          {{:ok, _} = r, count} -> {r, count}
-          {{:error, _} = r, _count} -> {r, nil}
-          other -> {other, nil}
-        end
+      {result, examined} = split_result(fun.())
 
       duration = System.monotonic_time() - started
 
-      attrs = start_attrs ++ if(examined, do: [examined: examined], else: [])
+      attrs = query_attrs(start_attrs, examined)
 
       Meters.record(:"elixir_db.query.execute.duration", duration, attrs)
-      _ = if(examined, do: Tracer.set_attributes(examined: examined))
-
-      case result do
-        {:error, %ElixirDB.Error{} = error} ->
-          _ = Tracer.record_error(error)
-          _ = Tracer.apply_error_status(error)
-
-        _ ->
-          :ok
-      end
+      _ = record_examined(examined)
+      _ = record_result_error(result)
 
       result
     end)
@@ -89,4 +74,25 @@ defmodule ElixirDB.Observability.Instrumentation.Query do
       result
     end)
   end
+
+  defp start_attrs(nil), do: []
+  defp start_attrs(uuid), do: [db_uuid: uuid]
+
+  defp split_result({{:ok, _} = result, count}), do: {result, count}
+  defp split_result({{:error, _} = result, _count}), do: {result, nil}
+  defp split_result(result), do: {result, nil}
+
+  defp query_attrs(attrs, nil), do: attrs
+  defp query_attrs(attrs, examined), do: attrs ++ [examined: examined]
+
+  defp record_examined(nil), do: :ok
+  defp record_examined(examined), do: Tracer.set_attributes(examined: examined)
+
+  defp record_result_error({:error, %ElixirDB.Error{} = error}) do
+    _ = Tracer.record_error(error)
+    _ = Tracer.apply_error_status(error)
+    :ok
+  end
+
+  defp record_result_error(_), do: :ok
 end

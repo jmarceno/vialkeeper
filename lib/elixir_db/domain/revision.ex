@@ -1,4 +1,6 @@
 defmodule ElixirDB.Domain.Revision do
+  @moduledoc "Validated immutable document revision state."
+
   @enforce_keys [:document_id, :revision_id, :generation, :parent_revision, :deleted, :body]
   defstruct [
     :document_id,

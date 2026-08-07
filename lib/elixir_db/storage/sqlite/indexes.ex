@@ -3,6 +3,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
 
   alias ElixirDB.Diagnostics
   alias ElixirDB.JSON.{Pointer, StrictDecoder}
+  alias ElixirDB.MapAccess
   alias ElixirDB.Query.FullText
   alias ElixirDB.Storage.SQLite.{Connection, QueryCompiler}
 
@@ -20,7 +21,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
 
   @spec drop(Connection.handle(), map()) :: :ok | {:error, ElixirDB.Error.t()}
   def drop(conn, metadata) do
-    name = metadata["physical_name"] || metadata[:physical_name]
+    name = MapAccess.get(metadata, :physical_name)
 
     if valid_identifier?(name) do
       Connection.execute(conn, "DROP #{drop_kind(metadata)} #{quote_identifier(name)}")
@@ -34,7 +35,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
           :ok | {:error, ElixirDB.Error.t()}
   def refresh_document(conn, metadata, doc_key, body, deleted) do
     if type(metadata) == :full_text do
-      name = metadata["physical_name"] || metadata[:physical_name]
+      name = MapAccess.get(metadata, :physical_name)
 
       with true <- valid_identifier?(name),
            :ok <- delete_fts_row(conn, name, metadata, doc_key),
@@ -52,7 +53,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   @spec search(Connection.handle(), map(), binary(), binary()) ::
           {:ok, list()} | {:error, ElixirDB.Error.t()}
   def search(conn, metadata, text, mode) do
-    name = metadata["physical_name"] || metadata[:physical_name]
+    name = MapAccess.get(metadata, :physical_name)
     match_definition = Map.put(metadata, "mode", mode || "all")
 
     with true <- valid_identifier?(name),
@@ -81,16 +82,14 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   @spec rebuild(Connection.handle(), binary(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def rebuild(conn, index_id, definition) do
-    with {:ok, metadata} <- create(conn, index_id, definition) do
-      {:ok, metadata}
-    end
+    create(conn, index_id, definition)
   end
 
   @spec integrity(Connection.handle(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def integrity(conn, metadata) do
-    name = metadata["physical_name"] || metadata[:physical_name]
-    index_id = metadata["index_id"] || metadata[:index_id]
+    name = MapAccess.get(metadata, :physical_name)
+    index_id = MapAccess.get(metadata, :index_id)
 
     expected_name =
       physical_name(index_id, if(type(metadata) == :full_text, do: :full_text, else: :structured))
@@ -110,7 +109,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
       if type(metadata) == :full_text do
         check_full_text_integrity(conn, metadata, name)
       else
-        {:ok, %{index_id: metadata["index_id"] || metadata[:index_id], physical: :present}}
+        {:ok, %{index_id: index_id, physical: :present}}
       end
     else
       false ->
@@ -131,13 +130,18 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   def physical_name(index_id, :full_text), do: "fts_" <> digest24(index_id)
 
   defp create_structured(conn, index_id, definition) do
-    fields = definition["fields"] || definition[:fields] || []
+    fields = MapAccess.get(definition, :fields, [])
     name = physical_name(index_id, :structured)
 
     with {:ok, expressions} <- reduce_compiled_expressions(fields) do
       sql =
-        "CREATE INDEX #{quote_identifier(name)} ON documents (winning_deleted, " <>
-          Enum.join(expressions, ", ") <> ", document_id)"
+        IO.iodata_to_binary([
+          "CREATE INDEX ",
+          quote_identifier(name),
+          " ON documents (winning_deleted, ",
+          Enum.join(expressions, ", "),
+          ", document_id)"
+        ])
 
       with :ok <- Connection.execute(conn, sql),
            {:ok, metadata} <- metadata(index_id, definition, name) do
@@ -200,8 +204,8 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
       "physical_name" => name,
       "physical_version" => @physical_version,
       "type" => type_string(definition),
-      "fields" => definition["fields"] || definition[:fields] || [],
-      "tokenization" => definition["tokenization"] || definition[:tokenization] || %{}
+      "fields" => MapAccess.get(definition, :fields, []),
+      "tokenization" => MapAccess.get(definition, :tokenization, %{})
     }
 
     {:ok, if(fts_kind, do: Map.put(base, "fts_table_kind", fts_kind), else: base)}
@@ -214,22 +218,26 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
              "SELECT doc_key, winning_body_json FROM documents WHERE winning_deleted = 0"
            ) do
       Enum.reduce_while(rows, :ok, fn [doc_key, body_json], :ok ->
-        case StrictDecoder.decode(body_json) do
-          {:ok, body} ->
-            case insert_text_if_present(conn, name, definition, doc_key, body, false) do
-              :ok -> {:cont, :ok}
-              {:error, reason} -> {:halt, {:error, reason}}
-            end
-
-          {:error, error} ->
-            {:halt, {:error, error}}
-        end
+        rebuild_full_text_row(conn, name, definition, doc_key, body_json)
       end)
     end
   end
 
+  defp rebuild_full_text_row(conn, name, definition, doc_key, body_json) do
+    case StrictDecoder.decode(body_json) do
+      {:ok, body} ->
+        case insert_text_if_present(conn, name, definition, doc_key, body, false) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
   defp delete_fts_row(conn, name, metadata, doc_key) do
-    case metadata["fts_table_kind"] || metadata[:fts_table_kind] || fts_table_kind() do
+    case MapAccess.get(metadata, :fts_table_kind, fts_table_kind()) do
       "contentless_delete" ->
         Connection.execute(conn, "DELETE FROM #{quote_identifier(name)} WHERE rowid = ?", [doc_key])
 
@@ -261,12 +269,12 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   end
 
   defp extract_text(body, definition) do
-    fields = definition["fields"] || definition[:fields] || []
+    fields = MapAccess.get(definition, :fields, [])
 
     fields
     |> Enum.map(fn
       field when is_binary(field) -> field
-      field -> field["path"] || field[:path]
+      field -> MapAccess.get(field, :path)
     end)
     |> Enum.flat_map(fn path ->
       case Pointer.get(body, path) do
@@ -278,7 +286,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   end
 
   defp compile_search(text, metadata, mode) do
-    fields = metadata["fields"] || metadata[:fields] || []
+    fields = MapAccess.get(metadata, :fields, [])
     diacritics = get_in(metadata, ["tokenization", "diacritics"]) || "preserve"
     terms = FullText.tokens(text, if(diacritics == "remove", do: :remove, else: :preserve))
 
@@ -293,7 +301,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
             Enum.join(escaped, " OR ")
 
           "phrase" ->
-            "\"" <> Enum.join(terms |> Enum.map(&String.replace(&1, "\"", "\"\"")), " ") <> "\""
+            "\"" <> Enum.map_join(terms, " ", &String.replace(&1, "\"", "\"\"")) <> "\""
 
           _ ->
             Enum.join(escaped, " AND ")
@@ -340,7 +348,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     with {:ok, rows} <- Connection.query(conn, "SELECT rowid FROM #{quote_identifier(name)}"),
          actual <- rows |> Enum.map(&List.first/1) |> MapSet.new(),
          true <- actual == expected do
-      {:ok, %{index_id: metadata["index_id"] || metadata[:index_id], physical: :consistent}}
+      {:ok, %{index_id: MapAccess.get(metadata, :index_id), physical: :consistent}}
     else
       false ->
         {:error,
@@ -357,7 +365,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     if type(metadata) != :full_text do
       true
     else
-      kind = metadata["fts_table_kind"] || metadata[:fts_table_kind] || fts_table_kind()
+      kind = MapAccess.get(metadata, :fts_table_kind, fts_table_kind())
       lowered = String.downcase(sql)
 
       case kind do

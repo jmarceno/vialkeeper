@@ -1,4 +1,4 @@
-defmodule ElixirDB.Storage.Commands do
+defmodule ElixirDB.Commands do
   @moduledoc """
   Typed command envelopes used at the database-owner boundary.
 
@@ -94,7 +94,7 @@ defmodule ElixirDB.Storage.Commands do
     defstruct [:replication_id]
   end
 
-  defmodule PutCheckpoint do
+  defmodule PutLocalRecord do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
@@ -106,7 +106,7 @@ defmodule ElixirDB.Storage.Commands do
     defstruct [:namespace, :key]
   end
 
-  defmodule PutLocalRecord do
+  defmodule PutCheckpoint do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
@@ -169,9 +169,7 @@ defmodule ElixirDB.Storage.Commands do
     defstruct []
   end
 
-  @doc """
-  Converts tagged owner tuples (and already-normalized structs) into command structs.
-  """
+  @doc "Converts tagged owner tuples and already-normalized structs into command structs."
   @spec normalize(term()) :: struct() | term()
   def normalize(%_{} = command), do: command
 

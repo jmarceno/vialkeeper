@@ -11,6 +11,9 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
   use ExUnit.Case, async: false
 
   alias ElixirDB.FaultAdapter
+  alias ElixirDB.Replication.Id
+  alias ElixirDB.Replication.LocalEndpoint
+  alias ElixirDB.Replication.Worker
   alias ElixirDB.Runtime.DatabaseCatalog
 
   setup do
@@ -42,11 +45,11 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
     assert {:ok, _} =
              ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
-    {:ok, source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-    {:ok, target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+    {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    {:ok, target} = LocalEndpoint.new(b.database_uuid)
 
     assert {:ok, replication_id} =
-             ElixirDB.Replication.Id.calculate(
+             Id.calculate(
                a.database_uuid,
                b.database_uuid,
                "push",
@@ -63,7 +66,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
       phase_hook: fn _phase, _context -> :ok end
     }
 
-    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    assert {:ok, pid} = Worker.start_link(options)
     ref = Process.monitor(pid)
 
     # REPL-004 / Plan §7.7: the initial worker state is :idle, emitted before :start.
@@ -103,11 +106,11 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
     assert {:ok, %{revision: revision}} =
              ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
-    {:ok, source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-    {:ok, target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+    {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    {:ok, target} = LocalEndpoint.new(b.database_uuid)
 
     assert {:ok, replication_id} =
-             ElixirDB.Replication.Id.calculate(
+             Id.calculate(
                a.database_uuid,
                b.database_uuid,
                "push",
@@ -137,7 +140,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
       phase_hook: phase_fault_hook(faults)
     }
 
-    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    assert {:ok, pid} = Worker.start_link(options)
     ref = Process.monitor(pid)
     :gen_statem.cast(pid, :start)
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
@@ -175,16 +178,19 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
 
   defp phase_fault_hook(faults) do
     fn observed, _context ->
-      Agent.get_and_update(faults, fn adapter ->
-        case FaultAdapter.maybe_fail(adapter, observed) do
-          {:ok, next} -> {:ok, next}
-          {:error, error, next} -> {{:error, error}, next}
-        end
-      end)
-      |> case do
-        :ok -> :ok
-        {:error, error} -> {:error, error}
-      end
+      faults
+      |> Agent.get_and_update(&worker_fault_update(&1, observed))
+      |> normalize_fault_result()
     end
   end
+
+  defp worker_fault_update(adapter, observed) do
+    case FaultAdapter.maybe_fail(adapter, observed) do
+      {:ok, next} -> {:ok, next}
+      {:error, error, next} -> {{:error, error}, next}
+    end
+  end
+
+  defp normalize_fault_result(:ok), do: :ok
+  defp normalize_fault_result({:error, error}), do: {:error, error}
 end

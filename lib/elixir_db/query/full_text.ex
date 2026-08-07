@@ -1,6 +1,9 @@
 defmodule ElixirDB.Query.FullText do
   @moduledoc "Storage-neutral unicode_words_v1 tokenization and search."
 
+  alias ElixirDB.JSON.Pointer
+  alias ElixirDB.MapAccess
+
   @spec tokens(binary(), atom()) :: [binary()]
   def tokens(text, diacritics \\ :preserve) when is_binary(text) do
     text
@@ -19,42 +22,53 @@ defmodule ElixirDB.Query.FullText do
 
   @spec matches?(map(), map(), binary()) :: boolean()
   def matches?(body, definition, text) do
-    fields = definition[:fields] || definition["fields"] || []
+    fields = MapAccess.get(definition, :fields, [])
 
-    tokenization = definition[:tokenization] || definition["tokenization"] || %{}
+    tokenization = MapAccess.get(definition, :tokenization, %{})
 
     diacritics =
-      if tokenization[:diacritics] in ["remove", :remove] or
-           tokenization["diacritics"] in ["remove", :remove],
-         do: :remove,
-         else: :preserve
+      if MapAccess.get(tokenization, :diacritics) in ["remove", :remove],
+        do: :remove,
+        else: :preserve
 
     query = tokens(text, diacritics)
 
     values =
       Enum.flat_map(fields, fn field ->
-        path = if is_binary(field), do: field, else: field["path"] || field[:path]
+        path = if is_binary(field), do: field, else: MapAccess.get(field, :path)
 
-        case ElixirDB.JSON.Pointer.get(body, path) do
+        case Pointer.get(body, path) do
           {:ok, value} when is_binary(value) -> tokens(value, diacritics)
           _ -> []
         end
       end)
 
-    if query == [] do
-      false
-    else
-      case definition[:mode] || definition["mode"] || "all" do
-        "any" -> Enum.any?(query, &(&1 in values))
-        "phrase" -> phrase?(values, query)
-        _ -> Enum.all?(query, &(&1 in values))
-      end
+    case query do
+      [] ->
+        false
+
+      _ ->
+        query_matches?(query, values, MapAccess.get(definition, :mode, "all"))
     end
   end
 
+  defp query_matches?(query, values, "phrase"), do: phrase?(values, query)
+
+  defp query_matches?(query, values, mode) do
+    initial = mode == "all"
+    Enum.reduce_while(query, initial, &reduce_query_token(&1, &2, values, mode))
+  end
+
+  defp reduce_query_token(token, _matched, values, "any") do
+    if token in values, do: {:halt, true}, else: {:cont, false}
+  end
+
+  defp reduce_query_token(token, matched, values, _mode) do
+    if token in values, do: {:cont, matched}, else: {:halt, false}
+  end
+
   defp phrase?(values, query) do
-    query != [] and
-      values |> Enum.chunk_every(length(query), 1, :discard) |> Enum.any?(&(&1 == query))
+    values |> Enum.chunk_every(length(query), 1, :discard) |> Enum.any?(&(&1 == query))
   end
 
   defp flush(tokens, []), do: {tokens, []}

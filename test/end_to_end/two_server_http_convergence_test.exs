@@ -10,9 +10,11 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   """
   use ExUnit.Case, async: false
 
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Replication.Id
+  alias ElixirDB.Replication.JobManager
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.TestServer
-
   @tag :slow
   test "two Bandit servers converge over remote wire across mid-replication restart" do
     root = ElixirDB.Config.database_root()
@@ -70,7 +72,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
     ElixirDB.Eventual.eventually(
       fn ->
-        case ElixirDB.Replication.JobManager.get(a_uuid, job_id) do
+        case JobManager.get(a_uuid, job_id) do
           {:ok, %{state: state}} when state in [:waiting, :backoff, :handshake, :read_changes] ->
             true
 
@@ -95,11 +97,11 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     assert {:error, _} = Req.get("http://127.0.0.1:#{port_a}/v1/databases", retry: false)
     assert {:error, _} = Req.get("http://127.0.0.1:#{port_b}/v1/databases", retry: false)
 
-    assert {:ok, _} = ElixirDB.Replication.JobManager.disable(a_uuid, job_id)
+    assert {:ok, _} = JobManager.disable(a_uuid, job_id)
 
     ElixirDB.Eventual.eventually(
       fn ->
-        case ElixirDB.Replication.JobManager.get(a_uuid, job_id) do
+        case JobManager.get(a_uuid, job_id) do
           {:ok, %{state: :disabled}} -> true
           _ -> false
         end
@@ -125,11 +127,11 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     assert server_b2.port == port_b
 
     # Explicit resume path: enable + start after Bandit restart.
-    assert {:ok, _} = ElixirDB.Replication.JobManager.enable(a_uuid, job_id)
+    assert {:ok, _} = JobManager.enable(a_uuid, job_id)
 
     ElixirDB.Eventual.eventually(
       fn ->
-        case ElixirDB.Replication.JobManager.get(a_uuid, job_id) do
+        case JobManager.get(a_uuid, job_id) do
           {:ok, %{state: state}}
           when state in [
                  :waiting,
@@ -165,7 +167,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     wait_for_document!(server_b2, b_uuid, "post-restart", post_rev, %{"n" => 4})
 
     assert {:ok, replication_id} =
-             ElixirDB.Replication.Id.calculate(a_uuid, b_uuid, "push", "continuous")
+             Id.calculate(a_uuid, b_uuid, "push", "continuous")
 
     final_sequence = source_sequence!(a_uuid)
     assert final_sequence >= 4
@@ -207,7 +209,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     assert {:ok, %{ok: true}} =
              DatabaseCatalog.command(b_uuid, {:command, :integrity_check, %{}})
 
-    _ = ElixirDB.Replication.JobManager.disable(a_uuid, job_id)
+    _ = JobManager.disable(a_uuid, job_id)
   end
 
   defp create_database!(server, path) do
@@ -248,23 +250,25 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
   defp wait_for_document!(server, uuid, id, revision, body_subset) do
     ElixirDB.Eventual.eventually(
-      fn ->
-        case get_document!(server, uuid, id) do
-          {:ok, %{"revision" => ^revision, "body" => body}} ->
-            Enum.all?(body_subset, fn {k, v} -> body[k] == v end)
-
-          _ ->
-            false
-        end
-      end,
+      fn -> document_matches?(server, uuid, id, revision, body_subset) end,
       timeout: 20_000,
       message: "document #{id} revision #{revision} did not appear on remote server"
     )
   end
 
+  defp document_matches?(server, uuid, id, revision, body_subset) do
+    case get_document!(server, uuid, id) do
+      {:ok, %{"revision" => ^revision, "body" => body}} -> body_subset_matches?(body, body_subset)
+      _ -> false
+    end
+  end
+
+  defp body_subset_matches?(body, body_subset),
+    do: Enum.all?(body_subset, fn {key, value} -> body[key] == value end)
+
   defp source_sequence!(uuid) do
     assert {:ok, identity} = DatabaseCatalog.command(uuid, {:command, :identity, %{}})
-    identity[:current_sequence] || identity["current_sequence"]
+    MapAccess.get(identity, :current_sequence)
   end
 
   defp checkpoint_source_sequence(uuid, replication_id) do
@@ -273,10 +277,10 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
            {:command, :get_local_record, "checkpoints", replication_id}
          ) do
       {:ok, %{value: value}} when is_map(value) ->
-        {:ok, value["source_sequence"] || value[:source_sequence]}
+        {:ok, MapAccess.get(value, :source_sequence)}
 
       {:ok, %{"value" => value}} when is_map(value) ->
-        {:ok, value["source_sequence"] || value[:source_sequence]}
+        {:ok, MapAccess.get(value, :source_sequence)}
 
       other ->
         other
@@ -302,20 +306,20 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   defp leaf_map(changes) do
     Map.new(changes, fn change ->
       leaves =
-        (change.leaf_revisions || change["leaf_revisions"] || [])
-        |> Enum.map(fn leaf -> leaf[:revision] || leaf["revision"] end)
+        MapAccess.get(change, :leaf_revisions, [])
+        |> Enum.map(&MapAccess.get(&1, :revision))
         |> Enum.reject(&is_nil/1)
         |> MapSet.new()
 
-      {change.document_id || change["document_id"], leaves}
+      {MapAccess.get(change, :document_id), leaves}
     end)
   end
 
   defp maybe_disable_jobs(uuid) do
-    case ElixirDB.Replication.JobManager.list(uuid) do
+    case JobManager.list(uuid) do
       {:ok, jobs} ->
         Enum.each(jobs, fn job ->
-          _ = ElixirDB.Replication.JobManager.disable(uuid, job.job_id)
+          _ = JobManager.disable(uuid, job.job_id)
         end)
 
       _ ->

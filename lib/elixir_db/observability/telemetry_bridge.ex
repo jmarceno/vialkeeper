@@ -54,12 +54,10 @@ defmodule ElixirDB.Observability.TelemetryBridge do
 
   @doc false
   def handle_event(event, measurements, metadata, _config) do
-    try do
-      dispatch(event, measurements, metadata)
-    catch
-      # Never leak an observability fault into the emitting (request) process.
-      _, _ -> :ok
-    end
+    dispatch(event, measurements, metadata)
+  catch
+    # Never leak an observability fault into the emitting (request) process.
+    _, _ -> :ok
   end
 
   defp dispatch([:finch, :request, :start], _measurements, _metadata) do

@@ -5,7 +5,9 @@ import Config
 # `<database_root>/host.toml` at runtime by config/runtime.exs. Per-database
 # defaults are owned by `ElixirDB.Config`.
 
-config :logger, :console, format: "[$level] $message\n"
+config :logger, :console,
+  format: "[$level] $message\n",
+  metadata: [:database_uuid, :kind, :reason]
 
 # OpenTelemetry resource identity and span batch processor tuning only (plan
 # §2.2). The OTLP endpoint is intentionally NOT set here — a hardcoded endpoint

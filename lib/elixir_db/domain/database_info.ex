@@ -1,4 +1,6 @@
 defmodule ElixirDB.Domain.DatabaseInfo do
+  @moduledoc "Database identity and persisted runtime metadata."
+
   @enforce_keys [:database_uuid, :current_sequence, :file_format_version, :logical_schema_version]
   defstruct [
     :database_uuid,

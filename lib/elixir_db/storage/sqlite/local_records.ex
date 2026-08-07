@@ -7,15 +7,16 @@ defmodule ElixirDB.Storage.SQLite.LocalRecords do
   """
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.Connection
-
   @doc false
   def get(adapter, namespace, key),
-    do: ElixirDB.Storage.SQLite.Adapter.get_local_record(adapter, namespace, key)
+    do: Adapter.get_local_record(adapter, namespace, key)
 
   @doc false
   def put(adapter, request),
-    do: ElixirDB.Storage.SQLite.Adapter.put_local_record_cas(adapter, request)
+    do: Adapter.put_local_record_cas(adapter, request)
 
   @doc """
   Loads one local record by namespace and key, or `nil` when absent.
@@ -45,10 +46,10 @@ defmodule ElixirDB.Storage.SQLite.LocalRecords do
   """
   @spec put_cas_tx(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def put_cas_tx(%{conn: conn}, request) when is_map(request) do
-    namespace = request[:namespace] || request["namespace"]
-    key = request[:key] || request["key"]
-    expected = request[:expected_version] || request["expected_version"] || 0
-    value = request[:value] || request["value"]
+    namespace = MapAccess.get(request, :namespace)
+    key = MapAccess.get(request, :key)
+    expected = MapAccess.get(request, :expected_version, 0)
+    value = MapAccess.get(request, :value)
 
     with {:ok, current} <- fetch(conn, namespace, key),
          observed <- if(is_nil(current), do: 0, else: current.version),

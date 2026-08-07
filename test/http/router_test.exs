@@ -1,4 +1,7 @@
 defmodule ElixirDB.HTTP.RouterTest do
+  alias ElixirDB.HTTP.Router
+  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.Runtime.DatabaseCatalog
   use ExUnit.Case, async: false
 
   test "database and document endpoints return versioned envelopes" do
@@ -8,15 +11,15 @@ defmodule ElixirDB.HTTP.RouterTest do
     conn =
       Plug.Test.conn(:post, "/v1/databases", body)
       |> Plug.Conn.put_req_header("content-type", "application/json")
-      |> ElixirDB.HTTP.Router.call([])
+      |> Router.call([])
 
     assert conn.status == 201
-    {:ok, created} = ElixirDB.JSON.StrictDecoder.decode(conn.resp_body)
+    {:ok, created} = StrictDecoder.decode(conn.resp_body)
     uuid = created["data"]["database_uuid"]
 
     on_exit(fn ->
-      _ = ElixirDB.Runtime.DatabaseCatalog.close(uuid)
-      _ = ElixirDB.Runtime.DatabaseCatalog.unregister(uuid)
+      _ = DatabaseCatalog.close(uuid)
+      _ = DatabaseCatalog.unregister(uuid)
       ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
     end)
 
@@ -25,7 +28,7 @@ defmodule ElixirDB.HTTP.RouterTest do
     conn =
       Plug.Test.conn(:post, "/v1/databases/#{uuid}/documents/put", put)
       |> Plug.Conn.put_req_header("content-type", "application/json")
-      |> ElixirDB.HTTP.Router.call([])
+      |> Router.call([])
 
     assert conn.status == 201
 
@@ -34,10 +37,10 @@ defmodule ElixirDB.HTTP.RouterTest do
     conn =
       Plug.Test.conn(:post, "/v1/databases/#{uuid}/documents/get", get)
       |> Plug.Conn.put_req_header("content-type", "application/json")
-      |> ElixirDB.HTTP.Router.call([])
+      |> Router.call([])
 
     assert conn.status == 200
-    {:ok, response} = ElixirDB.JSON.StrictDecoder.decode(conn.resp_body)
+    {:ok, response} = StrictDecoder.decode(conn.resp_body)
     assert response["data"]["body"]["ok"] == true
   end
 end

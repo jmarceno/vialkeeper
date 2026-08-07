@@ -65,7 +65,7 @@ defmodule ElixirDB.StorageAdapter.V1ConformanceTest do
     assert {:ok, %{conflicts: conflicts}} =
              @adapter.get_document(adapter, %{document_id: "doc", include_conflicts: true})
 
-    assert length(conflicts) == 1
+    assert [_] = conflicts
     assert hd(conflicts) in [left, right]
 
     assert {:error, %ElixirDB.Error{code: :revision_conflict}} =

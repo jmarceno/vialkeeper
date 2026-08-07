@@ -8,7 +8,10 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
 
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.Canonical
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Revisions.ConflictResolution
   alias ElixirDB.Revisions.{Id, Winner}
+  alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.{Changes, Documents, IndexCatalog, Revisions}
 
   @doc """
@@ -16,11 +19,11 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   """
   @spec apply_local_tx(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def apply_local_tx(adapter, request) do
-    operation = request[:operation] || request["operation"] || :put
-    document_id = request[:document_id] || request["document_id"]
-    if_revision = Map.get(request, :if_revision, Map.get(request, "if_revision"))
+    operation = MapAccess.get(request, :operation, :put)
+    document_id = MapAccess.get(request, :document_id)
+    if_revision = MapAccess.get(request, :if_revision)
     deleted = operation in [:delete, "delete"]
-    body = if deleted, do: nil, else: request[:body] || request["body"]
+    body = if deleted, do: nil, else: MapAccess.get(request, :body)
 
     with :ok <- validate_mutation_operation(operation),
          :ok <- validate_document_input(adapter, document_id, deleted, body),
@@ -55,10 +58,10 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   """
   @spec resolve_conflict_tx(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def resolve_conflict_tx(adapter, request) do
-    document_id = request[:document_id] || request["document_id"]
-    expected = request[:expected_live_revisions] || request["expected_live_revisions"] || []
-    body = request[:body] || request["body"]
-    delete_all = request[:delete_all] || request["delete_all"] || false
+    document_id = MapAccess.get(request, :document_id)
+    expected = MapAccess.get(request, :expected_live_revisions, [])
+    body = MapAccess.get(request, :body)
+    delete_all = MapAccess.get(request, :delete_all, false)
 
     with true <- is_boolean(delete_all),
          :ok <-
@@ -70,30 +73,32 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
            ),
          {:ok, %{doc_key: _} = doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current_leaves} <- Revisions.load_leaves(adapter.conn, doc.doc_key),
-         :ok <- ElixirDB.Revisions.ConflictResolution.validate_leaf_set(current_leaves, expected),
+         :ok <- ConflictResolution.validate_leaf_set(current_leaves, expected),
          {:ok, revisions} <-
            build_resolution_revisions(document_id, current_leaves, request, body, delete_all),
          {:ok, status} <- resolution_status(adapter, doc.doc_key, revisions) do
-      case status do
-        :replayed ->
-          with {:ok, winner} <- current_winner(adapter, doc),
-               {:ok, result} <- document_mutation_result(adapter, doc, winner) do
-            {:ok, Map.put(result, :replayed, true)}
-          end
-
-        :new ->
-          with :ok <- insert_resolution_revisions(adapter, doc.doc_key, revisions),
-               {:ok, result} <-
-                 finalize_document(adapter, doc.doc_key, document_id, List.first(revisions)) do
-            {:ok, Map.put(result, :replayed, false)}
-          end
-      end
+      resolve_conflict_status(adapter, doc, document_id, revisions, status)
     else
       {:ok, nil} ->
         {:error, ElixirDB.Error.document_not_found("document does not exist")}
 
       {:error, error} ->
         {:error, error}
+    end
+  end
+
+  defp resolve_conflict_status(adapter, doc, _document_id, _revisions, :replayed) do
+    with {:ok, winner} <- current_winner(adapter, doc),
+         {:ok, result} <- document_mutation_result(adapter, doc, winner) do
+      {:ok, Map.put(result, :replayed, true)}
+    end
+  end
+
+  defp resolve_conflict_status(adapter, doc, document_id, revisions, :new) do
+    with :ok <- insert_resolution_revisions(adapter, doc.doc_key, revisions),
+         {:ok, result} <-
+           finalize_document(adapter, doc.doc_key, document_id, List.first(revisions)) do
+      {:ok, Map.put(result, :replayed, false)}
     end
   end
 
@@ -128,42 +133,70 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     max_body =
       get_in(adapter_identity(adapter), [:config, "documents", "max_document_bytes"]) || 1_048_576
 
-    body_size_error =
-      if not deleted and is_map(body) do
-        case Canonical.encode(body) do
-          {:ok, json} when byte_size(json) <= max_body -> nil
-          {:ok, _json} -> :too_large
-          {:error, _error} -> :invalid
-        end
-      else
+    validators = [
+      fn -> validate_document_id(document_id) end,
+      fn -> validate_document_id_size(document_id, max_id) end,
+      fn -> validate_document_id_characters(document_id) end,
+      fn -> validate_deleted_body(deleted, body) end,
+      fn -> validate_live_body(deleted, body) end,
+      fn -> validate_body_size(deleted, body, max_body) end
+    ]
+
+    case Enum.find_value(validators, & &1.()) do
+      nil -> :ok
+      error -> {:error, error}
+    end
+  end
+
+  defp validate_document_id(value) when is_binary(value) and value != "" do
+    if String.valid?(value), do: nil, else: invalid_document_id()
+  end
+
+  defp validate_document_id(_), do: invalid_document_id()
+
+  defp invalid_document_id,
+    do: ElixirDB.Error.invalid_request("document id must be a non-empty UTF-8 string")
+
+  defp validate_document_id_size(value, max) when is_binary(value) and byte_size(value) <= max,
+    do: nil
+
+  defp validate_document_id_size(_value, _max),
+    do: ElixirDB.Error.resource_limit("document id exceeds the configured limit")
+
+  defp validate_document_id_characters(value) do
+    if String.contains?(value, <<0>>) or String.starts_with?(value, "_system/") or
+         Enum.any?(String.to_charlist(value), &(&1 < 0x20)),
+       do: ElixirDB.Error.invalid_request("document id contains a reserved character"),
+       else: nil
+  end
+
+  defp validate_deleted_body(true, nil), do: nil
+
+  defp validate_deleted_body(true, _body),
+    do: ElixirDB.Error.invalid_request("deleted revisions must not contain a body")
+
+  defp validate_deleted_body(false, _body), do: nil
+
+  defp validate_live_body(false, body) when is_map(body), do: nil
+  defp validate_live_body(true, _body), do: nil
+
+  defp validate_live_body(false, _body),
+    do: ElixirDB.Error.invalid_request("document body must be an object")
+
+  defp validate_body_size(true, _body, _max), do: nil
+  defp validate_body_size(false, body, max) when is_map(body), do: body_size_error(body, max)
+  defp validate_body_size(false, _body, _max), do: nil
+
+  defp body_size_error(body, max) do
+    case Canonical.encode(body) do
+      {:ok, json} when byte_size(json) <= max ->
         nil
-      end
 
-    cond do
-      not is_binary(document_id) or document_id == "" or not String.valid?(document_id) ->
-        {:error, ElixirDB.Error.invalid_request("document id must be a non-empty UTF-8 string")}
+      {:ok, _json} ->
+        ElixirDB.Error.resource_limit("document body exceeds the configured limit")
 
-      byte_size(document_id) > max_id ->
-        {:error, ElixirDB.Error.resource_limit("document id exceeds the configured limit")}
-
-      String.contains?(document_id, <<0>>) or String.starts_with?(document_id, "_system/") or
-          Enum.any?(String.to_charlist(document_id), &(&1 < 0x20)) ->
-        {:error, ElixirDB.Error.invalid_request("document id contains a reserved character")}
-
-      deleted and not is_nil(body) ->
-        {:error, ElixirDB.Error.invalid_request("deleted revisions must not contain a body")}
-
-      not deleted and not is_map(body) ->
-        {:error, ElixirDB.Error.invalid_request("document body must be an object")}
-
-      body_size_error == :too_large ->
-        {:error, ElixirDB.Error.resource_limit("document body exceeds the configured limit")}
-
-      body_size_error == :invalid ->
-        {:error, ElixirDB.Error.invalid_request("document body must contain canonical JSON values")}
-
-      true ->
-        :ok
+      {:error, _error} ->
+        ElixirDB.Error.invalid_request("document body must contain canonical JSON values")
     end
   end
 
@@ -181,39 +214,38 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   end
 
   defp candidate_revision(adapter, doc, document_id, if_revision, current, deleted, body) do
-    cond do
-      is_nil(current) and not is_nil(if_revision) ->
-        {:error, ElixirDB.Error.revision_conflict("document does not have the expected parent")}
-
-      true ->
-        with {:ok, revision} <- build_candidate(document_id, if_revision, deleted, body) do
-          cond do
-            is_nil(current) or if_revision == current.revision_id ->
-              {:ok, revision}
-
-            true ->
-              # Stale parent: the candidate is only acceptable if an identical revision
-              # already exists (a replay). Defer the winner check to insert_local_revision,
-              # which rejects superseded retries with operation_already_committed: true and
-              # replays only when the candidate is still the winner. A content mismatch under
-              # the same revision id is an integrity violation (caught in the unified path).
-              case Revisions.find(adapter.conn, doc.doc_key, revision.revision_id) do
-                {:ok, existing} ->
-                  if Revisions.same?(existing, revision) do
-                    {:ok, revision}
-                  else
-                    stale_revision_error(if_revision, current, revision)
-                  end
-
-                {:error, %ElixirDB.Error{code: :revision_not_found}} ->
-                  stale_revision_error(if_revision, current, revision)
-
-                {:error, error} ->
-                  {:error, error}
-              end
-          end
-        end
+    if is_nil(current) and not is_nil(if_revision) do
+      {:error, ElixirDB.Error.revision_conflict("document does not have the expected parent")}
+    else
+      with {:ok, revision} <- build_revision(document_id, if_revision, deleted, body) do
+        candidate_from_revision(adapter, doc, if_revision, current, revision)
+      end
     end
+  end
+
+  defp candidate_from_revision(_adapter, _doc, _if_revision, nil, revision), do: {:ok, revision}
+
+  defp candidate_from_revision(_adapter, _doc, if_revision, current, revision)
+       when if_revision == current.revision_id,
+       do: {:ok, revision}
+
+  defp candidate_from_revision(adapter, doc, if_revision, current, revision) do
+    case Revisions.find(adapter.conn, doc.doc_key, revision.revision_id) do
+      {:ok, existing} ->
+        replay_candidate(existing, revision, if_revision, current)
+
+      {:error, %ElixirDB.Error{code: :revision_not_found}} ->
+        stale_revision_error(if_revision, current, revision)
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp replay_candidate(existing, revision, if_revision, current) do
+    if Revisions.same?(existing, revision),
+      do: {:ok, revision},
+      else: stale_revision_error(if_revision, current, revision)
   end
 
   defp stale_revision_error(if_revision, current, revision) do
@@ -224,22 +256,6 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
        candidate_revision: revision.revision_id,
        operation_already_committed: false
      })}
-  end
-
-  defp build_candidate(document_id, parent_revision, deleted, body) do
-    with {:ok, revision_id} <- Id.calculate(document_id, parent_revision, deleted, body),
-         {:ok, generation} <- Id.generation(revision_id) do
-      {:ok,
-       %Revision{
-         document_id: document_id,
-         revision_id: revision_id,
-         generation: generation,
-         parent_revision: parent_revision,
-         digest: digest(revision_id),
-         deleted: deleted,
-         body: body
-       }}
-    end
   end
 
   defp insert_local_revision(adapter, nil, %Revision{} = candidate, _if_revision, _operation) do
@@ -253,20 +269,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   defp insert_local_revision(adapter, doc, %Revision{} = candidate, _if_revision, _operation) do
     case Revisions.find(adapter.conn, doc.doc_key, candidate.revision_id) do
       {:ok, existing} ->
-        if Revisions.same?(existing, candidate) do
-          if doc.winning_revision == candidate.revision_id,
-            do:
-              {:ok,
-               %{revision: candidate.revision_id, sequence: doc.update_sequence, replayed: true}},
-            else:
-              {:error,
-               ElixirDB.Error.revision_conflict("operation was already committed", %{
-                 operation_already_committed: true,
-                 revision: candidate.revision_id
-               })}
-        else
-          {:error, ElixirDB.Error.integrity_violation("revision id has different content")}
-        end
+        existing_local_revision_result(existing, doc, candidate)
 
       {:error, %ElixirDB.Error{code: :revision_not_found}} ->
         with :ok <- Revisions.ensure_parent(adapter.conn, doc.doc_key, candidate.parent_revision),
@@ -280,6 +283,23 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
         {:error, error}
     end
   end
+
+  defp existing_local_revision_result(existing, doc, candidate) do
+    if Revisions.same?(existing, candidate),
+      do: local_replay_result(doc, candidate),
+      else: {:error, ElixirDB.Error.integrity_violation("revision id has different content")}
+  end
+
+  defp local_replay_result(doc, candidate) when doc.winning_revision == candidate.revision_id,
+    do: {:ok, %{revision: candidate.revision_id, sequence: doc.update_sequence, replayed: true}}
+
+  defp local_replay_result(_doc, candidate),
+    do:
+      {:error,
+       ElixirDB.Error.revision_conflict("operation was already committed", %{
+         operation_already_committed: true,
+         revision: candidate.revision_id
+       })}
 
   defp finalize_document(adapter, doc_key, document_id, _candidate) do
     with {:ok, all_leaves} <- Revisions.load_leaves(adapter.conn, doc_key),
@@ -305,19 +325,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
 
   defp prepare_bulk_operations(adapter, operations) do
     Enum.reduce_while(operations, {:ok, [], %{}}, fn operation, {:ok, effects, affected} ->
-      case prepare_bulk_operation(adapter, operation) do
-        {:ok, effect} ->
-          affected =
-            if(effect.changed,
-              do: Map.put(affected, effect.doc_key, effect.document_id),
-              else: affected
-            )
-
-          {:cont, {:ok, [effect | effects], affected}}
-
-        {:error, error} ->
-          {:halt, {:error, error}}
-      end
+      prepare_bulk_effect(adapter, operation, effects, affected)
     end)
     |> case do
       {:ok, effects, affected} -> {:ok, Enum.reverse(effects), affected}
@@ -325,8 +333,23 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
+  defp prepare_bulk_effect(adapter, operation, effects, affected) do
+    case prepare_bulk_operation(adapter, operation) do
+      {:ok, effect} ->
+        {:cont, {:ok, [effect | effects], update_affected(affected, effect)}}
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
+  defp update_affected(affected, %{changed: true, doc_key: doc_key, document_id: document_id}),
+    do: Map.put(affected, doc_key, document_id)
+
+  defp update_affected(affected, _effect), do: affected
+
   defp prepare_bulk_operation(adapter, request) do
-    operation = request[:operation] || request["operation"] || :put
+    operation = MapAccess.get(request, :operation, :put)
 
     case operation do
       operation when operation in [:resolve, "resolve"] ->
@@ -341,11 +364,11 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   end
 
   defp prepare_bulk_mutation_operation(adapter, request) do
-    operation = request[:operation] || request["operation"] || :put
-    document_id = request[:document_id] || request["document_id"]
-    if_revision = Map.get(request, :if_revision, Map.get(request, "if_revision"))
+    operation = MapAccess.get(request, :operation, :put)
+    document_id = MapAccess.get(request, :document_id)
+    if_revision = MapAccess.get(request, :if_revision)
     deleted = operation in [:delete, "delete"]
-    body = if(deleted, do: nil, else: request[:body] || request["body"])
+    body = if(deleted, do: nil, else: MapAccess.get(request, :body))
 
     with :ok <- validate_mutation_operation(operation),
          :ok <- validate_document_input(adapter, document_id, deleted, body),
@@ -353,79 +376,77 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          {:ok, current} <- current_winner(adapter, doc),
          {:ok, candidate_state} <-
            candidate_revision(adapter, doc, document_id, if_revision, current, deleted, body) do
-      case doc do
-        nil ->
-          candidate = candidate_state
-
-          with {:ok, doc_key} <- Documents.insert(adapter.conn, document_id),
-               :ok <- Revisions.insert(adapter.conn, doc_key, candidate),
-               :ok <- update_pending_document(adapter, doc_key, candidate) do
-            {:ok,
-             %{
-               doc_key: doc_key,
-               document_id: document_id,
-               changed: true,
-               replayed: false,
-               result: %{revision: candidate.revision_id, sequence: 0}
-             }}
-          end
-
-        doc ->
-          # TX-006: the same unified winner check as insert_local_revision. A stale-parent
-          # retry that was superseded fails the batch atomically with
-          # operation_already_committed: true; only the still-winning candidate replays.
-          candidate = candidate_state
-
-          case Revisions.find(adapter.conn, doc.doc_key, candidate.revision_id) do
-            {:ok, existing} ->
-              if Revisions.same?(existing, candidate) do
-                if doc.winning_revision == candidate.revision_id do
-                  {:ok,
-                   %{
-                     doc_key: doc.doc_key,
-                     document_id: document_id,
-                     changed: false,
-                     replayed: true,
-                     result: %{revision: candidate.revision_id, sequence: doc.update_sequence}
-                   }}
-                else
-                  {:error,
-                   ElixirDB.Error.revision_conflict("operation was already committed", %{
-                     operation_already_committed: true,
-                     revision: candidate.revision_id
-                   })}
-                end
-              else
-                {:error, ElixirDB.Error.integrity_violation("revision id has different content")}
-              end
-
-            {:error, %ElixirDB.Error{code: :revision_not_found}} ->
-              with :ok <-
-                     Revisions.ensure_parent(adapter.conn, doc.doc_key, candidate.parent_revision),
-                   :ok <- Revisions.insert(adapter.conn, doc.doc_key, candidate),
-                   :ok <- update_pending_document(adapter, doc.doc_key, candidate) do
-                {:ok,
-                 %{
-                   doc_key: doc.doc_key,
-                   document_id: document_id,
-                   changed: true,
-                   replayed: false,
-                   result: %{revision: candidate.revision_id, sequence: 0}
-                 }}
-              end
-
-            {:error, error} ->
-              {:error, error}
-          end
-      end
+      prepare_bulk_document(adapter, doc, candidate_state, document_id)
     end
   end
 
+  defp prepare_bulk_document(adapter, nil, candidate, document_id) do
+    with {:ok, doc_key} <- Documents.insert(adapter.conn, document_id),
+         :ok <- Revisions.insert(adapter.conn, doc_key, candidate),
+         :ok <- update_pending_document(adapter, doc_key, candidate) do
+      {:ok,
+       bulk_effect(doc_key, document_id, true, false, %{
+         revision: candidate.revision_id,
+         sequence: 0
+       })}
+    end
+  end
+
+  defp prepare_bulk_document(adapter, doc, candidate, document_id) do
+    case Revisions.find(adapter.conn, doc.doc_key, candidate.revision_id) do
+      {:ok, existing} ->
+        existing_bulk_revision(existing, doc, candidate, document_id)
+
+      {:error, %ElixirDB.Error{code: :revision_not_found}} ->
+        with :ok <- Revisions.ensure_parent(adapter.conn, doc.doc_key, candidate.parent_revision),
+             :ok <- Revisions.insert(adapter.conn, doc.doc_key, candidate),
+             :ok <- update_pending_document(adapter, doc.doc_key, candidate) do
+          {:ok,
+           bulk_effect(
+             doc.doc_key,
+             document_id,
+             true,
+             false,
+             %{revision: candidate.revision_id, sequence: 0}
+           )}
+        end
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp existing_bulk_revision(existing, doc, candidate, document_id) do
+    if Revisions.same?(existing, candidate),
+      do: bulk_replay_revision(doc, candidate, document_id),
+      else: {:error, ElixirDB.Error.integrity_violation("revision id has different content")}
+  end
+
+  defp bulk_replay_revision(doc, candidate, document_id)
+       when doc.winning_revision == candidate.revision_id do
+    {:ok,
+     bulk_effect(
+       doc.doc_key,
+       document_id,
+       false,
+       true,
+       %{revision: candidate.revision_id, sequence: doc.update_sequence}
+     )}
+  end
+
+  defp bulk_replay_revision(_doc, candidate, _document_id),
+    do:
+      {:error,
+       ElixirDB.Error.revision_conflict("operation was already committed", %{
+         operation_already_committed: true,
+         revision: candidate.revision_id
+       })}
+
   defp prepare_bulk_resolution_operation(adapter, request) do
-    document_id = request[:document_id] || request["document_id"]
-    expected = request[:expected_live_revisions] || request["expected_live_revisions"] || []
-    body = Map.get(request, :body, Map.get(request, "body"))
-    delete_all = Map.get(request, :delete_all, Map.get(request, "delete_all", false))
+    document_id = MapAccess.get(request, :document_id)
+    expected = MapAccess.get(request, :expected_live_revisions, [])
+    body = MapAccess.get(request, :body)
+    delete_all = MapAccess.get(request, :delete_all, false)
 
     with true <- is_boolean(delete_all),
          :ok <-
@@ -438,36 +459,11 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          true <- is_list(expected) and Enum.all?(expected, &is_binary/1),
          {:ok, %{doc_key: _} = doc} <- Documents.find(adapter.conn, document_id),
          {:ok, leaves} <- Revisions.load_leaves(adapter.conn, doc.doc_key),
-         :ok <- ElixirDB.Revisions.ConflictResolution.validate_leaf_set(leaves, expected),
+         :ok <- ConflictResolution.validate_leaf_set(leaves, expected),
          {:ok, revisions} <-
            build_resolution_revisions(document_id, leaves, request, body, delete_all),
          {:ok, status} <- resolution_status(adapter, doc.doc_key, revisions) do
-      case status do
-        :replayed ->
-          {:ok, winner} = current_winner(adapter, doc)
-
-          {:ok,
-           %{
-             doc_key: doc.doc_key,
-             document_id: document_id,
-             changed: false,
-             replayed: true,
-             result: %{revision: winner.revision_id, sequence: doc.update_sequence}
-           }}
-
-        :new ->
-          with :ok <- insert_resolution_revisions(adapter, doc.doc_key, revisions),
-               :ok <- update_pending_document(adapter, doc.doc_key, List.first(revisions)) do
-            {:ok,
-             %{
-               doc_key: doc.doc_key,
-               document_id: document_id,
-               changed: true,
-               replayed: false,
-               result: %{revision: List.first(revisions).revision_id, sequence: 0}
-             }}
-          end
-      end
+      prepare_resolution_status(adapter, doc, document_id, revisions, status)
     else
       {:ok, nil} ->
         {:error, ElixirDB.Error.document_not_found("document does not exist")}
@@ -481,12 +477,47 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
+  defp prepare_resolution_status(adapter, doc, document_id, _revisions, :replayed) do
+    {:ok, winner} = current_winner(adapter, doc)
+
+    {:ok,
+     bulk_effect(
+       doc.doc_key,
+       document_id,
+       false,
+       true,
+       %{revision: winner.revision_id, sequence: doc.update_sequence}
+     )}
+  end
+
+  defp prepare_resolution_status(adapter, doc, document_id, revisions, :new) do
+    with :ok <- insert_resolution_revisions(adapter, doc.doc_key, revisions),
+         :ok <- update_pending_document(adapter, doc.doc_key, List.first(revisions)) do
+      {:ok,
+       bulk_effect(
+         doc.doc_key,
+         document_id,
+         true,
+         false,
+         %{revision: List.first(revisions).revision_id, sequence: 0}
+       )}
+    end
+  end
+
+  defp bulk_effect(doc_key, document_id, changed, replayed, result),
+    do: %{
+      doc_key: doc_key,
+      document_id: document_id,
+      changed: changed,
+      replayed: replayed,
+      result: result
+    }
+
   defp update_pending_document(adapter, doc_key, _candidate) do
     with {:ok, leaves_now} <- Revisions.load_leaves(adapter.conn, doc_key),
          {:ok, winner} <- Winner.select(leaves_now),
-         :ok <- Documents.update(adapter.conn, doc_key, winner, 0),
-         :ok <- IndexCatalog.refresh_ready(adapter.conn, doc_key, winner) do
-      :ok
+         :ok <- Documents.update(adapter.conn, doc_key, winner, 0) do
+      IndexCatalog.refresh_ready(adapter.conn, doc_key, winner)
     end
   end
 
@@ -502,28 +533,35 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   end
 
   defp resolution_status(adapter, doc_key, revisions) do
-    statuses =
-      Enum.map(revisions, fn revision ->
-        case Revisions.find(adapter.conn, doc_key, revision.revision_id) do
-          {:ok, existing} ->
-            if(Revisions.same?(existing, revision), do: :existing, else: :different)
+    statuses = Enum.map(revisions, &resolution_revision_status(adapter, doc_key, &1))
 
-          {:error, %ElixirDB.Error{code: :revision_not_found}} ->
-            :missing
+    classify_resolution_statuses(statuses)
+  end
 
-          {:error, _} ->
-            :different
-        end
+  defp resolution_revision_status(adapter, doc_key, revision) do
+    case Revisions.find(adapter.conn, doc_key, revision.revision_id) do
+      {:ok, existing} -> if(Revisions.same?(existing, revision), do: :existing, else: :different)
+      {:error, %ElixirDB.Error{code: :revision_not_found}} -> :missing
+      {:error, _} -> :different
+    end
+  end
+
+  defp classify_resolution_statuses(statuses) do
+    {has_different, has_existing, has_missing} =
+      Enum.reduce(statuses, {false, false, false}, fn
+        :different, {_different, existing, missing} -> {true, existing, missing}
+        :existing, {different, _existing, missing} -> {different, true, missing}
+        :missing, {different, existing, _missing} -> {different, existing, true}
       end)
 
     cond do
-      Enum.any?(statuses, &(&1 == :different)) ->
+      has_different ->
         {:error, ElixirDB.Error.integrity_violation("resolution revision id has different content")}
 
-      statuses != [] and Enum.all?(statuses, &(&1 == :existing)) ->
+      has_existing and not has_missing ->
         {:ok, :replayed}
 
-      Enum.any?(statuses, &(&1 == :existing)) ->
+      has_existing ->
         {:error,
          ElixirDB.Error.revision_conflict("conflict resolution replay is only partially present")}
 
@@ -542,7 +580,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   end
 
   defp build_resolution_revisions(document_id, leaves, request, body, delete_all) do
-    chosen = request[:chosen_parent_revision] || request["chosen_parent_revision"]
+    chosen = MapAccess.get(request, :chosen_parent_revision)
     live = Enum.reject(leaves, & &1.deleted)
 
     cond do
@@ -601,7 +639,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     do: Revisions.find(adapter.conn, doc.doc_key, doc.winning_revision)
 
   defp adapter_identity(adapter) do
-    case ElixirDB.Storage.SQLite.Adapter.identity(adapter) do
+    case Adapter.identity(adapter) do
       {:ok, value} -> value
       _ -> %{current_sequence: 0, config: ElixirDB.Config.defaults()}
     end

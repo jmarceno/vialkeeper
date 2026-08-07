@@ -2,15 +2,21 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   @moduledoc "Registration catalog and lazy database runtime manager."
   use GenServer
   require Logger
-  alias ElixirDB.Storage.SQLite.Adapter
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.Database
+  alias ElixirDB.Replication.JobManager
 
   alias ElixirDB.Runtime.{
     DatabaseAdmission,
     DatabaseOwner,
     DatabaseRuntimeSupervisor,
+    PathSafety,
     RegistrationManifest
   }
 
+  alias ElixirDB.Runtime.ChangeNotifier
+  alias ElixirDB.Runtime.DatabaseAdmission
+  alias ElixirDB.Storage.SQLite.Adapter
   def start_link(_args), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
   def create(relative_path, options \\ %{}),
@@ -26,7 +32,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   # before the GenServer.call — so the span is a child of the caller's trace
   # (e.g. the HTTP request that triggered the open) and covers call latency.
   def open(uuid) do
-    ElixirDB.Observability.Instrumentation.Database.open(uuid, fn ->
+    Database.open(uuid, fn ->
       GenServer.call(__MODULE__, {:open, uuid}, 30_000)
     end)
   end
@@ -70,7 +76,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
              false <- File.exists?(absolute),
              {:ok, config} <-
                ElixirDB.Config.merge_and_bound(
-                 Map.get(options, :config, Map.get(options, "config", ElixirDB.Config.defaults()))
+                 MapAccess.get(options, :config, ElixirDB.Config.defaults())
                ),
              {:ok, adapter} <- Adapter.create(absolute, Map.put(options, :config, config)),
              {:ok, identity} <- Adapter.identity(adapter),
@@ -143,11 +149,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
         case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
           [] ->
             next = %{state | entries: Map.delete(state.entries, uuid)}
-
-            case RegistrationManifest.write(Map.values(next.entries)) do
-              :ok -> {:reply, :ok, next}
-              {:error, error} -> {:reply, {:error, error}, state}
-            end
+            unregister_entry(next, state)
 
           _ ->
             {:reply,
@@ -175,13 +177,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
             {:reply, DatabaseOwner.command(uuid, {:command, :identity, %{}}), state}
 
           [] ->
-            case inspect_entry(entry) do
-              {:ok, _} = ok ->
-                {:reply, ok, mark_status(state, uuid, :registered)}
-
-              {:error, %ElixirDB.Error{} = error} = err ->
-                {:reply, err, maybe_mark_unavailable(state, uuid, error)}
-            end
+            inspect_unregistered_entry(state, uuid, entry)
         end
     end
   end
@@ -221,36 +217,55 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     # unanticipated raise/throw from the adapter or admission layer would otherwise crash
     # this process and propagate a GenServer.call exit to *every* concurrent caller. Catch
     # any exception here and convert it to a typed internal_error so the catalog survives.
-    try do
-      case open_runtime(state, uuid) do
-        {:ok, _info, state} ->
-          ElixirDB.Observability.Instrumentation.Database.command(uuid, command, fn ->
-            DatabaseAdmission.with_token(uuid, fn -> DatabaseOwner.command(uuid, command) end)
-          end)
-          |> command_reply(state)
+    case open_runtime(state, uuid) do
+      {:ok, _info, state} ->
+        run_command(uuid, command)
+        |> command_reply(state)
 
-        {:error, error, state} ->
-          {:error, error}
-          |> command_reply(state)
-      end
-    catch
-      kind, reason ->
-        Logger.error("database command raised",
-          database_uuid: inspect(uuid),
-          kind: kind,
-          reason: inspect(reason)
-        )
-
-        {:reply,
-         {:error,
-          ElixirDB.Error.internal_error("database command failed", %{
-            cause: inspect(reason),
-            kind: kind
-          })}, state}
+      {:error, error, state} ->
+        {:error, error}
+        |> command_reply(state)
     end
+  catch
+    kind, reason ->
+      Logger.error("database command raised",
+        database_uuid: inspect(uuid),
+        kind: kind,
+        reason: inspect(reason)
+      )
+
+      {:reply,
+       {:error,
+        ElixirDB.Error.internal_error("database command failed", %{
+          cause: inspect(reason),
+          kind: kind
+        })}, state}
   end
 
   defp command_reply(result, state), do: {:reply, result, state}
+
+  defp unregister_entry(next, state) do
+    case RegistrationManifest.write(Map.values(next.entries)) do
+      :ok -> {:reply, :ok, next}
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  defp inspect_unregistered_entry(state, uuid, entry) do
+    case inspect_entry(entry) do
+      {:ok, _} = ok ->
+        {:reply, ok, mark_status(state, uuid, :registered)}
+
+      {:error, %ElixirDB.Error{} = error} = err ->
+        {:reply, err, maybe_mark_unavailable(state, uuid, error)}
+    end
+  end
+
+  defp run_command(uuid, command) do
+    Database.command(uuid, command, fn ->
+      DatabaseAdmission.with_token(uuid, fn -> DatabaseOwner.command(uuid, command) end)
+    end)
+  end
 
   # SAFETY: final catch-all net for handle_call clauses that touch the adapter. An
   # unanticipated raise/throw is converted to a typed internal_error reply so the shared
@@ -289,37 +304,46 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       nil ->
         {:error, ElixirDB.Error.database_not_registered("database is not registered"), state}
 
-      %{absolute_path: path} = entry ->
-        case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
-          [{_pid, _}] ->
-            {:ok, %{database_uuid: uuid, runtime_state: :open},
-             mark_status(state, uuid, :registered)}
+      %{absolute_path: _path} = entry ->
+        open_registered_entry(state, uuid, entry)
+    end
+  end
 
-          [] ->
-            cond do
-              not File.regular?(path) ->
-                error = ElixirDB.Error.database_unavailable("registered database file is missing")
-                {:error, error, mark_status(state, uuid, :unavailable)}
+  defp open_registered_entry(state, uuid, entry) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
+      [{_pid, _}] ->
+        {:ok, %{database_uuid: uuid, runtime_state: :open}, mark_status(state, uuid, :registered)}
 
-              open_count() >= (ElixirDB.Config.host_limits()[:max_open_databases] || 64) ->
-                {:error, ElixirDB.Error.resource_limit("maximum open database count reached", %{}),
-                 state}
+      [] ->
+        start_registered_entry(state, uuid, entry)
+    end
+  end
 
-              true ->
-                case DynamicSupervisor.start_child(
-                       ElixirDB.Runtime.DatabaseSupervisor,
-                       {DatabaseRuntimeSupervisor, %{uuid: uuid, path: path}}
-                     ) do
-                  {:ok, _pid} ->
-                    {:ok, %{database_uuid: uuid, runtime_state: :open},
-                     mark_status(state, uuid, :registered)}
+  defp start_registered_entry(state, uuid, %{absolute_path: path} = entry) do
+    cond do
+      not File.regular?(path) ->
+        error = ElixirDB.Error.database_unavailable("registered database file is missing")
+        {:error, error, mark_status(state, uuid, :unavailable)}
 
-                  {:error, reason} ->
-                    error = open_failure_error(reason, entry)
-                    {:error, error, maybe_mark_unavailable(state, uuid, error)}
-                end
-            end
-        end
+      open_count() >= (ElixirDB.Config.host_limits()[:max_open_databases] || 64) ->
+        {:error, ElixirDB.Error.resource_limit("maximum open database count reached", %{}), state}
+
+      true ->
+        start_database_runtime(state, uuid, entry, path)
+    end
+  end
+
+  defp start_database_runtime(state, uuid, entry, path) do
+    case DynamicSupervisor.start_child(
+           ElixirDB.Runtime.DatabaseSupervisor,
+           {DatabaseRuntimeSupervisor, %{uuid: uuid, path: path}}
+         ) do
+      {:ok, _pid} ->
+        {:ok, %{database_uuid: uuid, runtime_state: :open}, mark_status(state, uuid, :registered)}
+
+      {:error, reason} ->
+        error = open_failure_error(reason, entry)
+        {:error, error, maybe_mark_unavailable(state, uuid, error)}
     end
   end
 
@@ -399,8 +423,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   defp ensure_path_not_open(state, absolute_path) do
-    case Enum.find(Map.values(state.entries), &(&1.absolute_path == absolute_path)) do
-      %{uuid: uuid} ->
+    case Enum.find(state.entries, fn {_uuid, entry} -> entry.absolute_path == absolute_path end) do
+      {_uuid, %{uuid: uuid}} ->
         case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
           [] ->
             :ok
@@ -427,7 +451,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
           String.starts_with?(relative_to_root, "../") ->
         {:error, ElixirDB.Error.invalid_request("database path escapes the database root")}
 
-      not no_symlink_components?(expanded) ->
+      not PathSafety.no_symlink_components?(expanded) ->
         {:error, ElixirDB.Error.invalid_request("database path contains a symlink")}
 
       true ->
@@ -459,24 +483,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     if File.exists?(entry.absolute_path) do
       case Adapter.open(entry.absolute_path) do
         {:ok, adapter} ->
-          result = Adapter.identity(adapter)
-          _ = Adapter.close(adapter)
-
-          case result do
-            {:ok, %{database_uuid: uuid}} when uuid == entry.uuid ->
-              result
-
-            {:ok, %{database_uuid: actual}} ->
-              {:error,
-               ElixirDB.Error.database_unavailable("database UUID mismatch", %{
-                 reason: :uuid_mismatch,
-                 expected: entry.uuid,
-                 actual: actual
-               })}
-
-            other ->
-              other
-          end
+          inspect_open_adapter(adapter, entry)
 
         {:error, error} ->
           {:error, error}
@@ -486,31 +493,33 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
-  defp no_symlink_components?(path) do
-    path
-    |> Path.split()
-    |> Enum.reduce_while("", fn component, current ->
-      next = Path.join(current, component)
+  defp inspect_open_adapter(adapter, entry) do
+    result = Adapter.identity(adapter)
+    _ = Adapter.close(adapter)
 
-      case File.lstat(next) do
-        {:ok, %File.Stat{type: :symlink}} -> {:halt, false}
-        {:ok, _} -> {:cont, next}
-        {:error, :enoent} -> {:halt, true}
-        {:error, _} -> {:halt, false}
-      end
-    end)
-    |> case do
-      false -> false
-      _ -> true
+    case result do
+      {:ok, %{database_uuid: uuid}} when uuid == entry.uuid ->
+        result
+
+      {:ok, %{database_uuid: actual}} ->
+        {:error,
+         ElixirDB.Error.database_unavailable("database UUID mismatch", %{
+           reason: :uuid_mismatch,
+           expected: entry.uuid,
+           actual: actual
+         })}
+
+      other ->
+        other
     end
   end
 
   defp resume_registered_jobs(uuid) do
     case open(uuid) do
       {:ok, _} ->
-        :ok = ElixirDB.Replication.JobManager.resume(uuid)
+        :ok = JobManager.resume(uuid)
 
-        if not ElixirDB.Replication.JobManager.active?(uuid), do: _ = close(uuid)
+        if not JobManager.active?(uuid), do: _ = close(uuid)
 
       {:error, _} ->
         :ok
@@ -518,9 +527,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   defp close_runtime(uuid) do
-    with false <- ElixirDB.Replication.JobManager.active?(uuid),
+    with false <- JobManager.active?(uuid),
          :ok <-
-           (case ElixirDB.Runtime.DatabaseAdmission.active_count(uuid) do
+           (case DatabaseAdmission.active_count(uuid) do
               {:ok, 0} ->
                 :ok
 
@@ -533,7 +542,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
               {:error, error} ->
                 error
             end),
-         :ok <- ElixirDB.Runtime.ChangeNotifier.close(uuid),
+         :ok <- ChangeNotifier.close(uuid),
          runtime when not is_nil(runtime) <- runtime_pid(uuid) do
       if Process.alive?(runtime),
         do: Supervisor.stop(runtime, :shutdown, ElixirDB.Config.shutdown_timeout()),

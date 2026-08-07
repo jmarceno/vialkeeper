@@ -1,4 +1,6 @@
 defmodule ElixirDB.Domain.Checkpoint do
+  @moduledoc "Validated replication checkpoint state."
+
   @enforce_keys [
     :version,
     :replication_id,
@@ -71,27 +73,56 @@ defmodule ElixirDB.Domain.Checkpoint do
   def from_wire(_), do: {:error, ElixirDB.Error.invalid_request("checkpoint must be an object")}
 
   defp build(attrs) do
-    cond do
-      attrs[:version] != 1 ->
-        {:error, ElixirDB.Error.invalid_request("unsupported checkpoint version")}
-
-      not is_binary(attrs[:replication_id]) or attrs[:replication_id] == "" ->
-        {:error, ElixirDB.Error.invalid_request("checkpoint replication_id is required")}
-
-      not is_integer(attrs[:checkpoint_version]) or attrs[:checkpoint_version] < 0 ->
-        {:error, ElixirDB.Error.invalid_request("checkpoint_version must be non-negative")}
-
-      not is_binary(attrs[:session_id]) or attrs[:session_id] == "" ->
-        {:error, ElixirDB.Error.invalid_request("checkpoint session_id is required")}
-
-      not is_integer(attrs[:source_sequence]) or attrs[:source_sequence] < 0 ->
-        {:error, ElixirDB.Error.invalid_request("source_sequence must be non-negative")}
-
-      not is_list(attrs[:history]) ->
-        {:error, ElixirDB.Error.invalid_request("checkpoint history must be an array")}
-
-      true ->
-        {:ok, struct(__MODULE__, attrs)}
+    case validation_error(attrs) do
+      nil -> {:ok, struct(__MODULE__, attrs)}
+      error -> {:error, error}
     end
   end
+
+  defp validation_error(attrs) do
+    validators = [
+      &validate_version/1,
+      &validate_replication_id/1,
+      &validate_checkpoint_version/1,
+      &validate_session_id/1,
+      &validate_source_sequence/1,
+      &validate_history/1
+    ]
+
+    Enum.find_value(validators, & &1.(attrs))
+  end
+
+  defp validate_version(%{version: 1}), do: nil
+  defp validate_version(_), do: ElixirDB.Error.invalid_request("unsupported checkpoint version")
+
+  defp validate_replication_id(%{replication_id: value})
+       when is_binary(value) and value != "",
+       do: nil
+
+  defp validate_replication_id(_),
+    do: ElixirDB.Error.invalid_request("checkpoint replication_id is required")
+
+  defp validate_checkpoint_version(%{checkpoint_version: value})
+       when is_integer(value) and value >= 0,
+       do: nil
+
+  defp validate_checkpoint_version(_),
+    do: ElixirDB.Error.invalid_request("checkpoint_version must be non-negative")
+
+  defp validate_session_id(%{session_id: value}) when is_binary(value) and value != "", do: nil
+
+  defp validate_session_id(_),
+    do: ElixirDB.Error.invalid_request("checkpoint session_id is required")
+
+  defp validate_source_sequence(%{source_sequence: value})
+       when is_integer(value) and value >= 0,
+       do: nil
+
+  defp validate_source_sequence(_),
+    do: ElixirDB.Error.invalid_request("source_sequence must be non-negative")
+
+  defp validate_history(%{history: value}) when is_list(value), do: nil
+
+  defp validate_history(_),
+    do: ElixirDB.Error.invalid_request("checkpoint history must be an array")
 end

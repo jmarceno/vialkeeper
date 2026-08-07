@@ -2,6 +2,9 @@ defmodule ElixirDB.HTTP.Response do
   @moduledoc false
   import Plug.Conn
 
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Storage.Results
+
   def request_id(conn) do
     case get_req_header(conn, "x-request-id") do
       [value | _] when byte_size(value) <= 128 and value != "" ->
@@ -26,13 +29,13 @@ defmodule ElixirDB.HTTP.Response do
   def result(conn, result, status \\ 200)
 
   def result(conn, {:ok, data}, status),
-    do: ok(conn, ElixirDB.Storage.Results.to_public(data), status)
+    do: ok(conn, Results.to_public(data), status)
 
   def result(conn, {:error, error}, _status), do: error(conn, error)
   def result(conn, :ok, status), do: ok(conn, %{}, status)
 
   def send_json(conn, status, body) do
-    request_id = body["request_id"] || body[:request_id] || request_id(conn)
+    request_id = MapAccess.get(body, :request_id, request_id(conn))
 
     conn
     |> put_resp_header("x-request-id", request_id)

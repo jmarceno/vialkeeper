@@ -1,4 +1,6 @@
 defmodule ElixirDB.Revisions.Id do
+  @moduledoc "Content-addressed revision identifier helpers."
+
   alias ElixirDB.JSON.Canonical
 
   @spec calculate(binary(), binary() | nil, boolean(), map() | nil) ::

@@ -1,18 +1,20 @@
 defmodule ElixirDB.Replication.CheckpointReconciler do
   @moduledoc false
 
+  alias ElixirDB.MapAccess
+
   def common_sequence(nil, _target), do: 0
   def common_sequence(_source, nil), do: 0
 
   def common_sequence(source, target) when is_map(source) and is_map(target) do
-    source_history = source[:history] || source["history"] || []
-    target_history = target[:history] || target["history"] || []
+    source_history = MapAccess.get(source, :history, [])
+    target_history = MapAccess.get(target, :history, [])
 
     source_history
-    |> Enum.sort_by(&(&1[:source_sequence] || &1["source_sequence"] || 0), :desc)
+    |> Enum.sort_by(&MapAccess.get(&1, :source_sequence, 0), :desc)
     |> Enum.find_value(0, fn source_entry ->
       if Enum.any?(target_history, &same_session?(&1, source_entry)),
-        do: source_entry[:source_sequence] || source_entry["source_sequence"] || 0,
+        do: MapAccess.get(source_entry, :source_sequence, 0),
         else: nil
     end)
   end
@@ -24,9 +26,8 @@ defmodule ElixirDB.Replication.CheckpointReconciler do
 
   defp same_session?(left, right) when is_map(left) and is_map(right),
     do:
-      (left[:session_id] || left["session_id"]) == (right[:session_id] || right["session_id"]) and
-        (left[:source_sequence] || left["source_sequence"]) ==
-          (right[:source_sequence] || right["source_sequence"])
+      MapAccess.get(left, :session_id) == MapAccess.get(right, :session_id) and
+        MapAccess.get(left, :source_sequence) == MapAccess.get(right, :source_sequence)
 
   # SAFETY: a malformed checkpoint history may contain non-map entries. Treat any
   # non-map entry as "not the same session" instead of raising BadMapError.

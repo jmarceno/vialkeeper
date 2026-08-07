@@ -1,8 +1,10 @@
 defmodule ElixirDB.Contract.V1ContractsTest do
   use ExUnit.Case, async: true
 
+  alias ElixirDB.Domain.ReplicationEndpoint
   alias ElixirDB.JSON.{Canonical, Pointer, StrictDecoder}
   alias ElixirDB.Query.{BookmarkCodec, Normalizer}
+  alias ElixirDB.Query.FullText
   alias ElixirDB.Replication.Id
 
   test "strict JSON enforces duplicate keys, UTF-8, depth, and binary64 integers" do
@@ -76,7 +78,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
     uuid = ElixirDB.UUID.v4()
 
     assert {:ok, %{kind: :remote}} =
-             ElixirDB.Domain.ReplicationEndpoint.new(%{
+             ReplicationEndpoint.new(%{
                "kind" => "remote",
                "database_uuid" => uuid,
                "base_url" => "https://example.test"
@@ -84,7 +86,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
 
     for url <- ["https://user:pass@example.test", "https://example.test/db", "file:///tmp/db"] do
       assert {:error, %ElixirDB.Error{code: :invalid_request}} =
-               ElixirDB.Domain.ReplicationEndpoint.new(%{
+               ReplicationEndpoint.new(%{
                  "kind" => "remote",
                  "database_uuid" => uuid,
                  "base_url" => url
@@ -92,7 +94,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
     end
 
     assert {:error, %ElixirDB.Error{code: :invalid_request}} =
-             ElixirDB.Domain.ReplicationEndpoint.new(%{
+             ReplicationEndpoint.new(%{
                "kind" => "remote",
                "database_uuid" => uuid,
                "base_url" => "https://example.test",
@@ -105,7 +107,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
 
     # Remote endpoint may carry an auth_token sibling of base_url.
     assert {:ok, %{kind: :remote, auth_token: "abc"}} =
-             ElixirDB.Domain.ReplicationEndpoint.new(%{
+             ReplicationEndpoint.new(%{
                "kind" => "remote",
                "database_uuid" => uuid,
                "base_url" => "https://example.test",
@@ -114,7 +116,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
 
     # auth_token is optional on remote endpoints.
     assert {:ok, %{kind: :remote, auth_token: nil}} =
-             ElixirDB.Domain.ReplicationEndpoint.new(%{
+             ReplicationEndpoint.new(%{
                "kind" => "remote",
                "database_uuid" => uuid,
                "base_url" => "https://example.test"
@@ -122,7 +124,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
 
     # URL-embedded credentials remain rejected even with auth_token present.
     assert {:error, %ElixirDB.Error{code: :invalid_request}} =
-             ElixirDB.Domain.ReplicationEndpoint.new(%{
+             ReplicationEndpoint.new(%{
                "kind" => "remote",
                "database_uuid" => uuid,
                "base_url" => "https://user:pass@example.test",
@@ -131,7 +133,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
 
     # Local endpoints never accept credentials.
     assert {:error, %ElixirDB.Error{code: :invalid_request}} =
-             ElixirDB.Domain.ReplicationEndpoint.new(%{
+             ReplicationEndpoint.new(%{
                "kind" => "local",
                "database_uuid" => uuid,
                "auth_token" => "abc"
@@ -139,7 +141,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
 
     # Empty-string auth_token is rejected.
     assert {:error, %ElixirDB.Error{code: :invalid_request}} =
-             ElixirDB.Domain.ReplicationEndpoint.new(%{
+             ReplicationEndpoint.new(%{
                "kind" => "remote",
                "database_uuid" => uuid,
                "base_url" => "https://example.test",
@@ -199,7 +201,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
   end
 
   test "unicode_words_v1 tokenization is deterministic" do
-    assert ElixirDB.Query.FullText.tokens("École café 東京") == ["école", "cafe", "東京"]
-    assert ElixirDB.Query.FullText.tokens("École café", :remove) == ["ecole", "cafe"]
+    assert FullText.tokens("École café 東京") == ["école", "cafe", "東京"]
+    assert FullText.tokens("École café", :remove) == ["ecole", "cafe"]
   end
 end

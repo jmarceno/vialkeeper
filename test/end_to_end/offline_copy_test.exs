@@ -92,7 +92,7 @@ defmodule ElixirDB.EndToEnd.OfflineCopyTest do
                "limit" => 10
              })
 
-    assert length(docs) == 1
+    assert [_] = docs
     assert hd(docs).id == "portable"
 
     assert {:ok, %{documents: fts_docs, selected_index: ^fts_id}} =

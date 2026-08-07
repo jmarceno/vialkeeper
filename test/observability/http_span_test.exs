@@ -36,7 +36,7 @@ defmodule ElixirDB.Observability.HTTPSpanTest do
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
 
     spans = TestExporter.spans_named("elixir_db.http.request")
-    assert length(spans) >= 1, "expected at least one http.request span"
+    assert [_ | _] = spans, "expected at least one http.request span"
 
     span =
       Enum.find(spans, fn s ->
@@ -107,8 +107,8 @@ defmodule ElixirDB.Observability.HTTPSpanTest do
     caller_trace = String.to_integer(@trace_id_hex, 16)
     {continued, fresh} = Enum.split_with(spans, &(&1[:trace_id] == caller_trace))
 
-    assert length(continued) == 1, "exactly one span may continue the inbound trace"
-    assert length(fresh) >= 1, "expected a follow-up span in a fresh trace"
+    assert [_] = continued, "exactly one span may continue the inbound trace"
+    assert [_ | _] = fresh, "expected a follow-up span in a fresh trace"
 
     for span <- fresh do
       refute span[:trace_id] == caller_trace

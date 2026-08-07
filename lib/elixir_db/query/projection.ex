@@ -1,4 +1,5 @@
 defmodule ElixirDB.Query.Projection do
+  alias ElixirDB.JSON.Pointer
   @moduledoc "Storage-neutral query result projection."
 
   @spec project(map(), map()) :: map()
@@ -14,7 +15,7 @@ defmodule ElixirDB.Query.Projection do
           fields:
             Map.new(
               Enum.flat_map(fields, fn path ->
-                case ElixirDB.JSON.Pointer.get(document.body, path) do
+                case Pointer.get(document.body, path) do
                   {:ok, value} -> [{path, value}]
                   _ -> []
                 end

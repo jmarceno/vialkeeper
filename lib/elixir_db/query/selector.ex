@@ -5,41 +5,42 @@ defmodule ElixirDB.Query.Selector do
 
   @spec matches?(map(), map()) :: {:ok, boolean()} | {:error, ElixirDB.Error.t()}
   def matches?(document, selector) when is_map(document) and is_map(selector) do
-    Enum.reduce_while(selector, {:ok, true}, fn
-      {"$and", clauses}, {:ok, true} when is_list(clauses) and clauses != [] ->
-        case Enum.reduce_while(clauses, {:ok, true}, fn
-               clause, {:ok, true} ->
-                 case matches?(document, clause) do
-                   {:ok, true} -> {:cont, {:ok, true}}
-                   {:ok, false} -> {:halt, {:ok, false}}
-                   {:error, _} = error -> {:halt, error}
-                 end
-
-               _clause, {:ok, false} = acc ->
-                 {:halt, acc}
-
-               _clause, {:error, _} = error ->
-                 {:halt, error}
-             end) do
-          {:ok, value} -> {:cont, {:ok, value}}
-          {:error, _} = error -> {:halt, error}
-        end
-
-      {"$and", _}, _ ->
-        {:halt, {:error, ElixirDB.Error.invalid_request("$and must contain a non-empty array")}}
-
-      {path, condition}, {:ok, true} when is_binary(path) ->
-        case match_field(document, path, condition) do
-          {:ok, value} -> {:cont, {:ok, value}}
-          {:error, _} = error -> {:halt, error}
-        end
-
-      {_path, _condition}, _ ->
-        {:cont, {:ok, false}}
+    Enum.reduce_while(selector, {:ok, true}, fn entry, acc ->
+      match_entry(document, entry, acc)
     end)
   end
 
   def matches?(_, _), do: {:error, ElixirDB.Error.invalid_request("selector must be an object")}
+
+  defp match_entry(document, {"$and", clauses}, {:ok, true})
+       when is_list(clauses) and clauses != [] do
+    clauses
+    |> Enum.reduce_while({:ok, true}, fn clause, acc -> match_clause(document, clause, acc) end)
+    |> continue_or_halt()
+  end
+
+  defp match_entry(_document, {"$and", _clauses}, _acc),
+    do: {:halt, {:error, ElixirDB.Error.invalid_request("$and must contain a non-empty array")}}
+
+  defp match_entry(document, {path, condition}, {:ok, true}) when is_binary(path) do
+    match_field(document, path, condition) |> continue_or_halt()
+  end
+
+  defp match_entry(_document, {_path, _condition}, _acc), do: {:cont, {:ok, false}}
+
+  defp match_clause(document, clause, {:ok, true}) do
+    case matches?(document, clause) do
+      {:ok, true} -> {:cont, {:ok, true}}
+      {:ok, false} -> {:halt, {:ok, false}}
+      {:error, _} = error -> {:halt, error}
+    end
+  end
+
+  defp match_clause(_document, _clause, {:ok, false} = acc), do: {:halt, acc}
+  defp match_clause(_document, _clause, {:error, _} = error), do: {:halt, error}
+
+  defp continue_or_halt({:ok, value}), do: {:cont, {:ok, value}}
+  defp continue_or_halt({:error, _} = error), do: {:halt, error}
 
   defp match_field(document, path, condition) do
     with {:ok, _tokens} <- Pointer.parse(path), false <- path == "" do

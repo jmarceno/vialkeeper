@@ -2,6 +2,9 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
   use ExUnit.Case, async: false
 
   alias ElixirDB.FaultAdapter
+  alias ElixirDB.Replication.Id
+  alias ElixirDB.Replication.LocalEndpoint
+  alias ElixirDB.Replication.Worker
   alias ElixirDB.Runtime.DatabaseCatalog
 
   setup do
@@ -32,11 +35,11 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
              ElixirDB.Documents.put(a.database_uuid, %{id: "phases", body: %{"n" => 1}})
 
     {:ok, agent} = Agent.start_link(fn -> [] end)
-    assert {:ok, source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-    assert {:ok, target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+    assert {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    assert {:ok, target} = LocalEndpoint.new(b.database_uuid)
 
     assert {:ok, replication_id} =
-             ElixirDB.Replication.Id.calculate(
+             Id.calculate(
                a.database_uuid,
                b.database_uuid,
                "push",
@@ -55,7 +58,7 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
       end
     }
 
-    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    assert {:ok, pid} = Worker.start_link(options)
     ref = Process.monitor(pid)
     :gen_statem.cast(pid, :start)
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000

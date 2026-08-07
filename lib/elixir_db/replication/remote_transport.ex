@@ -1,16 +1,26 @@
 defmodule ElixirDB.Replication.RemoteTransport do
+  alias ElixirDB.Observability.Tracer
   @moduledoc false
 
   def request(base_url, method, path, body \\ nil, auth_token \\ nil) do
     # Inject the current trace context into outgoing replication requests so a
     # push job's trace spans both the local worker and the remote server
     # (plan §6.2). The noop propagator (no SDK) returns the headers unchanged.
-    trace_headers =
-      ElixirDB.Observability.Tracer.inject([])
-      |> Enum.map(fn {k, v} -> {to_string(k), to_string(v)} end)
+    options = request_options(base_url, method, path, body, auth_token)
 
-    # When the endpoint declares an auth_token (AUTH-003), present it as the
-    # bearer credential so the target's AuthPlug accepts the replication call.
+    timeout = ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
+
+    # Carry the trace context into the timeout-enforcement task so the Finch
+    # telemetry-bridge span for this request parents under the replication
+    # trace (plan §6.2); without it the span would be a parentless root.
+    otel_ctx = OpenTelemetry.Ctx.get_current()
+
+    task = request_task(options, otel_ctx)
+    handle_task_result(Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill))
+  end
+
+  defp request_options(base_url, method, path, body, auth_token) do
+    trace_headers = trace_headers()
     auth_headers = auth_headers(auth_token)
 
     options = [
@@ -22,69 +32,75 @@ defmodule ElixirDB.Replication.RemoteTransport do
       headers: [{"accept", "application/json"} | auth_headers ++ trace_headers]
     ]
 
-    options =
-      if is_nil(body),
-        do: options,
-        else:
-          Keyword.merge(options,
-            json: body,
-            headers: [
-              {"accept", "application/json"},
-              {"content-type", "application/json"} | auth_headers ++ trace_headers
-            ]
-          )
+    add_request_body(options, body, auth_headers, trace_headers)
+  end
 
-    timeout = ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
+  defp trace_headers do
+    Tracer.inject([])
+    |> Enum.map(fn {key, value} -> {to_string(key), to_string(value)} end)
+  end
 
-    # Carry the trace context into the timeout-enforcement task so the Finch
-    # telemetry-bridge span for this request parents under the replication
-    # trace (plan §6.2); without it the span would be a parentless root.
-    otel_ctx = OpenTelemetry.Ctx.get_current()
+  defp add_request_body(options, nil, _auth_headers, _trace_headers), do: options
 
-    task =
-      Task.async(fn ->
-        token = OpenTelemetry.Ctx.attach(otel_ctx)
+  defp add_request_body(options, body, auth_headers, trace_headers) do
+    Keyword.merge(options,
+      json: body,
+      headers: [
+        {"accept", "application/json"},
+        {"content-type", "application/json"} | auth_headers ++ trace_headers
+      ]
+    )
+  end
 
-        try do
-          Req.request(options)
-        after
-          OpenTelemetry.Ctx.detach(token)
-        end
-      end)
+  defp request_task(options, otel_ctx) do
+    Task.async(fn ->
+      token = OpenTelemetry.Ctx.attach(otel_ctx)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, %{status: status, body: response} = result}} when status in 200..299 ->
-        if response_size(result) <= max_response_bytes() and accepted_content_type?(result),
-          do: {:ok, response},
-          else:
-            {:error,
-             ElixirDB.Error.database_unavailable("remote endpoint returned an invalid response")}
+      try do
+        Req.request(options)
+      after
+        OpenTelemetry.Ctx.detach(token)
+      end
+    end)
+  end
 
-      {:ok, {:ok, %{status: status, body: response} = result}} ->
-        if response_size(result) <= max_response_bytes(),
-          do: {:error, decode_error(status, response)},
-          else: {:error, ElixirDB.Error.payload_too_large("remote endpoint response is too large")}
+  defp handle_task_result({:ok, {:ok, %{status: status, body: response} = result}})
+       when status in 200..299 do
+    if valid_success_response?(result),
+      do: {:ok, response},
+      else: invalid_response_error()
+  end
 
-      {:ok, {:error, reason}} ->
-        {:error,
-         ElixirDB.Error.database_unavailable("remote endpoint request failed", %{
-           cause: inspect(reason)
-         })}
+  defp handle_task_result({:ok, {:ok, %{status: status, body: response} = result}}) do
+    if response_size(result) <= max_response_bytes(),
+      do: {:error, decode_error(status, response)},
+      else: {:error, ElixirDB.Error.payload_too_large("remote endpoint response is too large")}
+  end
 
-      # SAFETY: Req.request/1 (or the OpenTelemetry context handling) may raise rather
-      # than return {:error, _} on certain malformed inputs or transport faults. The task
-      # then exits with {:exit, reason}. Without these arms the surrounding `case` would
-      # raise CaseClauseError in the worker. Funnel the crash into a typed error so the
-      # replication worker retries instead of aborting.
-      {:exit, reason} ->
-        {:error,
-         ElixirDB.Error.internal_error("replication transport request failed", %{
-           cause: inspect(reason)
-         })}
+  defp handle_task_result({:ok, {:error, reason}}),
+    do:
+      {:error,
+       ElixirDB.Error.database_unavailable("remote endpoint request failed", %{
+         cause: inspect(reason)
+       })}
 
-      nil ->
-        {:error, ElixirDB.Error.database_unavailable("remote endpoint request timed out")}
-    end
+  # SAFETY: Req.request/1 (or OpenTelemetry context handling) may exit rather
+  # than return an error. Convert that exit into a typed retryable failure.
+  defp handle_task_result({:exit, reason}),
+    do:
+      {:error,
+       ElixirDB.Error.internal_error("replication transport request failed", %{
+         cause: inspect(reason)
+       })}
+
+  defp handle_task_result(nil),
+    do: {:error, ElixirDB.Error.database_unavailable("remote endpoint request timed out")}
+
+  defp valid_success_response?(result),
+    do: response_size(result) <= max_response_bytes() and accepted_content_type?(result)
+
+  defp invalid_response_error do
+    {:error, ElixirDB.Error.database_unavailable("remote endpoint returned an invalid response")}
   end
 
   defp decode_error(_status, %{"error" => error}) when is_map(error) do
@@ -97,7 +113,18 @@ defmodule ElixirDB.Replication.RemoteTransport do
       retryable: error["retryable"] || false
     )
   rescue
-    _ -> ElixirDB.Error.database_unavailable("remote endpoint returned an invalid error")
+    _error in [
+      ArgumentError,
+      BadMapError,
+      ErlangError,
+      FunctionClauseError,
+      KeyError,
+      MatchError,
+      Protocol.UndefinedError,
+      RuntimeError,
+      UndefinedFunctionError
+    ] ->
+      ElixirDB.Error.database_unavailable("remote endpoint returned an invalid error")
   end
 
   defp decode_error(status, _),

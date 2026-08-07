@@ -6,6 +6,8 @@ defmodule ElixirDB.HTTP.NdjsonChangesTest do
   """
   use ExUnit.Case, async: false
 
+  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.DatabaseCatalog
 
   test "changes stream emits change, caught_up, heartbeat, closed, and error events" do
@@ -65,13 +67,13 @@ defmodule ElixirDB.HTTP.NdjsonChangesTest do
                     }},
                    2_000
 
-    assert change["document_id"] == "doc" or change[:document_id] == "doc"
+    assert MapAccess.get(change, :document_id) == "doc"
 
-    assert (change["winning_revision"] || change[:winning_revision]) == revision or
+    assert MapAccess.get(change, :winning_revision) == revision or
              revision in leaf_revisions(change)
 
-    assert is_integer(change["sequence"] || change[:sequence])
-    assert is_list(change["leaf_revisions"] || change[:leaf_revisions])
+    assert is_integer(MapAccess.get(change, :sequence))
+    assert is_list(MapAccess.get(change, :leaf_revisions))
 
     assert_receive {:ndjson_event, %{"type" => "caught_up", "sequence" => caught_seq}}, 2_000
     assert is_integer(caught_seq) and caught_seq >= put_sequence
@@ -118,8 +120,8 @@ defmodule ElixirDB.HTTP.NdjsonChangesTest do
   end
 
   defp leaf_revisions(change) do
-    (change["leaf_revisions"] || change[:leaf_revisions] || [])
-    |> Enum.map(fn leaf -> leaf["revision"] || leaf[:revision] end)
+    MapAccess.get(change, :leaf_revisions, [])
+    |> Enum.map(&MapAccess.get(&1, :revision))
   end
 
   defp collect_stream_events(url, body, parent) do
@@ -129,7 +131,7 @@ defmodule ElixirDB.HTTP.NdjsonChangesTest do
            into: fn
              {:data, data}, {req, resp} ->
                for line <- String.split(IO.iodata_to_binary(data), "\n", trim: true) do
-                 case ElixirDB.JSON.StrictDecoder.decode(line) do
+                 case StrictDecoder.decode(line) do
                    {:ok, event} when is_map(event) -> send(parent, {:ndjson_event, event})
                    _ -> :ok
                  end

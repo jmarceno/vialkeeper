@@ -9,8 +9,11 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
   alias ElixirDB.FaultAdapter
   alias ElixirDB.FaultEndpoint
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Replication.LocalEndpoint
+  alias ElixirDB.Replication.Worker
   alias ElixirDB.Revisions.Id
+  alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Storage.AdapterCase
 
   @phases [
@@ -92,8 +95,8 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
       {:ok, seen} = Agent.start_link(fn -> [] end)
 
-      assert {:ok, local_source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-      assert {:ok, local_target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+      assert {:ok, local_source} = LocalEndpoint.new(a.database_uuid)
+      assert {:ok, local_target} = LocalEndpoint.new(b.database_uuid)
 
       {source, target, options} =
         if point in @endpoint_fault_points do
@@ -149,7 +152,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
       options = %{options | replication_id: replication_id, source: source, target: target}
 
-      assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+      assert {:ok, pid} = Worker.start_link(options)
       ref = Process.monitor(pid)
       :gen_statem.cast(pid, :start)
       assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
@@ -190,8 +193,8 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
       {:ok, seen} = Agent.start_link(fn -> [] end)
 
-      assert {:ok, local_source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-      assert {:ok, local_target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+      assert {:ok, local_source} = LocalEndpoint.new(a.database_uuid)
+      assert {:ok, local_target} = LocalEndpoint.new(b.database_uuid)
       source = FaultEndpoint.wrap(local_source)
       target = FaultEndpoint.wrap(local_target)
 
@@ -214,7 +217,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
         phase_hook: phase_fault_hook(seen, faults)
       }
 
-      assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+      assert {:ok, pid} = Worker.start_link(options)
       ref = Process.monitor(pid)
       :gen_statem.cast(pid, :start)
 
@@ -246,17 +249,17 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
         message: "committed source revision after #{point} fault was skipped"
       )
 
-      assert {:ok, target_ep} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
-      assert {:ok, source_ep} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
+      assert {:ok, target_ep} = LocalEndpoint.new(b.database_uuid)
+      assert {:ok, source_ep} = LocalEndpoint.new(a.database_uuid)
 
       ElixirDB.Eventual.eventually(
         fn ->
           with {:ok, %{value: target_cp}} <-
-                 ElixirDB.Replication.LocalEndpoint.get_checkpoint(target_ep, replication_id),
+                 LocalEndpoint.get_checkpoint(target_ep, replication_id),
                {:ok, %{value: source_cp}} <-
-                 ElixirDB.Replication.LocalEndpoint.get_checkpoint(source_ep, replication_id) do
-            target_seq = target_cp["source_sequence"] || target_cp[:source_sequence]
-            source_seq = source_cp["source_sequence"] || source_cp[:source_sequence]
+                 LocalEndpoint.get_checkpoint(source_ep, replication_id) do
+            target_seq = MapAccess.get(target_cp, :source_sequence)
+            source_seq = MapAccess.get(source_cp, :source_sequence)
             target_seq == expected_sequence and source_seq == expected_sequence
           else
             _ -> false
@@ -291,8 +294,8 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     source_snapshot = source_revision_snapshot(a.database_uuid)
     source_sequence = source_sequence!(a.database_uuid)
 
-    assert {:ok, local_source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-    assert {:ok, local_target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+    assert {:ok, local_source} = LocalEndpoint.new(a.database_uuid)
+    assert {:ok, local_target} = LocalEndpoint.new(b.database_uuid)
 
     source = FaultEndpoint.wrap(local_source)
 
@@ -320,7 +323,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       retry: %{base_delay_ms: 5, max_delay_ms: 40, jitter_ms: 0, max_attempts: 8}
     }
 
-    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    assert {:ok, pid} = Worker.start_link(options)
     ref = Process.monitor(pid)
     :gen_statem.cast(pid, :start)
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
@@ -341,8 +344,8 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     assert {:ok, %{revision: revision}} =
              ElixirDB.Documents.put(a.database_uuid, %{id: "terminal", body: %{"ok" => true}})
 
-    assert {:ok, source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-    assert {:ok, target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+    assert {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    assert {:ok, target} = LocalEndpoint.new(b.database_uuid)
 
     assert {:ok, replication_id} =
              ElixirDB.Replication.Id.calculate(
@@ -363,7 +366,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       state_notify: parent
     }
 
-    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    assert {:ok, pid} = Worker.start_link(options)
     ref = Process.monitor(pid)
     :gen_statem.cast(pid, :start)
 
@@ -387,8 +390,8 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
         )
       end)
 
-    assert {:ok, source} = ElixirDB.Replication.LocalEndpoint.new(a.database_uuid)
-    assert {:ok, target} = ElixirDB.Replication.LocalEndpoint.new(b.database_uuid)
+    assert {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    assert {:ok, target} = LocalEndpoint.new(b.database_uuid)
 
     assert {:ok, replication_id} =
              ElixirDB.Replication.Id.calculate(
@@ -409,19 +412,16 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       state_notify: parent,
       retry: %{base_delay_ms: 1, max_delay_ms: 5, jitter_ms: 0, max_attempts: 2},
       phase_hook: fn phase, _context ->
-        case Agent.get_and_update(faults, fn adapter ->
-               case FaultAdapter.maybe_fail(adapter, phase) do
-                 {:ok, next} -> {:ok, next}
-                 {:error, error, next} -> {{:error, error}, next}
-               end
-             end) do
-          :ok -> :ok
-          {:error, error} -> {:error, error}
-        end
+        Agent.get_and_update(faults, fn adapter ->
+          case FaultAdapter.maybe_fail(adapter, phase) do
+            {:ok, next} -> {:ok, next}
+            {:error, error, next} -> {{:error, error}, next}
+          end
+        end)
       end
     }
 
-    assert {:ok, pid} = ElixirDB.Replication.Worker.start_link(options)
+    assert {:ok, pid} = Worker.start_link(options)
     ref = Process.monitor(pid)
     :gen_statem.cast(pid, :start)
 
@@ -520,29 +520,27 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   defp phase_fault_hook(seen, faults) do
     fn observed, _context ->
       Agent.update(seen, &(&1 ++ [observed]))
+      Agent.get_and_update(faults, &phase_fault_update(&1, observed))
+    end
+  end
 
-      case Agent.get_and_update(faults, fn adapter ->
-             case FaultAdapter.maybe_fail(adapter, observed) do
-               {:ok, next} -> {:ok, next}
-               {:error, error, next} -> {{:error, error}, next}
-             end
-           end) do
-        :ok -> :ok
-        {:error, error} -> {:error, error}
-      end
+  defp phase_fault_update(adapter, observed) do
+    case FaultAdapter.maybe_fail(adapter, observed) do
+      {:ok, next} -> {:ok, next}
+      {:error, error, next} -> {{:error, error}, next}
     end
   end
 
   defp source_revision_snapshot(uuid) do
     assert {:ok, %{results: results}} = ElixirDB.Changes.read(uuid, %{since: 0, limit: 200})
-    assert {:ok, ep} = ElixirDB.Replication.LocalEndpoint.new(uuid)
+    assert {:ok, ep} = LocalEndpoint.new(uuid)
 
     Map.new(results, fn change ->
-      document_id = change.document_id || change["document_id"]
+      document_id = MapAccess.get(change, :document_id)
 
       leaves =
-        (change.leaf_revisions || change["leaf_revisions"] || [])
-        |> Enum.map(fn leaf -> leaf[:revision] || leaf["revision"] end)
+        MapAccess.get(change, :leaf_revisions, [])
+        |> Enum.map(&MapAccess.get(&1, :revision))
         |> Enum.reject(&is_nil/1)
         |> MapSet.new()
 
@@ -553,18 +551,12 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   end
 
   defp revision_ids_for(ep, document_id, leaf_list) do
-    case ElixirDB.Replication.LocalEndpoint.get_revision_chains(ep, %{
+    case LocalEndpoint.get_revision_chains(ep, %{
            documents: [%{document_id: document_id, leaf_revisions: leaf_list}]
          }) do
       {:ok, %{chains: chains}} ->
         chains
-        |> Enum.flat_map(fn chain ->
-          revs = chain[:revisions] || chain["revisions"] || []
-
-          Enum.map(revs, fn rev ->
-            rev[:revision] || rev["revision"] || rev[:revision_id] || rev["revision_id"]
-          end)
-        end)
+        |> Enum.flat_map(&chain_revision_ids/1)
         |> Enum.reject(&is_nil/1)
         |> MapSet.new()
 
@@ -573,11 +565,24 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     end
   end
 
+  defp chain_revision_ids(chain) do
+    chain
+    |> MapAccess.get(:revisions, [])
+    |> Enum.map(&revision_id/1)
+  end
+
+  defp revision_id(revision) do
+    case MapAccess.get(revision, :revision, :missing) do
+      :missing -> MapAccess.get(revision, :revision_id)
+      value -> value
+    end
+  end
+
   defp source_sequence!(uuid) do
     assert {:ok, identity} =
-             ElixirDB.Runtime.DatabaseCatalog.command(uuid, {:command, :identity, %{}})
+             DatabaseCatalog.command(uuid, {:command, :identity, %{}})
 
-    identity[:current_sequence] || identity["current_sequence"]
+    MapAccess.get(identity, :current_sequence)
   end
 
   defp assert_no_skipped_revisions(
@@ -604,17 +609,17 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
              "target winner #{doc.revision} for #{document_id} not in source leaves"
     end
 
-    assert {:ok, source_ep} = ElixirDB.Replication.LocalEndpoint.new(source_uuid)
-    assert {:ok, target_ep} = ElixirDB.Replication.LocalEndpoint.new(target_uuid)
+    assert {:ok, source_ep} = LocalEndpoint.new(source_uuid)
+    assert {:ok, target_ep} = LocalEndpoint.new(target_uuid)
 
     assert {:ok, %{value: source_cp}} =
-             ElixirDB.Replication.LocalEndpoint.get_checkpoint(source_ep, replication_id)
+             LocalEndpoint.get_checkpoint(source_ep, replication_id)
 
     assert {:ok, %{value: target_cp}} =
-             ElixirDB.Replication.LocalEndpoint.get_checkpoint(target_ep, replication_id)
+             LocalEndpoint.get_checkpoint(target_ep, replication_id)
 
-    source_cp_seq = source_cp["source_sequence"] || source_cp[:source_sequence]
-    target_cp_seq = target_cp["source_sequence"] || target_cp[:source_sequence]
+    source_cp_seq = MapAccess.get(source_cp, :source_sequence)
+    target_cp_seq = MapAccess.get(target_cp, :source_sequence)
 
     assert source_cp_seq == source_sequence,
            "source checkpoint #{inspect(source_cp_seq)} lagged source sequence #{source_sequence}"

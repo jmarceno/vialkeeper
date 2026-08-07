@@ -1,7 +1,7 @@
 defmodule ElixirDB.Storage.SQLite.Connection do
   @moduledoc false
-  alias Exqlite.Sqlite3
   alias ElixirDB.Storage.SQLite.Statements
+  alias Exqlite.Sqlite3
 
   @type handle :: reference()
 

@@ -8,7 +8,9 @@ defmodule ElixirDB.ModelGenerators do
   """
 
   alias ElixirDB.Domain.Revision
+  alias ElixirDB.OperationFixtures
   alias ElixirDB.Revisions.Id
+  alias ElixirDB.Revisions.Wire
 
   @doc """
   Generates a non-empty document ID suitable for Version 1 identity rules.
@@ -59,9 +61,7 @@ defmodule ElixirDB.ModelGenerators do
       StreamData.bind(
         StreamData.tuple({document_body(), document_body(), document_body()}),
         fn {root_body, left_body, right_body} ->
-          left_body =
-            if left_body == right_body, do: Map.put(left_body, "_side", "left"), else: left_body
-
+          left_body = distinct_left_body(left_body, right_body)
           right_body = Map.put(right_body, "_side", "right")
 
           {:ok, root_id} = Id.calculate(document_id, nil, false, root_body)
@@ -148,20 +148,9 @@ defmodule ElixirDB.ModelGenerators do
           ops =
             bodies
             |> Enum.with_index()
-            |> Enum.map(fn {body, index} ->
-              %{
-                op: :put,
-                document_id: document_id,
-                body: body,
-                if_revision: if(index == 0, do: nil, else: :winner)
-              }
-            end)
+            |> Enum.map(&put_operation(document_id, &1))
 
-          StreamData.constant(%{
-            document_id: document_id,
-            kind: :linear,
-            operations: maybe_append_replay(ops, replay?)
-          })
+          StreamData.constant(history(document_id, :linear, maybe_append_replay(ops, replay?)))
         end
       )
     end)
@@ -178,35 +167,8 @@ defmodule ElixirDB.ModelGenerators do
           StreamData.boolean(),
           StreamData.member_of([:left, :right, :winner])
         }),
-        fn {root_body, left_body, right_body, resolve_body, replay?, chosen_side} ->
-          left_body =
-            if left_body == right_body, do: Map.put(left_body, "_side", "left"), else: left_body
-
-          right_body = Map.put(right_body, "_side", "right")
-
-          ops = [
-            %{
-              op: :import_siblings,
-              document_id: document_id,
-              root_body: root_body,
-              left_body: left_body,
-              right_body: right_body
-            },
-            %{
-              op: :resolve,
-              document_id: document_id,
-              mode: mode,
-              chosen_side: chosen_side,
-              body: resolve_body,
-              expected: :current_live
-            }
-          ]
-
-          StreamData.constant(%{
-            document_id: document_id,
-            kind: {:siblings, mode},
-            operations: maybe_append_replay(ops, replay?)
-          })
+        fn tuple ->
+          sibling_operations(document_id, mode, tuple)
         end
       )
     end)
@@ -217,15 +179,11 @@ defmodule ElixirDB.ModelGenerators do
       StreamData.tuple({document_id(), document_body(), StreamData.boolean()}),
       fn {document_id, body, replay?} ->
         ops = [
-          %{op: :put, document_id: document_id, body: body, if_revision: nil},
+          OperationFixtures.put(document_id, body, nil),
           %{op: :delete, document_id: document_id, if_revision: :winner}
         ]
 
-        StreamData.constant(%{
-          document_id: document_id,
-          kind: :put_delete,
-          operations: maybe_append_replay(ops, replay?)
-        })
+        StreamData.constant(history(document_id, :put_delete, maybe_append_replay(ops, replay?)))
       end
     )
   end
@@ -238,15 +196,13 @@ defmodule ElixirDB.ModelGenerators do
         # Well-formed but nonexistent parent (generation + 64 hex).
         bogus = "1-" <> String.duplicate("0", 64)
 
-        StreamData.constant(%{
-          document_id: document_id,
-          kind: :stale_parent,
-          operations: [
-            %{op: :put, document_id: document_id, body: body, if_revision: nil},
-            %{op: :put, document_id: document_id, body: next, if_revision: :winner},
-            %{op: :put, document_id: document_id, body: stale, if_revision: bogus}
-          ]
-        })
+        StreamData.constant(
+          history(document_id, :stale_parent, [
+            put_operation(document_id, {body, 0}),
+            put_operation(document_id, {next, :winner}),
+            put_operation(document_id, {stale, bogus})
+          ])
+        )
       end
     )
   end
@@ -260,10 +216,8 @@ defmodule ElixirDB.ModelGenerators do
         left = if left == right, do: Map.put(left, "_side", "left"), else: left
         right = Map.put(right, "_side", "right")
 
-        StreamData.constant(%{
-          document_id: document_id,
-          kind: :wrong_cas,
-          operations: [
+        StreamData.constant(
+          history(document_id, :wrong_cas, [
             %{
               op: :import_siblings,
               document_id: document_id,
@@ -279,14 +233,59 @@ defmodule ElixirDB.ModelGenerators do
               body: resolve_body,
               expected: ["1-wrong-cas-leaf"]
             }
-          ]
-        })
+          ])
+        )
       end
     )
   end
 
   defp maybe_append_replay(ops, true) when ops != [], do: ops ++ [%{op: :replay_last}]
   defp maybe_append_replay(ops, _), do: ops
+
+  defp distinct_left_body(left, right) when left == right,
+    do: Map.put(left, "_side", "left")
+
+  defp distinct_left_body(left, _right), do: left
+
+  defp put_operation(document_id, {body, index}) when is_integer(index) do
+    OperationFixtures.put(document_id, body, if(index == 0, do: nil, else: :winner))
+  end
+
+  defp put_operation(document_id, {body, if_revision}) do
+    OperationFixtures.put(document_id, body, if_revision)
+  end
+
+  defp sibling_operations(
+         document_id,
+         mode,
+         {root_body, left_body, right_body, resolve_body, replay?, chosen_side}
+       ) do
+    left_body = distinct_left_body(left_body, right_body)
+    right_body = Map.put(right_body, "_side", "right")
+
+    ops = [
+      %{
+        op: :import_siblings,
+        document_id: document_id,
+        root_body: root_body,
+        left_body: left_body,
+        right_body: right_body
+      },
+      %{
+        op: :resolve,
+        document_id: document_id,
+        mode: mode,
+        chosen_side: chosen_side,
+        body: resolve_body,
+        expected: :current_live
+      }
+    ]
+
+    StreamData.constant(history(document_id, {:siblings, mode}, maybe_append_replay(ops, replay?)))
+  end
+
+  defp history(document_id, kind, operations),
+    do: %{document_id: document_id, kind: kind, operations: operations}
 
   defp build_linear_history(document_id, bodies) do
     {revisions, _parent} =
@@ -302,14 +301,7 @@ defmodule ElixirDB.ModelGenerators do
     {:ok, generation} = Id.generation(revision_id)
 
     {:ok, revision} =
-      Revision.new(%{
-        document_id: document_id,
-        revision_id: revision_id,
-        generation: generation,
-        parent_revision: parent,
-        deleted: deleted,
-        body: body
-      })
+      Revision.new(Wire.new(document_id, revision_id, generation, parent, deleted, body))
 
     revision
   end

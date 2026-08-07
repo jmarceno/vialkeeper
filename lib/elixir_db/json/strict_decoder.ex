@@ -37,6 +37,15 @@ defmodule ElixirDB.JSON.StrictDecoder do
 
   def decode(_, _), do: {:error, ElixirDB.Error.invalid_request("JSON body must be UTF-8 text")}
 
+  @doc "Decodes JSON and returns nil for malformed or invalid input."
+  @spec decode_or_nil(binary()) :: term() | nil
+  def decode_or_nil(input) do
+    case decode(input) do
+      {:ok, value} -> value
+      _ -> nil
+    end
+  end
+
   defp configured_max_depth do
     ElixirDB.Config.host_limits()[:max_json_nesting_depth] || @default_max_depth
   end
@@ -57,9 +66,7 @@ defmodule ElixirDB.JSON.StrictDecoder do
   defp parse_value(<<?", rest::binary>>, _depth, _max) do
     with {:ok, raw, tail} <- consume_string(rest, []),
          {:ok, value} <- JSON.decode(IO.iodata_to_binary([?\", raw, ?\"])) do
-      if String.valid?(value),
-        do: {:ok, value, tail},
-        else: {:error, ElixirDB.Error.invalid_request("invalid Unicode string")}
+      validate_string_value(value, tail)
     else
       {:error, %ElixirDB.Error{} = error} -> {:error, error}
       _ -> {:error, ElixirDB.Error.invalid_request("invalid JSON string")}
@@ -67,6 +74,12 @@ defmodule ElixirDB.JSON.StrictDecoder do
   end
 
   defp parse_value(input, _depth, _max), do: parse_number(input)
+
+  defp validate_string_value(value, tail) when is_binary(value) do
+    if String.valid?(value),
+      do: {:ok, value, tail},
+      else: {:error, ElixirDB.Error.invalid_request("invalid Unicode string")}
+  end
 
   defp parse_object(<<"}", rest::binary>>, object, _depth, _max), do: {:ok, object, rest}
 
@@ -76,20 +89,24 @@ defmodule ElixirDB.JSON.StrictDecoder do
          {:ok, key} <- JSON.decode(IO.iodata_to_binary([?\", raw_key, ?\"])),
          <<?:, after_colon::binary>> <- skip_ws(after_key),
          {:ok, value, after_value} <- parse_value(skip_ws(after_colon), depth, max) do
-      if Map.has_key?(object, key) do
-        {:error, ElixirDB.Error.invalid_request("duplicate JSON object key")}
-      else
-        next = skip_ws(after_value)
-        next_object = Map.put(object, key, value)
-
-        case next do
-          <<?}, tail::binary>> -> {:ok, next_object, tail}
-          <<?,, tail::binary>> -> parse_object(skip_ws(tail), next_object, depth, max)
-          _ -> {:error, ElixirDB.Error.invalid_request("malformed JSON object")}
-        end
-      end
+      put_object_value(object, key, value, after_value, depth, max)
     else
       {:error, %ElixirDB.Error{} = error} -> {:error, error}
+      _ -> {:error, ElixirDB.Error.invalid_request("malformed JSON object")}
+    end
+  end
+
+  defp put_object_value(object, key, _value, _after_value, _depth, _max)
+       when is_map_key(object, key),
+       do: {:error, ElixirDB.Error.invalid_request("duplicate JSON object key")}
+
+  defp put_object_value(object, key, value, after_value, depth, max) do
+    next = skip_ws(after_value)
+    next_object = Map.put(object, key, value)
+
+    case next do
+      <<?}, tail::binary>> -> {:ok, next_object, tail}
+      <<?,, tail::binary>> -> parse_object(skip_ws(tail), next_object, depth, max)
       _ -> {:error, ElixirDB.Error.invalid_request("malformed JSON object")}
     end
   end
@@ -98,14 +115,16 @@ defmodule ElixirDB.JSON.StrictDecoder do
     do: {:ok, Enum.reverse(values), rest}
 
   defp parse_array(input, values, depth, max) do
-    with {:ok, value, rest} <- parse_value(input, depth, max) do
-      case skip_ws(rest) do
-        <<?], tail::binary>> -> {:ok, Enum.reverse([value | values]), tail}
-        <<?,, tail::binary>> -> parse_array(skip_ws(tail), [value | values], depth, max)
-        _ -> {:error, ElixirDB.Error.invalid_request("malformed JSON array")}
-      end
-    else
-      {:error, %ElixirDB.Error{} = error} -> {:error, error}
+    case parse_value(input, depth, max) do
+      {:ok, value, rest} ->
+        case skip_ws(rest) do
+          <<?], tail::binary>> -> {:ok, Enum.reverse([value | values]), tail}
+          <<?,, tail::binary>> -> parse_array(skip_ws(tail), [value | values], depth, max)
+          _ -> {:error, ElixirDB.Error.invalid_request("malformed JSON array")}
+        end
+
+      {:error, %ElixirDB.Error{} = error} ->
+        {:error, error}
     end
   end
 
@@ -137,28 +156,40 @@ defmodule ElixirDB.JSON.StrictDecoder do
         {:error, ElixirDB.Error.invalid_request("invalid JSON value")}
 
       true ->
-        if String.contains?(token, [".", "e", "E"]) do
-          case Float.parse(token) do
-            {value, ""} when is_float(value) ->
-              validate_float(value, token, rest)
-
-            :error ->
-              # Extremely large exponents fail Float.parse on some OTP builds; treat as overflow.
-              {:error, ElixirDB.Error.invalid_request("number overflows to infinity")}
-
-            _ ->
-              {:error, ElixirDB.Error.invalid_request("invalid JSON number")}
-          end
-        else
-          {value, ""} = Integer.parse(token)
-
-          if abs(value) <= 9_007_199_254_740_991,
-            do: {:ok, value, rest},
-            else:
-              {:error, ElixirDB.Error.invalid_request("integer is outside the binary64 safe range")}
-        end
+        parse_number_token(token, rest)
     end
   end
+
+  defp parse_number_token(token, rest) do
+    if String.contains?(token, [".", "e", "E"]),
+      do: parse_float_token(token, rest),
+      else: parse_integer_token(token, rest)
+  end
+
+  defp parse_float_token(token, rest) do
+    case Float.parse(token) do
+      {value, ""} when is_float(value) ->
+        validate_float(value, token, rest)
+
+      :error ->
+        # Extremely large exponents fail Float.parse on some OTP builds; treat as overflow.
+        {:error, ElixirDB.Error.invalid_request("number overflows to infinity")}
+
+      _ ->
+        {:error, ElixirDB.Error.invalid_request("invalid JSON number")}
+    end
+  end
+
+  defp parse_integer_token(token, rest) do
+    {value, ""} = Integer.parse(token)
+    validate_integer(value, rest)
+  end
+
+  defp validate_integer(value, rest) when abs(value) <= 9_007_199_254_740_991,
+    do: {:ok, value, rest}
+
+  defp validate_integer(_value, _rest),
+    do: {:error, ElixirDB.Error.invalid_request("integer is outside the binary64 safe range")}
 
   defp validate_float(value, token, rest) do
     zero_literal? = Regex.match?(~r/^[-]?0(?:\.0+)?(?:[eE][+-]?[0-9]+)?$/, token)

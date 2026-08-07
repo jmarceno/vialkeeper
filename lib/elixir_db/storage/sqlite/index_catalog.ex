@@ -6,7 +6,8 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   document refresh. Transaction boundaries remain in the adapter.
   """
 
-  alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.JSON.{Canonical, StrictDecoder, Stringify}
+  alias ElixirDB.MapAccess
   alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, StructuredIndexes}
 
   @doc """
@@ -14,26 +15,27 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   """
   @spec list(Connection.handle()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
   def list(conn) do
-    with {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT index_id, definition_json, definition_digest, lifecycle_state, adapter_metadata_json FROM index_definitions ORDER BY index_id"
-           ) do
-      {:ok,
-       Enum.map(rows, fn [id, json, digest_value, state, metadata_json] ->
-         definition = decode_json!(json)
-         metadata = decode_json!(metadata_json)
+    case Connection.query(
+           conn,
+           "SELECT index_id, definition_json, definition_digest, lifecycle_state, adapter_metadata_json FROM index_definitions ORDER BY index_id"
+         ) do
+      {:ok, rows} ->
+        {:ok,
+         Enum.map(rows, fn [id, json, digest_value, state, metadata_json] ->
+           definition = decode_json!(json)
+           metadata = decode_json!(metadata_json)
 
-         definition
-         |> Map.merge(%{
-           "index_id" => id,
-           "definition_digest" => digest_value,
-           "lifecycle_state" => state,
-           "_metadata" => metadata
-         })
-       end)}
-    else
-      {:error, reason} -> {:error, normalize_error(reason)}
+           definition
+           |> Map.merge(%{
+             "index_id" => id,
+             "definition_digest" => digest_value,
+             "lifecycle_state" => state,
+             "_metadata" => metadata
+           })
+         end)}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
     end
   end
 
@@ -48,33 +50,34 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
          digest <- :crypto.hash(:sha256, definition_json) |> Base.encode16(case: :lower),
          id <- "idx_" <> binary_part(digest, 0, 24),
          {:ok, existing} <- find_by_name(conn, index_name(definition), definition_json, digest),
-         {:ok, result} <-
-           (case existing do
-              nil ->
-                with {:ok, metadata} <- create_physical(conn, id, definition),
-                     {:ok, metadata_json} <- Canonical.encode(metadata),
-                     :ok <-
-                       Connection.execute(
-                         conn,
-                         "INSERT INTO index_definitions(index_id, name, index_type, definition_digest, definition_json, lifecycle_state, adapter_metadata_json) VALUES (?, ?, ?, ?, ?, 'ready', ?)",
-                         [
-                           id,
-                           index_name(definition),
-                           index_type(definition),
-                           digest,
-                           definition_json,
-                           metadata_json
-                         ]
-                       ) do
-                  {:ok, index_result(definition, id, digest)}
-                end
-
-              existing ->
-                {:ok, existing}
-            end) do
+         {:ok, result} <- create_or_reuse(conn, existing, id, definition, digest, definition_json) do
       {:ok, result}
     else
       {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  defp create_or_reuse(_conn, existing, _id, _definition, _digest, _definition_json)
+       when not is_nil(existing),
+       do: {:ok, existing}
+
+  defp create_or_reuse(conn, nil, id, definition, digest, definition_json) do
+    with {:ok, metadata} <- create_physical(conn, id, definition),
+         {:ok, metadata_json} <- Canonical.encode(metadata),
+         :ok <-
+           Connection.execute(
+             conn,
+             "INSERT INTO index_definitions(index_id, name, index_type, definition_digest, definition_json, lifecycle_state, adapter_metadata_json) VALUES (?, ?, ?, ?, ?, 'ready', ?)",
+             [
+               id,
+               index_name(definition),
+               index_type(definition),
+               digest,
+               definition_json,
+               metadata_json
+             ]
+           ) do
+      {:ok, index_result(definition, id, digest)}
     end
   end
 
@@ -124,21 +127,25 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
              "SELECT index_id, definition_json, adapter_metadata_json FROM index_definitions WHERE lifecycle_state = 'ready' ORDER BY index_id"
            ) do
       Enum.reduce_while(rows, :ok, fn [index_id, definition_json, metadata_json], :ok ->
-        with {:ok, definition} <- decode_json(definition_json),
-             {:ok, metadata} <- decode_json(metadata_json),
-             :ok <-
-               FullTextIndexes.refresh_document(
-                 conn,
-                 Map.merge(Map.put(metadata, "index_id", index_id), definition),
-                 doc_key,
-                 winner.body,
-                 winner.deleted
-               ) do
-          {:cont, :ok}
-        else
-          {:error, error} -> {:halt, {:error, error}}
-        end
+        refresh_index_row(conn, doc_key, winner, index_id, definition_json, metadata_json)
       end)
+    end
+  end
+
+  defp refresh_index_row(conn, doc_key, winner, index_id, definition_json, metadata_json) do
+    with {:ok, definition} <- decode_json(definition_json),
+         {:ok, metadata} <- decode_json(metadata_json),
+         :ok <-
+           FullTextIndexes.refresh_document(
+             conn,
+             Map.merge(Map.put(metadata, "index_id", index_id), definition),
+             doc_key,
+             winner.body,
+             winner.deleted
+           ) do
+      {:cont, :ok}
+    else
+      {:error, error} -> {:halt, {:error, error}}
     end
   end
 
@@ -150,17 +157,19 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   end
 
   defp drop_physical(conn, metadata) do
-    case metadata["index_type"] || metadata[:index_type] || metadata["type"] || metadata[:type] do
+    index_type = MapAccess.get(metadata, :index_type, MapAccess.get(metadata, :type))
+
+    case index_type do
       "full_text" -> FullTextIndexes.drop(conn, metadata)
       :full_text -> FullTextIndexes.drop(conn, metadata)
       _ -> StructuredIndexes.drop(conn, metadata)
     end
   end
 
-  defp index_name(definition), do: definition["name"] || definition[:name]
+  defp index_name(definition), do: MapAccess.get(definition, :name)
 
   defp index_type(definition) do
-    case definition["type"] || definition[:type] do
+    case MapAccess.get(definition, :type) do
       :structured -> "structured"
       :full_text -> "full_text"
       value -> value
@@ -170,18 +179,12 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   defp index_result(definition, id, digest_value),
     do:
       definition
-      |> stringify_definition()
+      |> Stringify.keys()
       |> Map.merge(%{
         "index_id" => id,
         "definition_digest" => digest_value,
         "lifecycle_state" => "ready"
       })
-
-  defp stringify_definition(value) when is_map(value),
-    do: Map.new(value, fn {key, child} -> {to_string(key), stringify_definition(child)} end)
-
-  defp stringify_definition(value) when is_list(value), do: Enum.map(value, &stringify_definition/1)
-  defp stringify_definition(value), do: value
 
   defp find_by_name(conn, name, definition_json, digest_value) do
     case Connection.query(

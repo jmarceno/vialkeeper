@@ -12,11 +12,11 @@ defmodule ElixirDB.Contract.FixturesTest do
   alias ElixirDB.Revisions.Id, as: RevisionId
   alias ElixirDB.Storage.SQLite.Adapter
 
-  @fixtures_root Path.expand("../../priv/fixtures", __DIR__)
+  @fixtures_root Application.app_dir(:elixir_db, "priv/fixtures")
 
   test "canonical JSON object fixtures match ElixirDB.JSON.Canonical" do
     fixtures = load_json!("canonical_json/objects.json")
-    assert length(fixtures) >= 1
+    assert [_ | _] = fixtures
 
     for fixture <- fixtures do
       assert {:ok, actual} = Canonical.encode(fixture["input"])
@@ -35,7 +35,7 @@ defmodule ElixirDB.Contract.FixturesTest do
 
   test "RFC 8785 Appendix B number fixtures match ElixirDB.JSON.Canonical" do
     fixtures = load_json!("canonical_json/numbers.json")
-    assert length(fixtures) >= 1
+    assert [_ | _] = fixtures
 
     for fixture <- fixtures do
       bits = String.to_integer(fixture["ieee754_hex"], 16)
@@ -58,7 +58,7 @@ defmodule ElixirDB.Contract.FixturesTest do
 
   test "revision ID fixtures match ElixirDB.Revisions.Id (REV-002)" do
     fixtures = load_json!("revision_ids/vectors.json")
-    assert length(fixtures) >= 1
+    assert [_ | _] = fixtures
 
     for fixture <- fixtures do
       assert {:ok, actual} =
@@ -78,7 +78,7 @@ defmodule ElixirDB.Contract.FixturesTest do
 
   test "unicode_words_v1 tokenization fixtures match ElixirDB.Query.FullText (QUERY-015)" do
     fixtures = load_json!("tokenization/unicode_words_v1.json")
-    assert length(fixtures) >= 1
+    assert [_ | _] = fixtures
 
     for fixture <- fixtures do
       diacritics =
@@ -100,7 +100,7 @@ defmodule ElixirDB.Contract.FixturesTest do
       |> load_json!()
       |> Enum.filter(&(&1["check_fts5"] == true))
 
-    assert length(fixtures) >= 1
+    assert [_ | _] = fixtures
 
     for fixture <- fixtures do
       diacritics = fixture["diacritics"] || "preserve"
@@ -133,7 +133,7 @@ defmodule ElixirDB.Contract.FixturesTest do
 
   test "replication ID fixtures match ElixirDB.Replication.Id (REPL-006)" do
     fixtures = load_json!("protocol/replication_ids.json")
-    assert length(fixtures) >= 1
+    assert [_ | _] = fixtures
 
     for fixture <- fixtures do
       assert {:ok, actual} =
@@ -159,7 +159,7 @@ defmodule ElixirDB.Contract.FixturesTest do
 
   test "checkpoint reconcile fixtures match CheckpointReconciler (REPL-007)" do
     fixtures = load_json!("protocol/checkpoint_reconcile.json")
-    assert length(fixtures) >= 1
+    assert [_ | _] = fixtures
 
     for fixture <- fixtures do
       actual =
@@ -172,7 +172,7 @@ defmodule ElixirDB.Contract.FixturesTest do
 
   test "checkpoint CAS and wire fixtures execute (REPL-007)" do
     fixtures = load_json!("protocol/checkpoint_cas.json")
-    assert length(fixtures) >= 1
+    assert [_ | _] = fixtures
 
     for fixture <- fixtures do
       case fixture["op"] do

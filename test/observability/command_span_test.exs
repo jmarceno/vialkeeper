@@ -9,6 +9,8 @@ defmodule ElixirDB.Observability.CommandSpanTest do
   use ElixirDB.Observability.OtelCase, async: false
 
   alias ElixirDB.Documents
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.Database
   alias ElixirDB.Observability.TestExporter
   alias ElixirDB.Runtime.DatabaseCatalog
 
@@ -106,7 +108,7 @@ defmodule ElixirDB.Observability.CommandSpanTest do
     error = ElixirDB.Error.internal_error("injected for the error-policy test")
 
     assert {:error, ^error} =
-             ElixirDB.Observability.Instrumentation.Database.command(
+             Database.command(
                uuid,
                {:command, :put, %{}},
                fn -> {:error, error} end
@@ -134,7 +136,7 @@ defmodule ElixirDB.Observability.CommandSpanTest do
 
     case Documents.put(uuid, request) do
       {:ok, result} when is_map(result) ->
-        {:ok, Map.get(result, :revision) || Map.get(result, "revision")}
+        {:ok, MapAccess.get(result, :revision)}
 
       other ->
         other

@@ -1,6 +1,8 @@
 defmodule ElixirDB.Documents do
   @moduledoc "Validated document operations over the database runtime."
   alias ElixirDB.JSON.Canonical
+  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.DatabaseCatalog
 
   def get(uuid, request) do
@@ -63,29 +65,28 @@ defmodule ElixirDB.Documents do
   def bulk_write(_uuid, _operations),
     do: {:error, ElixirDB.Error.invalid_request("bulk-write body must be an array")}
 
-  defp validate_get(%{id: id} = request) do
-    with :ok <- known(request, [:id, :revision, :include_conflicts]),
+  defp validate_get(request) when is_map(request) do
+    with :ok <-
+           known(request, [
+             :id,
+             :revision,
+             :include_conflicts,
+             "id",
+             "revision",
+             "include_conflicts"
+           ]),
+         id <- MapAccess.get(request, :id),
          :ok <- validate_id(id),
-         true <- is_boolean(Map.get(request, :include_conflicts, false)) do
+         true <- is_boolean(MapAccess.get(request, :include_conflicts, false)) do
       {:ok,
        %{
          document_id: id,
-         revision: Map.get(request, :revision),
-         include_conflicts: Map.get(request, :include_conflicts, false)
+         revision: MapAccess.get(request, :revision),
+         include_conflicts: MapAccess.get(request, :include_conflicts, false)
        }}
     else
       false -> {:error, ElixirDB.Error.invalid_request("include_conflicts must be a boolean")}
       {:error, error} -> {:error, error}
-    end
-  end
-
-  defp validate_get(%{"id" => id} = request) do
-    with :ok <- known(request, ["id", "revision", "include_conflicts"]) do
-      validate_get(%{
-        id: id,
-        revision: Map.get(request, "revision"),
-        include_conflicts: Map.get(request, "include_conflicts", false)
-      })
     end
   end
 
@@ -107,13 +108,13 @@ defmodule ElixirDB.Documents do
     do: {:error, ElixirDB.Error.invalid_request("document mutation requires an object")}
 
   defp validate_put(request) do
-    id = request[:id] || request["id"]
-    body = request[:body] || request["body"]
+    id = MapAccess.get(request, :id)
+    body = MapAccess.get(request, :body)
 
     with :ok <- validate_id(id),
          true <- is_map(body),
          {:ok, canonical} <- Canonical.encode(body),
-         {:ok, normalized} <- ElixirDB.JSON.StrictDecoder.decode(canonical),
+         {:ok, normalized} <- StrictDecoder.decode(canonical),
          {:ok, revision} <- expected_revision(request) do
       {:ok, %{document_id: id, if_revision: revision, body: normalized}}
     else
@@ -123,7 +124,7 @@ defmodule ElixirDB.Documents do
   end
 
   defp validate_delete(request) do
-    id = request[:id] || request["id"]
+    id = MapAccess.get(request, :id)
 
     with :ok <- validate_id(id), {:ok, revision} <- expected_revision(request) do
       {:ok, %{document_id: id, if_revision: revision}}
@@ -147,25 +148,19 @@ defmodule ElixirDB.Documents do
     ]
 
     if Enum.all?(Map.keys(request), &(&1 in allowed)) do
-      id = request[:id] || request[:document_id] || request["id"] || request["document_id"]
+      id = MapAccess.get(request, :id, MapAccess.get(request, :document_id))
 
-      expected =
-        request[:expected_live_revisions] || request["expected_live_revisions"] || []
+      expected = MapAccess.get(request, :expected_live_revisions, [])
 
-      chosen = request[:chosen_parent_revision] || request["chosen_parent_revision"]
-      body = Map.get(request, :body, Map.get(request, "body"))
-      delete_all = Map.get(request, :delete_all, Map.get(request, "delete_all", false))
+      chosen = MapAccess.get(request, :chosen_parent_revision)
+      body = MapAccess.get(request, :body)
+      delete_all = MapAccess.get(request, :delete_all, false)
 
       with :ok <- validate_id(id),
            true <- is_list(expected) and Enum.all?(expected, &is_binary/1),
            true <- is_boolean(delete_all),
            true <- delete_all or (is_binary(chosen) and is_map(body)),
-           {:ok, canonical_body} <- if(delete_all, do: {:ok, nil}, else: Canonical.encode(body)),
-           {:ok, normalized_body} <-
-             if(delete_all,
-               do: {:ok, nil},
-               else: ElixirDB.JSON.StrictDecoder.decode(canonical_body)
-             ) do
+           {:ok, normalized_body} <- normalize_resolution_body(delete_all, body) do
         {:ok,
          %{
            document_id: id,
@@ -186,8 +181,16 @@ defmodule ElixirDB.Documents do
   defp validate_resolution(_),
     do: {:error, ElixirDB.Error.invalid_request("conflict resolution request must be an object")}
 
+  defp normalize_resolution_body(true, _body), do: {:ok, nil}
+
+  defp normalize_resolution_body(false, body) do
+    with {:ok, canonical} <- Canonical.encode(body) do
+      StrictDecoder.decode(canonical)
+    end
+  end
+
   defp expected_revision(request) do
-    revision = Map.get(request, :if_revision, Map.get(request, "if_revision"))
+    revision = MapAccess.get(request, :if_revision)
 
     if is_nil(revision) or is_binary(revision),
       do: {:ok, revision},
@@ -228,24 +231,24 @@ defmodule ElixirDB.Documents do
   end
 
   defp normalize_bulk_operation(%{"type" => "delete", "id" => id} = operation),
-    do: %{operation: :delete, document_id: id, if_revision: Map.get(operation, "if_revision")}
+    do: %{operation: :delete, document_id: id, if_revision: bulk_if_revision(operation)}
 
   defp normalize_bulk_operation(%{"type" => "put", "id" => id, "body" => body} = operation),
     do: %{
       operation: :put,
       document_id: id,
-      if_revision: Map.get(operation, "if_revision"),
+      if_revision: bulk_if_revision(operation),
       body: body
     }
 
   defp normalize_bulk_operation(%{type: :delete, id: id} = operation),
-    do: %{operation: :delete, document_id: id, if_revision: Map.get(operation, :if_revision)}
+    do: %{operation: :delete, document_id: id, if_revision: bulk_if_revision(operation)}
 
   defp normalize_bulk_operation(%{type: :put, id: id, body: body} = operation),
     do: %{
       operation: :put,
       document_id: id,
-      if_revision: Map.get(operation, :if_revision),
+      if_revision: bulk_if_revision(operation),
       body: body
     }
 
@@ -308,4 +311,6 @@ defmodule ElixirDB.Documents do
        }
 
   defp normalize_bulk_operation(operation), do: operation
+
+  defp bulk_if_revision(operation), do: MapAccess.get(operation, :if_revision)
 end

@@ -7,6 +7,7 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   """
   use ExUnit.Case, async: false
 
+  alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.TestServer
 
@@ -264,7 +265,7 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
         body
 
       is_binary(body) and body != "" ->
-        case ElixirDB.JSON.StrictDecoder.decode(body) do
+        case StrictDecoder.decode(body) do
           {:ok, decoded} -> decoded
           _ -> body
         end
@@ -324,12 +325,10 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   end
 
   defp assert_ok_or_domain_error(response, codes) do
-    cond do
-      response.status in 200..299 ->
-        assert Map.has_key?(response.body, "data")
-
-      true ->
-        assert_error_code(response, codes)
+    if response.status in 200..299 do
+      assert Map.has_key?(response.body, "data")
+    else
+      assert_error_code(response, codes)
     end
   end
 

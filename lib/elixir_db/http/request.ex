@@ -1,4 +1,6 @@
 defmodule ElixirDB.HTTP.Request do
+  alias ElixirDB.HTTP.BodyReader
+  alias ElixirDB.HTTP.Response
   @moduledoc false
 
   @doc """
@@ -10,9 +12,9 @@ defmodule ElixirDB.HTTP.Request do
   def call(conn, fun) when is_function(fun, 2), do: call(conn, [], fun)
 
   def call(conn, opts, fun) when is_list(opts) and is_function(fun, 2) do
-    case ElixirDB.HTTP.BodyReader.read(conn, opts) do
+    case BodyReader.read(conn, opts) do
       {:ok, body, conn} -> fun.(body, conn)
-      {:error, error} -> ElixirDB.HTTP.Response.error(conn, error)
+      {:error, error} -> Response.error(conn, error)
     end
   end
 

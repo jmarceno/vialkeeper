@@ -8,6 +8,8 @@ defmodule ElixirDB.Storage.SQLite.Chains do
   """
 
   alias ElixirDB.Domain.Revision
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Revisions.Wire
   alias ElixirDB.Storage.SQLite.{Documents, Revisions}
 
   @doc """
@@ -15,38 +17,12 @@ defmodule ElixirDB.Storage.SQLite.Chains do
   """
   @spec diff(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def diff(adapter, request) do
-    documents = request[:documents] || request["documents"] || []
+    documents = MapAccess.get(request, :documents, [])
 
     with :ok <- validate_documents_batch(documents),
          {:ok, result} <-
            Enum.reduce_while(documents, {:ok, []}, fn entry, {:ok, acc} ->
-             id = entry[:document_id] || entry["document_id"]
-             leaves_requested = entry[:leaf_revisions] || entry["leaf_revisions"] || []
-
-             case Documents.find(adapter.conn, id) do
-               {:ok, nil} ->
-                 {:cont, {:ok, [%{document_id: id, missing_revisions: leaves_requested} | acc]}}
-
-               {:ok, doc} ->
-                 existing =
-                   Revisions.leaves(adapter.conn, doc.doc_key)
-                   |> Enum.map(& &1.revision_id)
-                   |> MapSet.new()
-
-                 {:cont,
-                  {:ok,
-                   [
-                     %{
-                       document_id: id,
-                       missing_revisions:
-                         Enum.reject(leaves_requested, &MapSet.member?(existing, &1))
-                     }
-                     | acc
-                   ]}}
-
-               {:error, error} ->
-                 {:halt, {:error, error}}
-             end
+             diff_document(adapter, entry, acc)
            end)
            |> then(fn
              {:ok, values} -> {:ok, Enum.reverse(values)}
@@ -61,38 +37,72 @@ defmodule ElixirDB.Storage.SQLite.Chains do
   """
   @spec get(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def get(adapter, request) do
-    documents = request[:documents] || request["documents"] || []
+    documents = MapAccess.get(request, :documents, [])
 
     with :ok <- validate_documents_batch(documents),
          {:ok, chains} <-
            Enum.reduce_while(documents, {:ok, []}, fn entry, {:ok, acc} ->
-             id = entry[:document_id] || entry["document_id"]
-             requested = entry[:leaf_revisions] || entry["leaf_revisions"] || []
-
-             case Documents.find(adapter.conn, id) do
-               {:ok, nil} ->
-                 {:cont, {:ok, acc}}
-
-               {:ok, doc} ->
-                 case Enum.reduce_while(requested, {:ok, []}, fn leaf, {:ok, chain_acc} ->
-                        case chain_for_leaf(adapter, doc, leaf) do
-                          {:ok, chain} -> {:cont, {:ok, [chain | chain_acc]}}
-                          {:error, error} -> {:halt, {:error, error}}
-                        end
-                      end) do
-                   {:ok, values} -> {:cont, {:ok, Enum.reverse(values) ++ acc}}
-                   {:error, error} -> {:halt, {:error, error}}
-                 end
-
-               {:error, error} ->
-                 {:halt, {:error, error}}
-             end
+             get_document_chains(adapter, entry, acc)
            end)
            |> then(fn
              {:ok, values} -> {:ok, Enum.reverse(values)}
              error -> error
            end) do
       {:ok, %{chains: chains}}
+    end
+  end
+
+  defp diff_document(adapter, entry, acc) do
+    id = MapAccess.get(entry, :document_id)
+    leaves_requested = MapAccess.get(entry, :leaf_revisions, [])
+
+    case Documents.find(adapter.conn, id) do
+      {:ok, nil} ->
+        {:cont, {:ok, [%{document_id: id, missing_revisions: leaves_requested} | acc]}}
+
+      {:ok, doc} ->
+        existing =
+          Revisions.leaves(adapter.conn, doc.doc_key)
+          |> Enum.map(& &1.revision_id)
+          |> MapSet.new()
+
+        {:cont,
+         {:ok,
+          [
+            %{
+              document_id: id,
+              missing_revisions: Enum.reject(leaves_requested, &MapSet.member?(existing, &1))
+            }
+            | acc
+          ]}}
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
+  defp get_document_chains(adapter, entry, acc) do
+    id = MapAccess.get(entry, :document_id)
+    requested = MapAccess.get(entry, :leaf_revisions, [])
+
+    case Documents.find(adapter.conn, id) do
+      {:ok, nil} -> {:cont, {:ok, acc}}
+      {:ok, doc} -> get_requested_chains(adapter, doc, requested, acc)
+      {:error, error} -> {:halt, {:error, error}}
+    end
+  end
+
+  defp get_requested_chains(adapter, doc, requested, acc) do
+    case Enum.reduce_while(requested, {:ok, []}, &get_requested_chain(adapter, doc, &1, &2)) do
+      {:ok, values} -> {:cont, {:ok, Enum.reverse(values, acc)}}
+      {:error, error} -> {:halt, {:error, error}}
+    end
+  end
+
+  defp get_requested_chain(adapter, doc, leaf, {:ok, chain_acc}) do
+    case chain_for_leaf(adapter, doc, leaf) do
+      {:ok, chain} -> {:cont, {:ok, [chain | chain_acc]}}
+      {:error, error} -> {:halt, {:error, error}}
     end
   end
 
@@ -152,8 +162,8 @@ defmodule ElixirDB.Storage.SQLite.Chains do
     do: {:error, ElixirDB.Error.invalid_request("replication documents must be an array")}
 
   defp valid_replication_document_request?(entry) when is_map(entry) do
-    id = entry[:document_id] || entry["document_id"]
-    leaves = entry[:leaf_revisions] || entry["leaf_revisions"] || []
+    id = MapAccess.get(entry, :document_id)
+    leaves = MapAccess.get(entry, :leaf_revisions, [])
     allowed = [:document_id, :leaf_revisions, "document_id", "leaf_revisions"]
 
     Enum.all?(Map.keys(entry), &(&1 in allowed)) and is_binary(id) and is_list(leaves) and
@@ -164,12 +174,5 @@ defmodule ElixirDB.Storage.SQLite.Chains do
   defp valid_replication_document_request?(_), do: false
 
   defp revision_wire(%Revision{} = revision, document_id),
-    do: %{
-      document_id: document_id,
-      revision_id: revision.revision_id,
-      generation: revision.generation,
-      parent_revision: revision.parent_revision,
-      deleted: revision.deleted,
-      body: revision.body
-    }
+    do: Wire.from_revision(revision, document_id)
 end

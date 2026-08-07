@@ -53,21 +53,17 @@ defmodule ElixirDB.Observability.Attributes do
   """
   @spec build(keyword()) :: map()
   def build(attrs) when is_list(attrs) do
-    attrs
-    |> Enum.reduce(%{}, fn {key, value}, acc ->
-      cond do
-        key not in @allowed_keys or is_nil(value) ->
-          # Allow-list gate: silently drop. If you intended this field, add it
-          # to @allowed and document why it is safe (no customer data, bounded).
-          acc
+    Enum.reduce(attrs, %{}, &build_attribute/2)
+  end
 
-        true ->
-          case coerce(value) do
-            nil -> acc
-            coerced -> Map.put(acc, otel_key!(key), coerced)
-          end
-      end
-    end)
+  defp build_attribute({key, _value}, acc) when key not in @allowed_keys, do: acc
+  defp build_attribute({_key, nil}, acc), do: acc
+
+  defp build_attribute({key, value}, acc) do
+    case coerce(value) do
+      nil -> acc
+      coerced -> Map.put(acc, otel_key!(key), coerced)
+    end
   end
 
   @doc "Returns the OTel attribute key for an allow-listed local key."

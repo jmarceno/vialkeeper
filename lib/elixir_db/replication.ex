@@ -1,8 +1,11 @@
 defmodule ElixirDB.Replication do
   @moduledoc "One-shot and continuous replication orchestration."
+  alias ElixirDB.Changes.Request
+  alias ElixirDB.JSON.{Canonical, Stringify}
+  alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationModule
   alias ElixirDB.Replication.{CheckpointReconciler, Id}
-  alias ElixirDB.JSON.Canonical
-
+  alias ElixirDB.Replication.LocalEndpoint
   @default_batch 100
 
   @doc "Ordered worker phase states from Plan §7.7 (excluding terminal idle entry)."
@@ -24,8 +27,8 @@ defmodule ElixirDB.Replication do
   end
 
   def one_shot(source_uuid, target_uuid, options \\ %{}) do
-    with {:ok, source} <- ElixirDB.Replication.LocalEndpoint.new(source_uuid),
-         {:ok, target} <- ElixirDB.Replication.LocalEndpoint.new(target_uuid) do
+    with {:ok, source} <- LocalEndpoint.new(source_uuid),
+         {:ok, target} <- LocalEndpoint.new(target_uuid) do
       run(source, target, options)
     end
   end
@@ -86,10 +89,7 @@ defmodule ElixirDB.Replication do
     limit = option(options, :batch, @default_batch)
     wait_ms = option(options, :wait_ms_for_read, 0)
 
-    request =
-      if wait_ms > 0,
-        do: %{since: context.since, limit: limit, wait_ms: wait_ms},
-        else: %{since: context.since, limit: limit}
+    request = %Request{since: context.since, limit: limit, wait_ms: wait_ms}
 
     with :ok <- phase_hook(options, :read_changes, context),
          {:ok, changes} <- endpoint_call(source, :read_changes, [request]),
@@ -148,7 +148,7 @@ defmodule ElixirDB.Replication do
     with :ok <- phase_hook(options, :checkpoint_target, context),
          {:ok, prepared} <- prepare_checkpoint(source, target, context, options),
          {:ok, target_result} <-
-           ElixirDB.Observability.Instrumentation.Replication.checkpoint_span(
+           ReplicationModule.checkpoint_span(
              context.replication_id,
              :target,
              fn ->
@@ -178,7 +178,7 @@ defmodule ElixirDB.Replication do
 
     with :ok <- phase_hook(options, :checkpoint_source, context),
          {:ok, source_result} <-
-           ElixirDB.Observability.Instrumentation.Replication.checkpoint_span(
+           ReplicationModule.checkpoint_span(
              context.replication_id,
              :source,
              fn ->
@@ -212,7 +212,7 @@ defmodule ElixirDB.Replication do
     with :ok <- phase_hook(options, :waiting, context),
          {:ok, changes} <-
            endpoint_call(source, :read_changes, [
-             %{
+             %Request{
                since: context.since,
                limit: option(options, :batch, @default_batch),
                wait_ms: option(options, :wait_ms, 1_000)
@@ -260,22 +260,21 @@ defmodule ElixirDB.Replication do
 
   defp process_from_handshake(source, target, context, options) do
     if caught_up?(context) do
-      with {:ok, context} <- checkpoint_target(source, target, context, options),
-           {:ok, context} <- checkpoint_source(source, context, options) do
-        case next_after_checkpoint(context, options) do
-          {:completed, result} ->
-            {:ok, result}
-
-          {:waiting, context} ->
-            wait_loop(source, target, context, options)
-
-          {:continue_batch, context} ->
-            process_batches(source, target, context, options)
-        end
-      end
+      checkpoint_caught_up(source, target, context, options)
     else
       process_batches(source, target, context, options)
     end
+  end
+
+  defp checkpoint_caught_up(source, target, context, options) do
+    with {:ok, context} <- checkpoint_target(source, target, context, options),
+         {:ok, context} <- checkpoint_source(source, context, options) do
+      continue_after_checkpoint(source, target, context, options)
+    end
+  end
+
+  defp continue_after_checkpoint(source, target, context, options) do
+    handle_next_after_checkpoint(source, target, context, options)
   end
 
   defp process_batches(source, target, context, options) do
@@ -285,16 +284,15 @@ defmodule ElixirDB.Replication do
          {:ok, context} <- import_chains(target, context, options),
          {:ok, context} <- checkpoint_target(source, target, context, options),
          {:ok, context} <- checkpoint_source(source, context, options) do
-      case next_after_checkpoint(context, options) do
-        {:completed, result} ->
-          {:ok, result}
+      handle_next_after_checkpoint(source, target, context, options)
+    end
+  end
 
-        {:waiting, context} ->
-          wait_loop(source, target, context, options)
-
-        {:continue_batch, context} ->
-          process_batches(source, target, context, options)
-      end
+  defp handle_next_after_checkpoint(source, target, context, options) do
+    case next_after_checkpoint(context, options) do
+      {:completed, result} -> {:ok, result}
+      {:waiting, context} -> wait_loop(source, target, context, options)
+      {:continue_batch, context} -> process_batches(source, target, context, options)
     end
   end
 
@@ -360,8 +358,8 @@ defmodule ElixirDB.Replication do
   # REPL-007: retain at most the ten most recent completed sessions, keyed by
   # session identity `{session_id, source_sequence}` (same key used by checkpoint_entry/6).
   defp checkpoint_history(source, target, entry) do
-    (List.wrap(source && (source[:history] || source["history"])) ++
-       List.wrap(target && (target[:history] || target["history"])) ++ [entry])
+    (List.wrap(source && MapAccess.get(source, :history)) ++
+       List.wrap(target && MapAccess.get(target, :history)) ++ [entry])
     |> Enum.uniq_by(fn item -> {get(item, :session_id), get(item, :source_sequence)} end)
     |> Enum.sort_by(&get(&1, :source_sequence), :desc)
     |> Enum.take(10)
@@ -369,8 +367,8 @@ defmodule ElixirDB.Replication do
 
   defp checkpoint_entry(source, target, session_id, sequence, documents, imported) do
     existing =
-      (List.wrap(source && (source[:history] || source["history"])) ++
-         List.wrap(target && (target[:history] || target["history"])))
+      (List.wrap(source && MapAccess.get(source, :history)) ++
+         List.wrap(target && MapAccess.get(target, :history)))
       |> Enum.find(fn item ->
         get(item, :session_id) == session_id and get(item, :source_sequence) == sequence
       end)
@@ -395,45 +393,51 @@ defmodule ElixirDB.Replication do
   end
 
   defp take_batch_bytes(changes, options) do
-    configured =
-      option(
-        options,
-        :batch_bytes,
-        get_in(ElixirDB.Config.defaults(), ["replication", "batch_bytes"]) || 4_194_304
-      )
-
-    default = get_in(ElixirDB.Config.defaults(), ["replication", "batch_bytes"]) || 4_194_304
-    configured = if is_integer(configured) and configured > 0, do: configured, else: default
-
-    maximum =
-      min(configured, ElixirDB.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216)
+    maximum = batch_byte_limit(options)
 
     Enum.reduce_while(changes, {[], 0}, fn change, {selected, size} ->
-      case Canonical.encode(stringify_keys(change)) do
-        {:ok, encoded} ->
-          next_size = size + byte_size(encoded)
-
-          cond do
-            next_size <= maximum ->
-              {:cont, {[change | selected], next_size}}
-
-            selected == [] ->
-              {:halt,
-               {:error,
-                ElixirDB.Error.payload_too_large("replication batch exceeds the byte limit")}}
-
-            true ->
-              {:halt, {:done, Enum.reverse(selected)}}
-          end
-
-        {:error, error} ->
-          {:halt, {:error, error}}
-      end
+      take_batch_change(change, selected, size, maximum)
     end)
     |> case do
       {:error, _} = error -> error
       {:done, selected} -> {:ok, selected}
       {selected, _size} -> {:ok, Enum.reverse(selected)}
+    end
+  end
+
+  defp batch_byte_limit(options) do
+    default = get_in(ElixirDB.Config.defaults(), ["replication", "batch_bytes"]) || 4_194_304
+    configured = option(options, :batch_bytes, default)
+    configured = normalize_batch_bytes(configured, default)
+    min(configured, ElixirDB.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216)
+  end
+
+  defp normalize_batch_bytes(value, _default) when is_integer(value) and value > 0, do: value
+  defp normalize_batch_bytes(_value, default), do: default
+
+  defp take_batch_change(change, selected, size, maximum) do
+    case Canonical.encode(Stringify.keys(change)) do
+      {:ok, encoded} ->
+        append_batch_change(change, selected, size, byte_size(encoded), maximum)
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
+  defp append_batch_change(change, selected, size, change_size, maximum) do
+    next_size = size + change_size
+
+    cond do
+      next_size <= maximum ->
+        {:cont, {[change | selected], next_size}}
+
+      selected == [] ->
+        {:halt,
+         {:error, ElixirDB.Error.payload_too_large("replication batch exceeds the byte limit")}}
+
+      true ->
+        {:halt, {:done, Enum.reverse(selected)}}
     end
   end
 
@@ -477,12 +481,6 @@ defmodule ElixirDB.Replication do
         :ok
     end
   end
-
-  defp stringify_keys(value) when is_map(value),
-    do: Map.new(value, fn {key, child} -> {to_string(key), stringify_keys(child)} end)
-
-  defp stringify_keys(value) when is_list(value), do: Enum.map(value, &stringify_keys/1)
-  defp stringify_keys(value), do: value
 
   defp record_version(nil), do: 0
   defp record_version(%{version: version}) when is_integer(version), do: version
@@ -539,7 +537,7 @@ defmodule ElixirDB.Replication do
   defp value(_other), do: nil
 
   defp option(options, key, default) when is_map(options),
-    do: Map.get(options, key, Map.get(options, Atom.to_string(key), default))
+    do: MapAccess.get(options, key, default)
 
   defp option(options, key, default) when is_list(options),
     do: Keyword.get(options, key, default)

@@ -21,12 +21,12 @@ defmodule ElixirDB.Contract.RevisionModelPropertiesTest do
         |> Enum.filter(&(&1.revision_id in [scenario.left_revision, scenario.right_revision]))
 
       assert scenario.left_revision != scenario.right_revision
-      assert length(leaves) == 2
+      assert [_, _] = leaves
       assert {:ok, winner} = Winner.select(leaves)
       assert winner.revision_id in [scenario.left_revision, scenario.right_revision]
 
       conflicts = Winner.conflicts(leaves, winner)
-      assert length(conflicts) == 1
+      assert [_] = conflicts
       assert hd(conflicts) != winner.revision_id
 
       assert {:ok, ^winner} = Winner.select(Enum.reverse(leaves))

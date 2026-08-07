@@ -127,7 +127,7 @@ defmodule ElixirDB.Observability.TestExporter do
     :ets.foldl(fun, [], spans_tab)
     :ok
   rescue
-    e ->
+    e in [ArgumentError, ErlangError, RuntimeError, UndefinedFunctionError] ->
       IO.warn("TestExporter.export failed: #{inspect(e)}")
       :ok
   end

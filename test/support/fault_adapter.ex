@@ -56,31 +56,34 @@ defmodule ElixirDB.FaultAdapter do
   def maybe_fail(%__MODULE__{} = adapter, point) when is_atom(point) do
     hits = Map.update(adapter.hits, point, 1, &(&1 + 1))
     adapter = %{adapter | hits: hits}
+    fault_result(adapter, point, Map.get(adapter.faults, point))
+  end
 
-    case Map.get(adapter.faults, point) do
-      nil ->
-        {:ok, adapter}
+  defp fault_result(adapter, _point, nil), do: {:ok, adapter}
 
-      %ElixirDB.Error{} = error ->
-        {:error, error, adapter}
+  defp fault_result(adapter, _point, %ElixirDB.Error{} = error),
+    do: {:error, error, adapter}
 
-      {:error, %ElixirDB.Error{} = error} ->
-        {:error, error, adapter}
+  defp fault_result(adapter, _point, {:error, %ElixirDB.Error{} = error}),
+    do: {:error, error, adapter}
 
-      {:once, %ElixirDB.Error{} = error} ->
-        {:error, error, clear(adapter, point)}
+  defp fault_result(adapter, point, {:once, %ElixirDB.Error{} = error}),
+    do: {:error, error, clear(adapter, point)}
 
-      {:times, 1, %ElixirDB.Error{} = error} ->
-        {:error, error, clear(adapter, point)}
+  defp fault_result(adapter, point, {:times, 1, %ElixirDB.Error{} = error}),
+    do: {:error, error, clear(adapter, point)}
 
-      {:times, n, %ElixirDB.Error{} = error} when is_integer(n) and n > 1 ->
-        {:error, error, inject(adapter, point, {:times, n - 1, error})}
+  defp fault_result(adapter, point, {:times, n, %ElixirDB.Error{} = error})
+       when is_integer(n) and n > 1,
+       do: {:error, error, inject(adapter, point, {:times, n - 1, error})}
 
-      fun when is_function(fun, 1) ->
-        case fun.(adapter) do
-          :ok -> {:ok, adapter}
-          {:error, %ElixirDB.Error{} = error} -> {:error, error, adapter}
-        end
+  defp fault_result(adapter, _point, fun) when is_function(fun, 1),
+    do: run_fault_function(fun, adapter)
+
+  defp run_fault_function(fun, adapter) do
+    case fun.(adapter) do
+      :ok -> {:ok, adapter}
+      {:error, %ElixirDB.Error{} = error} -> {:error, error, adapter}
     end
   end
 

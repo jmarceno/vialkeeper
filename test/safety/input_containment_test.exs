@@ -14,8 +14,9 @@ defmodule ElixirDB.Safety.InputContainmentTest do
 
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.HTTP.Router
+  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.Runtime.DatabaseCatalog
 
   setup do
     path = "safety-#{System.unique_integer([:positive])}.db"
@@ -56,7 +57,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
   end
 
   defp encode(term), do: IO.iodata_to_binary(JSON.encode_to_iodata!(term))
-  defp decode(body), do: ElixirDB.JSON.StrictDecoder.decode(body)
+  defp decode(body), do: StrictDecoder.decode(body)
 
   defp assert_typed_error(conn, expected_status) when is_integer(expected_status) do
     assert conn.status == expected_status,

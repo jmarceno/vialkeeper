@@ -1,8 +1,12 @@
 defmodule ElixirDB.Replication.LocalEndpoint do
+  @moduledoc "Replication endpoint backed by a local database."
+
   @behaviour ElixirDB.Replication.Endpoint
+  alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.DatabaseCatalog
 
   defstruct [:database_uuid]
+  @type t :: %__MODULE__{database_uuid: binary()}
   def new(uuid), do: {:ok, %__MODULE__{database_uuid: uuid}}
 
   @impl true
@@ -12,7 +16,7 @@ defmodule ElixirDB.Replication.LocalEndpoint do
   @impl true
   def read_changes(%__MODULE__{database_uuid: uuid}, request),
     do:
-      if((request[:wait_ms] || request["wait_ms"] || 0) > 0,
+      if(MapAccess.get(request, :wait_ms, 0) > 0,
         do: ElixirDB.Changes.wait(uuid, request),
         else: DatabaseCatalog.command(uuid, {:command, :read_changes, request})
       )
@@ -36,7 +40,7 @@ defmodule ElixirDB.Replication.LocalEndpoint do
       {:ok,
        %{
          "confirmed" => true,
-         "current_sequence" => identity[:current_sequence] || identity["current_sequence"] || 0
+         "current_sequence" => MapAccess.get(identity, :current_sequence, 0)
        }}
     end
   end
@@ -54,9 +58,7 @@ defmodule ElixirDB.Replication.LocalEndpoint do
          %{
            namespace: "checkpoints",
            key: replication_id,
-           expected_version:
-             checkpoint["expected_checkpoint_version"] || checkpoint[:expected_checkpoint_version] ||
-               0,
+           expected_version: MapAccess.get(checkpoint, :expected_checkpoint_version, 0),
            value:
              Map.delete(checkpoint, "expected_checkpoint_version")
              |> Map.delete(:expected_checkpoint_version)

@@ -2,6 +2,7 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
   @moduledoc "Validated hand-off from the storage-neutral query contract to SQLite."
 
   alias ElixirDB.JSON.Pointer
+  alias ElixirDB.MapAccess
   alias ElixirDB.Query.Normalizer
 
   @spec compile(map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
@@ -20,10 +21,7 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
   def sqlite_path(path) when is_binary(path) do
     case Pointer.parse(path) do
       {:ok, tokens} ->
-        compiled =
-          Enum.reduce(tokens, "$", fn token, acc ->
-            acc <> ".\"" <> String.replace(token, "\"", "\"\"") <> "\""
-          end)
+        compiled = "$" <> Enum.map_join(tokens, &sqlite_path_token/1)
 
         {:ok, compiled}
 
@@ -31,6 +29,8 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
         {:error, error}
     end
   end
+
+  defp sqlite_path_token(token), do: ".\"" <> String.replace(token, "\"", "\"\"") <> "\""
 
   @doc """
   Compile a JSON Pointer into a `json_extract(winning_body_json, …)` expression.
@@ -52,7 +52,7 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
   @spec structured_expression(map() | binary()) ::
           {:ok, binary()} | {:error, ElixirDB.Error.t()}
   def structured_expression(field) do
-    path = field["path"] || field[:path] || field
+    path = MapAccess.get(field, :path, field)
 
     with {:ok, compiled} <- sqlite_path(path) do
       quoted = quote_literal(compiled)
@@ -151,24 +151,7 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
              do: {:ok, acc ++ compiled}
 
       {"$in", values}, acc when is_list(values) ->
-        with {:ok, compiled} <-
-               reduce_ok(values, [], fn value, inner_acc ->
-                 with {:ok, pairs} <- scalar_condition(path, "$eq", value, type),
-                      do: {:ok, inner_acc ++ pairs}
-               end) do
-          case compiled do
-            [] ->
-              {:ok, acc}
-
-            _ ->
-              {:ok,
-               acc ++
-                 [
-                   {"(" <> Enum.map_join(compiled, " OR ", &elem(&1, 0)) <> ")",
-                    Enum.map(compiled, &elem(&1, 1))}
-                 ]}
-          end
-        end
+        compile_in_operator(path, type, values, acc)
 
       _clause, acc ->
         {:ok, acc}
@@ -176,6 +159,30 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
   end
 
   defp field_condition(path, value, type), do: scalar_condition(path, "$eq", value, type)
+
+  defp compile_in_value(path, type, value, inner_acc) do
+    with {:ok, pairs} <- scalar_condition(path, "$eq", value, type),
+         do: {:ok, inner_acc ++ pairs}
+  end
+
+  defp compile_in_operator(path, type, values, acc) do
+    with {:ok, compiled} <-
+           reduce_ok(values, [], fn value, inner_acc ->
+             compile_in_value(path, type, value, inner_acc)
+           end),
+         do: compile_in_conditions(compiled, acc)
+  end
+
+  defp compile_in_conditions([], acc), do: {:ok, acc}
+
+  defp compile_in_conditions(compiled, acc) do
+    {:ok,
+     acc ++
+       [
+         {"(" <> Enum.map_join(compiled, " OR ", &elem(&1, 0)) <> ")",
+          Enum.map(compiled, &elem(&1, 1))}
+       ]}
+  end
 
   defp reduce_ok(enumerable, acc, fun) do
     Enum.reduce_while(enumerable, {:ok, acc}, fn element, {:ok, inner} ->

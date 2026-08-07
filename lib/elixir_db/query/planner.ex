@@ -30,15 +30,20 @@ defmodule ElixirDB.Query.Planner do
              ElixirDB.Error.invalid_index_hint("requested index does not exist", %{index: name})}
 
           index ->
-            if compatible_index?(index, request),
-              do: {:ok, index},
-              else:
-                {:error,
-                 ElixirDB.Error.invalid_index_hint(
-                   "requested index is incompatible with the query",
-                   %{index: name}
-                 )}
+            requested_index_result(index, request, name)
         end
+    end
+  end
+
+  defp requested_index_result(index, request, name) when is_map(index) do
+    if compatible_index?(index, request) do
+      {:ok, index}
+    else
+      {:error,
+       ElixirDB.Error.invalid_index_hint(
+         "requested index is incompatible with the query",
+         %{index: name}
+       )}
     end
   end
 
@@ -96,9 +101,11 @@ defmodule ElixirDB.Query.Planner do
   defp equality_prefix_length(fields, selector) do
     equality_paths = MapSet.new(equality_selector_paths(selector))
 
-    fields
-    |> Enum.take_while(fn field -> MapSet.member?(equality_paths, field["path"]) end)
-    |> length()
+    Enum.reduce_while(fields, 0, fn field, length ->
+      if MapSet.member?(equality_paths, field["path"]),
+        do: {:cont, length + 1},
+        else: {:halt, length}
+    end)
   end
 
   defp compatible_range_field?(fields, selector, equality_prefix_len) do

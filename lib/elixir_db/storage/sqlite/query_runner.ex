@@ -7,8 +7,12 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   remains storage-neutral in `ElixirDB.Query.Planner`.
   """
 
+  alias ElixirDB.JSON.Pointer
   alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.MapAccess
   alias ElixirDB.Query.{Planner, Projection}
+  alias ElixirDB.Query.Selector
+  alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, IndexCatalog, QueryCompiler}
 
   @doc """
@@ -23,7 +27,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          identity <- adapter_identity(adapter),
          :ok <- enforce_scan_limit(selected, examined, identity),
          limit <-
-           request[:limit] || request["limit"] ||
+           MapAccess.get(request, :limit) ||
              get_in(identity, [:config, "queries", "default_limit"]) || 50,
          ordered <- matched |> sort_documents(request) |> apply_after_cursor(request),
          values <- Enum.take(ordered, limit),
@@ -68,8 +72,8 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          full_scan: is_nil(selected),
          candidate_count: count,
          scan_allowed: not is_nil(selected) or count < scan_threshold,
-         selector: request[:selector] || request["selector"] || %{},
-         sort: request[:sort] || request["sort"] || [],
+         selector: MapAccess.get(request, :selector, %{}),
+         sort: MapAccess.get(request, :sort, []),
          pagination: if(selected, do: :indexed, else: :bounded_scan)
        }}
     else
@@ -108,21 +112,18 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   end
 
   defp candidate_documents(adapter, selected, request) do
-    if selected["type"] == "full_text" and (request[:search] || request["search"]) do
-      search = request[:search]
+    if selected["type"] == "full_text" and MapAccess.get(request, :search) do
+      search = MapAccess.get(request, :search)
       metadata = Map.merge(selected, selected["_metadata"] || %{})
 
       with {:ok, rows} <-
              FullTextIndexes.search(
                adapter.conn,
                metadata,
-               search[:text] || search["text"],
-               search[:mode] || search["mode"] || "all"
+               MapAccess.get(search, :text),
+               MapAccess.get(search, :mode, "all")
              ) do
-        {:ok,
-         Enum.map(rows, fn row ->
-           %{id: row.id, revision: row.revision, body: row.body, rank: row.rank}
-         end), length(rows)}
+        {:ok, full_text_documents(rows), length(rows)}
       end
     else
       with {:ok, rows} <- structured_candidate_rows(adapter, selected, request),
@@ -132,15 +133,19 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
+  defp full_text_documents(rows),
+    do:
+      Enum.map(rows, fn row ->
+        %{id: row.id, revision: row.revision, body: row.body, rank: row.rank}
+      end)
+
   defp structured_candidate_rows(adapter, selected, request) do
     fields = selected["fields"] || []
-    selector = request[:selector] || request["selector"] || %{}
+    selector = MapAccess.get(request, :selector, %{})
 
     with {:ok, conditions} <- QueryCompiler.structured_conditions(selector, fields) do
-      {where, params} =
-        Enum.reduce(conditions, {"winning_deleted = 0", []}, fn {sql, value}, {where, params} ->
-          {where <> " AND " <> sql, params ++ List.wrap(value)}
-        end)
+      where = ["winning_deleted = 0" | Enum.map(conditions, &elem(&1, 0))] |> Enum.join(" AND ")
+      params = Enum.flat_map(conditions, fn {_sql, value} -> List.wrap(value) end)
 
       Connection.query(
         adapter.conn,
@@ -156,7 +161,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
        if(selected && selected["index_id"] == index["index_id"], do: :selected, else: :incompatible)}
     end)
     |> Map.new()
-    |> Map.put(:request, request[:index] || request["index"])
+    |> Map.put(:request, MapAccess.get(request, :index))
   end
 
   defp enforce_scan_limit(selected, _examined, _identity) when not is_nil(selected), do: :ok
@@ -191,11 +196,11 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   end
 
   defp filter_query(documents, request) do
-    selector = request[:selector] || request["selector"] || %{}
+    selector = MapAccess.get(request, :selector, %{})
 
     result =
       Enum.reduce_while(documents, {:ok, []}, fn document, {:ok, acc} ->
-        case ElixirDB.Query.Selector.matches?(document.body, selector) do
+        case Selector.matches?(document.body, selector) do
           {:ok, true} -> {:cont, {:ok, [document | acc]}}
           {:ok, false} -> {:cont, {:ok, acc}}
           {:error, error} -> {:halt, {:error, error}}
@@ -210,9 +215,9 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   end
 
   defp sort_documents(documents, request) do
-    sort = request[:sort] || request["sort"] || []
+    sort = MapAccess.get(request, :sort, [])
 
-    if sort == [] and not is_nil(request[:search] || request["search"]) do
+    if sort == [] and not is_nil(MapAccess.get(request, :search)) do
       documents
     else
       Enum.sort(documents, fn left, right -> compare_documents(left, right, sort) end)
@@ -220,16 +225,16 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   end
 
   defp apply_after_cursor(documents, request) do
-    case request[:after_ordering] || request["after_ordering"] do
+    case MapAccess.get(request, :after_ordering) do
       after_ordering when is_map(after_ordering) ->
-        sort = request[:sort] || request["sort"] || []
+        sort = MapAccess.get(request, :sort, [])
 
         Enum.drop_while(documents, fn document ->
           compare_ordering_keys(ordering_key(document, request), after_ordering, sort) != :gt
         end)
 
       _ ->
-        case request[:after_id] || request["after_id"] do
+        case MapAccess.get(request, :after_id) do
           nil -> documents
           after_id -> Enum.drop_while(documents, &(&1.id <= after_id))
         end
@@ -239,24 +244,29 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   defp compare_ordering_keys(left, right, []), do: compare_ids(left["id"], right["id"])
 
   defp compare_ordering_keys(left, right, [sort | rest]) do
-    left_value = ordering_value(Enum.at(left["sort"] || [], 0))
-    right_value = ordering_value(Enum.at(right["sort"] || [], 0))
+    left_value = ordering_value(first_ordering_value(left))
+    right_value = ordering_value(first_ordering_value(right))
 
     case compare_values(left_value, right_value) do
       :eq ->
-        compare_ordering_keys(
-          %{"sort" => Enum.drop(left["sort"] || [], 1), "id" => left["id"]},
-          %{"sort" => Enum.drop(right["sort"] || [], 1), "id" => right["id"]},
-          rest
-        )
+        compare_ordering_keys(drop_ordering_key(left), drop_ordering_key(right), rest)
 
-      :lt ->
-        if((sort[:direction] || sort["direction"] || "asc") == "asc", do: :lt, else: :gt)
-
-      :gt ->
-        if((sort[:direction] || sort["direction"] || "asc") == "asc", do: :gt, else: :lt)
+      comparison ->
+        apply_ordering_direction(comparison, sort)
     end
   end
+
+  defp first_ordering_value(%{"sort" => [value | _]}), do: value
+  defp first_ordering_value(_), do: nil
+
+  defp drop_ordering_key(value),
+    do: %{"sort" => Enum.drop(value["sort"] || [], 1), "id" => value["id"]}
+
+  defp apply_ordering_direction(:lt, sort),
+    do: if(MapAccess.get(sort, :direction, "asc") == "asc", do: :lt, else: :gt)
+
+  defp apply_ordering_direction(:gt, sort),
+    do: if(MapAccess.get(sort, :direction, "asc") == "asc", do: :gt, else: :lt)
 
   defp compare_ids(left, right) when left == right, do: :eq
   defp compare_ids(left, right) when left < right, do: :lt
@@ -268,13 +278,13 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   defp ordering_key(nil, _request), do: nil
 
   defp ordering_key(document, request) do
-    sort = request[:sort] || request["sort"] || []
+    sort = MapAccess.get(request, :sort, [])
 
     values =
       Enum.map(sort, fn sort_field ->
-        path = sort_field[:path] || sort_field["path"]
+        path = MapAccess.get(sort_field, :path)
 
-        case ElixirDB.JSON.Pointer.get(document.body, path) do
+        case Pointer.get(document.body, path) do
           {:ok, value} -> %{"present" => true, "value" => value}
           :missing -> %{"present" => false}
         end
@@ -286,10 +296,10 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   defp compare_documents(left, right, []), do: left.id <= right.id
 
   defp compare_documents(left, right, [sort | rest]) do
-    path = sort[:path] || sort["path"]
-    direction = sort[:direction] || sort["direction"] || "asc"
-    left_value = ElixirDB.JSON.Pointer.get(left.body, path)
-    right_value = ElixirDB.JSON.Pointer.get(right.body, path)
+    path = MapAccess.get(sort, :path)
+    direction = MapAccess.get(sort, :direction, "asc")
+    left_value = Pointer.get(left.body, path)
+    right_value = Pointer.get(right.body, path)
 
     case compare_values(left_value, right_value) do
       :eq -> compare_documents(left, right, rest)
@@ -307,7 +317,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   defp compare_values(_, _), do: :eq
 
   defp adapter_identity(adapter) do
-    case ElixirDB.Storage.SQLite.Adapter.identity(adapter) do
+    case Adapter.identity(adapter) do
       {:ok, value} -> value
       _ -> %{current_sequence: 0, config: ElixirDB.Config.defaults()}
     end

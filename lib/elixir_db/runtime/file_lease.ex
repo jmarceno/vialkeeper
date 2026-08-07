@@ -37,16 +37,12 @@ defmodule ElixirDB.Runtime.FileLease do
   end
 
   defp set_busy_timeout(conn) do
-    case Exqlite.Sqlite3.set_busy_timeout(conn, 0) do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    Exqlite.Sqlite3.set_busy_timeout(conn, 0)
   end
 
   defp acquire(conn) do
-    with :ok <- set_busy_timeout(conn),
-         :ok <- Connection.execute(conn, "BEGIN EXCLUSIVE") do
-      :ok
+    with :ok <- set_busy_timeout(conn) do
+      Connection.execute(conn, "BEGIN EXCLUSIVE")
     end
   end
 

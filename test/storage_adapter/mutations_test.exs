@@ -50,7 +50,7 @@ defmodule ElixirDB.StorageAdapter.MutationsTest do
                ]
              })
 
-    assert length(results) == 2
+    assert [_, _] = results
     assert Enum.all?(results, &(&1.replayed == false))
 
     assert {:ok, %{body: %{"value" => 2}}} =

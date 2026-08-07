@@ -51,7 +51,7 @@ defmodule ElixirDB.Observability.DatabaseOpenSpanTest do
 
     spans = TestExporter.spans_named("elixir_db.database.open")
     rejected = Enum.filter(spans, fn s -> TestExporter.span_attr(s, :outcome) == :rejected end)
-    assert length(rejected) >= 1
+    assert [_ | _] = rejected
 
     span = List.last(rejected)
 

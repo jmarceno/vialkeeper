@@ -53,7 +53,7 @@ defmodule ElixirDB.Observability.PrivacyTest do
       })
 
     all_spans = TestExporter.spans()
-    assert length(all_spans) > 0, "expected some spans to be recorded"
+    assert [_ | _] = all_spans, "expected some spans to be recorded"
 
     assert Enum.any?(all_spans, &(&1[:name] == "elixir_db.query.execute")),
            "expected a query.execute span to exercise the search-text path"
@@ -79,7 +79,7 @@ defmodule ElixirDB.Observability.PrivacyTest do
 
     all_spans = TestExporter.spans()
     http_spans = Enum.filter(all_spans, &(&1[:name] == "elixir_db.http.request"))
-    assert length(http_spans) >= 2
+    assert [_, _ | _] = http_spans
 
     assert_no_leaks(http_spans, [path_secret, @doc_id])
 

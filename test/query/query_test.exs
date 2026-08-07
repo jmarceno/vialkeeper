@@ -1,12 +1,13 @@
 defmodule ElixirDB.Query.QueryTest do
+  alias ElixirDB.Storage.SQLite.Adapter
   use ExUnit.Case, async: false
 
   setup do
     path = Path.join(System.tmp_dir!(), "elixirdb-query-#{System.unique_integer([:positive])}.db")
-    {:ok, adapter} = ElixirDB.Storage.SQLite.Adapter.create(path, %{})
+    {:ok, adapter} = Adapter.create(path, %{})
 
     on_exit(fn ->
-      ElixirDB.Storage.SQLite.Adapter.close(adapter)
+      Adapter.close(adapter)
       ElixirDB.TempDatabase.cleanup(path)
     end)
 
@@ -15,21 +16,21 @@ defmodule ElixirDB.Query.QueryTest do
 
   test "selector and pointer projection operate on materialized documents", %{adapter: adapter} do
     assert {:ok, _} =
-             ElixirDB.Storage.SQLite.Adapter.apply_local_mutation(adapter, %{
+             Adapter.apply_local_mutation(adapter, %{
                operation: :put,
                document_id: "a",
                body: %{"type" => "task", "priority" => 3, "title" => "A"}
              })
 
     assert {:ok, _} =
-             ElixirDB.Storage.SQLite.Adapter.apply_local_mutation(adapter, %{
+             Adapter.apply_local_mutation(adapter, %{
                operation: :put,
                document_id: "b",
                body: %{"type" => "note", "priority" => 1}
              })
 
     assert {:ok, %{results: [%{id: "a", fields: fields}]}} =
-             ElixirDB.Storage.SQLite.Adapter.execute_query(adapter, %{
+             Adapter.execute_query(adapter, %{
                selector: %{"/type" => "task"},
                fields: ["/title"],
                limit: 10
@@ -46,7 +47,7 @@ defmodule ElixirDB.Query.QueryTest do
 
     for n <- 1..(threshold - 1) do
       assert {:ok, _} =
-               ElixirDB.Storage.SQLite.Adapter.apply_local_mutation(adapter, %{
+               Adapter.apply_local_mutation(adapter, %{
                  operation: :put,
                  document_id: :erlang.integer_to_binary(n),
                  body: %{"type" => "note", "priority" => n}
@@ -55,23 +56,23 @@ defmodule ElixirDB.Query.QueryTest do
 
     # below the threshold: selector with no matching index still scans successfully.
     assert {:ok, %{results: results}} =
-             ElixirDB.Storage.SQLite.Adapter.execute_query(adapter, %{
+             Adapter.execute_query(adapter, %{
                selector: %{"/type" => "note"},
                limit: 5
              })
 
-    assert length(results) == 5
+    assert [_, _, _, _, _] = results
 
     # seed exactly one more to reach exactly the threshold (1000 candidate docs).
     assert {:ok, _} =
-             ElixirDB.Storage.SQLite.Adapter.apply_local_mutation(adapter, %{
+             Adapter.apply_local_mutation(adapter, %{
                operation: :put,
                document_id: :erlang.integer_to_binary(threshold),
                body: %{"type" => "note", "priority" => threshold}
              })
 
     assert {:error, %ElixirDB.Error{code: :index_required}} =
-             ElixirDB.Storage.SQLite.Adapter.execute_query(adapter, %{
+             Adapter.execute_query(adapter, %{
                selector: %{"/type" => "note"},
                limit: 5
              })

@@ -15,7 +15,7 @@ defmodule ElixirDB.Observability.SpanRecordingTest do
 
     spans = TestExporter.spans_named("test-direct-span")
 
-    assert length(spans) == 1,
+    assert [_] = spans,
            "expected the direct span to be recorded, got: #{inspect(TestExporter.spans() |> Enum.map(& &1[:name]))}"
   end
 end

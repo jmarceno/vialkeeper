@@ -1,4 +1,6 @@
 defmodule ElixirDB.Domain.IndexDefinition do
+  @moduledoc "Validated logical index definitions."
+
   @enforce_keys [:name, :type, :fields]
   defstruct [:index_id, :name, :type, :fields, :tokenization, :definition_digest, :lifecycle_state]
 
