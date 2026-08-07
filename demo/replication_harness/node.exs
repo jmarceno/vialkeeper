@@ -1,3 +1,22 @@
+Application.put_env(:elixir_db, :observability_dashboard, true)
+
+dashboard_reader = %{
+  id: :elixir_db_demo_dashboard_reader,
+  module: :otel_metric_reader,
+  config: %{
+    exporter: {ElixirDB.Observability.Dashboard, %{}},
+    export_interval_ms: 1_000
+  }
+}
+
+configured_readers = Application.get_env(:opentelemetry_experimental, :readers, [])
+
+Application.put_env(
+  :opentelemetry_experimental,
+  :readers,
+  [dashboard_reader | Enum.reject(configured_readers, &(&1[:id] == dashboard_reader.id))]
+)
+
 defmodule ElixirDB.ReplicationHarness.Node do
   alias ElixirDB.Runtime.DatabaseCatalog
 

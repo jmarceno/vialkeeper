@@ -104,17 +104,20 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
   end
 
   defp finish(span_ctx, conn, route, db_uuid, started) do
+    duration = System.monotonic_time() - started
+
+    metric_attrs =
+      [http_method: conn.method, http_route: route] ++
+        if(conn.status, do: [http_status_code: conn.status], else: []) ++
+        if(db_uuid, do: [db_uuid: db_uuid], else: [])
+
+    # Metrics remain useful when tracing is deliberately disabled (the normal
+    # no-collector configuration). Span mutation/end calls still need the
+    # recording guard because the span may be non-recording or already ended.
+    Meters.record(:"elixir_db.http.request.duration", duration, metric_attrs)
+
     # Guards the raise-after-send case: the span may already be ended.
     if OpenTelemetry.Span.is_recording(span_ctx) do
-      duration = System.monotonic_time() - started
-
-      metric_attrs =
-        [http_method: conn.method, http_route: route] ++
-          if(conn.status, do: [http_status_code: conn.status], else: []) ++
-          if(db_uuid, do: [db_uuid: db_uuid], else: [])
-
-      Meters.record(:"elixir_db.http.request.duration", duration, metric_attrs)
-
       if conn.status do
         _ =
           OpenTelemetry.Span.set_attributes(
@@ -136,15 +139,15 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
   # The pipeline raised before a response: the request failed with a 500 by
   # Bandit semantics. End the span here (no response callback will run).
   defp finish_raised(span_ctx, conn, route, db_uuid, started) do
+    duration = System.monotonic_time() - started
+
+    metric_attrs =
+      [http_method: conn.method, http_route: route, http_status_code: 500] ++
+        if(db_uuid, do: [db_uuid: db_uuid], else: [])
+
+    Meters.record(:"elixir_db.http.request.duration", duration, metric_attrs)
+
     if OpenTelemetry.Span.is_recording(span_ctx) do
-      duration = System.monotonic_time() - started
-
-      metric_attrs =
-        [http_method: conn.method, http_route: route, http_status_code: 500] ++
-          if(db_uuid, do: [db_uuid: db_uuid], else: [])
-
-      Meters.record(:"elixir_db.http.request.duration", duration, metric_attrs)
-
       _ =
         OpenTelemetry.Span.set_attributes(span_ctx, Attributes.build(http_status_code: 500))
 
@@ -228,6 +231,7 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
 
   defp template_for(["v1", "registrations"]), do: "/v1/registrations"
   defp template_for(["v1", "registrations", _uuid]), do: "/v1/registrations/:uuid"
+  defp template_for(["v1", "observability", "snapshot"]), do: "/v1/observability/snapshot"
 
   # Unknown route: constant fallback, never the raw path (§3.1 privacy,
   # bounded cardinality).

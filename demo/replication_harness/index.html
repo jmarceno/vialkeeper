@@ -39,6 +39,112 @@
         </p>
       </section>
 
+      <section class="observability-panel" aria-labelledby="observability-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">OpenTelemetry · 1 second reader</p>
+            <h2 id="observability-heading">System telemetry</h2>
+            <p class="observability-copy">
+              A compact view of request pressure, database work, replication latency, errors,
+              and BEAM runtime pressure. HTTP includes the intentional long-poll feed requests;
+              use the DB command and changes values for storage work latency.
+            </p>
+          </div>
+          <div class="observability-status" id="observability-status" data-state="starting">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="observability-status-text">Waiting for the first sample…</span>
+          </div>
+        </div>
+
+        <div class="telemetry-grid">
+          <article class="telemetry-node" data-telemetry-node="web">
+            <div class="telemetry-node-heading">
+              <div>
+                <p class="eyebrow">BEAM node</p>
+                <h3>Web node · A / B</h3>
+              </div>
+              <span class="telemetry-node-status" data-role="telemetry-status" data-state="starting">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span data-role="telemetry-status-text">Waiting…</span>
+              </span>
+            </div>
+            <div class="telemetry-metrics">
+              <div class="telemetry-metric">
+                <span>HTTP requests</span>
+                <strong data-metric="http-count">—</strong>
+                <small data-metric="http-latency">avg — · p95 —</small>
+              </div>
+              <div class="telemetry-metric">
+                <span>DB commands</span>
+                <strong data-metric="commands-count">—</strong>
+                <small data-metric="commands-latency">avg — · p95 —</small>
+              </div>
+              <div class="telemetry-metric">
+                <span>Replication batches</span>
+                <strong data-metric="replication-count">—</strong>
+                <small data-metric="replication-latency">avg — · p95 —</small>
+              </div>
+              <div class="telemetry-metric">
+                <span>Errors</span>
+                <strong data-metric="errors">—</strong>
+                <small data-metric="error-detail">HTTP · replication</small>
+              </div>
+            </div>
+            <div class="telemetry-runtime">
+              <span>Memory <strong data-metric="memory">—</strong></span>
+              <span>Run queue <strong data-metric="run-queue">—</strong></span>
+              <span>Workers <strong data-metric="workers">—</strong></span>
+            </div>
+            <p class="telemetry-sample" data-role="telemetry-sample">No sample yet</p>
+          </article>
+
+          <article class="telemetry-node" data-telemetry-node="native">
+            <div class="telemetry-node-heading">
+              <div>
+                <p class="eyebrow">BEAM node</p>
+                <h3>Native node · C</h3>
+              </div>
+              <span class="telemetry-node-status" data-role="telemetry-status" data-state="starting">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span data-role="telemetry-status-text">Waiting…</span>
+              </span>
+            </div>
+            <div class="telemetry-metrics">
+              <div class="telemetry-metric">
+                <span>HTTP requests</span>
+                <strong data-metric="http-count">—</strong>
+                <small data-metric="http-latency">avg — · p95 —</small>
+              </div>
+              <div class="telemetry-metric">
+                <span>DB commands</span>
+                <strong data-metric="commands-count">—</strong>
+                <small data-metric="commands-latency">avg — · p95 —</small>
+              </div>
+              <div class="telemetry-metric">
+                <span>Replication batches</span>
+                <strong data-metric="replication-count">—</strong>
+                <small data-metric="replication-latency">avg — · p95 —</small>
+              </div>
+              <div class="telemetry-metric">
+                <span>Errors</span>
+                <strong data-metric="errors">—</strong>
+                <small data-metric="error-detail">HTTP · replication</small>
+              </div>
+            </div>
+            <div class="telemetry-runtime">
+              <span>Memory <strong data-metric="memory">—</strong></span>
+              <span>Run queue <strong data-metric="run-queue">—</strong></span>
+              <span>Workers <strong data-metric="workers">—</strong></span>
+            </div>
+            <p class="telemetry-sample" data-role="telemetry-sample">No sample yet</p>
+          </article>
+        </div>
+
+        <p class="telemetry-note" id="observability-note">
+          Starting the local OTel reader…
+        </p>
+      </section>
+
       <section class="client-grid" id="client-grid" aria-label="HTTP database clients"></section>
 
       <section class="native-panel" aria-label="Native Elixir client">

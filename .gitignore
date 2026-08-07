@@ -15,6 +15,13 @@ erl_crash.dump
 /config/*.secret.exs
 .elixir_ls/
 
+# Local browser/test artifacts and agent state
+**/.playwright-cli/
+**/playwright/
+**/playwright-report/
+**/output/
+**/.zcode/
+
 
 ### Elixir Patch ###
 

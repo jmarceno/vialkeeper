@@ -9,16 +9,23 @@ defmodule ElixirDB.Runtime.FileLease do
   def init(database_path) do
     lease_path = database_path <> ".lease"
 
-    with {:ok, conn} <- Connection.open(lease_path),
-         :ok <- set_busy_timeout(conn),
-         :ok <- Connection.execute(conn, "BEGIN EXCLUSIVE") do
-      {:ok, %{conn: conn, path: lease_path}}
-    else
+    case Connection.open(lease_path) do
+      {:ok, conn} ->
+        case acquire(conn) do
+          :ok ->
+            {:ok, %{conn: conn, path: lease_path}}
+
+          {:error, reason} ->
+            # A failed contender still owns an SQLite connection. Close it
+            # before returning from init; otherwise its unfinalized handle can
+            # leave the lease journal/lock alive long enough to make a later
+            # reacquisition report a false :busy.
+            _ = Connection.close(conn)
+            unavailable(reason)
+        end
+
       {:error, reason} ->
-        {:stop,
-         ElixirDB.Error.database_in_use("database ownership lease is unavailable", %{
-           cause: inspect(reason)
-         })}
+        unavailable(reason)
     end
   end
 
@@ -34,5 +41,19 @@ defmodule ElixirDB.Runtime.FileLease do
       :ok -> :ok
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp acquire(conn) do
+    with :ok <- set_busy_timeout(conn),
+         :ok <- Connection.execute(conn, "BEGIN EXCLUSIVE") do
+      :ok
+    end
+  end
+
+  defp unavailable(reason) do
+    {:stop,
+     ElixirDB.Error.database_in_use("database ownership lease is unavailable", %{
+       cause: inspect(reason)
+     })}
   end
 end

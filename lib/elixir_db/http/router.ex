@@ -52,6 +52,17 @@ defmodule ElixirDB.HTTP.Router do
     Databases.unregister(conn)
   end
 
+  get "/v1/observability/snapshot" do
+    if Application.get_env(:elixir_db, :observability_dashboard, false) do
+      Response.ok(conn, ElixirDB.Observability.Dashboard.snapshot())
+    else
+      Response.error(
+        conn,
+        ElixirDB.Error.invalid_request("route not found", %{path: conn.request_path})
+      )
+    end
+  end
+
   forward("/v1/databases", to: Databases)
 
   match _ do

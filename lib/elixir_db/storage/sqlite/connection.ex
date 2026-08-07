@@ -14,6 +14,12 @@ defmodule ElixirDB.Storage.SQLite.Connection do
   def close(nil), do: :ok
 
   def close(handle) do
+    # Exqlite documents cancel/1 as part of connection teardown: it wakes a
+    # connection blocked in SQLite's busy handler before statements or the
+    # database handle are finalized. This matters for short-lived contenders
+    # such as the file-lease process, which must not leave a journal/lock
+    # behind for the next owner.
+    _ = Sqlite3.cancel(handle)
     Statements.release_all(handle)
     Sqlite3.close(handle)
   end

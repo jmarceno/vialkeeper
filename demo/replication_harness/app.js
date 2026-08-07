@@ -2,6 +2,7 @@ const state = {
   config: null,
   clients: new Map(),
   eventCount: 0,
+  observabilityRefreshing: false,
 };
 
 const elements = {
@@ -12,6 +13,9 @@ const elements = {
   nativeTitle: document.querySelector("#native-title"),
   nativeCopy: document.querySelector("#native-copy"),
   nativeDetails: document.querySelector("#native-details"),
+  observabilityStatus: document.querySelector("#observability-status"),
+  observabilityStatusText: document.querySelector("#observability-status-text"),
+  observabilityNote: document.querySelector("#observability-note"),
 };
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -36,6 +40,162 @@ function formatTime(value = Date.now()) {
 function updateGlobalStatus(stateName, text) {
   elements.globalStatus.dataset.state = stateName;
   elements.globalStatusText.textContent = text;
+}
+
+function telemetryPanel(kind) {
+  return document.querySelector(`[data-telemetry-node="${CSS.escape(kind)}"]`);
+}
+
+function setTelemetryText(panel, metric, value) {
+  panel?.querySelector(`[data-metric="${metric}"]`)?.replaceChildren(document.createTextNode(value));
+}
+
+function formatCount(value) {
+  return Number.isFinite(Number(value)) ? Math.round(Number(value)).toLocaleString() : "—";
+}
+
+function formatDuration(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+  const milliseconds = Number(value);
+  if (milliseconds < 0.01) return "<0.01 ms";
+  if (milliseconds >= 1_000) return `${(milliseconds / 1_000).toFixed(2)} s`;
+  const digits = milliseconds >= 100 ? 0 : milliseconds >= 10 ? 1 : 2;
+  return `${milliseconds.toFixed(digits)} ms`;
+}
+
+function formatLatency(summary) {
+  return `avg ${formatDuration(summary?.avg_ms)} · p95 ${formatDuration(summary?.p95_ms)}`;
+}
+
+function formatMemory(bytes) {
+  if (!Number.isFinite(Number(bytes))) return "—";
+  return `${(Number(bytes) / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function renderTelemetry(kind, snapshot) {
+  const panel = telemetryPanel(kind);
+  if (!panel) return;
+
+  const status = panel.querySelector('[data-role="telemetry-status"]');
+  const statusText = panel.querySelector('[data-role="telemetry-status-text"]');
+  const sample = panel.querySelector('[data-role="telemetry-sample"]');
+
+  if (!snapshot?.otel?.available) {
+    status.dataset.state = "starting";
+    statusText.textContent = "Warming up…";
+    sample.textContent = "Waiting for the OTel reader to export its first sample";
+    for (const metric of ["http-count", "commands-count", "replication-count", "errors", "memory", "run-queue", "workers"]) {
+      setTelemetryText(panel, metric, "—");
+    }
+    setTelemetryText(panel, "http-latency", "avg — · p95 —");
+    setTelemetryText(panel, "commands-latency", "avg — · p95 —");
+    setTelemetryText(panel, "replication-latency", "avg — · p95 —");
+    setTelemetryText(panel, "error-detail", "HTTP · database · replication");
+    return;
+  }
+
+  const nodeState = snapshot.status === "busy" ? "working" : "connected";
+  status.dataset.state = nodeState;
+  statusText.textContent = snapshot.status === "busy" ? "Busy" : "Healthy";
+
+  const otel = snapshot.otel;
+  const runtime = snapshot.runtime || {};
+  setTelemetryText(panel, "http-count", formatCount(otel.http?.count));
+  setTelemetryText(panel, "http-latency", formatLatency(otel.http));
+  setTelemetryText(panel, "commands-count", formatCount(otel.commands?.count));
+  setTelemetryText(panel, "commands-latency", formatLatency(otel.commands));
+  setTelemetryText(panel, "replication-count", formatCount(otel.replication?.count));
+  setTelemetryText(panel, "replication-latency", formatLatency(otel.replication));
+  const errorCounts = otel.errors || {};
+  const totalErrors = Object.values(errorCounts).reduce((total, value) => total + Number(value || 0), 0);
+  setTelemetryText(panel, "errors", formatCount(totalErrors));
+  setTelemetryText(
+    panel,
+    "error-detail",
+    `HTTP ${formatCount(errorCounts.http)} · db ${formatCount((errorCounts.commands || 0) + (errorCounts.changes || 0))} · repl ${formatCount(errorCounts.replication)}`,
+  );
+  setTelemetryText(panel, "memory", formatMemory(runtime.memory_bytes));
+  setTelemetryText(
+    panel,
+    "run-queue",
+    `${formatCount(runtime.run_queue)} / ${formatCount(runtime.schedulers_online)}`,
+  );
+  setTelemetryText(panel, "workers", formatCount(runtime.replication_workers));
+  sample.textContent = snapshot.sampled_at
+    ? `Sampled ${formatTime(snapshot.sampled_at)} · ${formatCount(runtime.open_databases)} / ${formatCount(runtime.registered_databases)} databases open`
+    : "Sample exported without a timestamp";
+}
+
+function renderTelemetryUnavailable(kind, error) {
+  const panel = telemetryPanel(kind);
+  if (!panel) return;
+  const status = panel.querySelector('[data-role="telemetry-status"]');
+  status.dataset.state = "error";
+  panel.querySelector('[data-role="telemetry-status-text"]').textContent = "Unavailable";
+  panel.querySelector('[data-role="telemetry-sample"]').textContent = error.message;
+  for (const metric of ["http-count", "commands-count", "replication-count", "errors", "memory", "run-queue", "workers"]) {
+    setTelemetryText(panel, metric, "—");
+  }
+  setTelemetryText(panel, "http-latency", "avg — · p95 —");
+  setTelemetryText(panel, "commands-latency", "avg — · p95 —");
+  setTelemetryText(panel, "replication-latency", "avg — · p95 —");
+  setTelemetryText(panel, "error-detail", "No sample");
+}
+
+async function fetchTelemetry(path) {
+  const response = await fetch(path, {
+    cache: "no-store",
+    headers: { accept: "application/json" },
+  });
+  let envelope;
+  try {
+    envelope = await response.json();
+  } catch {
+    throw new Error(`HTTP ${response.status} returned a non-JSON telemetry response`);
+  }
+  if (!response.ok || envelope.error) {
+    throw new Error(envelope.error?.message || `HTTP ${response.status}`);
+  }
+  return envelope.data;
+}
+
+async function refreshObservability() {
+  if (!state.config || state.observabilityRefreshing) return;
+  state.observabilityRefreshing = true;
+
+  const requests = [
+    ["web", "/api/observability/web"],
+    ["native", "/api/observability/native"],
+  ];
+  const results = await Promise.allSettled(requests.map(([, path]) => fetchTelemetry(path)));
+  const successes = [];
+
+  results.forEach((result, index) => {
+    const [kind] = requests[index];
+    if (result.status === "fulfilled") {
+      renderTelemetry(kind, result.value);
+      successes.push(kind);
+    } else {
+      renderTelemetryUnavailable(kind, result.reason);
+    }
+  });
+
+  if (successes.length === requests.length) {
+    elements.observabilityStatus.dataset.state = "connected";
+    elements.observabilityStatusText.textContent = "Live · OTel samples arriving";
+    elements.observabilityNote.textContent =
+      "Latency values come from exported OTel histograms; p95 is bucket-based and runtime values are a point-in-time BEAM sample.";
+  } else if (successes.length > 0) {
+    elements.observabilityStatus.dataset.state = "working";
+    elements.observabilityStatusText.textContent = "Partial telemetry";
+    elements.observabilityNote.textContent = "One node is not returning telemetry yet; the available node is still live.";
+  } else {
+    elements.observabilityStatus.dataset.state = "error";
+    elements.observabilityStatusText.textContent = "Telemetry unavailable";
+    elements.observabilityNote.textContent = "The local OTel snapshot endpoints could not be reached.";
+  }
+
+  state.observabilityRefreshing = false;
 }
 
 function clientCard(client) {
@@ -351,6 +511,8 @@ async function start() {
     else updateGlobalStatus("error", "One or more connections unavailable");
 
     for (const client of state.clients.values()) void pollClient(client);
+    void refreshObservability();
+    window.setInterval(() => void refreshObservability(), 2_000);
   } catch (error) {
     updateGlobalStatus("error", "Harness configuration unavailable");
     elements.clientGrid.innerHTML = `<div class="client-panel"><p>${escapeHtml(error.message)}</p></div>`;

@@ -189,6 +189,168 @@ button {
   gap: 18px;
 }
 
+.observability-panel {
+  margin-bottom: 18px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: linear-gradient(145deg, rgba(29, 41, 49, 0.98), rgba(19, 28, 34, 0.98));
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.16);
+}
+
+.observability-panel .panel-heading {
+  align-items: flex-start;
+}
+
+.eyebrow {
+  margin: 0 0 5px;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.observability-copy {
+  max-width: 760px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.observability-status,
+.telemetry-node-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--teal);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.observability-status {
+  padding-top: 4px;
+}
+
+.observability-status[data-state="starting"],
+.telemetry-node-status[data-state="starting"],
+.telemetry-node-status[data-state="working"] {
+  color: var(--amber);
+}
+
+.observability-status[data-state="working"] {
+  color: var(--amber);
+}
+
+.observability-status[data-state="error"],
+.telemetry-node-status[data-state="error"] {
+  color: var(--red);
+}
+
+.telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.telemetry-node {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: rgba(8, 13, 17, 0.36);
+}
+
+.telemetry-node-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.telemetry-node-heading h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+}
+
+.telemetry-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.telemetry-metric {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid rgba(53, 67, 77, 0.75);
+  background: rgba(24, 33, 40, 0.72);
+}
+
+.telemetry-metric span,
+.telemetry-metric small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.telemetry-metric strong {
+  display: block;
+  margin: 7px 0 3px;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.telemetry-metric small {
+  overflow: hidden;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.telemetry-runtime {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.telemetry-runtime strong {
+  color: var(--teal);
+  font-weight: 600;
+}
+
+.telemetry-sample,
+.telemetry-note {
+  margin: 10px 0 0;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.telemetry-note {
+  margin-top: 14px;
+  padding-top: 11px;
+  border-top: 1px solid var(--border-soft);
+}
+
 .client-panel,
 .native-panel {
   border: 1px solid var(--border);
@@ -638,6 +800,10 @@ button {
   .topbar-status {
     justify-content: flex-end;
   }
+
+  .telemetry-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
@@ -672,6 +838,19 @@ button {
 
   .client-grid {
     grid-template-columns: 1fr;
+  }
+
+  .telemetry-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .observability-panel .panel-heading {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .observability-status {
+    padding-top: 0;
   }
 
   .client-meta,

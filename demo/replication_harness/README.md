@@ -36,6 +36,16 @@ The native process owns Database C directly in Elixir; it does not use the web
 UI or an HTTP client to observe its changes. Its output is written to the
 terminal and to the run directory’s `native-cli.log`.
 
+The page also reads the same OpenTelemetry metric stream used by the database:
+each BEAM node has a local one-second metric reader with no collector network
+connection. The telemetry cards show cumulative HTTP requests, database
+commands, changes reads, replication batches, latency average/p95, error
+counts, memory, scheduler run queue, open databases, and replication workers.
+HTTP latency includes the harness’s intentional long-poll requests, so use the
+database-command and changes values when judging storage performance. The
+snapshot route is disabled unless the harness enables it and is only proxied
+through the local demo server.
+
 Optional environment variables:
 
 ```sh

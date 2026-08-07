@@ -105,7 +105,7 @@ echo "  Web UI: http://127.0.0.1:$web_port"
   DEMO_MAIN_CONFIG="$main_config" \
   DEMO_C_CONFIG="$cli_config" \
   DEMO_READY_CONFIG="$ready_config" \
-  mix run demo/replication_harness/node.exs web
+  mix run --no-start demo/replication_harness/node.exs web
 ) >"$main_log" 2>&1 &
 main_pid=$!
 
@@ -118,7 +118,7 @@ wait_for_file "$main_config"
   ELIXIR_DB_PORT="$cli_port" \
   DEMO_C_CONFIG="$cli_config" \
   DEMO_READY_CONFIG="$ready_config" \
-  mix run demo/replication_harness/node.exs cli
+  mix run --no-start demo/replication_harness/node.exs cli
 ) >"$cli_log" 2>&1 &
 cli_pid=$!
 

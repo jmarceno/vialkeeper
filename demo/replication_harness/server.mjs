@@ -48,12 +48,10 @@ async function readRequestBody(request) {
   return Buffer.concat(chunks);
 }
 
-async function proxy(request, response, clientKey, suffix) {
-  const config = await readConfig();
-  const client = config.clients.find((value) => value.key === clientKey);
-  if (!client) return sendJson(response, 404, { error: "unknown demo client" });
+async function proxyEndpoint(request, response, endpoint, suffix) {
+  if (!endpoint) return sendJson(response, 503, { error: "demo endpoint is not ready" });
 
-  const target = new URL(suffix || "/", client.endpoint);
+  const target = new URL(suffix || "/", endpoint);
   const body = ["GET", "HEAD", "DELETE"].includes(request.method)
     ? undefined
     : await readRequestBody(request);
@@ -86,6 +84,13 @@ async function proxy(request, response, clientKey, suffix) {
   }
 }
 
+async function proxy(request, response, clientKey, suffix) {
+  const config = await readConfig();
+  const client = config.clients.find((value) => value.key === clientKey);
+  if (!client) return sendJson(response, 404, { error: "unknown demo client" });
+  return proxyEndpoint(request, response, client.endpoint, suffix);
+}
+
 async function serveStatic(request, response, pathname) {
   const requested = pathname === "/" ? "/index.html" : pathname;
   const file = normalize(join(root, requested));
@@ -112,6 +117,21 @@ const server = createServer(async (request, response) => {
 
     const proxyMatch = url.pathname.match(/^\/api\/(a|b)(\/.*)?$/);
     if (proxyMatch) return await proxy(request, response, proxyMatch[1], proxyMatch[2] || "/");
+
+    if (url.pathname === "/api/observability/web") {
+      const config = await readConfig();
+      return await proxyEndpoint(request, response, config.server_url, "/v1/observability/snapshot");
+    }
+
+    if (url.pathname === "/api/observability/native") {
+      const config = await readConfig();
+      return await proxyEndpoint(
+        request,
+        response,
+        config.native_client?.endpoint,
+        "/v1/observability/snapshot",
+      );
+    }
 
     if (request.method !== "GET" && request.method !== "HEAD") {
       return sendJson(response, 405, { error: "method not allowed" });
