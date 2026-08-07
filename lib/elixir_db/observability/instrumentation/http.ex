@@ -71,7 +71,30 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
         # No response was (or will be) sent: before_send never fires, so end
         # the span here with the effective 500.
         finish_raised(span_ctx, conn, route, db_uuid, started)
-        reraise error, __STACKTRACE__
+
+        # SAFETY net: an unanticipated raise inside a route handler must never escape as a
+        # bare process crash that drops the HTTP connection without a JSON body. If the
+        # response has not yet started (conn.state still unsent), render a typed
+        # internal_error envelope so the client observes a stable 500. If the response was
+        # already started (e.g. mid-chunk on a streaming endpoint), the body can no longer
+        # be replaced, so reraise and let the server close the connection.
+        if conn.state in [:unset, :set, :set_chunked, :set_file] do
+          Plug.Conn.put_resp_content_type(conn, "application/json")
+          |> Plug.Conn.send_resp(
+            500,
+            JSON.encode_to_iodata!(%{
+              "request_id" => ElixirDB.UUID.v4(),
+              "error" =>
+                ElixirDB.Error.public(
+                  ElixirDB.Error.internal_error("request failed", %{
+                    cause: inspect(error)
+                  })
+                )
+            })
+          )
+        else
+          reraise error, __STACKTRACE__
+        end
     after
       # Restore the prior context so the extracted parent doesn't leak into
       # the next keep-alive request on this connection process.

@@ -21,45 +21,39 @@ defmodule ElixirDB.HTTP.Routes.Replications do
   end
 
   get "/:job_id" do
-    Response.result(
-      conn,
-      ElixirDB.Replication.JobManager.get(Request.uuid(conn), conn.path_params["job_id"])
-    )
+    with_path_id(conn, fn conn, job_id ->
+      Response.result(conn, ElixirDB.Replication.JobManager.get(Request.uuid(conn), job_id))
+    end)
   end
 
   post "/:job_id/start" do
-    Response.result(
-      conn,
-      ElixirDB.Replication.JobManager.start(Request.uuid(conn), conn.path_params["job_id"])
-    )
+    with_path_id(conn, fn conn, job_id ->
+      Response.result(conn, ElixirDB.Replication.JobManager.start(Request.uuid(conn), job_id))
+    end)
   end
 
   post "/:job_id/cancel" do
-    Response.result(
-      conn,
-      ElixirDB.Replication.JobManager.cancel(Request.uuid(conn), conn.path_params["job_id"])
-    )
+    with_path_id(conn, fn conn, job_id ->
+      Response.result(conn, ElixirDB.Replication.JobManager.cancel(Request.uuid(conn), job_id))
+    end)
   end
 
   post "/:job_id/enable" do
-    Response.result(
-      conn,
-      ElixirDB.Replication.JobManager.enable(Request.uuid(conn), conn.path_params["job_id"])
-    )
+    with_path_id(conn, fn conn, job_id ->
+      Response.result(conn, ElixirDB.Replication.JobManager.enable(Request.uuid(conn), job_id))
+    end)
   end
 
   post "/:job_id/disable" do
-    Response.result(
-      conn,
-      ElixirDB.Replication.JobManager.disable(Request.uuid(conn), conn.path_params["job_id"])
-    )
+    with_path_id(conn, fn conn, job_id ->
+      Response.result(conn, ElixirDB.Replication.JobManager.disable(Request.uuid(conn), job_id))
+    end)
   end
 
   delete "/:job_id" do
-    Response.result(
-      conn,
-      ElixirDB.Replication.JobManager.delete(Request.uuid(conn), conn.path_params["job_id"])
-    )
+    with_path_id(conn, fn conn, job_id ->
+      Response.result(conn, ElixirDB.Replication.JobManager.delete(Request.uuid(conn), job_id))
+    end)
   end
 
   match _ do
@@ -67,5 +61,14 @@ defmodule ElixirDB.HTTP.Routes.Replications do
       conn,
       ElixirDB.Error.invalid_request("route not found", %{path: conn.request_path})
     )
+  end
+
+  # SAFETY: bounds-check the :job_id path parameter (length/UTF-8/control chars) before it
+  # is used as a job identifier. See Request.validate_path_id/1.
+  defp with_path_id(conn, fun) do
+    case Request.validate_path_id(conn.path_params["job_id"]) do
+      :ok -> fun.(conn, conn.path_params["job_id"])
+      {:error, error} -> Response.error(conn, error)
+    end
   end
 end

@@ -21,17 +21,15 @@ defmodule ElixirDB.HTTP.Routes.Indexes do
   end
 
   delete "/:index_id" do
-    Response.result(
-      conn,
-      ElixirDB.Query.delete_index(Request.uuid(conn), conn.path_params["index_id"])
-    )
+    with_path_id(conn, fn conn, index_id ->
+      Response.result(conn, ElixirDB.Query.delete_index(Request.uuid(conn), index_id))
+    end)
   end
 
   post "/:index_id/rebuild" do
-    Response.result(
-      conn,
-      ElixirDB.Query.rebuild_index(Request.uuid(conn), conn.path_params["index_id"])
-    )
+    with_path_id(conn, fn conn, index_id ->
+      Response.result(conn, ElixirDB.Query.rebuild_index(Request.uuid(conn), index_id))
+    end)
   end
 
   match _ do
@@ -39,6 +37,15 @@ defmodule ElixirDB.HTTP.Routes.Indexes do
       conn,
       ElixirDB.Error.invalid_request("route not found", %{path: conn.request_path})
     )
+  end
+
+  # SAFETY: bounds-check the :index_id path parameter before it reaches storage. See
+  # Request.validate_path_id/1.
+  defp with_path_id(conn, fun) do
+    case Request.validate_path_id(conn.path_params["index_id"]) do
+      :ok -> fun.(conn, conn.path_params["index_id"])
+      {:error, error} -> Response.error(conn, error)
+    end
   end
 
   @doc false

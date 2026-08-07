@@ -62,59 +62,74 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   @impl true
   def handle_call({:create, relative_path, options}, _from, state) do
-    with {:ok, absolute} <- safe_path(state.root, relative_path),
-         false <- File.exists?(absolute),
-         {:ok, config} <-
-           ElixirDB.Config.merge_and_bound(
-             Map.get(options, :config, Map.get(options, "config", ElixirDB.Config.defaults()))
-           ),
-         {:ok, adapter} <- Adapter.create(absolute, Map.put(options, :config, config)),
-         {:ok, identity} <- Adapter.identity(adapter),
-         :ok <- Adapter.close(adapter),
-         {:ok, state} <- put_entry(state, identity.database_uuid, relative_path) do
-      {:reply, {:ok, identity}, state}
-    else
-      true ->
-        {:reply, {:error, ElixirDB.Error.invalid_request("database file already exists")}, state}
+    # SAFETY: create touches the filesystem and adapter DDL; an unanticipated raise here
+    # would crash the shared catalog. Catch and convert to a typed error.
+    safe(
+      fn ->
+        with {:ok, absolute} <- safe_path(state.root, relative_path),
+             false <- File.exists?(absolute),
+             {:ok, config} <-
+               ElixirDB.Config.merge_and_bound(
+                 Map.get(options, :config, Map.get(options, "config", ElixirDB.Config.defaults()))
+               ),
+             {:ok, adapter} <- Adapter.create(absolute, Map.put(options, :config, config)),
+             {:ok, identity} <- Adapter.identity(adapter),
+             :ok <- Adapter.close(adapter),
+             {:ok, state} <- put_entry(state, identity.database_uuid, relative_path) do
+          {:reply, {:ok, identity}, state}
+        else
+          true ->
+            {:reply, {:error, ElixirDB.Error.invalid_request("database file already exists")},
+             state}
 
-      {:error, %ElixirDB.Error{} = error} ->
-        {:reply, {:error, error}, state}
+          {:error, %ElixirDB.Error{} = error} ->
+            {:reply, {:error, error}, state}
 
-      {:error, reason} ->
-        {:reply,
-         {:error,
-          ElixirDB.Error.internal_error("database creation failed", %{cause: inspect(reason)})},
-         state}
-    end
+          {:error, reason} ->
+            {:reply,
+             {:error,
+              ElixirDB.Error.internal_error("database creation failed", %{cause: inspect(reason)})},
+             state}
+        end
+      end,
+      state
+    )
   end
 
   @impl true
   def handle_call({:register, relative_path}, _from, state) do
-    with {:ok, absolute} <- safe_path(state.root, relative_path),
-         true <- File.regular?(absolute),
-         :ok <- ensure_path_not_open(state, absolute),
-         {:ok, adapter} <- Adapter.open(absolute),
-         {:ok, identity} <- Adapter.identity(adapter),
-         :ok <- Adapter.close(adapter),
-         :ok <- no_duplicate_uuid(state, identity.database_uuid, absolute),
-         {:ok, next} <- put_entry(state, identity.database_uuid, relative_path) do
-      {:reply, {:ok, identity}, next}
-    else
-      false ->
-        {:reply,
-         {:error, ElixirDB.Error.database_unavailable("registered database file is missing")},
-         state}
+    # SAFETY: register opens the database file via the adapter; an unanticipated raise
+    # would crash the shared catalog. Catch and convert to a typed error.
+    safe(
+      fn ->
+        with {:ok, absolute} <- safe_path(state.root, relative_path),
+             true <- File.regular?(absolute),
+             :ok <- ensure_path_not_open(state, absolute),
+             {:ok, adapter} <- Adapter.open(absolute),
+             {:ok, identity} <- Adapter.identity(adapter),
+             :ok <- Adapter.close(adapter),
+             :ok <- no_duplicate_uuid(state, identity.database_uuid, absolute),
+             {:ok, next} <- put_entry(state, identity.database_uuid, relative_path) do
+          {:reply, {:ok, identity}, next}
+        else
+          false ->
+            {:reply,
+             {:error, ElixirDB.Error.database_unavailable("registered database file is missing")},
+             state}
 
-      {:error, %ElixirDB.Error{} = error} ->
-        {:reply, {:error, error}, state}
+          {:error, %ElixirDB.Error{} = error} ->
+            {:reply, {:error, error}, state}
 
-      {:error, reason} ->
-        {:reply,
-         {:error,
-          ElixirDB.Error.database_unavailable("database could not be registered", %{
-            cause: inspect(reason)
-          })}, state}
-    end
+          {:error, reason} ->
+            {:reply,
+             {:error,
+              ElixirDB.Error.database_unavailable("database could not be registered", %{
+                cause: inspect(reason)
+              })}, state}
+        end
+      end,
+      state
+    )
   end
 
   @impl true
@@ -201,7 +216,12 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     # Plan §5.2: wrap the central command dispatch in the database.command span.
     # command.type is derived from the command struct; expected domain errors
     # keep span status UNSET, only :internal_error sets ERROR (policy §6.5).
-    result =
+    #
+    # SAFETY: the catalog is a single shared GenServer serving every database. An
+    # unanticipated raise/throw from the adapter or admission layer would otherwise crash
+    # this process and propagate a GenServer.call exit to *every* concurrent caller. Catch
+    # any exception here and convert it to a typed internal_error so the catalog survives.
+    try do
       case open_runtime(state, uuid) do
         {:ok, _info, state} ->
           ElixirDB.Observability.Instrumentation.Database.command(uuid, command, fn ->
@@ -213,11 +233,45 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
           {:error, error}
           |> command_reply(state)
       end
+    catch
+      kind, reason ->
+        Logger.error("database command raised",
+          database_uuid: inspect(uuid),
+          kind: kind,
+          reason: inspect(reason)
+        )
 
-    result
+        {:reply,
+         {:error,
+          ElixirDB.Error.internal_error("database command failed", %{
+            cause: inspect(reason),
+            kind: kind
+          })}, state}
+    end
   end
 
   defp command_reply(result, state), do: {:reply, result, state}
+
+  # SAFETY: final catch-all net for handle_call clauses that touch the adapter. An
+  # unanticipated raise/throw is converted to a typed internal_error reply so the shared
+  # catalog GenServer never crashes from a poisoned input. `state` is returned unchanged
+  # because the operation failed before (or outside of) any state mutation.
+  defp safe(fun, state) do
+    fun.()
+  catch
+    kind, reason ->
+      Logger.error("catalog operation raised",
+        kind: kind,
+        reason: inspect(reason)
+      )
+
+      {:reply,
+       {:error,
+        ElixirDB.Error.internal_error("database operation failed", %{
+          cause: inspect(reason),
+          kind: kind
+        })}, state}
+  end
 
   @impl true
   def handle_info(:resume_registered_jobs, state) do

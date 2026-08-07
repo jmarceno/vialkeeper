@@ -67,6 +67,17 @@ defmodule ElixirDB.Replication.RemoteTransport do
            cause: inspect(reason)
          })}
 
+      # SAFETY: Req.request/1 (or the OpenTelemetry context handling) may raise rather
+      # than return {:error, _} on certain malformed inputs or transport faults. The task
+      # then exits with {:exit, reason}. Without these arms the surrounding `case` would
+      # raise CaseClauseError in the worker. Funnel the crash into a typed error so the
+      # replication worker retries instead of aborting.
+      {:exit, reason} ->
+        {:error,
+         ElixirDB.Error.internal_error("replication transport request failed", %{
+           cause: inspect(reason)
+         })}
+
       nil ->
         {:error, ElixirDB.Error.database_unavailable("remote endpoint request timed out")}
     end

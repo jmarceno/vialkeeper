@@ -129,6 +129,9 @@ defmodule ElixirDB.Storage.SQLite.Changes do
     end
   end
 
+  # Pass already-typed domain errors through unchanged; only wrap raw driver reasons.
+  defp normalize_error(%ElixirDB.Error{} = error), do: error
+
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
 end

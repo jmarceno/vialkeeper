@@ -41,6 +41,13 @@ defmodule ElixirDB.Documents do
         {:error, ElixirDB.Error.resource_limit("bulk-get operation count exceeds the host limit")}
   end
 
+  # SAFETY: the /bulk-get route decodes the JSON body without an object allow-list (the
+  # endpoint legitimately accepts an array), so a non-array body (object, scalar) reaches
+  # here. Without this fallback the `when is_list` clause above would raise
+  # FunctionClauseError in the request process. Funnel it into a typed 400 instead.
+  def bulk_get(_uuid, _requests),
+    do: {:error, ElixirDB.Error.invalid_request("bulk-get body must be an array")}
+
   def bulk_write(uuid, operations) when is_list(operations) do
     if length(operations) <= (ElixirDB.Config.host_limits()[:max_bulk_operations] || 500),
       do:
@@ -51,6 +58,10 @@ defmodule ElixirDB.Documents do
       else:
         {:error, ElixirDB.Error.resource_limit("bulk-write operation count exceeds the host limit")}
   end
+
+  # SAFETY: see bulk_get/2 — a non-array body must not raise FunctionClauseError.
+  def bulk_write(_uuid, _operations),
+    do: {:error, ElixirDB.Error.invalid_request("bulk-write body must be an array")}
 
   defp validate_get(%{id: id} = request) do
     with :ok <- known(request, [:id, :revision, :include_conflicts]),

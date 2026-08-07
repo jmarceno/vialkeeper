@@ -255,6 +255,12 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
     end
   end
 
+  # Pass already-typed domain errors (e.g. index_name_conflict, index_not_found) through
+  # unchanged so they keep their HTTP status and code. Only wrap raw SQLite/driver reasons
+  # as a generic internal_error. Without this, a legitimate 409 index_name_conflict was
+  # being degraded to a 500 internal_error by the `with`...`else` clause in create_tx.
+  defp normalize_error(%ElixirDB.Error{} = error), do: error
+
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
 end

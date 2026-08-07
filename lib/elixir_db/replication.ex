@@ -532,6 +532,12 @@ defmodule ElixirDB.Replication do
   defp value(%{value: value}), do: value
   defp value(%{"value" => value}), do: value
 
+  # SAFETY: checkpoints arrive from remote peers whose responses are untrusted. A
+  # malformed checkpoint whose stored value is a non-map (scalar/list) or a map without
+  # a "value" key would otherwise raise FunctionClauseError inside the worker task.
+  # Treat any unrecognized shape as an absent value.
+  defp value(_other), do: nil
+
   defp option(options, key, default) when is_map(options),
     do: Map.get(options, key, Map.get(options, Atom.to_string(key), default))
 

@@ -88,13 +88,15 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   end
 
   get "/checkpoints/:replication_id" do
-    Response.result(
-      conn,
-      ElixirDB.Runtime.DatabaseCatalog.command(
-        Request.uuid(conn),
-        {:command, :get_local_record, "checkpoints", conn.path_params["replication_id"]}
+    with_path_id(conn, fn conn, replication_id ->
+      Response.result(
+        conn,
+        ElixirDB.Runtime.DatabaseCatalog.command(
+          Request.uuid(conn),
+          {:command, :get_local_record, "checkpoints", replication_id}
+        )
       )
-    )
+    end)
   end
 
   put "/checkpoints/:replication_id" do
@@ -104,19 +106,21 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
       fn body, conn ->
         if valid_checkpoint_put?(body),
           do:
-            Response.result(
-              conn,
-              ElixirDB.Runtime.DatabaseCatalog.command(
-                Request.uuid(conn),
-                {:command, :put_local_record,
-                 %{
-                   namespace: "checkpoints",
-                   key: conn.path_params["replication_id"],
-                   expected_version: body["expected_checkpoint_version"],
-                   value: Map.delete(body, "expected_checkpoint_version")
-                 }}
+            with_path_id(conn, fn conn, replication_id ->
+              Response.result(
+                conn,
+                ElixirDB.Runtime.DatabaseCatalog.command(
+                  Request.uuid(conn),
+                  {:command, :put_local_record,
+                   %{
+                     namespace: "checkpoints",
+                     key: replication_id,
+                     expected_version: body["expected_checkpoint_version"],
+                     value: Map.delete(body, "expected_checkpoint_version")
+                   }}
+                )
               )
-            ),
+            end),
           else:
             Response.error(
               conn,
@@ -145,4 +149,13 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   end
 
   defp valid_checkpoint_put?(_), do: false
+
+  # SAFETY: bounds-check the :replication_id path parameter before it is used as a storage
+  # key. See Request.validate_path_id/1.
+  defp with_path_id(conn, fun) do
+    case Request.validate_path_id(conn.path_params["replication_id"]) do
+      :ok -> fun.(conn, conn.path_params["replication_id"])
+      {:error, error} -> Response.error(conn, error)
+    end
+  end
 end
