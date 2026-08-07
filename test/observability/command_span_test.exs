@@ -23,8 +23,7 @@ defmodule ElixirDB.Observability.CommandSpanTest do
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
       root = ElixirDB.Config.database_root()
-      _ = File.rm(Path.join(root, rel))
-      _ = File.rm(Path.join(root, rel <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, rel))
     end)
 
     [uuid: uuid]

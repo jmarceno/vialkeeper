@@ -16,8 +16,8 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     a_abs = Path.join(root, a_rel)
     b_abs = Path.join(root, b_rel)
 
-    for path <- [a_abs, b_abs, a_abs <> ".lease", b_abs <> ".lease"] do
-      _ = File.rm(path)
+    for path <- [a_abs, b_abs] do
+      ElixirDB.TempDatabase.cleanup(path)
     end
 
     assert {:ok, a} = DatabaseCatalog.create(a_rel)
@@ -29,8 +29,8 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
         _ = DatabaseCatalog.unregister(identity.database_uuid)
       end
 
-      for path <- [a_abs, b_abs, a_abs <> ".lease", b_abs <> ".lease"] do
-        _ = File.rm(path)
+      for path <- [a_abs, b_abs] do
+        ElixirDB.TempDatabase.cleanup(path)
       end
     end)
 

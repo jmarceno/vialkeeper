@@ -18,8 +18,7 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
     b_path = prefix <> "-b.db"
 
     for path <- [a_path, b_path] do
-      _ = File.rm(Path.join(root, path))
-      _ = File.rm(Path.join(root, path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
     end
 
     # Step 1 — create and register two databases through the Version 1 HTTP API.
@@ -35,8 +34,7 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
       for {uuid, path} <- [{a_uuid, a_path}, {b_uuid, b_path}] do
         _ = DatabaseCatalog.close(uuid)
         _ = DatabaseCatalog.unregister(uuid)
-        _ = File.rm(Path.join(root, path))
-        _ = File.rm(Path.join(root, path <> ".lease"))
+        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -265,8 +263,7 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
     on_exit(fn ->
       for path <- [a_copy, b_copy] do
         abs = Path.join(root, path)
-        _ = File.rm(abs)
-        _ = File.rm(abs <> ".lease")
+        ElixirDB.TempDatabase.cleanup(abs)
       end
     end)
 

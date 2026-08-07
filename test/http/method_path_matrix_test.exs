@@ -131,7 +131,7 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
            end
        end)},
       {:post, "/v1/databases/#{uuid}/documents/bulk-write",
-       [%{"type" => "put", "id" => "bulk", "if_revision" => nil, "body" => %{"x" => 1}}], 200,
+       [%{"type" => "put", "id" => "bulk", "body" => %{"x" => 1}}], 200,
        &assert_data(&1, fn data ->
          is_map(data) or
            (is_list(data) and Enum.any?(data, fn row -> row["document_id"] == "bulk" end))
@@ -373,16 +373,13 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
   defp cleanup_path(path) do
     root = ElixirDB.Config.database_root()
-    abs = Path.join(root, path)
-    _ = File.rm(abs)
-    _ = File.rm(abs <> ".lease")
+    ElixirDB.TempDatabase.cleanup(Path.join(root, path))
   end
 
   defp cleanup(uuid, path) do
     _ = DatabaseCatalog.close(uuid)
     _ = DatabaseCatalog.unregister(uuid)
     root = ElixirDB.Config.database_root()
-    _ = File.rm(Path.join(root, path))
-    _ = File.rm(Path.join(root, path <> ".lease"))
+    ElixirDB.TempDatabase.cleanup(Path.join(root, path))
   end
 end

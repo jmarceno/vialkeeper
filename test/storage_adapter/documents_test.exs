@@ -7,8 +7,7 @@ defmodule ElixirDB.StorageAdapter.DocumentsTest do
     path = Path.join(System.tmp_dir!(), "elixirdb-test-#{System.unique_integer([:positive])}.db")
 
     on_exit(fn ->
-      File.rm(path)
-      File.rm(path <> ".lease")
+      ElixirDB.TempDatabase.cleanup(path)
     end)
 
     {:ok, adapter} = Adapter.create(path, %{})

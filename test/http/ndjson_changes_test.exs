@@ -22,8 +22,7 @@ defmodule ElixirDB.HTTP.NdjsonChangesTest do
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
       root = ElixirDB.Config.database_root()
-      _ = File.rm(Path.join(root, path))
-      _ = File.rm(Path.join(root, path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
     end)
 
     {:ok, put_resp} =

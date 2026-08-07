@@ -14,6 +14,12 @@ defmodule ElixirDB.HTTP.RouterTest do
     {:ok, created} = ElixirDB.JSON.StrictDecoder.decode(conn.resp_body)
     uuid = created["data"]["database_uuid"]
 
+    on_exit(fn ->
+      _ = ElixirDB.Runtime.DatabaseCatalog.close(uuid)
+      _ = ElixirDB.Runtime.DatabaseCatalog.unregister(uuid)
+      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+    end)
+
     put = IO.iodata_to_binary(JSON.encode_to_iodata!(%{"id" => "doc", "body" => %{"ok" => true}}))
 
     conn =

@@ -216,22 +216,27 @@ defmodule ElixirDB.Documents do
       else: {:error, ElixirDB.Error.invalid_request("request contains an unknown field")}
   end
 
-  defp normalize_bulk_operation(%{"type" => "delete", "id" => id, "if_revision" => revision}),
-    do: %{operation: :delete, document_id: id, if_revision: revision}
+  defp normalize_bulk_operation(%{"type" => "delete", "id" => id} = operation),
+    do: %{operation: :delete, document_id: id, if_revision: Map.get(operation, "if_revision")}
 
-  defp normalize_bulk_operation(%{
-         "type" => "put",
-         "id" => id,
-         "if_revision" => revision,
-         "body" => body
-       }),
-       do: %{operation: :put, document_id: id, if_revision: revision, body: body}
+  defp normalize_bulk_operation(%{"type" => "put", "id" => id, "body" => body} = operation),
+    do: %{
+      operation: :put,
+      document_id: id,
+      if_revision: Map.get(operation, "if_revision"),
+      body: body
+    }
 
-  defp normalize_bulk_operation(%{type: :delete, id: id, if_revision: revision}),
-    do: %{operation: :delete, document_id: id, if_revision: revision}
+  defp normalize_bulk_operation(%{type: :delete, id: id} = operation),
+    do: %{operation: :delete, document_id: id, if_revision: Map.get(operation, :if_revision)}
 
-  defp normalize_bulk_operation(%{type: :put, id: id, if_revision: revision, body: body}),
-    do: %{operation: :put, document_id: id, if_revision: revision, body: body}
+  defp normalize_bulk_operation(%{type: :put, id: id, body: body} = operation),
+    do: %{
+      operation: :put,
+      document_id: id,
+      if_revision: Map.get(operation, :if_revision),
+      body: body
+    }
 
   defp normalize_bulk_operation(%{
          "type" => "resolve",

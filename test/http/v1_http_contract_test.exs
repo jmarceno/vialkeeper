@@ -27,8 +27,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
     on_exit(fn ->
       _ = ElixirDB.Runtime.DatabaseCatalog.close(uuid)
       _ = ElixirDB.Runtime.DatabaseCatalog.unregister(uuid)
-      _ = File.rm(Path.join(ElixirDB.Config.database_root(), path))
-      _ = File.rm(Path.join(ElixirDB.Config.database_root(), path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
     end)
 
     put =

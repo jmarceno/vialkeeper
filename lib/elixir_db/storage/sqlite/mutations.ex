@@ -22,7 +22,8 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     deleted = operation in [:delete, "delete"]
     body = if deleted, do: nil, else: request[:body] || request["body"]
 
-    with :ok <- validate_document_input(adapter, document_id, deleted, body),
+    with :ok <- validate_mutation_operation(operation),
+         :ok <- validate_document_input(adapter, document_id, deleted, body),
          {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current} <- current_winner(adapter, doc),
          {:ok, candidate} <-
@@ -327,9 +328,16 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   defp prepare_bulk_operation(adapter, request) do
     operation = request[:operation] || request["operation"] || :put
 
-    if operation in [:resolve, "resolve"],
-      do: prepare_bulk_resolution_operation(adapter, request),
-      else: prepare_bulk_mutation_operation(adapter, request)
+    case operation do
+      operation when operation in [:resolve, "resolve"] ->
+        prepare_bulk_resolution_operation(adapter, request)
+
+      operation when operation in [:put, "put", :delete, "delete"] ->
+        prepare_bulk_mutation_operation(adapter, request)
+
+      _ ->
+        {:error, ElixirDB.Error.invalid_request("bulk operation type is invalid")}
+    end
   end
 
   defp prepare_bulk_mutation_operation(adapter, request) do
@@ -339,7 +347,8 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     deleted = operation in [:delete, "delete"]
     body = if(deleted, do: nil, else: request[:body] || request["body"])
 
-    with :ok <- validate_document_input(adapter, document_id, deleted, body),
+    with :ok <- validate_mutation_operation(operation),
+         :ok <- validate_document_input(adapter, document_id, deleted, body),
          {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current} <- current_winner(adapter, doc),
          {:ok, candidate_state} <-
@@ -597,6 +606,12 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
       _ -> %{current_sequence: 0, config: ElixirDB.Config.defaults()}
     end
   end
+
+  defp validate_mutation_operation(operation) when operation in [:put, "put", :delete, "delete"],
+    do: :ok
+
+  defp validate_mutation_operation(_),
+    do: {:error, ElixirDB.Error.invalid_request("mutation operation type is invalid")}
 
   defp digest(id), do: id |> String.split("-", parts: 2) |> List.last()
 end

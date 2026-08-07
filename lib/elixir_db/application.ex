@@ -15,6 +15,7 @@ defmodule ElixirDB.Application do
       ElixirDB.Runtime.DatabaseSupervisor,
       {Registry, keys: :unique, name: ElixirDB.Replication.WorkerRegistry},
       ElixirDB.Replication.WorkerSupervisor,
+      ElixirDB.Replication.JobManager,
       {Task.Supervisor, name: ElixirDB.TaskSupervisor},
       ElixirDB.Runtime.DatabaseCatalog,
       http_server

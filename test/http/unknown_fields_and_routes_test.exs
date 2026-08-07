@@ -27,8 +27,7 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      _ = File.rm(Path.join(ElixirDB.Config.database_root(), path))
-      _ = File.rm(Path.join(ElixirDB.Config.database_root(), path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
     end)
 
     assert {:ok, %{status: 200, body: listed}} = Req.get(server.base_url <> "/v1/databases")

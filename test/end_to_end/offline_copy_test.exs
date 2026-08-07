@@ -11,8 +11,8 @@ defmodule ElixirDB.EndToEnd.OfflineCopyTest do
     source_abs = Path.join(root, source_rel)
     dest_abs = Path.join(root, dest_rel)
 
-    for path <- [source_abs, dest_abs, source_abs <> ".lease", dest_abs <> ".lease"] do
-      _ = File.rm(path)
+    for path <- [source_abs, dest_abs] do
+      ElixirDB.TempDatabase.cleanup(path)
     end
 
     assert {:ok, source} = DatabaseCatalog.create(source_rel)
@@ -68,10 +68,8 @@ defmodule ElixirDB.EndToEnd.OfflineCopyTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(source_uuid)
       _ = DatabaseCatalog.unregister(source_uuid)
-      _ = File.rm(source_abs)
-      _ = File.rm(dest_abs)
-      _ = File.rm(source_abs <> ".lease")
-      _ = File.rm(dest_abs <> ".lease")
+      ElixirDB.TempDatabase.cleanup(source_abs)
+      ElixirDB.TempDatabase.cleanup(dest_abs)
     end)
 
     assert {:ok, %{revision: ^revision, body: %{"copied" => true, "kind" => "task"}}} =

@@ -60,6 +60,18 @@ defmodule ElixirDB.StorageAdapter.MutationsTest do
              @adapter.get_document(adapter, %{document_id: "other"})
   end
 
+  test "bulk mutations reject unknown operation types", %{adapter: adapter} do
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             @adapter.apply_bulk_mutation(adapter, %{
+               operations: [
+                 %{operation: :upsert, document_id: "doc", body: %{"value" => 1}}
+               ]
+             })
+
+    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+             @adapter.get_document(adapter, %{document_id: "doc"})
+  end
+
   test "integrity mismatch is detected after revision corruption", %{adapter: adapter} do
     assert {:ok, %{revision: revision}} =
              @adapter.apply_local_mutation(adapter, %{

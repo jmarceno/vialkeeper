@@ -26,8 +26,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     b_path = prefix <> "-b.db"
 
     for path <- [a_path, b_path] do
-      _ = File.rm(Path.join(root, path))
-      _ = File.rm(Path.join(root, path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -38,8 +37,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
         _ = disable_jobs(identity.database_uuid)
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        _ = File.rm(Path.join(root, path))
-        _ = File.rm(Path.join(root, path <> ".lease"))
+        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 

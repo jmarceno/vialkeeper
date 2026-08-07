@@ -5,10 +5,8 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     prefix = "runtime-#{System.unique_integer([:positive])}"
     a_path = prefix <> "-a.db"
     b_path = prefix <> "-b.db"
-    _ = File.rm(Path.join(ElixirDB.Config.database_root(), a_path))
-    _ = File.rm(Path.join(ElixirDB.Config.database_root(), b_path))
-    _ = File.rm(Path.join(ElixirDB.Config.database_root(), a_path <> ".lease"))
-    _ = File.rm(Path.join(ElixirDB.Config.database_root(), b_path <> ".lease"))
+    ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), a_path))
+    ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), b_path))
     {:ok, a} = ElixirDB.Runtime.DatabaseCatalog.create(a_path)
     {:ok, b} = ElixirDB.Runtime.DatabaseCatalog.create(b_path)
 
@@ -16,8 +14,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = ElixirDB.Runtime.DatabaseCatalog.close(identity.database_uuid)
         _ = ElixirDB.Runtime.DatabaseCatalog.unregister(identity.database_uuid)
-        _ = File.rm(Path.join(ElixirDB.Config.database_root(), path))
-        _ = File.rm(Path.join(ElixirDB.Config.database_root(), path <> ".lease"))
+        ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
       end
     end)
 
@@ -83,6 +80,99 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
     assert {:ok, %{body: %{"ok" => true}}} =
              ElixirDB.Documents.get(b.database_uuid, %{id: "job-doc"})
+  end
+
+  test "continuous job state survives the caller process exiting", %{a: a, b: b} do
+    task =
+      Task.async(fn ->
+        ElixirDB.Replication.JobManager.put(a.database_uuid, %{
+          "persist" => true,
+          "mode" => "continuous",
+          "direction" => "push",
+          "endpoint" => %{"kind" => "local", "database_uuid" => b.database_uuid},
+          "enabled" => true,
+          "wait_ms" => 100
+        })
+      end)
+
+    assert {:ok, %{job_id: job_id}} = Task.await(task, 5_000)
+
+    ElixirDB.Eventual.eventually(
+      fn ->
+        case ElixirDB.Replication.JobManager.get(a.database_uuid, job_id) do
+          {:ok, %{state: state}} when state in [:waiting, :backoff] -> true
+          _ -> false
+        end
+      end,
+      timeout: 5_000,
+      message: "continuous job state was lost when its caller exited"
+    )
+
+    assert {:ok, %{state: state}} = ElixirDB.Replication.JobManager.get(a.database_uuid, job_id)
+    assert state in [:waiting, :backoff]
+
+    assert {:ok, %{state: :disabled}} =
+             ElixirDB.Replication.JobManager.disable(a.database_uuid, job_id)
+  end
+
+  test "disabling a continuous job waits for its worker before close", %{a: a, b: b} do
+    assert {:ok, %{job_id: job_id}} =
+             ElixirDB.Replication.JobManager.put(a.database_uuid, %{
+               "persist" => true,
+               "mode" => "continuous",
+               "direction" => "push",
+               "endpoint" => %{"kind" => "local", "database_uuid" => b.database_uuid},
+               "enabled" => true,
+               "wait_ms" => 100
+             })
+
+    ElixirDB.Eventual.eventually(
+      fn ->
+        case ElixirDB.Replication.JobManager.get(a.database_uuid, job_id) do
+          {:ok, %{state: state}} when state in [:waiting, :backoff] -> true
+          _ -> false
+        end
+      end,
+      timeout: 5_000,
+      message: "continuous job did not reach a cancellable state"
+    )
+
+    assert {:ok, %{state: :disabled}} =
+             ElixirDB.Replication.JobManager.disable(a.database_uuid, job_id)
+
+    assert {:ok, %{state: :disabled}} =
+             ElixirDB.Replication.JobManager.get(a.database_uuid, job_id)
+
+    assert :ok = ElixirDB.Runtime.DatabaseCatalog.close(a.database_uuid)
+  end
+
+  test "cancelling a continuous job waits for its worker before close", %{a: a, b: b} do
+    assert {:ok, %{job_id: job_id}} =
+             ElixirDB.Replication.JobManager.put(a.database_uuid, %{
+               "persist" => true,
+               "mode" => "continuous",
+               "direction" => "push",
+               "endpoint" => %{"kind" => "local", "database_uuid" => b.database_uuid},
+               "enabled" => true,
+               "wait_ms" => 100
+             })
+
+    ElixirDB.Eventual.eventually(
+      fn ->
+        case ElixirDB.Replication.JobManager.get(a.database_uuid, job_id) do
+          {:ok, %{state: state}} when state in [:waiting, :backoff] -> true
+          _ -> false
+        end
+      end,
+      timeout: 5_000,
+      message: "continuous job did not reach a cancellable state"
+    )
+
+    assert {:ok, %{state: :failed}} =
+             ElixirDB.Replication.JobManager.cancel(job_id)
+
+    assert {:ok, %{state: :failed}} = ElixirDB.Replication.JobManager.get(a.database_uuid, job_id)
+    assert :ok = ElixirDB.Runtime.DatabaseCatalog.close(a.database_uuid)
   end
 
   test "worker reports mandated phase transitions through completed", %{a: a, b: b} do

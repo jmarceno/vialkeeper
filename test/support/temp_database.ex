@@ -28,12 +28,18 @@ defmodule ElixirDB.TempDatabase do
   end
 
   @doc """
-  Removes a temporary database file and its companion lease file when present.
+  Removes a database file and SQLite companion files when present.
+
+  SQLite may leave rollback journals behind after an interrupted process. Tests
+  must remove those sidecars explicitly so a later test cannot inherit stale
+  recovery state from another scenario.
   """
   @spec cleanup(binary()) :: :ok
   def cleanup(db_path) when is_binary(db_path) do
-    _ = File.rm(db_path)
-    _ = File.rm(db_path <> ".lease")
+    for suffix <- ["", ".lease", ".lease-journal", "-journal", "-wal", "-shm"] do
+      _ = File.rm(db_path <> suffix)
+    end
+
     :ok
   end
 end

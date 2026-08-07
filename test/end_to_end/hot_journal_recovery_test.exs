@@ -25,12 +25,19 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     copy_rel = String.replace_suffix(rel, ".db", "-copy.db")
     copy_abs = Path.join(root, copy_rel)
 
-    for path <- [abs, journal, abs <> ".lease", copy_abs, copy_abs <> ".lease"] do
-      _ = File.rm(path)
+    for path <- [abs, copy_abs] do
+      ElixirDB.TempDatabase.cleanup(path)
     end
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
     uuid = identity.database_uuid
+
+    on_exit(fn ->
+      _ = DatabaseCatalog.close(uuid)
+      _ = DatabaseCatalog.unregister(uuid)
+      ElixirDB.TempDatabase.cleanup(abs)
+      ElixirDB.TempDatabase.cleanup(copy_abs)
+    end)
 
     assert {:ok, %{revision: revision}} =
              ElixirDB.Documents.put(uuid, %{id: "durable", body: %{"committed" => true}})
@@ -86,16 +93,6 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     assert :ok = DatabaseCatalog.unregister(uuid)
     assert {:ok, restored} = DatabaseCatalog.register(copy_rel)
     assert restored.database_uuid == uuid
-
-    on_exit(fn ->
-      _ = DatabaseCatalog.close(uuid)
-      _ = DatabaseCatalog.unregister(uuid)
-      _ = File.rm(abs)
-      _ = File.rm(journal)
-      _ = File.rm(abs <> ".lease")
-      _ = File.rm(copy_abs)
-      _ = File.rm(copy_abs <> ".lease")
-    end)
 
     assert {:ok, %{revision: ^revision, body: %{"committed" => true}}} =
              ElixirDB.Documents.get(uuid, %{id: "durable"})

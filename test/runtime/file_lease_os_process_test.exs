@@ -24,7 +24,6 @@ defmodule ElixirDB.Runtime.FileLeaseOsProcessTest do
     on_exit(fn ->
       _ = File.write(stop, "stop")
       ElixirDB.TempDatabase.cleanup(path)
-      _ = File.rm(path <> ".lease")
       _ = File.rm(ready)
       _ = File.rm(stop)
     end)

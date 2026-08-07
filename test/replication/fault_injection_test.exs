@@ -50,8 +50,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     root = ElixirDB.Config.database_root()
 
     for path <- [a_path, b_path] do
-      _ = File.rm(Path.join(root, path))
-      _ = File.rm(Path.join(root, path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -61,8 +60,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        _ = File.rm(Path.join(root, path))
-        _ = File.rm(Path.join(root, path <> ".lease"))
+        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 

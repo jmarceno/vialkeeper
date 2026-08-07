@@ -246,7 +246,7 @@ defmodule ElixirDB.Contract.FixturesTest do
 
   defp fts5_token_counts(input, remove_diacritics) do
     path = Path.join(System.tmp_dir!(), "elixirdb-fts5-#{System.unique_integer([:positive])}.db")
-    File.rm(path)
+    ElixirDB.TempDatabase.cleanup(path)
     {:ok, conn} = Exqlite.Sqlite3.open(path)
 
     try do
@@ -284,7 +284,7 @@ defmodule ElixirDB.Contract.FixturesTest do
       rows
     after
       Exqlite.Sqlite3.close(conn)
-      File.rm(path)
+      ElixirDB.TempDatabase.cleanup(path)
     end
   end
 

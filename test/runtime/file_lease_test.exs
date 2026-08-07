@@ -18,7 +18,6 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
 
     on_exit(fn ->
       ElixirDB.TempDatabase.cleanup(path)
-      _ = File.rm(path <> ".lease")
     end)
 
     {:ok, path: path}
@@ -45,16 +44,14 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
   test "catalog open holds the lease so a raw FileLease cannot steal ownership" do
     relative = "lease-catalog-#{System.unique_integer([:positive])}.db"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    _ = File.rm(absolute)
-    _ = File.rm(absolute <> ".lease")
+    ElixirDB.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = ElixirDB.Runtime.DatabaseCatalog.create(relative)
 
     on_exit(fn ->
       _ = ElixirDB.Runtime.DatabaseCatalog.close(identity.database_uuid)
       _ = ElixirDB.Runtime.DatabaseCatalog.unregister(identity.database_uuid)
-      _ = File.rm(absolute)
-      _ = File.rm(absolute <> ".lease")
+      ElixirDB.TempDatabase.cleanup(absolute)
     end)
 
     assert {:ok, _} = ElixirDB.Runtime.DatabaseCatalog.open(identity.database_uuid)

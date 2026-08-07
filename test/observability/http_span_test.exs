@@ -22,8 +22,7 @@ defmodule ElixirDB.Observability.HTTPSpanTest do
     # Leftover files from a previous VM run would fail creation with
     # "database file already exists"; remove ours on exit.
     on_exit(fn ->
-      _ = File.rm(Path.join(root, path))
-      _ = File.rm(Path.join(root, path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
     end)
 
     [server: server, path: path]

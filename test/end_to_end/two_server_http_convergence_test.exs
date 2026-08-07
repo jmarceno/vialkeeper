@@ -21,8 +21,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     b_path = prefix <> "-b.db"
 
     for path <- [a_path, b_path] do
-      _ = File.rm(Path.join(root, path))
-      _ = File.rm(Path.join(root, path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a = TestServer.start_supervised!()
@@ -40,10 +39,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      _ = File.rm(Path.join(root, a_path))
-      _ = File.rm(Path.join(root, b_path))
-      _ = File.rm(Path.join(root, a_path <> ".lease"))
-      _ = File.rm(Path.join(root, b_path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, a_path))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, b_path))
     end)
 
     assert {:ok, %{"revision" => first_rev}} =
@@ -103,7 +100,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     ElixirDB.Eventual.eventually(
       fn ->
         case ElixirDB.Replication.JobManager.get(a_uuid, job_id) do
-          {:ok, %{state: state}} when state in [:disabled, :failed, :completed] -> true
+          {:ok, %{state: :disabled}} -> true
           _ -> false
         end
       end,

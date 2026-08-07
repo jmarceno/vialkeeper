@@ -14,8 +14,7 @@ defmodule ElixirDB.Runtime.AdmissionTest do
 
     relative = "admission-#{System.unique_integer([:positive])}.db"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    _ = File.rm(absolute)
-    _ = File.rm(absolute <> ".lease")
+    ElixirDB.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     assert {:ok, _} = DatabaseCatalog.open(identity.database_uuid)
@@ -23,8 +22,7 @@ defmodule ElixirDB.Runtime.AdmissionTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(identity.database_uuid)
       _ = DatabaseCatalog.unregister(identity.database_uuid)
-      _ = File.rm(absolute)
-      _ = File.rm(absolute <> ".lease")
+      ElixirDB.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: identity.database_uuid}

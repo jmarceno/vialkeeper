@@ -10,8 +10,7 @@ defmodule ElixirDB.Runtime.WaiterTerminationTest do
   setup do
     relative = "waiter-#{System.unique_integer([:positive])}.db"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    _ = File.rm(absolute)
-    _ = File.rm(absolute <> ".lease")
+    ElixirDB.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     uuid = identity.database_uuid
@@ -20,8 +19,7 @@ defmodule ElixirDB.Runtime.WaiterTerminationTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      _ = File.rm(absolute)
-      _ = File.rm(absolute <> ".lease")
+      ElixirDB.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: uuid}

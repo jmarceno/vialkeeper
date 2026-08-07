@@ -1,8 +1,14 @@
 import Config
 
+test_registration_manifest =
+  Path.join(
+    System.tmp_dir!(),
+    "elixirdb-test-registrations-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}.json"
+  )
+
 config :elixir_db,
   database_root: Path.expand("tmp/test-databases", File.cwd!()),
-  registration_manifest: Path.expand("tmp/test-databases/registrations.json", File.cwd!()),
+  registration_manifest: test_registration_manifest,
   listener: [ip: {127, 0, 0, 1}, port: 0]
 
 # Observability: never export over the network in tests. Wire the SDK to use

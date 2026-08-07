@@ -6,16 +6,14 @@ defmodule ElixirDB.Runtime.OwnerUniquenessTest do
   setup do
     relative = "owner-#{System.unique_integer([:positive])}.db"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    _ = File.rm(absolute)
-    _ = File.rm(absolute <> ".lease")
+    ElixirDB.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
 
     on_exit(fn ->
       _ = DatabaseCatalog.close(identity.database_uuid)
       _ = DatabaseCatalog.unregister(identity.database_uuid)
-      _ = File.rm(absolute)
-      _ = File.rm(absolute <> ".lease")
+      ElixirDB.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, identity: identity, absolute: absolute, relative: relative}
@@ -51,8 +49,7 @@ defmodule ElixirDB.Runtime.OwnerUniquenessTest do
     File.cp!(absolute, copy_abs)
 
     on_exit(fn ->
-      _ = File.rm(copy_abs)
-      _ = File.rm(copy_abs <> ".lease")
+      ElixirDB.TempDatabase.cleanup(copy_abs)
     end)
 
     assert {:error, %ElixirDB.Error{code: :duplicate_database_uuid}} =

@@ -1,5 +1,6 @@
 defmodule ElixirDB.Replication.JobManager do
   @moduledoc "Persistent replication definitions and transient worker lifecycle."
+  use GenServer
 
   alias ElixirDB.Domain.ReplicationEndpoint
   alias ElixirDB.Runtime.DatabaseCatalog
@@ -18,6 +19,14 @@ defmodule ElixirDB.Replication.JobManager do
     :waiting,
     :backoff
   ]
+
+  def start_link(_args \\ []), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
+
+  @impl true
+  def init(_args) do
+    _ = ensure_table()
+    {:ok, %{}}
+  end
 
   def list(uuid) do
     table = ensure_table()
@@ -113,17 +122,19 @@ defmodule ElixirDB.Replication.JobManager do
     table = ensure_table()
 
     case :ets.lookup(table, job_id) do
-      [{^job_id, state, pid, ^uuid, _replication_id, _details}] when state in @active_states ->
-        send_cancel(pid)
+      [{^job_id, state, _pid, entry_uuid, _replication_id, _details}]
+      when (is_nil(uuid) or uuid == entry_uuid) and state in @active_states ->
+        case cancel_if_active(entry_uuid, job_id) do
+          :ok -> {:ok, %{job_id: job_id, state: :failed}}
+          {:error, _} = error -> error
+        end
 
-        report(job_id, :failed, %{
-          error: ElixirDB.Error.database_closed("replication was cancelled")
-        })
-
-        {:ok, %{job_id: job_id, state: :failed}}
-
-      [{^job_id, state, _pid, ^uuid, _replication_id, details}] ->
-        {:ok, Map.merge(%{job_id: job_id, state: state}, details || %{})}
+      [{^job_id, state, _pid, entry_uuid, _replication_id, details}]
+      when is_nil(uuid) or uuid == entry_uuid ->
+        case await_worker_termination(entry_uuid, job_id) do
+          :ok -> {:ok, Map.merge(%{job_id: job_id, state: state}, details || %{})}
+          {:error, _} = error -> error
+        end
 
       [] ->
         {:error, ElixirDB.Error.replication_job_not_found("replication job is not running")}
@@ -142,9 +153,10 @@ defmodule ElixirDB.Replication.JobManager do
 
   def disable(uuid, job_id) do
     with {:ok, job} <- get(uuid, job_id),
-         _ <- cancel_if_active(uuid, job_id),
+         :ok <- cancel_if_active(uuid, job_id),
          definition <- Map.put(job.definition, "enabled", false),
          {:ok, _} <- put_persisted(uuid, job_id, definition, false) do
+      mark_disabled(uuid, job_id)
       {:ok, %{job_id: job_id, state: :disabled}}
     end
   end
@@ -232,10 +244,89 @@ defmodule ElixirDB.Replication.JobManager do
 
   defp cancel_if_active(uuid, job_id) do
     case :ets.lookup(ensure_table(), job_id) do
-      [{^job_id, state, pid, ^uuid, _, _details}] when state in @active_states ->
-        send_cancel(pid)
+      [{^job_id, state, pid, ^uuid, replication_id, _details}] when state in @active_states ->
+        stop_worker(state, pid, replication_id, job_id)
+
+      [{^job_id, _state, _pid, ^uuid, _replication_id, _details}] ->
+        await_worker_termination(uuid, job_id)
 
       _ ->
+        :ok
+    end
+  end
+
+  defp await_worker_termination(uuid, job_id) do
+    case :ets.lookup(ensure_table(), job_id) do
+      [{^job_id, state, pid, ^uuid, replication_id, _details}] ->
+        stop_worker(state, pid, replication_id, job_id)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp stop_worker(state, pid, replication_id, job_id) do
+    ref = Process.monitor(pid)
+    if state in @active_states, do: send_cancel(pid)
+
+    with :ok <- await_worker_exit(ref, pid, job_id),
+         :ok <- await_worker_registry_release(replication_id, pid) do
+      :ok
+    end
+  end
+
+  defp await_worker_exit(ref, pid, job_id) do
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} ->
+        :ok
+    after
+      ElixirDB.Config.shutdown_timeout() ->
+        Process.demonitor(ref, [:flush])
+
+        {:error,
+         ElixirDB.Error.database_not_closable("replication worker did not stop", %{
+           job_id: job_id
+         })}
+    end
+  end
+
+  defp await_worker_registry_release(replication_id, pid) do
+    deadline = System.monotonic_time(:millisecond) + ElixirDB.Config.shutdown_timeout()
+    await_worker_registry_release(replication_id, pid, deadline)
+  end
+
+  defp await_worker_registry_release(replication_id, pid, deadline) do
+    case Registry.lookup(ElixirDB.Replication.WorkerRegistry, replication_id) do
+      [] ->
+        :ok
+
+      [{^pid, _}] ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error,
+           ElixirDB.Error.database_not_closable(
+             "replication worker registry entry did not clear",
+             %{
+               replication_id: replication_id
+             }
+           )}
+        else
+          Process.sleep(1)
+          await_worker_registry_release(replication_id, pid, deadline)
+        end
+
+      _entries ->
+        {:error,
+         ElixirDB.Error.replication_already_running("replication worker is already running")}
+    end
+  end
+
+  defp mark_disabled(uuid, job_id) do
+    case :ets.lookup(ensure_table(), job_id) do
+      [{^job_id, _state, pid, ^uuid, replication_id, details}] ->
+        true = :ets.insert(ensure_table(), {job_id, :disabled, pid, uuid, replication_id, details})
+        :ok
+
+      [] ->
         :ok
     end
   end

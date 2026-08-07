@@ -7,7 +7,7 @@ defmodule ElixirDB.Query.QueryTest do
 
     on_exit(fn ->
       ElixirDB.Storage.SQLite.Adapter.close(adapter)
-      File.rm(path)
+      ElixirDB.TempDatabase.cleanup(path)
     end)
 
     {:ok, adapter: adapter}

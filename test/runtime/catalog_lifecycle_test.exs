@@ -11,8 +11,7 @@ defmodule ElixirDB.Runtime.CatalogLifecycleTest do
     root = ElixirDB.Config.database_root()
 
     for path <- [registered_path, replacement_path] do
-      _ = File.rm(Path.join(root, path))
-      _ = File.rm(Path.join(root, path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, registered} = DatabaseCatalog.create(registered_path)
@@ -21,10 +20,8 @@ defmodule ElixirDB.Runtime.CatalogLifecycleTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      _ = File.rm(Path.join(root, registered_path))
-      _ = File.rm(Path.join(root, registered_path <> ".lease"))
-      _ = File.rm(Path.join(root, replacement_path))
-      _ = File.rm(Path.join(root, replacement_path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, registered_path))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, replacement_path))
     end)
 
     {:ok,

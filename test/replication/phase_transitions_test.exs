@@ -10,8 +10,7 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
     b_path = prefix <> "-b.db"
 
     for path <- [a_path, b_path] do
-      _ = File.rm(Path.join(ElixirDB.Config.database_root(), path))
-      _ = File.rm(Path.join(ElixirDB.Config.database_root(), path <> ".lease"))
+      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -21,8 +20,7 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        _ = File.rm(Path.join(ElixirDB.Config.database_root(), path))
-        _ = File.rm(Path.join(ElixirDB.Config.database_root(), path <> ".lease"))
+        ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
       end
     end)
 
