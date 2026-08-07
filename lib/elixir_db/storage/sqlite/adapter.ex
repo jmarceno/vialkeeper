@@ -30,24 +30,37 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     Schema
   }
 
-  defstruct [:path, :conn, :identity]
-  @type t :: %__MODULE__{path: binary(), conn: Connection.handle(), identity: map()}
+  defstruct [:path, :conn, :identity, storage_mode: :disk]
+  @type storage_mode :: :disk | :memory
+  @type t :: %__MODULE__{
+          path: binary(),
+          conn: Connection.handle(),
+          identity: map(),
+          storage_mode: storage_mode()
+        }
 
   @impl true
   def create(path, options \\ %{}) do
     options = if is_map(options), do: options, else: %{}
-    File.mkdir_p!(Path.dirname(path))
     uuid = MapAccess.get(options, :database_uuid, ElixirDB.UUID.v4())
     config = MapAccess.get(options, :config, ElixirDB.Config.defaults())
 
-    with true <- valid_uuid?(uuid),
+    with {:ok, storage_mode} <- storage_mode(path, options),
+         true <- valid_uuid?(uuid),
          {:ok, bounded_config} <- ElixirDB.Config.merge_and_bound(config),
          {:ok, config_json} <- Canonical.encode(bounded_config),
-         {:ok, conn} <- Connection.open(path),
-         :ok <- Schema.configure(conn),
-         :ok <- Schema.create(conn, uuid, config_json),
-         {:ok, identity} <- Schema.validate(conn) do
-      {:ok, %__MODULE__{path: path, conn: conn, identity: decode_identity(identity)}}
+         :ok <- ensure_parent_directory(path, storage_mode),
+         {:ok, conn} <- Connection.open(connection_path(path, storage_mode)),
+         :ok <- Schema.configure(conn, storage_mode: storage_mode),
+         :ok <- Schema.create(conn, uuid, config_json, storage_mode: storage_mode),
+         {:ok, identity} <- Schema.validate(conn, storage_mode: storage_mode) do
+      {:ok,
+       %__MODULE__{
+         path: path,
+         conn: conn,
+         identity: decode_identity(identity),
+         storage_mode: storage_mode
+       }}
     else
       false ->
         {:error, ElixirDB.Error.invalid_request("database UUID must be a UUID")}
@@ -431,6 +444,39 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
+
+  defp storage_mode(path, options) do
+    requested =
+      MapAccess.get(options, :storage_mode, if(path == ":memory:", do: :memory, else: :disk))
+
+    case {requested, path == ":memory:"} do
+      {:disk, false} ->
+        {:ok, :disk}
+
+      {:memory, true} ->
+        {:ok, :memory}
+
+      {:memory, false} ->
+        {:error,
+         ElixirDB.Error.invalid_request("in-memory SQLite databases must use the :memory: path")}
+
+      {:disk, true} ->
+        {:error, ElixirDB.Error.invalid_request(":memory: requires storage_mode: :memory")}
+
+      _ ->
+        {:error, ElixirDB.Error.invalid_request("SQLite storage mode must be :disk or :memory")}
+    end
+  end
+
+  defp ensure_parent_directory(_path, :memory), do: :ok
+
+  defp ensure_parent_directory(path, :disk) do
+    File.mkdir_p!(Path.dirname(path))
+    :ok
+  end
+
+  defp connection_path(_path, :memory), do: ":memory:"
+  defp connection_path(path, :disk), do: path
 
   defp valid_uuid?(uuid) when is_binary(uuid) do
     Regex.match?(

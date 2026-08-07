@@ -31,7 +31,14 @@ defmodule ElixirDB.MixProject do
   defp elixirc_paths(_), do: ["lib"]
 
   def cli do
-    [preferred_envs: ["check.fast": :test, "check.full": :test, "release.build": :prod]]
+    [
+      preferred_envs: [
+        bench: :test,
+        "check.fast": :test,
+        "check.full": :test,
+        "release.build": :prod
+      ]
+    ]
   end
 
   def application do
@@ -99,6 +106,7 @@ defmodule ElixirDB.MixProject do
         "test --warnings-as-errors",
         "dialyzer"
       ],
+      bench: ["run bench/elixirdb_benchmark.exs"],
       "release.build": ["deps.get", "compile", "release --overwrite"]
     ]
   end

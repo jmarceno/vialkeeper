@@ -1,0 +1,696 @@
+defmodule ElixirDB.Benchmarks.Runner do
+  @moduledoc """
+  Repeatable storage benchmark runner for ElixirDB.
+
+  The runner intentionally lives outside the application release. It exercises
+  the real SQLite adapter while keeping setup, measurement, and cleanup
+  separate. Run it with `MIX_ENV=test` so the existing in-memory OTel exporters
+  make the instrumentation visible in the result file.
+  """
+
+  alias ElixirDB.Observability.Instrumentation.{Changes, Database}
+  alias ElixirDB.Storage.SQLite.Adapter
+
+  @scenarios [:bulk_write, :point_read, :changes_read, :index_build, :indexed_query]
+  @modes [:disk, :memory]
+  @span_names [
+    "elixir_db.database.command",
+    "elixir_db.changes.read",
+    "elixir_db.query.execute",
+    "elixir_db.index.build"
+  ]
+  @metric_names [
+    "elixir_db.database.command.duration",
+    "elixir_db.changes.read.duration",
+    "elixir_db.query.execute.duration",
+    "elixir_db.index.build.duration"
+  ]
+
+  @default_iterations 15
+  @default_warmup 3
+  @default_dataset_size 500
+  @default_batch_size 100
+  @default_read_count 100
+  @default_max_regression_pct 20.0
+
+  @doc false
+  @spec main([binary()]) :: :ok
+  def main(argv) do
+    options = parse_options(argv)
+    ensure_test_observability!()
+    {:ok, _started} = Application.ensure_all_started(:elixir_db)
+
+    config = benchmark_config(options)
+    started_at = DateTime.utc_now() |> DateTime.to_iso8601()
+    modes = parse_modes(options[:mode])
+    scenarios = parse_scenarios(options[:scenario])
+
+    results =
+      for mode <- modes, scenario <- scenarios do
+        run_case(mode, scenario, config)
+      end
+
+    report = %{
+      "schema_version" => 1,
+      "started_at" => started_at,
+      "git_revision" => git_revision(),
+      "runtime" => runtime_metadata(),
+      "configuration" => config,
+      "results" => results
+    }
+
+    output = options[:output] || default_output_path()
+    write_report(report, output)
+    print_summary(report, output)
+
+    if baseline = options[:baseline] do
+      compare_with_baseline!(report, baseline, config["max_regression_pct"])
+    end
+
+    :ok
+  end
+
+  defp parse_options(argv) do
+    argv = if List.first(argv) == "--", do: tl(argv), else: argv
+
+    {options, positional, invalid} =
+      OptionParser.parse(argv,
+        strict: [
+          mode: :string,
+          scenario: :string,
+          iterations: :integer,
+          warmup: :integer,
+          dataset: :integer,
+          batch: :integer,
+          reads: :integer,
+          output: :string,
+          baseline: :string,
+          max_regression: :float,
+          help: :boolean
+        ],
+        aliases: [m: :mode, s: :scenario, o: :output]
+      )
+
+    if options[:help] do
+      IO.puts(usage())
+      System.halt(0)
+    end
+
+    if positional != [] or invalid != [] do
+      Mix.raise("invalid benchmark arguments: #{inspect(positional ++ invalid)}\n\n#{usage()}")
+    end
+
+    options
+  end
+
+  defp benchmark_config(options) do
+    iterations =
+      positive_option(options, :iterations, "ELIXIRDB_BENCH_ITERATIONS", @default_iterations)
+
+    warmup = non_negative_option(options, :warmup, "ELIXIRDB_BENCH_WARMUP", @default_warmup)
+
+    dataset_size =
+      positive_option(options, :dataset, "ELIXIRDB_BENCH_DATASET", @default_dataset_size)
+
+    batch_size = positive_option(options, :batch, "ELIXIRDB_BENCH_BATCH", @default_batch_size)
+    read_count = positive_option(options, :reads, "ELIXIRDB_BENCH_READS", @default_read_count)
+
+    if batch_size > 500 do
+      Mix.raise("--batch must be at most the configured host bulk limit (500)")
+    end
+
+    max_regression_pct =
+      options[:max_regression] ||
+        env_float("ELIXIRDB_BENCH_MAX_REGRESSION_PCT", @default_max_regression_pct)
+
+    if max_regression_pct < 0 do
+      Mix.raise("--max-regression must be non-negative")
+    end
+
+    %{
+      "iterations" => iterations,
+      "warmup" => warmup,
+      "dataset_size" => dataset_size,
+      "batch_size" => batch_size,
+      "read_count" => read_count,
+      "max_regression_pct" => max_regression_pct
+    }
+  end
+
+  defp positive_option(options, key, env, default) do
+    value = options[key] || env_integer(env, default)
+
+    if value > 0 do
+      value
+    else
+      Mix.raise("#{env} / --#{key} must be positive")
+    end
+  end
+
+  defp non_negative_option(options, key, env, default) do
+    value = options[key] || env_integer(env, default)
+
+    if value >= 0 do
+      value
+    else
+      Mix.raise("#{env} / --#{key} must be non-negative")
+    end
+  end
+
+  defp env_integer(env, default) do
+    case System.get_env(env) do
+      nil -> default
+      value -> String.to_integer(value)
+    end
+  rescue
+    ArgumentError -> Mix.raise("#{env} must be an integer")
+  end
+
+  defp env_float(env, default) do
+    case System.get_env(env) do
+      nil -> default
+      value -> String.to_float(value)
+    end
+  rescue
+    ArgumentError -> Mix.raise("#{env} must be a number")
+  end
+
+  defp parse_modes(nil), do: @modes
+  defp parse_modes("both"), do: @modes
+  defp parse_modes(value), do: parse_atoms(value, @modes, "mode")
+
+  defp parse_scenarios(nil), do: @scenarios
+  defp parse_scenarios("all"), do: @scenarios
+  defp parse_scenarios(value), do: parse_atoms(value, @scenarios, "scenario")
+
+  defp parse_atoms(value, allowed, label) do
+    atoms =
+      value
+      |> String.split(",", trim: true)
+      |> Enum.map(&String.to_existing_atom/1)
+
+    if atoms != [] and Enum.all?(atoms, &(&1 in allowed)) do
+      atoms
+    else
+      Mix.raise(
+        "unknown #{label} #{inspect(value)}; allowed: #{Enum.join(Enum.map(allowed, &Atom.to_string/1), ", ")}"
+      )
+    end
+  rescue
+    ArgumentError -> Mix.raise("unknown #{label} #{inspect(value)}")
+  end
+
+  defp run_case(mode, scenario, config) do
+    reset_observability()
+
+    with_adapter(mode, fn adapter ->
+      uuid = adapter.identity.database_uuid
+      setup_scenario(adapter, uuid, scenario, config)
+      reset_observability()
+
+      {operation_count, operation, cleanup, scenario_metadata} =
+        scenario_operation(adapter, uuid, scenario, config)
+
+      memory_before = :erlang.memory(:total)
+
+      {samples, _last_result} =
+        measure(operation, cleanup, config["warmup"], config["iterations"])
+
+      memory_after = :erlang.memory(:total)
+      flush_metrics()
+
+      result = summarize_samples(samples, operation_count)
+
+      Map.merge(result, %{
+        "scenario" => Atom.to_string(scenario),
+        "storage_mode" => Atom.to_string(mode),
+        "operation_count" => operation_count,
+        "dataset_size" => config["dataset_size"],
+        "warmup" => config["warmup"],
+        "iterations" => config["iterations"],
+        "memory_before_bytes" => memory_before,
+        "memory_after_bytes" => memory_after,
+        "memory_delta_bytes" => memory_after - memory_before,
+        "sqlite" => sqlite_metadata(adapter),
+        "observability" => observability_metadata(),
+        "scenario_metadata" => scenario_metadata
+      })
+    end)
+  end
+
+  defp with_adapter(:memory, fun) do
+    case Adapter.create(":memory:", %{storage_mode: :memory}) do
+      {:ok, adapter} ->
+        try do
+          fun.(adapter)
+        after
+          _ = Adapter.close(adapter)
+        end
+
+      {:error, error} ->
+        Mix.raise("could not create in-memory benchmark database: #{inspect(error)}")
+    end
+  end
+
+  defp with_adapter(:disk, fun) do
+    path =
+      Path.join(System.tmp_dir!(), "elixirdb-benchmark-#{System.unique_integer([:positive])}.db")
+
+    case Adapter.create(path, %{storage_mode: :disk}) do
+      {:ok, adapter} ->
+        try do
+          fun.(adapter)
+        after
+          _ = Adapter.close(adapter)
+          cleanup_database(path)
+        end
+
+      {:error, error} ->
+        cleanup_database(path)
+        Mix.raise("could not create disk benchmark database: #{inspect(error)}")
+    end
+  end
+
+  defp setup_scenario(adapter, uuid, scenario, config)
+       when scenario in [:bulk_write, :point_read, :changes_read, :index_build, :indexed_query] do
+    seed_documents(adapter, uuid, config["dataset_size"], config["batch_size"])
+
+    if scenario == :indexed_query do
+      create_category_index(adapter, uuid, "by-category")
+    end
+
+    :ok
+  end
+
+  defp seed_documents(adapter, uuid, count, batch_size) do
+    0..(count - 1)
+    |> Enum.map(&put_operation("seed-#{&1}", &1))
+    |> Enum.chunk_every(batch_size)
+    |> Enum.each(fn operations ->
+      assert_ok!(Adapter.apply_bulk_mutation(adapter, %{operations: operations}), :seed)
+    end)
+
+    _ = uuid
+    :ok
+  end
+
+  defp scenario_operation(adapter, uuid, :bulk_write, config) do
+    batch_size = config["batch_size"]
+
+    operation = fn token ->
+      operations =
+        Enum.map(0..(batch_size - 1), fn offset ->
+          put_operation("bench-#{phase_name(token)}-#{token_number(token)}-#{offset}", offset)
+        end)
+
+      observable_command(uuid, {:command, :bulk_write, %{operations: operations}}, fn ->
+        Adapter.apply_bulk_mutation(adapter, %{operations: operations})
+      end)
+    end
+
+    {batch_size, operation, &noop_cleanup/1, %{"batch_size" => batch_size}}
+  end
+
+  defp scenario_operation(adapter, uuid, :point_read, config) do
+    dataset_size = config["dataset_size"]
+    read_count = config["read_count"]
+    ids = Enum.map(0..(dataset_size - 1), &"seed-#{&1}")
+
+    operation = fn token ->
+      start = rem(token_number(token) * read_count, dataset_size)
+
+      Enum.each(0..(read_count - 1), fn offset ->
+        id = Enum.at(ids, rem(start + offset, dataset_size))
+
+        result =
+          observable_command(uuid, {:command, :get_document, %{id: id}}, fn ->
+            Adapter.get_document(adapter, %{document_id: id})
+          end)
+
+        assert_ok!(result, :point_read)
+      end)
+
+      {:ok, read_count}
+    end
+
+    {read_count, operation, &noop_cleanup/1, %{"read_count" => read_count}}
+  end
+
+  defp scenario_operation(adapter, uuid, :changes_read, config) do
+    limit = min(config["batch_size"], config["dataset_size"])
+    request = %{since: 0, limit: limit}
+
+    operation = fn _token ->
+      Changes.read(uuid, 0, fn ->
+        observable_command(uuid, {:command, :read_changes, request}, fn ->
+          Adapter.read_changes(adapter, request)
+        end)
+      end)
+    end
+
+    {limit, operation, &noop_cleanup/1, %{"limit" => limit}}
+  end
+
+  defp scenario_operation(adapter, uuid, :index_build, _config) do
+    operation = fn token ->
+      definition =
+        category_index_definition("by-category-#{phase_name(token)}-#{token_number(token)}")
+
+      observable_command(uuid, {:command, :create_index, definition}, fn ->
+        Adapter.create_index(adapter, definition)
+      end)
+    end
+
+    cleanup = fn
+      {:ok, %{"index_id" => index_id}} ->
+        assert_ok!(Adapter.delete_index(adapter, index_id), :index_cleanup)
+
+      other ->
+        Mix.raise("index benchmark did not return an index id: #{inspect(other)}")
+    end
+
+    {1, operation, cleanup, %{"index_type" => "structured", "indexed_field" => "/category"}}
+  end
+
+  defp scenario_operation(adapter, uuid, :indexed_query, _config) do
+    request = %{
+      selector: %{"/category" => "task"},
+      index: "by-category",
+      limit: 50
+    }
+
+    operation = fn _token ->
+      observable_command(uuid, {:command, :query, request}, fn ->
+        Adapter.execute_query(adapter, request)
+      end)
+    end
+
+    {1, operation, &noop_cleanup/1, %{"index" => "by-category", "selector" => "/category=task"}}
+  end
+
+  defp create_category_index(adapter, uuid, name) do
+    definition = category_index_definition(name)
+
+    assert_ok!(
+      observable_command(uuid, {:command, :create_index, definition}, fn ->
+        Adapter.create_index(adapter, definition)
+      end),
+      :index_setup
+    )
+  end
+
+  defp category_index_definition(name) do
+    %{
+      "name" => name,
+      "type" => "structured",
+      "fields" => [%{"path" => "/category", "type" => "string", "direction" => "asc"}]
+    }
+  end
+
+  defp put_operation(id, value) do
+    %{
+      operation: :put,
+      document_id: id,
+      body: %{
+        "category" => if(rem(value, 4) == 0, do: "task", else: "note"),
+        "priority" => rem(value, 100),
+        "title" => "Benchmark document #{value}",
+        "tags" => ["benchmark", "v1"]
+      }
+    }
+  end
+
+  defp observable_command(uuid, command, fun),
+    do: Database.command(uuid, command, fun)
+
+  defp measure(operation, cleanup, warmup, iterations) do
+    Enum.each(sequence(warmup), fn number ->
+      result = operation.({:warmup, number})
+      cleanup.(assert_result!(result, :warmup))
+    end)
+
+    Enum.map_reduce(sequence(iterations), nil, fn number, _last_result ->
+      {elapsed_us, result} = :timer.tc(fn -> operation.({:sample, number}) end)
+      result = assert_result!(result, :sample)
+      cleanup.(result)
+      {elapsed_us, result}
+    end)
+  end
+
+  defp assert_result!({:ok, _} = result, _label), do: result
+  defp assert_result!(:ok = result, _label), do: result
+
+  defp assert_result!({:error, error}, label),
+    do: Mix.raise("benchmark #{label} operation failed: #{inspect(error)}")
+
+  defp assert_result!(result, label),
+    do: Mix.raise("benchmark #{label} returned an unexpected result: #{inspect(result)}")
+
+  defp assert_ok!({:ok, _} = result, _label), do: result
+  defp assert_ok!(:ok = result, _label), do: result
+
+  defp assert_ok!({:error, error}, label),
+    do: Mix.raise("benchmark #{label} setup failed: #{inspect(error)}")
+
+  defp assert_ok!(result, label),
+    do: Mix.raise("benchmark #{label} setup returned an unexpected result: #{inspect(result)}")
+
+  defp summarize_samples(samples, operation_count) do
+    values = Enum.sort(samples)
+    count = length(values)
+    median_us = percentile(values, 0.50)
+    p95_us = percentile(values, 0.95)
+    p99_us = percentile(values, 0.99)
+    mean_us = Enum.sum(values) / count
+
+    %{
+      "sample_us" => values,
+      "mean_us" => Float.round(mean_us, 2),
+      "median_us" => median_us,
+      "p95_us" => p95_us,
+      "p99_us" => p99_us,
+      "median_us_per_operation" => Float.round(median_us / operation_count, 2),
+      "median_operations_per_second" => Float.round(operation_count * 1_000_000 / median_us, 2)
+    }
+  end
+
+  defp percentile(values, fraction) do
+    index = max(1, ceil(length(values) * fraction)) - 1
+    Enum.at(values, index)
+  end
+
+  defp sqlite_metadata(adapter) do
+    %{
+      "journal_mode" => pragma_value(adapter, "journal_mode"),
+      "synchronous" => pragma_value(adapter, "synchronous"),
+      "locking_mode" => pragma_value(adapter, "locking_mode")
+    }
+  end
+
+  defp pragma_value(adapter, pragma) do
+    case ElixirDB.Storage.SQLite.Connection.pragma(adapter.conn, pragma) do
+      {:ok, [[value]]} -> to_string(value)
+      other -> inspect(other)
+    end
+  end
+
+  defp reset_observability do
+    ElixirDB.Observability.TestExporter.reset()
+    ElixirDB.Observability.TestMetricExporter.reset()
+  end
+
+  defp flush_metrics do
+    deadline = System.monotonic_time(:millisecond) + 1_000
+
+    wait_for_metrics(deadline)
+  end
+
+  defp wait_for_metrics(deadline) do
+    if System.monotonic_time(:millisecond) >= deadline or metrics_exported?() do
+      :ok
+    else
+      Process.sleep(10)
+      wait_for_metrics(deadline)
+    end
+  end
+
+  defp metrics_exported? do
+    Enum.any?(@metric_names, fn name ->
+      ElixirDB.Observability.TestMetricExporter.datapoints(name) != []
+    end)
+  end
+
+  defp observability_metadata do
+    %{
+      "span_counts" =>
+        Map.new(@span_names, fn name ->
+          {name, length(ElixirDB.Observability.TestExporter.spans_named(name))}
+        end),
+      "metric_datapoint_counts" =>
+        Map.new(@metric_names, fn name ->
+          {name, length(ElixirDB.Observability.TestMetricExporter.datapoints(name))}
+        end)
+    }
+  end
+
+  defp ensure_test_observability! do
+    unless Code.ensure_loaded?(ElixirDB.Observability.TestExporter) and
+             Code.ensure_loaded?(ElixirDB.Observability.TestMetricExporter) do
+      Mix.raise("run benchmarks with MIX_ENV=test to enable the in-memory observability exporters")
+    end
+  end
+
+  defp write_report(report, "-") do
+    IO.puts(JSON.encode_to_iodata!(report))
+  end
+
+  defp write_report(report, path) do
+    File.mkdir_p!(Path.dirname(path))
+    json = JSON.encode_to_iodata!(report) |> IO.iodata_to_binary()
+    File.write!(path, json <> "\n")
+  end
+
+  defp print_summary(report, output) do
+    IO.puts("ElixirDB benchmark report: #{output}")
+
+    Enum.each(report["results"], fn result ->
+      IO.puts(
+        "  #{result["storage_mode"]}/#{result["scenario"]}: " <>
+          "median #{result["median_us"]} us, " <>
+          "p95 #{result["p95_us"]} us, " <>
+          "#{result["median_operations_per_second"]} ops/s"
+      )
+    end)
+  end
+
+  defp compare_with_baseline!(report, baseline_path, threshold_pct) do
+    baseline =
+      baseline_path
+      |> File.read!()
+      |> JSON.decode!()
+
+    validate_baseline_configuration!(
+      report["configuration"],
+      baseline["configuration"],
+      baseline_path
+    )
+
+    failures =
+      Enum.flat_map(report["results"], fn current ->
+        case find_result(baseline["results"], current["storage_mode"], current["scenario"]) do
+          nil ->
+            [{current, :missing_baseline}]
+
+          previous ->
+            threshold = previous["median_us"] * (1 + threshold_pct / 100)
+
+            if current["median_us"] > threshold do
+              [{current, {:regressed, previous["median_us"], threshold_pct}}]
+            else
+              []
+            end
+        end
+      end)
+
+    if failures != [] do
+      IO.puts("Benchmark regression detected against #{baseline_path}:")
+
+      Enum.each(failures, fn {current, reason} ->
+        IO.puts("  #{current["storage_mode"]}/#{current["scenario"]}: #{inspect(reason)}")
+      end)
+
+      System.halt(1)
+    end
+
+    IO.puts(
+      "Benchmark comparison passed against #{baseline_path} (median threshold #{threshold_pct}%)."
+    )
+  end
+
+  defp validate_baseline_configuration!(current, baseline, baseline_path)
+       when is_map(current) and is_map(baseline) do
+    current = Map.delete(current, "max_regression_pct")
+    baseline = Map.delete(baseline, "max_regression_pct")
+
+    if current != baseline do
+      Mix.raise(
+        "baseline configuration does not match #{baseline_path}; " <>
+          "use the same iterations, warmup, dataset, batch, and read count"
+      )
+    end
+  end
+
+  defp validate_baseline_configuration!(_current, _baseline, baseline_path) do
+    Mix.raise("baseline report #{baseline_path} is missing benchmark configuration")
+  end
+
+  defp find_result(results, mode, scenario) do
+    Enum.find(results, fn result ->
+      result["storage_mode"] == mode and result["scenario"] == scenario
+    end)
+  end
+
+  defp runtime_metadata do
+    %{
+      "elixir" => System.version(),
+      "otp" => :erlang.system_info(:otp_release) |> to_string(),
+      "sqlite" => ElixirDB.Diagnostics.runtime() |> Map.get(:sqlite),
+      "schedulers_online" => :erlang.system_info(:schedulers_online),
+      "os" => :os.type() |> inspect()
+    }
+  end
+
+  defp git_revision do
+    case System.cmd("git", ["rev-parse", "HEAD"], stderr_to_stdout: true) do
+      {revision, 0} -> String.trim(revision)
+      _ -> "unknown"
+    end
+  end
+
+  defp default_output_path do
+    timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%dT%H%M%SZ")
+    Path.join("output/benchmarks", "elixirdb-#{timestamp}.json")
+  end
+
+  defp cleanup_database(path) do
+    for suffix <- ["", "-journal", "-wal", "-shm"] do
+      _ = File.rm(path <> suffix)
+    end
+
+    :ok
+  end
+
+  defp phase_name({phase, _number}), do: Atom.to_string(phase)
+  defp token_number({_phase, number}), do: number
+
+  defp sequence(0), do: []
+  defp sequence(count), do: 1..count
+
+  defp noop_cleanup(_result), do: :ok
+
+  defp usage do
+    """
+    Usage:
+      MIX_ENV=test mix run bench/elixirdb_benchmark.exs -- [options]
+
+    Options:
+      --mode disk|memory|both        Storage mode (default: both)
+      --scenario NAME|all             Comma-separated scenario list (default: all)
+      --iterations N                  Measured samples (default: 15)
+      --warmup N                      Warmup samples excluded from results (default: 3)
+      --dataset N                     Seeded documents (default: 500)
+      --batch N                       Bulk/changes batch size (default: 100, max: 500)
+      --reads N                       Point reads per measured sample (default: 100)
+      --output PATH                   JSON report path (default: output/benchmarks/...json)
+      --baseline PATH                 Compare median latency against a prior report
+      --max-regression PCT            Allowed median regression (default: 20)
+
+    Environment equivalents:
+      ELIXIRDB_BENCH_ITERATIONS, ELIXIRDB_BENCH_WARMUP,
+      ELIXIRDB_BENCH_DATASET, ELIXIRDB_BENCH_BATCH, ELIXIRDB_BENCH_READS,
+      ELIXIRDB_BENCH_MAX_REGRESSION_PCT
+    """
+  end
+end
+
+ElixirDB.Benchmarks.Runner.main(System.argv())

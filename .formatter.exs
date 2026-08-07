@@ -4,6 +4,7 @@
     ".credo.exs",
     ".reach.exs",
     "config/**/*.exs",
+    "bench/**/*.exs",
     "lib/**/*.ex",
     "test/**/*.{ex,exs}"
   ],

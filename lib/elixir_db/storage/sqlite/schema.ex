@@ -4,24 +4,28 @@ defmodule ElixirDB.Storage.SQLite.Schema do
   alias ElixirDB.Storage.SQLite.Connection
 
   @application_id 0x45584442
+  @type storage_mode :: :disk | :memory
 
-  @spec configure(Connection.handle()) :: :ok | {:error, term()}
-  def configure(conn) do
-    with :ok <- Connection.execute(conn, "PRAGMA journal_mode = DELETE"),
-         :ok <- Connection.execute(conn, "PRAGMA synchronous = EXTRA"),
+  @spec configure(Connection.handle(), keyword()) :: :ok | {:error, term()}
+  def configure(conn, opts \\ []) do
+    storage_mode = Keyword.get(opts, :storage_mode, :disk)
+
+    with :ok <- Connection.execute(conn, journal_mode_sql(storage_mode)),
+         :ok <- Connection.execute(conn, synchronous_sql(storage_mode)),
          :ok <- Connection.execute(conn, "PRAGMA foreign_keys = ON"),
          :ok <- Connection.execute(conn, "PRAGMA locking_mode = NORMAL") do
       Connection.execute(conn, "PRAGMA trusted_schema = OFF")
     end
   end
 
-  @spec create(Connection.handle(), binary(), binary()) :: :ok | {:error, ElixirDB.Error.t()}
-  def create(conn, database_uuid, config_json) do
+  @spec create(Connection.handle(), binary(), binary(), keyword()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def create(conn, database_uuid, config_json, opts \\ []) do
     schema =
       File.read!(Path.join([Application.app_dir(:elixir_db), "priv", "sqlite", "schema_v1.sql"]))
 
     with :ok <- execute_script(conn, schema),
-         :ok <- configure(conn),
+         :ok <- configure(conn, opts),
          {:ok, _} <-
            Connection.query(conn, "INSERT INTO db_meta VALUES (1, ?, 1, 1, 1, 1, 1, 0, ?, ?)", [
              database_uuid,
@@ -38,8 +42,10 @@ defmodule ElixirDB.Storage.SQLite.Schema do
     end
   end
 
-  @spec validate(Connection.handle()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def validate(conn) do
+  @spec validate(Connection.handle(), keyword()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def validate(conn, opts \\ []) do
+    storage_mode = Keyword.get(opts, :storage_mode, :disk)
+
     with {:ok, [[application_id]]} <- Connection.pragma(conn, "application_id"),
          {:ok, [[user_version]]} <- Connection.pragma(conn, "user_version"),
          {:ok, [[journal_mode]]} <- Connection.pragma(conn, "journal_mode"),
@@ -58,7 +64,8 @@ defmodule ElixirDB.Storage.SQLite.Schema do
         synchronous,
         locking_mode,
         trusted_schema,
-        meta
+        meta,
+        storage_mode
       )
     else
       {:ok, []} ->
@@ -79,10 +86,10 @@ defmodule ElixirDB.Storage.SQLite.Schema do
          synchronous,
          locking_mode,
          trusted_schema,
-         meta
+         meta,
+         storage_mode
        ) do
-    if String.downcase(to_string(journal_mode)) == "delete" and synchronous in [3, "3"] and
-         String.downcase(to_string(locking_mode)) == "normal" and trusted_schema in [0, "0"] do
+    if valid_storage_pragmas?(storage_mode, journal_mode, synchronous, locking_mode, trusted_schema) do
       validate_metadata_row(meta)
     else
       {:error,
@@ -97,7 +104,8 @@ defmodule ElixirDB.Storage.SQLite.Schema do
          _synchronous,
          _locking_mode,
          _trusted_schema,
-         _meta
+         _meta,
+         _storage_mode
        ),
        do:
          {:error,
@@ -161,6 +169,31 @@ defmodule ElixirDB.Storage.SQLite.Schema do
   end
 
   defp valid_uuid?(_), do: false
+
+  defp journal_mode_sql(:disk), do: "PRAGMA journal_mode = DELETE"
+  defp journal_mode_sql(:memory), do: "PRAGMA journal_mode = MEMORY"
+
+  defp synchronous_sql(:disk), do: "PRAGMA synchronous = EXTRA"
+  defp synchronous_sql(:memory), do: "PRAGMA synchronous = NORMAL"
+
+  defp valid_storage_pragmas?(:disk, journal_mode, synchronous, locking_mode, trusted_schema) do
+    String.downcase(to_string(journal_mode)) == "delete" and synchronous in [3, "3"] and
+      String.downcase(to_string(locking_mode)) == "normal" and trusted_schema in [0, "0"]
+  end
+
+  defp valid_storage_pragmas?(:memory, journal_mode, synchronous, locking_mode, trusted_schema) do
+    String.downcase(to_string(journal_mode)) == "memory" and synchronous in [1, "1"] and
+      String.downcase(to_string(locking_mode)) == "normal" and trusted_schema in [0, "0"]
+  end
+
+  defp valid_storage_pragmas?(
+         _storage_mode,
+         _journal_mode,
+         _synchronous,
+         _locking_mode,
+         _trusted_schema
+       ),
+       do: false
 
   defp execute_script(conn, script) do
     script
