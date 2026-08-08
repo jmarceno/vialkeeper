@@ -1,5 +1,7 @@
 defmodule ElixirDB.Query.QueryTest do
+  alias ElixirDB.Query.Normalizer
   alias ElixirDB.Storage.SQLite.Adapter
+  alias ElixirDB.Storage.SQLite.QueryRunner
   use ExUnit.Case, async: false
 
   setup do
@@ -147,7 +149,8 @@ defmodule ElixirDB.Query.QueryTest do
                "fields" => [%{"path" => "/priority", "type" => "number", "direction" => "asc"}]
              })
 
-    assert {:ok, %{plan_kind: :union, results: results, index_bindings: selected}} =
+    assert {:ok,
+            %{plan_kind: :union, results: results, index_bindings: selected, examined: examined}} =
              Adapter.execute_query(adapter, %{
                selector: %{
                  "$or" => [
@@ -160,6 +163,26 @@ defmodule ElixirDB.Query.QueryTest do
 
     assert Enum.map(results, & &1.id) |> Enum.sort() == ["both", "high", "open"]
     assert [_, _] = selected
+    assert examined == 3
+  end
+
+  test "query runner enforces the configured execution deadline", %{adapter: adapter} do
+    assert {:ok, _} =
+             Adapter.update_config(adapter, %{"queries" => %{"max_execution_ms" => 1}})
+
+    for n <- 1..128 do
+      assert {:ok, _} =
+               Adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: "deadline-#{n}",
+                 body: %{"value" => n}
+               })
+    end
+
+    assert {:ok, request} = Normalizer.normalize(%{selector: %{}})
+
+    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+             QueryRunner.execute(adapter, request)
   end
 
   test "executes OR branches sharing one structured index", %{adapter: adapter} do

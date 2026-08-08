@@ -20,21 +20,30 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   """
   @spec execute(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def execute(adapter, request) do
+    started_native = System.monotonic_time()
+    identity = adapter_identity(adapter)
+    deadline = query_deadline(identity, started_native)
+
     with {:ok, indexes} <- IndexCatalog.list(adapter.conn),
+         :ok <- check_deadline(deadline),
          {:ok, plan} <- plan_request(indexes, request),
+         :ok <- check_deadline(deadline),
          :ok <- validate_bookmark_plan(request, plan),
-         {:ok, documents, examined} <- candidate_documents(adapter, plan, indexes, request),
-         {:ok, matched} <- filter_query(documents, request),
-         identity <- adapter_identity(adapter),
+         {:ok, documents, examined} <-
+           candidate_documents(adapter, plan, indexes, request, deadline),
+         {:ok, matched} <- filter_query(documents, request, deadline),
+         :ok <- check_deadline(deadline),
          :ok <- enforce_scan_limit(plan, examined, identity),
          limit <-
            value_or_default(
              MapAccess.get(request, :limit),
              get_in(identity, [:config, "queries", "default_limit"]) || 50
            ),
-         ordered <- matched |> sort_documents(request) |> apply_after_cursor(request),
+         {:ok, ordered} <- sort_documents(matched, request, deadline),
+         {:ok, ordered} <- apply_after_cursor(ordered, request, deadline),
          values <- Enum.take(ordered, limit),
-         {:ok, projected} <- project_documents(values, request),
+         :ok <- check_deadline(deadline),
+         {:ok, projected} <- project_documents(values, request, deadline),
          selected_metadata <- selected_metadata(plan) do
       {:ok,
        %{
@@ -135,12 +144,13 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp candidate_documents(adapter, %Plan{kind: :bounded_scan}, _indexes, _request) do
+  defp candidate_documents(adapter, %Plan{kind: :bounded_scan}, _indexes, _request, deadline) do
     with {:ok, [[count]]} <-
            Connection.query(
              adapter.conn,
              "SELECT count(*) FROM documents WHERE winning_deleted = 0"
            ),
+         :ok <- check_deadline(deadline),
          :ok <-
            if(
              count <
@@ -155,17 +165,19 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
                       1_000
                 })}
            ),
+         :ok <- check_deadline(deadline),
          {:ok, rows} <-
            Connection.query(
              adapter.conn,
              "SELECT document_id, winning_revision, winning_body_json FROM documents WHERE winning_deleted = 0 ORDER BY document_id"
            ),
+         :ok <- check_deadline(deadline),
          {:ok, documents} <- decode_query_documents(rows) do
       {:ok, documents, count}
     end
   end
 
-  defp candidate_documents(adapter, %Plan{kind: :full_text} = plan, indexes, request) do
+  defp candidate_documents(adapter, %Plan{kind: :full_text} = plan, indexes, request, deadline) do
     selected = selected_index(indexes, plan)
 
     if selected && MapAccess.get(request, :search) do
@@ -177,8 +189,10 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
                adapter.conn,
                metadata,
                MapAccess.get(search, :text),
-               MapAccess.get(search, :mode, "all")
-             ) do
+               MapAccess.get(search, :mode, "all"),
+               deadline
+             ),
+           :ok <- check_deadline(deadline) do
         {:ok, full_text_documents(rows), length(rows)}
       end
     else
@@ -186,34 +200,38 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp candidate_documents(adapter, %Plan{kind: :single} = plan, indexes, _request) do
+  defp candidate_documents(adapter, %Plan{kind: :single} = plan, indexes, _request, deadline) do
     selected = selected_index(indexes, plan)
     scan = List.first(plan.scans)
 
     with {:ok, rows} <- structured_candidate_rows(adapter, selected, scan),
+         :ok <- check_deadline(deadline),
          {:ok, documents} <- decode_query_documents(rows) do
       {:ok, documents, length(documents)}
     end
   end
 
-  defp candidate_documents(adapter, %Plan{kind: :union} = plan, indexes, _request) do
+  defp candidate_documents(adapter, %Plan{kind: :union} = plan, indexes, _request, deadline) do
     Enum.reduce_while(plan.scans, {:ok, [], 0}, fn scan, {:ok, candidates, examined} ->
       selected = selected_index(indexes, scan["index_id"])
 
-      case structured_candidate_rows(adapter, selected, scan) do
-        {:ok, rows} ->
-          {:cont, {:ok, [rows | candidates], examined + length(rows)}}
-
-        {:error, _} = error ->
-          {:halt, error}
+      with :ok <- check_deadline(deadline),
+           {:ok, rows} <- structured_candidate_rows(adapter, selected, scan),
+           :ok <- check_deadline(deadline) do
+        {:cont, {:ok, [rows | candidates], examined + length(rows)}}
+      else
+        {:error, _} = error -> {:halt, error}
       end
     end)
     |> case do
-      {:ok, rows, examined} ->
+      {:ok, rows, _examined} ->
         rows = rows |> Enum.reverse() |> Enum.concat() |> Enum.uniq_by(&List.first/1)
+        unique_examined = length(rows)
 
-        with {:ok, documents} <- decode_query_documents(rows) do
-          {:ok, documents, examined}
+        with :ok <- check_deadline(deadline),
+             {:ok, documents} <- decode_query_documents(rows),
+             :ok <- check_deadline(deadline) do
+          {:ok, documents, unique_examined}
         end
 
       {:error, _} = error ->
@@ -278,8 +296,13 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          })}
   end
 
-  defp project_documents(values, request),
-    do: {:ok, Enum.map(values, &Projection.project(&1, request))}
+  defp project_documents(values, request, deadline) do
+    with :ok <- check_deadline(deadline),
+         projected <- Enum.map(values, &Projection.project(&1, request)),
+         :ok <- check_deadline(deadline) do
+      {:ok, projected}
+    end
+  end
 
   defp decode_query_documents(rows) do
     Enum.reduce_while(rows, {:ok, []}, fn [id, revision, body_json], {:ok, acc} ->
@@ -294,45 +317,74 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp filter_query(documents, request) do
+  defp filter_query(documents, request, deadline) do
     predicate = MapAccess.get(request, :predicate)
 
     if is_nil(predicate) do
       {:error, ElixirDB.Error.invalid_request("normalized predicate is required")}
     else
-      documents
-      |> filter_documents(predicate)
-      |> sort_filtered_documents(request)
+      with {:ok, filtered} <- filter_documents(documents, predicate, deadline),
+           do: sort_documents(filtered, request, deadline)
     end
   end
 
-  defp filter_documents(documents, predicate) do
-    Enum.reduce_while(documents, {:ok, []}, fn document, {:ok, acc} ->
-      case Selector.matches?(document.body, predicate) do
-        {:ok, true} -> {:cont, {:ok, [document | acc]}}
-        {:ok, false} -> {:cont, {:ok, acc}}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
+  defp filter_documents(documents, predicate, deadline) do
+    documents
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, &filter_document(&1, &2, predicate, deadline))
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
   end
 
-  defp sort_filtered_documents({:ok, values}, request) do
-    {:ok, values |> Enum.reverse() |> sort_documents(request)}
+  defp filter_document({document, index}, {:ok, acc}, predicate, deadline) do
+    case periodic_deadline_check(deadline, index) do
+      :ok -> filter_document_match(Selector.matches?(document.body, predicate), document, acc)
+      {:error, _} = error -> {:halt, error}
+    end
   end
 
-  defp sort_filtered_documents(error, _request), do: error
+  defp filter_document_match({:ok, true}, document, acc),
+    do: {:cont, {:ok, [document | acc]}}
 
-  defp sort_documents(documents, request) do
+  defp filter_document_match({:ok, false}, _document, acc), do: {:cont, {:ok, acc}}
+  defp filter_document_match({:error, error}, _document, _acc), do: {:halt, {:error, error}}
+
+  defp sort_documents(documents, request, deadline) do
     sort = MapAccess.get(request, :sort, [])
 
-    if sort == [] and not is_nil(MapAccess.get(request, :search)) do
-      documents
-    else
-      Enum.sort(documents, fn left, right -> compare_documents(left, right, sort) end)
+    with :ok <- check_deadline(deadline) do
+      sort_documents_after_check(documents, sort, request, deadline)
     end
   end
 
-  defp apply_after_cursor(documents, request) do
+  defp sort_documents_after_check(documents, sort, request, deadline) do
+    sorted =
+      if sort == [] and not is_nil(MapAccess.get(request, :search)) do
+        documents
+      else
+        Enum.sort(documents, fn left, right -> compare_documents(left, right, sort) end)
+      end
+
+    case check_deadline(deadline) do
+      :ok -> {:ok, sorted}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp apply_after_cursor(documents, request, deadline) do
+    with :ok <- check_deadline(deadline) do
+      values = cursor_values(documents, request)
+
+      case check_deadline(deadline) do
+        :ok -> {:ok, values}
+        {:error, _} = error -> error
+      end
+    end
+  end
+
+  defp cursor_values(documents, request) do
     case MapAccess.get(request, :after_ordering) do
       after_ordering when is_map(after_ordering) ->
         sort = MapAccess.get(request, :sort, [])
@@ -451,6 +503,26 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
       {:ok, value} -> value
       _ -> %{current_sequence: 0, config: ElixirDB.Config.defaults()}
     end
+  end
+
+  defp query_deadline(identity, started_native) do
+    maximum_ms = get_in(identity, [:config, "queries", "max_execution_ms"]) || 5_000
+    {started_native + System.convert_time_unit(maximum_ms, :millisecond, :native), maximum_ms}
+  end
+
+  defp check_deadline({deadline, maximum_ms}) do
+    if System.monotonic_time() < deadline do
+      :ok
+    else
+      {:error,
+       ElixirDB.Error.resource_limit("query execution exceeded the configured limit", %{
+         maximum_ms: maximum_ms
+       })}
+    end
+  end
+
+  defp periodic_deadline_check(deadline, index) do
+    if rem(index, 32) == 0, do: check_deadline(deadline), else: :ok
   end
 
   defp normalize_error(%ElixirDB.Error{} = error), do: error

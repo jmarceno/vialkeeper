@@ -23,4 +23,9 @@ defmodule ElixirDB.Storage.SQLite.FullTextIndexes do
   @spec search(Connection.handle(), map(), binary(), binary()) ::
           {:ok, list()} | {:error, ElixirDB.Error.t()}
   def search(conn, metadata, text, mode), do: Indexes.search(conn, metadata, text, mode)
+
+  @spec search(Connection.handle(), map(), binary(), binary(), term()) ::
+          {:ok, list()} | {:error, ElixirDB.Error.t()}
+  def search(conn, metadata, text, mode, deadline),
+    do: Indexes.search(conn, metadata, text, mode, deadline)
 end

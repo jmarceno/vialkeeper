@@ -1,4 +1,6 @@
 defmodule ElixirDB.StorageAdapter.FullTextIndexesTest do
+  alias ElixirDB.Query.Normalizer
+  alias ElixirDB.Storage.SQLite.QueryRunner
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
   alias ElixirDB.Storage.SQLite.Connection
@@ -130,6 +132,29 @@ defmodule ElixirDB.StorageAdapter.FullTextIndexesTest do
                search: %{index: "titles", text: "replic* OR", mode: "prefix"},
                limit: 10
              })
+  end
+
+  test "full-text candidate processing enforces the query deadline", %{adapter: adapter} do
+    for n <- 1..128 do
+      assert {:ok, _} =
+               @adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: "deadline-#{n}",
+                 body: %{"title" => String.duplicate("replication checkpoint ", 256)}
+               })
+    end
+
+    assert {:ok, %{"index_id" => _index_id}} = @adapter.create_index(adapter, @fts_definition)
+    assert {:ok, _} = @adapter.update_config(adapter, %{"queries" => %{"max_execution_ms" => 1}})
+
+    assert {:ok, request} =
+             Normalizer.normalize(%{
+               search: %{index: "titles", text: "replication", mode: "all"},
+               limit: 128
+             })
+
+    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+             QueryRunner.execute(adapter, request)
   end
 
   test "full-text pagination continues by rank before document id", %{adapter: adapter} do

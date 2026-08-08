@@ -53,25 +53,30 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   @spec search(Connection.handle(), map(), binary(), binary()) ::
           {:ok, list()} | {:error, ElixirDB.Error.t()}
   def search(conn, metadata, text, mode) do
+    search(conn, metadata, text, mode, nil)
+  end
+
+  @spec search(Connection.handle(), map(), binary(), binary(), term()) ::
+          {:ok, list()} | {:error, ElixirDB.Error.t()}
+  def search(conn, metadata, text, mode, deadline) do
     name = MapAccess.get(metadata, :physical_name)
     match_definition = Map.put(metadata, "mode", mode || "all")
 
     with true <- valid_identifier?(name),
          {:ok, query} <- compile_search(text, metadata, mode),
+         :ok <- check_deadline(deadline),
          {:ok, rows} <-
            Connection.query(
              conn,
              "SELECT d.doc_key, d.document_id, d.winning_revision, d.winning_body_json, bm25(#{quote_identifier(name)}) FROM #{quote_identifier(name)} AS f JOIN documents AS d ON d.doc_key = f.rowid WHERE #{quote_identifier(name)} MATCH ? AND d.winning_deleted = 0",
              [query]
            ),
-         {:ok, candidates} <- decode_search_rows(rows) do
+         :ok <- check_deadline(deadline),
+         {:ok, candidates} <- decode_search_rows(rows, deadline),
+         {:ok, filtered} <- filter_search_candidates(candidates, match_definition, text, deadline),
+         {:ok, sorted} <- sort_search_candidates(filtered, deadline) do
       # FTS5 retrieves candidates; unicode_words_v1 via FullText.matches?/3 is authoritative.
-      filtered =
-        Enum.filter(candidates, fn row ->
-          FullText.matches?(row.body, match_definition, text)
-        end)
-
-      {:ok, Enum.sort_by(filtered, fn row -> {row.rank, row.id} end)}
+      {:ok, sorted}
     else
       false -> {:error, ElixirDB.Error.integrity_violation("index physical metadata is invalid")}
       {:error, %ElixirDB.Error{} = error} -> {:error, error}
@@ -315,20 +320,59 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     end
   end
 
-  defp decode_search_rows(rows) do
-    Enum.reduce_while(rows, {:ok, []}, fn [doc_key, id, revision, body_json, rank], {:ok, acc} ->
-      case StrictDecoder.decode(body_json) do
-        {:ok, body} ->
-          {:cont,
-           {:ok, [%{doc_key: doc_key, id: id, revision: revision, body: body, rank: rank} | acc]}}
-
-        {:error, error} ->
-          {:halt, {:error, error}}
+  defp decode_search_rows(rows, deadline) do
+    rows
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {row, index}, {:ok, acc} ->
+      case periodic_deadline_check(deadline, index) do
+        :ok -> decode_search_row(row, acc)
+        {:error, _} = error -> {:halt, error}
       end
     end)
     |> case do
       {:ok, values} -> {:ok, Enum.reverse(values)}
       error -> error
+    end
+  end
+
+  defp decode_search_row([doc_key, id, revision, body_json, rank], acc) do
+    case StrictDecoder.decode(body_json) do
+      {:ok, body} ->
+        {:cont,
+         {:ok, [%{doc_key: doc_key, id: id, revision: revision, body: body, rank: rank} | acc]}}
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
+  defp filter_search_candidates(candidates, definition, text, deadline) do
+    candidates
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, &filter_search_candidate(&1, &2, definition, text, deadline))
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
+  end
+
+  defp filter_search_candidate({row, index}, {:ok, acc}, definition, text, deadline) do
+    case periodic_deadline_check(deadline, index) do
+      :ok ->
+        if FullText.matches?(row.body, definition, text),
+          do: {:cont, {:ok, [row | acc]}},
+          else: {:cont, {:ok, acc}}
+
+      {:error, _} = error ->
+        {:halt, error}
+    end
+  end
+
+  defp sort_search_candidates(candidates, deadline) do
+    with :ok <- check_deadline(deadline),
+         sorted <- Enum.sort_by(candidates, fn row -> {row.rank, row.id} end),
+         :ok <- check_deadline(deadline) do
+      {:ok, sorted}
     end
   end
 
@@ -430,6 +474,25 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     is_binary(value) and
       (Regex.match?(~r/^exdb_s_[a-zA-Z0-9_]+$/, value) or
          Regex.match?(~r/^fts_[0-9a-f]{24}$/, value))
+  end
+
+  defp check_deadline(nil), do: :ok
+
+  defp check_deadline({deadline, maximum_ms}) do
+    if System.monotonic_time() < deadline do
+      :ok
+    else
+      {:error,
+       ElixirDB.Error.resource_limit("query execution exceeded the configured limit", %{
+         maximum_ms: maximum_ms
+       })}
+    end
+  end
+
+  defp periodic_deadline_check(nil, _index), do: :ok
+
+  defp periodic_deadline_check(deadline, index) do
+    if rem(index, 32) == 0, do: check_deadline(deadline), else: :ok
   end
 
   defp quote_identifier(value), do: "\"" <> String.replace(value, "\"", "\"\"") <> "\""

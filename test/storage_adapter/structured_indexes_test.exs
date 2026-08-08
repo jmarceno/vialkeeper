@@ -60,8 +60,8 @@ defmodule ElixirDB.StorageAdapter.StructuredIndexesTest do
   end
 
   test "$and selector compiles against structured index fields without raising", %{adapter: adapter} do
-    # The Normalizer produces $and as a list of selector maps; structured_conditions must
-    # recurse into each clause map rather than crash on the non-tuple clause shape.
+    # The planner extracts the positive $and constraint before the scan compiler
+    # receives it, so candidate compilation remains independent of raw selectors.
     assert {:ok, _} =
              @adapter.apply_local_mutation(adapter, %{
                operation: :put,
@@ -89,5 +89,95 @@ defmodule ElixirDB.StorageAdapter.StructuredIndexesTest do
                index: "by-type",
                limit: 10
              })
+  end
+
+  test "$beginsWith candidate bounds are complete across Unicode and metacharacters", %{
+    adapter: adapter
+  } do
+    prefix_cases = [
+      {"ascii", "alpha-value", "alpha"},
+      {"accented", "éclair-value", "écl"},
+      {"non-latin", "Жизнь-value", "Жиз"},
+      {"emoji", "😀rocket-value", "😀"},
+      {"quote", ~s("quoted-value), ~s("quo)},
+      {"percent", "%percent-value", "%per"},
+      {"underscore", "_underscore-value", "_under"},
+      {"asterisk", "*asterisk-value", "*ast"},
+      {"surrogate-gap", <<0xED, 0x9F, 0xBF>> <> "-tail", <<0xED, 0x9F, 0xBF>>},
+      {"maximum-scalar", <<0xF4, 0x8F, 0xBF, 0xBF>> <> "-tail", <<0xF4, 0x8F, 0xBF, 0xBF>>}
+    ]
+
+    for {document_id, value, _prefix} <- prefix_cases do
+      assert {:ok, _} =
+               @adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: document_id,
+                 body: %{"value" => value}
+               })
+    end
+
+    assert {:ok, _} =
+             @adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "pointer-slash",
+               body: %{"a/b" => "special-slash-value"}
+             })
+
+    assert {:ok, _} =
+             @adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "pointer-tilde",
+               body: %{"a~b" => "special-tilde-value"}
+             })
+
+    assert {:ok, _} =
+             @adapter.create_index(adapter, %{
+               "name" => "by-value",
+               "type" => "structured",
+               "fields" => [%{"path" => "/value", "type" => "string", "direction" => "asc"}]
+             })
+
+    assert {:ok, _} =
+             @adapter.create_index(adapter, %{
+               "name" => "by-pointer-slash",
+               "type" => "structured",
+               "fields" => [%{"path" => "/a~1b", "type" => "string", "direction" => "asc"}]
+             })
+
+    assert {:ok, _} =
+             @adapter.create_index(adapter, %{
+               "name" => "by-pointer-tilde",
+               "type" => "structured",
+               "fields" => [%{"path" => "/a~0b", "type" => "string", "direction" => "asc"}]
+             })
+
+    for {document_id, _value, prefix} <- prefix_cases do
+      assert {:ok, %{results: results}} =
+               @adapter.execute_query(adapter, %{
+                 selector: %{"/value" => %{"$beginsWith" => prefix}},
+                 index: "by-value",
+                 limit: 100
+               })
+
+      assert Enum.any?(results, &(&1.id == document_id))
+    end
+
+    assert {:ok, %{results: results}} =
+             @adapter.execute_query(adapter, %{
+               selector: %{"/a~1b" => %{"$beginsWith" => "special-"}},
+               index: "by-pointer-slash",
+               limit: 10
+             })
+
+    assert Enum.any?(results, &(&1.id == "pointer-slash"))
+
+    assert {:ok, %{results: results}} =
+             @adapter.execute_query(adapter, %{
+               selector: %{"/a~0b" => %{"$beginsWith" => "special-"}},
+               index: "by-pointer-tilde",
+               limit: 10
+             })
+
+    assert Enum.any?(results, &(&1.id == "pointer-tilde"))
   end
 end
