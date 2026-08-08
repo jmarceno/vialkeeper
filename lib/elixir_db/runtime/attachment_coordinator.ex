@@ -226,6 +226,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
 
   @impl true
   def handle_call(:begin_close, from, state) do
+    state = abort_gc_for_close(state)
     state = %{state | closing: true, close_waiters: [from | state.close_waiters]}
 
     if drain_complete?(state) do
@@ -310,8 +311,45 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
     %{
       state
       | gc_scheduled: state.gc_scheduled + 1,
-        gc_task_monitors: Map.put(state.gc_task_monitors, ref, true)
+        gc_task_monitors: Map.put(state.gc_task_monitors, ref, pid)
     }
+  end
+
+  defp abort_gc_for_close(state) do
+    Enum.each(state.gc_task_monitors, fn {ref, pid} ->
+      _ = Process.demonitor(ref, [:flush])
+      _ = Process.exit(pid, :kill)
+    end)
+
+    if state.gc_waiter do
+      GenServer.reply(
+        state.gc_waiter,
+        {:error, ElixirDB.Error.database_closed("attachment coordinator is closing")}
+      )
+    end
+
+    case state.gc_follow_up do
+      {from, _pid} ->
+        GenServer.reply(
+          from,
+          {:error, ElixirDB.Error.database_closed("attachment coordinator is closing")}
+        )
+
+      nil ->
+        :ok
+    end
+
+    state
+    |> clear_gc_monitor()
+    |> Map.merge(%{
+      gc_token: nil,
+      gc_barrier: false,
+      gc_caller: nil,
+      gc_waiter: nil,
+      gc_follow_up: nil,
+      gc_scheduled: 0,
+      gc_task_monitors: %{}
+    })
   end
 
   defp handle_guard_down(ref, state) do
@@ -480,8 +518,12 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   defp maybe_complete_close(state), do: state
 
   defp drain_complete?(state) do
+    # Scheduled post-compact GC Tasks are tracked for observers (`gc_scheduled`)
+    # but MUST NOT block close: they call back into DatabaseCatalog/owner and
+    # would deadlock if close waited for them. Closing rejects new GC; in-flight
+    # GC fails with database_closed and its Task monitor clears the count.
     guard_count(state) == 0 and is_nil(state.gc_token) and is_nil(state.gc_waiter) and
-      is_nil(state.gc_follow_up) and state.gc_scheduled == 0
+      is_nil(state.gc_follow_up)
   end
 
   defp guard_count(state),

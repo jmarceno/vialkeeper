@@ -170,7 +170,14 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
       Task.async(fn ->
         result = AttachmentCoordinator.begin_gc(uuid)
         send(parent, {:gc_done, result})
-        result
+
+        receive do
+          {:finish_gc, token} ->
+            AttachmentCoordinator.end_gc(uuid, token)
+        after
+          5_000 ->
+            flunk("gc finish was not signaled")
+        end
       end)
 
     assert Eventual.eventually(
@@ -189,8 +196,9 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     send(holder.pid, {:release, gate})
     assert :released = Task.await(holder)
 
-    assert {:ok, gc_token} = Task.await(gc_task)
-    assert :ok = AttachmentCoordinator.end_gc(uuid, gc_token)
+    assert_receive {:gc_done, {:ok, gc_token}}, 1_000
+    send(gc_task.pid, {:finish_gc, gc_token})
+    assert :ok = Task.await(gc_task)
   end
 
   test "concurrent close callers all drain successfully", %{uuid: uuid} do

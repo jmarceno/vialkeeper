@@ -7,7 +7,9 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   """
   use ExUnit.Case, async: false
 
+  alias ElixirDB.Eventual
   alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.Runtime.AttachmentCoordinator
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.TestServer
 
@@ -107,15 +109,6 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
       {:put, "/v1/databases/#{uuid}/config", %{}, 200, &assert_data_map/1},
       {:post, "/v1/databases/#{uuid}/integrity-check", %{}, 200,
        &assert_data(&1, fn data -> data["ok"] == true end)},
-      {:post, "/v1/databases/#{uuid}/compact", %{}, 200,
-       &assert_data(&1, fn data ->
-         is_integer(data["old_floor"]) and is_integer(data["new_floor"]) and
-           is_integer(data["removed_revisions"])
-       end)},
-      {:post, "/v1/databases/#{uuid}/documents/get", %{"id" => "doc"}, 200,
-       &assert_data(&1, fn data ->
-         data["id"] == "doc" and data["revision"] == revision and is_map(data["body"])
-       end)},
       {:post, "/v1/databases/#{uuid}/attachments/upload", "matrix-bytes", 201,
        &assert_attachment_upload/1},
       {:post, "/v1/databases/#{uuid}/attachments/get",
@@ -126,6 +119,15 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
          "attachment_blob_not_found",
          "internal_error"
        ])},
+      {:post, "/v1/databases/#{uuid}/compact", %{}, 200,
+       &assert_data(&1, fn data ->
+         is_integer(data["old_floor"]) and is_integer(data["new_floor"]) and
+           is_integer(data["removed_revisions"])
+       end)},
+      {:post, "/v1/databases/#{uuid}/documents/get", %{"id" => "doc"}, 200,
+       &assert_data(&1, fn data ->
+         data["id"] == "doc" and data["revision"] == revision and is_map(data["body"])
+       end)},
       {:post, "/v1/databases/#{uuid}/documents/put",
        %{"id" => "doc-2", "body" => %{"kind" => "note"}}, 201,
        &assert_data(&1, fn data -> is_binary(data["revision"]) and data["replayed"] == false end)},
@@ -268,6 +270,12 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
              "#{method_string(method)} #{path} missing envelope"
 
       assert_fn.(response)
+
+      # Compact schedules attachment GC asynchronously; drain before later
+      # attachment-guarded mutations in this matrix.
+      if String.ends_with?(path, "/compact") and response.status == 200 do
+        await_attachment_gc_idle(uuid)
+      end
     end)
 
     # Close stops the runtime; registered databases reopen on the next command
@@ -442,6 +450,19 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   end
 
   defp method_string(method), do: method |> Atom.to_string() |> String.upcase()
+
+  defp await_attachment_gc_idle(uuid) do
+    Eventual.eventually(
+      fn ->
+        case AttachmentCoordinator.status(uuid) do
+          %{gc_barrier: false, gc_active: false, gc_queued: false, gc_scheduled: false} -> true
+          _ -> false
+        end
+      end,
+      timeout: 5_000,
+      message: "attachment GC after compact did not become idle"
+    )
+  end
 
   defp cleanup_path(path) do
     root = ElixirDB.Config.database_root()
