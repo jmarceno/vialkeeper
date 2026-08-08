@@ -7,7 +7,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
   @moduletag :attachments
 
   setup do
-    root = Path.join(System.tmp_dir!(), "elixirdb-store-#{System.unique_integer([:positive])}")
+    root = unique_tmp_path("elixirdb-store")
 
     on_exit(fn -> File.rm_rf(root) end)
 
@@ -109,7 +109,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     payload = "symlinked-prefix"
     digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
     prefix = String.slice(digest, 0, 2)
-    outside = Path.join(System.tmp_dir!(), "elixirdb-outside-#{System.unique_integer([:positive])}")
+    outside = unique_tmp_path("elixirdb-outside")
     File.mkdir_p!(outside)
     File.ln_s!(outside, Path.join([bundle.root, "blobs", prefix]))
 
@@ -128,9 +128,12 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     payload = compressible_payload()
 
     results =
-      1..4
+      1..8
       |> Task.async_stream(fn _ -> put_whole(bundle.root, payload) end, timeout: :infinity)
-      |> Enum.map(fn {:ok, {:ok, result}} -> result end)
+      |> Enum.map(fn
+        {:ok, {:ok, result}} -> result
+        {:ok, {:error, reason}} -> flunk("concurrent install failed: #{inspect(reason)}")
+      end)
 
     digests = Enum.map(results, & &1.digest)
     assert Enum.uniq(digests) == [hd(digests)]
@@ -138,6 +141,26 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
     assert {:ok, listed} = FilesystemStore.list_digests(bundle.root)
     assert listed == [hd(digests)]
+  end
+
+  test "repeated concurrent same-digest installs stay race-free", %{bundle: bundle} do
+    payload = compressible_payload()
+
+    Enum.each(1..20, fn _ ->
+      results =
+        1..8
+        |> Task.async_stream(fn _ -> put_whole(bundle.root, payload) end, timeout: :infinity)
+        |> Enum.map(fn
+          {:ok, {:ok, result}} -> result
+          {:ok, {:error, reason}} -> flunk("concurrent install failed: #{inspect(reason)}")
+        end)
+
+      digests = Enum.map(results, & &1.digest)
+      assert Enum.uniq(digests) == [hd(digests)]
+    end)
+
+    assert {:ok, [digest]} = FilesystemStore.list_digests(bundle.root)
+    assert FilesystemStore.verify(bundle.root, digest, byte_size(payload)) == :ok
   end
 
   test "user attachment names never affect blob paths", %{bundle: bundle} do
@@ -342,5 +365,10 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     size = if(is_binary(data), do: byte_size(data), else: IO.iodata_length(data))
     current = :atomics.get(peak, 1)
     if size > current, do: :atomics.put(peak, 1, size)
+  end
+
+  defp unique_tmp_path(prefix) do
+    suffix = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+    Path.join(System.tmp_dir!(), "#{prefix}-#{suffix}")
   end
 end

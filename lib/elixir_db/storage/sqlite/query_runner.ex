@@ -58,6 +58,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          plan_kind: plan.kind,
          plan_digest: plan.digest,
          index_bindings: Plan.index_bindings(plan),
+         selected_indexes: Enum.map(Plan.index_bindings(plan), & &1.index_id),
          last_ordering_key: ordering_key(List.last(values), request)
        }}
     else
@@ -119,7 +120,16 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
              "SELECT count(*) FROM documents WHERE winning_deleted = 0"
            ),
          identity <- adapter_identity(adapter),
-         scan_threshold <- get_in(identity, [:config, "queries", "scan_threshold"]) || 1_000 do
+         scan_threshold <- get_in(identity, [:config, "queries", "scan_threshold"]) || 1_000,
+         {:ok, candidate_count} <-
+           explain_candidate_count(
+             adapter,
+             plan,
+             indexes,
+             request,
+             count,
+             query_deadline(identity, System.monotonic_time())
+           ) do
       {:ok,
        %{
          plan_kind: plan.kind,
@@ -130,10 +140,14 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          candidate_indexes: Enum.map(indexes, & &1["index_id"]),
          rejected_index_reasons: rejected_index_reasons(indexes, plan, request),
          pushdown_predicates: plan_pushdowns(plan),
-         post_filter_predicates: post_filter_predicates(request),
+         post_filter_predicates:
+           Predicate.post_filter_predicates(
+             MapAccess.get(request, :predicate, :match_all),
+             plan_pushdowns(plan)
+           ),
          full_scan: plan.kind == :bounded_scan,
-         candidate_count: count,
-         scan_allowed: plan.kind != :bounded_scan or count < scan_threshold,
+         candidate_count: candidate_count,
+         scan_allowed: plan.kind != :bounded_scan or candidate_count < scan_threshold,
          selector: MapAccess.get(request, :selector, %{}),
          sort: MapAccess.get(request, :sort, []),
          pagination: plan.pagination,
@@ -141,6 +155,23 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
        }}
     else
       {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  defp explain_candidate_count(
+         _adapter,
+         %Plan{kind: :bounded_scan},
+         _indexes,
+         _request,
+         count,
+         _deadline
+       ),
+       do: {:ok, count}
+
+  defp explain_candidate_count(adapter, plan, indexes, request, _count, deadline) do
+    case candidate_documents(adapter, plan, indexes, request, deadline) do
+      {:ok, _documents, examined} -> {:ok, examined}
+      {:error, _} = error -> error
     end
   end
 
@@ -538,13 +569,6 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
 
   defp plan_pushdowns(%Plan{scans: scans}),
     do: Enum.flat_map(scans, &Map.get(&1, "constraints", []))
-
-  defp post_filter_predicates(request) do
-    case MapAccess.get(request, :predicate) do
-      nil -> []
-      predicate -> [Predicate.render(predicate)]
-    end
-  end
 
   defp value_or_default(nil, default), do: default
   defp value_or_default(value, _default), do: value

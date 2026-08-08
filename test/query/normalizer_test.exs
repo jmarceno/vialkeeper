@@ -1,5 +1,6 @@
 defmodule ElixirDB.Query.NormalizerTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias ElixirDB.Query.{Normalizer, Predicate}
 
@@ -122,11 +123,72 @@ defmodule ElixirDB.Query.NormalizerTest do
     assert Predicate.node_count(predicate) == 4
   end
 
+  test "enforces the elemMatch depth boundary" do
+    accepted = nested_elem_match_selector(15)
+    rejected = nested_elem_match_selector(16)
+
+    assert {:ok, _} = Normalizer.normalize(%{selector: accepted})
+
+    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+             Normalizer.normalize(%{selector: rejected})
+  end
+
+  test "normalizes NOR as exact negation of OR and rejects malformed Boolean arrays" do
+    assert {:ok, %{predicate: {:not, {:or, [_first, _second]}}}} =
+             Normalizer.normalize(%{
+               selector: %{"$nor" => [%{"/state" => "closed"}, %{"/deleted" => true}]}
+             })
+
+    for operator <- ["$and", "$or", "$nor"] do
+      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+               Normalizer.normalize(%{selector: %{operator => []}})
+
+      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+               Normalizer.normalize(%{selector: %{operator => %{"/state" => "open"}}})
+    end
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             Normalizer.normalize(%{selector: %{"$not" => [%{"/state" => "open"}]}})
+  end
+
+  test "rejects semantic complexity before dispatching to a database owner" do
+    selector = %{"$or" => Enum.map(1..65, &%{"/value" => &1})}
+
+    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+             ElixirDB.Query.execute("not-a-database", %{selector: selector})
+  end
+
   test "fingerprints normalized selector source rather than compiled regex state" do
     request = %{selector: %{"/title" => %{"$regex" => "^hello"}}}
     assert {:ok, first} = Normalizer.normalize(request)
     assert {:ok, second} = Normalizer.normalize(request)
     assert first.fingerprint == second.fingerprint
     assert first.predicate != first.selector
+  end
+
+  property "generated Boolean trees remain bounded by semantic depth" do
+    check all(depth <- StreamData.integer(0..6)) do
+      assert {:ok, %{predicate: predicate}} =
+               Normalizer.normalize(%{selector: boolean_selector(depth)})
+
+      assert Predicate.depth(predicate) <= 32
+    end
+  end
+
+  defp nested_elem_match_selector(depth) do
+    Enum.reduce(1..depth, %{"/value" => 1}, fn _level, selector ->
+      %{"/items" => %{"$elemMatch" => selector}}
+    end)
+  end
+
+  defp boolean_selector(0), do: %{"/value" => 1}
+
+  defp boolean_selector(depth) do
+    %{
+      "$and" => [
+        %{"$or" => [boolean_selector(depth - 1), %{"/other" => %{"$gte" => depth}}]},
+        %{"/stable" => true}
+      ]
+    }
   end
 end

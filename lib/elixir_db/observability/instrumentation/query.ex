@@ -36,6 +36,7 @@ defmodule ElixirDB.Observability.Instrumentation.Query do
       attrs = query_attrs(start_attrs, examined)
 
       Meters.record(:"elixir_db.query.execute.duration", duration, attrs)
+      _ = record_plan(result)
       _ = record_examined(examined)
       _ = record_result_error(result)
 
@@ -84,6 +85,27 @@ defmodule ElixirDB.Observability.Instrumentation.Query do
 
   defp query_attrs(attrs, nil), do: attrs
   defp query_attrs(attrs, examined), do: attrs ++ [examined: examined]
+
+  defp record_plan({:ok, result}) when is_map(result) do
+    plan_kind = Map.get(result, :plan_kind, Map.get(result, "plan_kind"))
+    bindings = Map.get(result, :index_bindings, Map.get(result, "index_bindings", []))
+
+    attrs =
+      [
+        plan_kind: plan_kind,
+        selected_index_count: length_if_list(bindings),
+        union_branch_count:
+          if(plan_kind in [:union, "union"], do: length_if_list(bindings), else: 0)
+      ]
+
+    _ = Tracer.set_attributes(attrs)
+    :ok
+  end
+
+  defp record_plan(_result), do: :ok
+
+  defp length_if_list(value) when is_list(value), do: length(value)
+  defp length_if_list(_value), do: 0
 
   defp record_examined(nil), do: :ok
   defp record_examined(examined), do: Tracer.set_attributes(examined: examined)

@@ -1,6 +1,12 @@
 defmodule ElixirDB.Query.QueryTest do
+  use ExUnitProperties
+
   alias ElixirDB.Query.Normalizer
+  alias ElixirDB.Query.Planner
+  alias ElixirDB.Query.Selector
   alias ElixirDB.Storage.SQLite.Adapter
+  alias ElixirDB.Storage.SQLite.Connection
+  alias ElixirDB.Storage.SQLite.QueryCompiler
   alias ElixirDB.Storage.SQLite.QueryRunner
   use ExUnit.Case, async: false
 
@@ -166,6 +172,105 @@ defmodule ElixirDB.Query.QueryTest do
     assert examined == 3
   end
 
+  property "generated indexed candidates are supersets of authoritative matches", %{
+    adapter: adapter
+  } do
+    for definition <- [
+          %{
+            "name" => "property-status",
+            "type" => "structured",
+            "fields" => [%{"path" => "/status", "type" => "string", "direction" => "asc"}]
+          },
+          %{
+            "name" => "property-priority",
+            "type" => "structured",
+            "fields" => [%{"path" => "/priority", "type" => "number", "direction" => "asc"}]
+          }
+        ] do
+      assert {:ok, _} = Adapter.create_index(adapter, definition)
+    end
+
+    assert {:ok, indexes} = Adapter.list_indexes(adapter)
+
+    check all(
+            rows <-
+              StreamData.list_of(
+                StreamData.tuple({
+                  StreamData.member_of(["open", "closed", "queued"]),
+                  StreamData.integer(0..9)
+                }),
+                min_length: 1,
+                max_length: 8
+              ),
+            max_runs: 20
+          ) do
+      batch = "property-#{System.unique_integer([:positive, :monotonic])}"
+
+      documents =
+        rows
+        |> Enum.with_index()
+        |> Enum.map(fn {{status, priority}, index} ->
+          %{
+            id: "#{batch}-#{index}",
+            body: %{"batch" => batch, "status" => status, "priority" => priority}
+          }
+        end)
+
+      for document <- documents do
+        assert {:ok, _} =
+                 Adapter.apply_local_mutation(adapter, %{
+                   operation: :put,
+                   document_id: document.id,
+                   body: document.body
+                 })
+      end
+
+      request = %{
+        selector: %{
+          "$and" => [
+            %{"/batch" => batch},
+            %{"$or" => [%{"/status" => "open"}, %{"/priority" => %{"$gte" => 7}}]}
+          ]
+        }
+      }
+
+      assert {:ok, normalized} = Normalizer.normalize(request)
+      assert {:ok, plan} = Planner.plan(indexes, normalized)
+
+      candidate_ids =
+        plan.scans
+        |> Enum.flat_map(fn scan ->
+          index = Enum.find(indexes, &(&1["index_id"] == scan["index_id"]))
+          assert {:ok, conditions} = QueryCompiler.compile_scan(scan, index["fields"] || [])
+          where = ["winning_deleted = 0" | Enum.map(conditions, &elem(&1, 0))] |> Enum.join(" AND ")
+          params = Enum.flat_map(conditions, fn {_sql, value} -> List.wrap(value) end)
+
+          assert {:ok, rows} =
+                   Connection.query(
+                     adapter.conn,
+                     "SELECT document_id FROM documents WHERE #{where}",
+                     params
+                   )
+
+          Enum.map(rows, fn [id] -> id end)
+        end)
+        |> MapSet.new()
+
+      expected_ids =
+        documents
+        |> Enum.filter(fn document ->
+          assert {:ok, result} = Selector.matches?(document.body, normalized.predicate)
+          result
+        end)
+        |> Enum.map(& &1.id)
+        |> MapSet.new()
+
+      assert MapSet.subset?(expected_ids, candidate_ids)
+      assert {:ok, %{results: results}} = Adapter.execute_query(adapter, request)
+      assert MapSet.new(Enum.map(results, & &1.id)) == expected_ids
+    end
+  end
+
   test "query runner enforces the configured execution deadline", %{adapter: adapter} do
     assert {:ok, _} =
              Adapter.update_config(adapter, %{"queries" => %{"max_execution_ms" => 1}})
@@ -239,5 +344,86 @@ defmodule ElixirDB.Query.QueryTest do
                index: "by-null",
                limit: 10
              })
+  end
+
+  test "indexed candidates are a conservative superset of authoritative matches", %{
+    adapter: adapter
+  } do
+    documents = [
+      {"task-open", %{"kind" => "task", "status" => "open", "priority" => 1}},
+      {"task-high", %{"kind" => "task", "status" => "closed", "priority" => 5}},
+      {"note-open", %{"kind" => "note", "status" => "open", "priority" => 4}},
+      {"note-low", %{"kind" => "note", "status" => "closed", "priority" => 1}},
+      {"missing-status", %{"kind" => "task", "priority" => 9}}
+    ]
+
+    for {document_id, body} <- documents do
+      assert {:ok, _} =
+               Adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: document_id,
+                 body: body
+               })
+    end
+
+    assert {:ok, _} =
+             Adapter.create_index(adapter, %{
+               "name" => "by-status",
+               "type" => "structured",
+               "fields" => [%{"path" => "/status", "type" => "string", "direction" => "asc"}]
+             })
+
+    assert {:ok, _} =
+             Adapter.create_index(adapter, %{
+               "name" => "by-priority",
+               "type" => "structured",
+               "fields" => [%{"path" => "/priority", "type" => "number", "direction" => "asc"}]
+             })
+
+    selector = %{
+      "$or" => [
+        %{"/status" => "open", "/kind" => "task"},
+        %{"/priority" => %{"$gte" => 3}, "/kind" => "task"}
+      ]
+    }
+
+    assert {:ok, %{predicate: predicate}} = Normalizer.normalize(%{selector: selector})
+
+    expected =
+      documents
+      |> Enum.filter(fn {_id, body} -> Selector.matches?(body, predicate) == {:ok, true} end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+
+    assert {:ok, %{plan_kind: :union, results: results}} =
+             Adapter.execute_query(adapter, %{selector: selector, limit: 10})
+
+    assert Enum.map(results, & &1.id) |> Enum.sort() == expected
+  end
+
+  test "explain uses the executable plan and remains storage-neutral", %{adapter: adapter} do
+    assert {:ok, _} =
+             Adapter.create_index(adapter, %{
+               "name" => "by-status",
+               "type" => "structured",
+               "fields" => [%{"path" => "/status", "type" => "string", "direction" => "asc"}]
+             })
+
+    assert {:ok, explanation} =
+             Adapter.explain_query(adapter, %{
+               selector: %{
+                 "$or" => [%{"/status" => "open"}, %{"/priority" => %{"$gte" => 3}}]
+               }
+             })
+
+    assert explanation.plan_kind in [:union, :bounded_scan]
+    assert is_binary(explanation.plan_digest)
+    assert is_list(explanation.selected_indexes)
+    assert is_list(explanation.pushdown_predicates)
+    assert is_list(explanation.post_filter_predicates)
+
+    refute inspect(explanation) =~ "SELECT"
+    refute inspect(explanation) =~ "physical_name"
+    refute inspect(explanation) =~ "sqlite_private"
   end
 end

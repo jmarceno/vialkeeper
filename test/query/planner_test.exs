@@ -1,5 +1,6 @@
 defmodule ElixirDB.Query.PlannerTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias ElixirDB.Query.{Normalizer, Plan, Planner, Projection, Regex}
 
@@ -316,6 +317,68 @@ defmodule ElixirDB.Query.PlannerTest do
     assert plan.selected_indexes == []
   end
 
+  test "plan digest is invariant under catalog permutations" do
+    indexes = [
+      structured("idx-status", [{"/status", "string"}]),
+      structured("idx-priority", [{"/priority", "number"}]),
+      structured("idx-kind", [{"/kind", "string"}])
+    ]
+
+    {:ok, request} =
+      Normalizer.normalize(%{
+        selector: %{"$or" => [%{"/status" => "open"}, %{"/priority" => %{"$gte" => 3}}]}
+      })
+
+    plans =
+      [
+        indexes,
+        Enum.reverse(indexes),
+        [Enum.at(indexes, 1), Enum.at(indexes, 2), Enum.at(indexes, 0)],
+        [Enum.at(indexes, 2), Enum.at(indexes, 0), Enum.at(indexes, 1)]
+      ]
+      |> Enum.map(fn order ->
+        assert {:ok, plan} = Planner.plan(order, request)
+        plan
+      end)
+
+    assert Enum.map(plans, & &1.kind) == List.duplicate(:union, length(plans))
+    assert Enum.map(plans, & &1.digest) |> Enum.uniq() |> length() == 1
+
+    assert Enum.map(plans, &Enum.map(&1.selected_indexes, fn binding -> binding.index_id end))
+           |> Enum.uniq() == [["idx-status", "idx-priority"]]
+  end
+
+  test "an enclosing mandatory source covers an otherwise uncovered OR" do
+    kind = structured("idx-kind", [{"/kind", "string"}])
+
+    {:ok, request} =
+      Normalizer.normalize(%{
+        selector: %{
+          "$and" => [
+            %{"/kind" => "task"},
+            %{"$or" => [%{"/status" => "open"}, %{"/unindexed" => 7}]}
+          ]
+        }
+      })
+
+    assert {:ok, %{kind: :single, selected_indexes: [%{index_id: "idx-kind"}]}} =
+             Planner.plan([kind], request)
+  end
+
+  test "an explicit hint cannot cover only one independent OR branch" do
+    status = structured("idx-status", [{"/status", "string"}])
+    priority = structured("idx-priority", [{"/priority", "number"}])
+
+    {:ok, request} =
+      Normalizer.normalize(%{
+        selector: %{"$or" => [%{"/status" => "open"}, %{"/priority" => %{"$gte" => 3}}]},
+        index: "idx-status"
+      })
+
+    assert {:error, %ElixirDB.Error{code: :invalid_index_hint}} =
+             Planner.plan([status, priority], request)
+  end
+
   test "negative-only predicates never use an index and hints cannot fall back" do
     status = structured("idx-status", [{"/status", "string"}])
     {:ok, request} = Normalizer.normalize(%{selector: %{"/status" => %{"$ne" => "closed"}}})
@@ -351,5 +414,31 @@ defmodule ElixirDB.Query.PlannerTest do
            ]
 
     assert plan.scans == [%{"branch" => 0, "index_id" => "idx-text", "type" => "full_text"}]
+  end
+
+  property "plan digest is invariant across generated catalog orderings" do
+    indexes = [
+      structured("idx-status", [{"/status", "string"}]),
+      structured("idx-priority", [{"/priority", "number"}]),
+      structured("idx-kind", [{"/kind", "string"}]),
+      structured("idx-created", [{"/created_at", "string"}])
+    ]
+
+    {:ok, request} =
+      Normalizer.normalize(%{
+        selector: %{
+          "$or" => [
+            %{"/status" => "open"},
+            %{"/priority" => %{"$gte" => 3}},
+            %{"/kind" => "task"}
+          ]
+        }
+      })
+
+    check all(seed <- StreamData.integer()) do
+      order = Enum.sort_by(indexes, &:erlang.phash2({seed, &1["index_id"]}))
+      assert {:ok, plan} = Planner.plan(order, request)
+      assert plan.digest == elem(Planner.plan(indexes, request), 1).digest
+    end
   end
 end

@@ -930,14 +930,21 @@ defmodule ElixirDB.Attachments.FilesystemStore do
       not PathSafety.no_symlink_components?(directory) ->
         {:error, Error.integrity_violation("attachment blob path contains a symlink")}
 
-      File.dir?(directory) ->
-        :ok
-
-      File.exists?(directory) ->
-        {:error, Error.integrity_violation("attachment blob prefix must be a directory")}
-
       true ->
-        :ok
+        case File.lstat(directory) do
+          {:ok, %File.Stat{type: :directory}} ->
+            :ok
+
+          {:ok, _stat} ->
+            {:error, Error.integrity_violation("attachment blob prefix must be a directory")}
+
+          {:error, :enoent} ->
+            :ok
+
+          {:error, reason} ->
+            {:error,
+             Error.internal_error("cannot inspect blob directory", %{reason: inspect(reason)})}
+        end
     end
   end
 

@@ -38,4 +38,30 @@ defmodule ElixirDB.Query.PredicateTest do
     assert Predicate.introspect(predicate).node_count == 5
     assert Predicate.depth(predicate) == 3
   end
+
+  test "post-filter explain keeps $not context and strips only pushed positives" do
+    predicate =
+      {:and,
+       [
+         {:field, "/status", [{:eq, "open"}]},
+         {:not, {:field, "/priority", [{:eq, 1}]}},
+         {:field, "/title", [{:begins_with, "replication"}]}
+       ]}
+
+    pushdowns = [%{"path" => "/status", "operator" => "$eq", "value" => "open"}]
+
+    assert Predicate.post_filter_predicates(predicate, pushdowns) == [
+             %{
+               "op" => "$not",
+               "predicate" => %{
+                 "$field" => "/priority",
+                 "predicates" => [%{"op" => "$eq", "value" => 1}]
+               }
+             },
+             %{
+               "path" => "/title",
+               "predicate" => %{"op" => "$beginsWith", "value" => "replication"}
+             }
+           ]
+  end
 end

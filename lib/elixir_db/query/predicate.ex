@@ -140,6 +140,15 @@ defmodule ElixirDB.Query.Predicate do
   @spec canonical_render(t()) :: map()
   def canonical_render(predicate), do: render(predicate)
 
+  @doc """
+  Returns the field predicates that remain final-evaluator work after the
+  planner-selected positive constraints are pushed into candidate scans.
+  """
+  @spec post_filter_predicates(t(), [map()]) :: [map()]
+  def post_filter_predicates(predicate, pushdowns) when is_list(pushdowns) do
+    residual_predicates(predicate, pushdowns)
+  end
+
   @doc "Return the number of predicate and field-predicate nodes."
   @spec node_count(t()) :: pos_integer()
   def node_count(:match_all), do: 1
@@ -200,6 +209,63 @@ defmodule ElixirDB.Query.Predicate do
 
   defp render_field_predicate({:mod, divisor, remainder}),
     do: %{"op" => "$mod", "value" => [divisor, remainder]}
+
+  defp residual_predicates(:match_all, _pushdowns), do: []
+
+  defp residual_predicates({:not, child}, _pushdowns) do
+    # Negation is never a candidate source; keep the full negated subtree so
+    # explain does not present the inner positive predicate as unnegated work.
+    [%{"op" => "$not", "predicate" => render(child)}]
+  end
+
+  defp residual_predicates({operator, children}, pushdowns) when operator in [:and, :or] do
+    Enum.flat_map(children, &residual_predicates(&1, pushdowns))
+  end
+
+  defp residual_predicates({:field, path, predicates}, pushdowns) do
+    Enum.flat_map(predicates, &post_filter_field_predicate(path, &1, pushdowns))
+  end
+
+  defp residual_predicates(_predicate, _pushdowns), do: []
+
+  defp pushdown_descriptor(path, {:eq, value}) do
+    if scalar?(value), do: %{"path" => path, "operator" => "$eq", "value" => value}
+  end
+
+  defp pushdown_descriptor(path, {:in, values}),
+    do: %{"path" => path, "operator" => "$in", "value" => values}
+
+  defp pushdown_descriptor(path, {operator, value}) when operator in [:gt, :gte, :lt, :lte],
+    do: %{"path" => path, "operator" => "$" <> Atom.to_string(operator), "value" => value}
+
+  defp pushdown_descriptor(path, {:begins_with, value}),
+    do: %{"path" => path, "operator" => "$beginsWith", "value" => value}
+
+  defp pushdown_descriptor(_path, _predicate), do: nil
+
+  defp post_filter_field_predicate(path, field_predicate, pushdowns) do
+    descriptor = pushdown_descriptor(path, field_predicate)
+    post_filter_field_predicate(descriptor, path, field_predicate, pushdowns)
+  end
+
+  defp post_filter_field_predicate(nil, path, field_predicate, _pushdowns),
+    do: [%{"path" => path, "predicate" => render_field_predicate(field_predicate)}]
+
+  defp post_filter_field_predicate(descriptor, path, field_predicate, pushdowns) do
+    if pushed?(descriptor, pushdowns) do
+      []
+    else
+      [%{"path" => path, "predicate" => render_field_predicate(field_predicate)}]
+    end
+  end
+
+  defp pushed?(descriptor, pushdowns) do
+    Enum.any?(pushdowns, fn pushdown ->
+      descriptor["path"] == pushdown["path"] and
+        descriptor["operator"] == pushdown["operator"] and
+        exact_equal?(descriptor["value"], pushdown["value"])
+    end)
+  end
 
   defp compare_values(left, right) when left < right, do: :lt
   defp compare_values(left, right) when left > right, do: :gt

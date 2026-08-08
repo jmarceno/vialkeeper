@@ -11,7 +11,8 @@ defmodule ElixirDB.Observability.Attributes do
 
   `db.uuid`, `command.type` (atom), `error.code` (atom), `outcome` (atom),
   `http.method`, `http.route` (route template, never the raw path),
-  `http.status_code`, `index_id`, `index_type`, `replication.id`, `endpoint`
+  `http.status_code`, `index_id`, `index_type`, `plan_kind`,
+  `selected_index_count`, `union_branch_count`, `replication.id`, `endpoint`
   (`:source` | `:target`), the bounded counts `entries`, `examined`,
   `revisions_written`, attachment stream measurements `logical_bytes`,
   `stream_chunks`, `compressed`, `deduplicated`, `blobs_deleted`,
@@ -36,6 +37,9 @@ defmodule ElixirDB.Observability.Attributes do
     http_status_code: :"http.status_code",
     index_id: :index_id,
     index_type: :index_type,
+    plan_kind: :plan_kind,
+    selected_index_count: :selected_index_count,
+    union_branch_count: :union_branch_count,
     replication_id: :"replication.id",
     endpoint: :endpoint,
     entries: :entries,

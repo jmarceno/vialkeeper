@@ -58,6 +58,11 @@ defmodule ElixirDB.Observability.PrivacyTest do
     assert Enum.any?(all_spans, &(&1[:name] == "elixir_db.query.execute")),
            "expected a query.execute span to exercise the search-text path"
 
+    query_span = Enum.find(all_spans, &(&1[:name] == "elixir_db.query.execute"))
+    assert TestExporter.span_attr(query_span, :plan_kind) == :bounded_scan
+    assert TestExporter.span_attr(query_span, :selected_index_count) == 0
+    assert TestExporter.span_attr(query_span, :union_branch_count) == 0
+
     assert_no_leaks(all_spans, [@body_secret, @doc_id, @search_secret])
   end
 

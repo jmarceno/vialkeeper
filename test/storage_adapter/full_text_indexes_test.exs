@@ -134,6 +134,32 @@ defmodule ElixirDB.StorageAdapter.FullTextIndexesTest do
              })
   end
 
+  test "prefix search remains the candidate source while structured predicates post-filter", %{
+    adapter: adapter
+  } do
+    for {document_id, title, status} <- [
+          {"open", "replication checkpoint", "open"},
+          {"closed", "replication checkpoint", "closed"},
+          {"other", "replication guide", "open"}
+        ] do
+      assert {:ok, _} =
+               @adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: document_id,
+                 body: %{"title" => title, "status" => status}
+               })
+    end
+
+    assert {:ok, _} = @adapter.create_index(adapter, @fts_definition)
+
+    assert {:ok, %{plan_kind: :full_text, results: [%{id: "open"}]}} =
+             @adapter.execute_query(adapter, %{
+               search: %{index: "titles", text: "replic checkp", mode: "prefix"},
+               selector: %{"/status" => "open"},
+               limit: 10
+             })
+  end
+
   test "full-text candidate processing enforces the query deadline", %{adapter: adapter} do
     for n <- 1..128 do
       assert {:ok, _} =

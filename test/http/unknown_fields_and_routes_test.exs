@@ -67,6 +67,8 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
          "unexpected" => true
        }},
       {:post, "/v1/databases/#{uuid}/query", %{"selector" => %{"/kind" => "task"}, "bonus" => 1}},
+      {:post, "/v1/databases/#{uuid}/query",
+       %{"search" => %{"index" => "missing", "text" => "term", "mode" => "wildcard"}}},
       {:post, "/v1/databases/#{uuid}/changes",
        %{"since" => 0, "limit" => 10, "wait_ms" => 0, "extra" => true}},
       {:post, "/v1/databases/#{uuid}/changes/stream",
