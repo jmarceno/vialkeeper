@@ -227,6 +227,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     case result do
       {:ok, stats} ->
         maybe_publish_maintenance(state.uuid, stats)
+        schedule_attachment_gc(state.uuid)
         {:reply, result, state}
 
       {:error, _} ->
@@ -243,6 +244,19 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   end
 
   defp compact_trigger(_), do: :explicit
+
+  # Post-commit seam only: never delete blobs inside the compact SQLite txn.
+  # Spawn so GC can acquire owner admission for live-digest / pending cleanup
+  # without re-entering this GenServer call. Module is configured (not aliased)
+  # so runtime does not depend on the application Attachments facade.
+  defp schedule_attachment_gc(uuid) do
+    module = Application.fetch_env!(:elixir_db, :attachment_gc_module)
+
+    case AttachmentCoordinator.schedule_gc(uuid, module) do
+      :ok -> :ok
+      {:error, _} -> :ok
+    end
+  end
 
   defp maybe_publish_maintenance(uuid, stats) do
     old_floor = Map.get(stats, :old_floor, 0)

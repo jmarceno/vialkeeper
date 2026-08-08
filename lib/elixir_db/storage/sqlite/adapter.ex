@@ -129,8 +129,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @impl true
   def integrity_check(%__MODULE__{} = adapter, _options) do
     with {:ok, indexes} <- list_indexes(adapter),
-         :ok <- Integrity.run(adapter.conn, indexes, attachment_bundle_root(adapter)) do
-      {:ok, %{ok: true, indexes: length(indexes)}}
+         {:ok, report} <- Integrity.run(adapter.conn, indexes, attachment_bundle_root(adapter)) do
+      {:ok, Map.merge(%{ok: true, indexes: length(indexes)}, report)}
     else
       {:error, %ElixirDB.Error{} = error} ->
         {:error, error}

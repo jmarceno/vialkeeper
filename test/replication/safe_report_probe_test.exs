@@ -1,9 +1,11 @@
 defmodule ElixirDB.Replication.SafeReportProbeTest do
   use ExUnit.Case, async: false
 
+  alias ElixirDB.Eventual
   alias ElixirDB.MapAccess
   alias ElixirDB.Replication
   alias ElixirDB.Replication.LocalEndpoint
+  alias ElixirDB.Runtime.AttachmentCoordinator
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Storage.SQLite.Adapter
 
@@ -73,6 +75,19 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
 
     assert {:ok, _} =
              DatabaseCatalog.command(a.database_uuid, {:command, :compact_retention, %{}})
+
+    # Compact schedules attachment GC asynchronously; wait so the following
+    # omitted-attachment put does not race the exclusive GC barrier.
+    Eventual.eventually(
+      fn ->
+        case AttachmentCoordinator.status(a.database_uuid) do
+          %{gc_barrier: false, gc_active: false, gc_queued: false, gc_scheduled: false} -> true
+          _ -> false
+        end
+      end,
+      timeout: 5_000,
+      message: "attachment GC after compact did not become idle"
+    )
 
     {:ok, source} = LocalEndpoint.new(a.database_uuid)
     {:ok, target} = LocalEndpoint.new(b.database_uuid)

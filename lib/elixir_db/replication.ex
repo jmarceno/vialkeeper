@@ -1055,12 +1055,21 @@ defmodule ElixirDB.Replication do
 
   defp transfer_one_blob(source, target, digest, context, options) do
     transfer_context = Map.put(context, :blob_digest, digest)
+    replication_id = Map.get(context, :replication_id) || ""
 
-    with :ok <- phase_hook(options, :before_blob_transfer, transfer_context),
-         {:ok, stream} <- endpoint_call(source, :open_blob, [digest]),
-         :ok <- phase_hook(options, :after_open_blob, transfer_context),
-         :ok <- put_blob_result(endpoint_call(target, :put_blob, [stream])) do
-      phase_hook(options, :after_put_blob, transfer_context)
+    ReplicationModule.blob_transfer_span(replication_id, [], fn ->
+      with :ok <- phase_hook(options, :before_blob_transfer, transfer_context),
+           {:ok, stream} <- endpoint_call(source, :open_blob, [digest]),
+           :ok <- phase_hook(options, :after_open_blob, transfer_context),
+           :ok <- put_blob_result(endpoint_call(target, :put_blob, [stream])),
+           :ok <- phase_hook(options, :after_put_blob, transfer_context) do
+        {:ok, %{logical_bytes: stream.length}}
+      end
+    end)
+    |> case do
+      {:ok, _} -> :ok
+      :ok -> :ok
+      {:error, _} = error -> error
     end
   end
 

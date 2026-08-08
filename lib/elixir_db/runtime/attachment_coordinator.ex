@@ -33,6 +33,17 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
     call(uuid, {:end_gc, gc_token})
   end
 
+  @doc """
+  Spawns and tracks an asynchronous GC Task (post-compact seam).
+
+  Increments `gc_scheduled` before returning so callers cannot observe idle
+  between schedule and Task start. The Task monitor clears the count on exit
+  (normal or kill).
+  """
+  def schedule_gc(uuid, module) when is_atom(module) do
+    call(uuid, {:schedule_gc, module})
+  end
+
   def begin_close(uuid) do
     call(uuid, :begin_close, :infinity)
   end
@@ -73,6 +84,11 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
        gc_caller: nil,
        gc_monitor_ref: nil,
        gc_waiter: nil,
+       # At most one queued begin_gc while a run is active (MAINT-009 / MAINT-010).
+       gc_follow_up: nil,
+       # Count of asynchronously scheduled GC Tasks not yet finished (post-compact).
+       gc_scheduled: 0,
+       gc_task_monitors: %{},
        close_waiters: [],
        guards: %{},
        monitors: %{},
@@ -145,9 +161,31 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   end
 
   @impl true
-  def handle_call({:begin_gc, _caller_pid}, _from, %{gc_barrier: true} = state) do
-    {:reply, {:error, ElixirDB.Error.attachment_overloaded("attachment gc is already active")},
-     state}
+  def handle_call({:schedule_gc, module}, _from, state) when is_atom(module) do
+    case ensure_open(state) do
+      :ok -> {:reply, :ok, start_scheduled_gc(state, module)}
+      {:error, _} = error -> {:reply, error, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:begin_gc, caller_pid}, from, %{gc_barrier: true} = state) do
+    with :ok <- ensure_caller(caller_pid),
+         :ok <- ensure_open(state) do
+      case state.gc_follow_up do
+        nil ->
+          # Serialize the next GC so a post-compact trigger cannot race an
+          # in-flight run and so the follow-up recomputes the live set.
+          {:noreply, %{state | gc_follow_up: {from, caller_pid}}}
+
+        {_queued_from, _queued_pid} ->
+          # Further overlapping triggers are harmless: the queued follow-up
+          # already covers a recomputation after the current barrier drops.
+          {:reply, {:ok, :coalesced}, state}
+      end
+    else
+      {:error, _} = error -> {:reply, error, state}
+    end
   end
 
   @impl true
@@ -159,7 +197,6 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
 
       if guard_count(state) == 0 do
         {token, state} = grant_gc_token(state)
-        state = clear_gc_monitor(state)
         {:reply, {:ok, token}, state}
       else
         {:noreply, %{state | gc_waiter: from}}
@@ -177,6 +214,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
       |> Map.put(:gc_token, nil)
       |> Map.put(:gc_barrier, false)
       |> Map.put(:gc_caller, nil)
+      |> promote_gc_follow_up()
 
     {:reply, :ok, maybe_complete_waiters(state)}
   end
@@ -199,10 +237,21 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
-    if ref == state.gc_monitor_ref do
-      handle_gc_caller_down(state)
-    else
-      handle_guard_down(ref, state)
+    cond do
+      ref == state.gc_monitor_ref ->
+        handle_gc_caller_down(state)
+
+      Map.has_key?(state.gc_task_monitors, ref) ->
+        state = %{
+          state
+          | gc_task_monitors: Map.delete(state.gc_task_monitors, ref),
+            gc_scheduled: max(state.gc_scheduled - 1, 0)
+        }
+
+        {:noreply, maybe_complete_waiters(state)}
+
+      true ->
+        handle_guard_down(ref, state)
     end
   end
 
@@ -221,8 +270,48 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
       |> Map.put(:gc_barrier, false)
       |> Map.put(:gc_caller, nil)
       |> Map.put(:gc_monitor_ref, nil)
+      |> promote_gc_follow_up()
 
     {:noreply, maybe_complete_waiters(state)}
+  end
+
+  defp promote_gc_follow_up(%{gc_follow_up: {from, caller_pid}} = state) do
+    case {ensure_caller(caller_pid), ensure_open(state)} do
+      {:ok, :ok} ->
+        monitor_ref = Process.monitor(caller_pid)
+
+        %{
+          state
+          | gc_follow_up: nil,
+            gc_barrier: true,
+            gc_caller: caller_pid,
+            gc_monitor_ref: monitor_ref,
+            gc_token: nil,
+            gc_waiter: from
+        }
+
+      {{:error, error}, _} ->
+        GenServer.reply(from, {:error, error})
+        %{state | gc_follow_up: nil}
+
+      {_, {:error, error}} ->
+        GenServer.reply(from, {:error, error})
+        %{state | gc_follow_up: nil}
+    end
+  end
+
+  defp promote_gc_follow_up(state), do: state
+
+  defp start_scheduled_gc(state, module) do
+    uuid = state.uuid
+    {:ok, pid} = Task.start(fn -> _ = module.gc(uuid) end)
+    ref = Process.monitor(pid)
+
+    %{
+      state
+      | gc_scheduled: state.gc_scheduled + 1,
+        gc_task_monitors: Map.put(state.gc_task_monitors, ref, true)
+    }
   end
 
   defp handle_guard_down(ref, state) do
@@ -367,7 +456,8 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
        when not is_nil(from) do
     if guard_count(state) == 0 do
       {token, state} = grant_gc_token(state)
-      state = clear_gc_monitor(state)
+      # Keep gc_monitor_ref until end_gc/caller DOWN so a killed GC process
+      # cannot leave the exclusive barrier stuck.
       GenServer.reply(from, {:ok, token})
       %{state | gc_waiter: nil}
     else
@@ -390,7 +480,8 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   defp maybe_complete_close(state), do: state
 
   defp drain_complete?(state) do
-    guard_count(state) == 0 and is_nil(state.gc_token) and is_nil(state.gc_waiter)
+    guard_count(state) == 0 and is_nil(state.gc_token) and is_nil(state.gc_waiter) and
+      is_nil(state.gc_follow_up) and state.gc_scheduled == 0
   end
 
   defp guard_count(state),
@@ -408,7 +499,9 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
       max_attachment_bytes: state.max_attachment_bytes,
       closing: state.closing,
       gc_barrier: state.gc_barrier,
-      gc_active: not is_nil(state.gc_token)
+      gc_active: not is_nil(state.gc_token),
+      gc_queued: not is_nil(state.gc_follow_up),
+      gc_scheduled: state.gc_scheduled > 0
     }
   end
 end

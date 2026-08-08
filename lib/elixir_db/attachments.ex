@@ -9,6 +9,7 @@ defmodule ElixirDB.Attachments do
 
   alias ElixirDB.Attachments.{FilesystemStore, Manifest, Ticket}
   alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.Attachment, as: AttachmentInstr
   alias ElixirDB.Replication.BlobStream
   alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
 
@@ -46,7 +47,9 @@ defmodule ElixirDB.Attachments do
          {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
          {:ok, write_guard, max_bytes} <- AttachmentCoordinator.acquire_write(uuid) do
       try do
-        do_upload(uuid, bundle_root, source, max_bytes, opts)
+        AttachmentInstr.write(uuid, fn ->
+          do_upload(uuid, bundle_root, source, max_bytes, opts)
+        end)
       after
         _ = AttachmentCoordinator.release(uuid, write_guard)
       end
@@ -64,15 +67,38 @@ defmodule ElixirDB.Attachments do
     with :ok <- ensure_open(uuid),
          {:ok, ticket_request} <- normalize_get_request(request),
          {:ok, read_guard} <- AttachmentCoordinator.acquire_read(uuid) do
+      read_handle = AttachmentInstr.start_read(uuid)
+
       try do
-        open_stream_under_guard(uuid, ticket_request, read_guard)
+        case open_stream_under_guard(uuid, ticket_request, read_guard, read_handle) do
+          {:ok, _} = ok ->
+            ok
+
+          {:error, %ElixirDB.Error{} = error} = err ->
+            _ = AttachmentInstr.fail_read(read_handle, error)
+            err
+        end
       rescue
         exception in @release_on_raise ->
           _ = AttachmentCoordinator.release(uuid, read_guard)
+
+          _ =
+            AttachmentInstr.fail_read(
+              read_handle,
+              ElixirDB.Error.internal_error("attachment read failed")
+            )
+
           reraise(exception, __STACKTRACE__)
       catch
         kind, reason ->
           _ = AttachmentCoordinator.release(uuid, read_guard)
+
+          _ =
+            AttachmentInstr.fail_read(
+              read_handle,
+              ElixirDB.Error.internal_error("attachment read failed")
+            )
+
           :erlang.raise(kind, reason, __STACKTRACE__)
       end
     end
@@ -172,10 +198,42 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  @doc "Attachment GC placeholder for a later wave."
-  @spec gc(binary()) :: {:error, ElixirDB.Error.t()}
-  def gc(_uuid),
-    do: {:error, ElixirDB.Error.internal_error("attachment gc is not implemented")}
+  @doc """
+  Reclaims unreachable attachment blobs under the exclusive GC barrier.
+
+  Short owner calls collect the live digest set and clean expired pending rows;
+  physical deletes and tmp cleanup run outside SQLite/owner admission.
+  """
+  @spec gc(binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def gc(uuid) when is_binary(uuid) do
+    with :ok <- ensure_open(uuid),
+         {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
+         {:ok, gc_token} <- AttachmentCoordinator.begin_gc(uuid) do
+      case gc_token do
+        :coalesced ->
+          {:ok, %{deleted: 0, blobs_deleted: 0, bytes_deleted: 0, coalesced: true}}
+
+        _ ->
+          try do
+            AttachmentInstr.gc(uuid, fn ->
+              case run_gc(uuid, bundle_root) do
+                {:ok, stats} ->
+                  {:ok,
+                   Map.merge(stats, %{
+                     blobs_deleted: Map.get(stats, :deleted, 0),
+                     bytes_deleted: Map.get(stats, :bytes_deleted, 0)
+                   })}
+
+                other ->
+                  other
+              end
+            end)
+          after
+            _ = AttachmentCoordinator.end_gc(uuid, gc_token)
+          end
+      end
+    end
+  end
 
   @doc """
   Returns digests whose physical blob is not durably present in the local CAS.
@@ -205,15 +263,38 @@ defmodule ElixirDB.Attachments do
     with :ok <- ensure_open(uuid),
          {:ok, digest} <- Manifest.validate_digest(digest),
          {:ok, read_guard} <- AttachmentCoordinator.acquire_read(uuid) do
+      read_handle = AttachmentInstr.start_read(uuid)
+
       try do
-        open_blob_under_guard(uuid, digest, read_guard)
+        case open_blob_under_guard(uuid, digest, read_guard, read_handle) do
+          {:ok, _} = ok ->
+            ok
+
+          {:error, %ElixirDB.Error{} = error} = err ->
+            _ = AttachmentInstr.fail_read(read_handle, error)
+            err
+        end
       rescue
         exception in @release_on_raise ->
           _ = AttachmentCoordinator.release(uuid, read_guard)
+
+          _ =
+            AttachmentInstr.fail_read(
+              read_handle,
+              ElixirDB.Error.internal_error("attachment read failed")
+            )
+
           reraise(exception, __STACKTRACE__)
       catch
         kind, reason ->
           _ = AttachmentCoordinator.release(uuid, read_guard)
+
+          _ =
+            AttachmentInstr.fail_read(
+              read_handle,
+              ElixirDB.Error.internal_error("attachment read failed")
+            )
+
           :erlang.raise(kind, reason, __STACKTRACE__)
       end
     end
@@ -240,7 +321,12 @@ defmodule ElixirDB.Attachments do
          {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
          {:ok, write_guard, max_bytes} <- AttachmentCoordinator.acquire_write(uuid) do
       try do
-        put_blob_under_guard(uuid, bundle_root, digest, length, source, max_bytes)
+        case AttachmentInstr.write(uuid, fn ->
+               put_blob_under_guard(uuid, bundle_root, digest, length, source, max_bytes)
+             end) do
+          {:ok, _stats} -> :ok
+          {:error, _} = error -> error
+        end
       after
         _ = AttachmentCoordinator.release(uuid, write_guard)
       end
@@ -254,11 +340,17 @@ defmodule ElixirDB.Attachments do
     case @store.begin_put(bundle_root, max_bytes, %{}) do
       {:ok, writer} ->
         try do
-          with :ok <- write_all_chunks(writer, source),
-               {:ok, %{digest: computed, logical_size: logical_size}} <- @store.finish_put(writer),
-               :ok <- match_blob_identity(digest, length, computed, logical_size),
-               {:ok, _} <- protect_uploaded_blob(uuid, digest, logical_size) do
-            :ok
+          with {:ok, stream_chunks} <- write_all_chunks(writer, source),
+               {:ok, finished} <- @store.finish_put(writer),
+               :ok <-
+                 match_blob_identity(digest, length, finished.digest, finished.logical_size),
+               {:ok, protected} <- protect_uploaded_blob(uuid, digest, finished.logical_size) do
+            {:ok,
+             Map.merge(protected, %{
+               stream_chunks: stream_chunks,
+               encoding: finished.encoding,
+               deduplicated?: finished.deduplicated?
+             })}
           else
             {:error, _} = error ->
               abort_writer(writer)
@@ -298,9 +390,16 @@ defmodule ElixirDB.Attachments do
     case @store.begin_put(bundle_root, max_bytes, Map.new(opts)) do
       {:ok, writer} ->
         try do
-          with :ok <- write_all_chunks(writer, source),
-               {:ok, %{digest: digest, logical_size: logical_size}} <- @store.finish_put(writer) do
-            protect_uploaded_blob(uuid, digest, logical_size)
+          with {:ok, stream_chunks} <- write_all_chunks(writer, source),
+               {:ok, finished} <- @store.finish_put(writer),
+               {:ok, protected} <-
+                 protect_uploaded_blob(uuid, finished.digest, finished.logical_size) do
+            {:ok,
+             Map.merge(protected, %{
+               stream_chunks: stream_chunks,
+               encoding: finished.encoding,
+               deduplicated?: finished.deduplicated?
+             })}
           else
             {:error, _} = error ->
               abort_writer(writer)
@@ -353,7 +452,7 @@ defmodule ElixirDB.Attachments do
     Enum.reject(digests, &durable_blob?(uuid, bundle_root, &1))
   end
 
-  defp open_blob_under_guard(uuid, digest, read_guard) do
+  defp open_blob_under_guard(uuid, digest, read_guard, read_handle) do
     with {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
          true <- @store.exists?(bundle_root, digest),
          {:ok, meta} <-
@@ -361,8 +460,18 @@ defmodule ElixirDB.Attachments do
          length when is_integer(length) and length >= 0 <-
            MapAccess.get(meta, :logical_size) || MapAccess.get(meta, :length),
          {:ok, reader} <- @store.open_read(bundle_root, digest),
-         {:ok, stream} <- BlobStream.new(digest, length, blob_body_stream(uuid, reader, read_guard)) do
-      {:ok, stream}
+         read_handle <-
+           AttachmentInstr.finish_read_open(read_handle, logical_bytes: length) do
+      finish = once_read_finish(reader, uuid, read_guard, read_handle)
+
+      case BlobStream.new(digest, length, blob_body_stream(reader, finish)) do
+        {:ok, stream} ->
+          {:ok, stream}
+
+        {:error, _} = error ->
+          finish.(outcome: :failed)
+          error
+      end
     else
       false ->
         _ = AttachmentCoordinator.release(uuid, read_guard)
@@ -378,7 +487,7 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  defp blob_body_stream(uuid, reader, read_guard) do
+  defp blob_body_stream(reader, finish) when is_function(finish, 1) do
     Stream.resource(
       fn -> {:open, reader} end,
       fn
@@ -396,41 +505,46 @@ defmodule ElixirDB.Attachments do
           {:halt, {:failed, current}}
       end,
       fn
-        {:open, current} ->
-          _ = @store.close_read(current)
-          _ = AttachmentCoordinator.release(uuid, read_guard)
-
-        {:done, current} ->
-          _ = @store.close_read(current)
-          _ = AttachmentCoordinator.release(uuid, read_guard)
-
-        {:failed, current} ->
-          _ = @store.close_read(current)
-          _ = AttachmentCoordinator.release(uuid, read_guard)
-
-        _ ->
-          _ = AttachmentCoordinator.release(uuid, read_guard)
+        {:failed, _} -> finish.(outcome: :failed)
+        _ -> finish.([])
       end
     )
   end
 
+  defp once_read_finish(reader, uuid, read_guard, read_handle) do
+    finished? = :atomics.new(1, signed: false)
+
+    fn attrs ->
+      case :atomics.compare_exchange(finished?, 1, 0, 1) do
+        :ok ->
+          _ = @store.close_read(reader)
+          _ = AttachmentCoordinator.release(uuid, read_guard)
+          _ = AttachmentInstr.end_read(read_handle, attrs)
+          :ok
+
+        _ ->
+          :ok
+      end
+    end
+  end
+
   defp write_all_chunks(writer, %Plug.Conn{} = conn) do
-    write_conn_chunks(writer, conn)
+    write_conn_chunks(writer, conn, 0)
   end
 
   defp write_all_chunks(writer, source) when is_function(source, 0) do
-    write_fun_chunks(writer, source)
+    write_fun_chunks(writer, source, 0)
   end
 
   defp write_all_chunks(writer, source) do
-    Enum.reduce_while(source, :ok, fn
-      chunk, :ok when is_binary(chunk) ->
+    Enum.reduce_while(source, {:ok, 0}, fn
+      chunk, {:ok, count} when is_binary(chunk) ->
         case @store.write_chunk(writer, chunk) do
-          :ok -> {:cont, :ok}
+          :ok -> {:cont, {:ok, count + 1}}
           {:error, _} = error -> {:halt, error}
         end
 
-      other, :ok ->
+      other, {:ok, _count} ->
         {:halt,
          {:error,
           ElixirDB.Error.invalid_request("attachment chunk must be a binary", %{
@@ -439,14 +553,19 @@ defmodule ElixirDB.Attachments do
     end)
   end
 
-  defp write_conn_chunks(writer, conn) do
+  defp write_conn_chunks(writer, conn, count) do
     case Plug.Conn.read_body(conn, @read_chunk_opts) do
+      {:ok, "", _conn} ->
+        {:ok, count}
+
       {:ok, body, _conn} ->
-        if body == "", do: :ok, else: @store.write_chunk(writer, body)
+        with :ok <- @store.write_chunk(writer, body) do
+          {:ok, count + 1}
+        end
 
       {:more, body, conn} ->
         with :ok <- @store.write_chunk(writer, body) do
-          write_conn_chunks(writer, conn)
+          write_conn_chunks(writer, conn, count + 1)
         end
 
       {:error, reason} ->
@@ -457,15 +576,15 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  defp write_fun_chunks(writer, fun) do
+  defp write_fun_chunks(writer, fun, count) do
     case fun.() do
       {:ok, chunk, next} when is_binary(chunk) and is_function(next, 0) ->
         with :ok <- @store.write_chunk(writer, chunk) do
-          write_fun_chunks(writer, next)
+          write_fun_chunks(writer, next, count + 1)
         end
 
       :done ->
-        :ok
+        {:ok, count}
 
       {:error, %ElixirDB.Error{}} = error ->
         error
@@ -507,12 +626,25 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  defp open_stream_under_guard(uuid, ticket_request, read_guard) do
+  defp open_stream_under_guard(uuid, ticket_request, read_guard, read_handle) do
     case resolve_ticket_command(uuid, ticket_request) do
       {:ok, ticket} ->
         case @store.open_read(ticket.bundle_path, ticket.blob_digest) do
           {:ok, reader} ->
-            {:ok, stream_result(uuid, ticket, reader, read_guard)}
+            read_handle =
+              AttachmentInstr.finish_read_open(read_handle, logical_bytes: ticket.logical_size)
+
+            finish = once_read_finish(reader, uuid, read_guard, read_handle)
+
+            {:ok,
+             %{
+               ticket: ticket,
+               content_type: ticket.content_type,
+               content_length: ticket.logical_size,
+               etag: ~s("#{ticket.blob_digest}"),
+               body: blob_body_stream(reader, finish),
+               close: fn -> finish.([]) end
+             }}
 
           {:error, _} = error ->
             _ = AttachmentCoordinator.release(uuid, read_guard)
@@ -523,23 +655,6 @@ defmodule ElixirDB.Attachments do
         _ = AttachmentCoordinator.release(uuid, read_guard)
         error
     end
-  end
-
-  defp stream_result(uuid, ticket, reader, read_guard) do
-    cleanup = fn ->
-      _ = @store.close_read(reader)
-      _ = AttachmentCoordinator.release(uuid, read_guard)
-      :ok
-    end
-
-    %{
-      ticket: ticket,
-      content_type: ticket.content_type,
-      content_length: ticket.logical_size,
-      etag: ~s("#{ticket.blob_digest}"),
-      body: blob_body_stream(uuid, reader, read_guard),
-      close: cleanup
-    }
   end
 
   defp resolve_ticket_command(uuid, ticket_request) do
@@ -646,5 +761,85 @@ defmodule ElixirDB.Attachments do
 
   defp abort_writer(writer) do
     @store.abort_put(writer)
+  end
+
+  defp run_gc(uuid, bundle_root) do
+    with {:ok, live} <- collect_live_digests(uuid),
+         {:ok, expired} <-
+           DatabaseCatalog.command(uuid, {:command, :cleanup_expired_pending_blobs, %{}}),
+         {:ok, on_disk} <- @store.list_digests(bundle_root),
+         {:ok, deleted} <- delete_unreachable(bundle_root, on_disk, live),
+         :ok <- @store.cleanup_tmp(bundle_root, tmp_cleanup_cutoff()) do
+      {:ok,
+       %{
+         deleted: length(deleted),
+         deleted_digests: deleted,
+         live_count: MapSet.size(live),
+         expired_pending_removed: MapAccess.get(expired, :removed, 0),
+         blobs_deleted: length(deleted),
+         bytes_deleted: 0
+       }}
+    end
+  end
+
+  defp collect_live_digests(uuid), do: collect_live_digests(uuid, nil, MapSet.new())
+
+  defp collect_live_digests(uuid, after_digest, acc) do
+    request =
+      if is_binary(after_digest) do
+        %{after_digest: after_digest}
+      else
+        %{}
+      end
+
+    case DatabaseCatalog.command(uuid, {:command, :list_live_attachment_digests, request}) do
+      {:ok, page} ->
+        digests = MapAccess.get(page, :digests) || []
+        next = MapAccess.get(page, :next_after_digest)
+        acc = Enum.reduce(digests, acc, &MapSet.put(&2, &1))
+
+        if is_binary(next) do
+          collect_live_digests(uuid, next, acc)
+        else
+          {:ok, acc}
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp delete_unreachable(bundle_root, on_disk, live) do
+    unreachable = Enum.reject(on_disk, &MapSet.member?(live, &1))
+
+    deleted =
+      Enum.reduce(unreachable, [], fn digest, acc ->
+        invoke_gc_hook({:before_delete, digest})
+
+        case @store.delete(bundle_root, digest) do
+          :ok ->
+            [digest | acc]
+
+          {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} ->
+            acc
+
+          {:error, _} ->
+            # Crash/partial failure may leave garbage; never roll back metadata.
+            acc
+        end
+      end)
+
+    {:ok, Enum.reverse(deleted)}
+  end
+
+  defp tmp_cleanup_cutoff do
+    DateTime.utc_now() |> DateTime.add(-@pending_protection_hours * 3600, :second)
+  end
+
+  defp invoke_gc_hook(event) do
+    case Application.get_env(:elixir_db, :attachment_gc_hook) do
+      fun when is_function(fun, 1) -> fun.(event)
+      _ -> :ok
+    end
   end
 end

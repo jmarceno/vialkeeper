@@ -13,13 +13,16 @@ defmodule ElixirDB.Observability.Attributes do
   `http.method`, `http.route` (route template, never the raw path),
   `http.status_code`, `index_id`, `index_type`, `replication.id`, `endpoint`
   (`:source` | `:target`), the bounded counts `entries`, `examined`,
-  `revisions_written`, and `finch.duration` (the telemetry bridge only: a
+  `revisions_written`, attachment stream measurements `logical_bytes`,
+  `stream_chunks`, `compressed`, `deduplicated`, `blobs_deleted`,
+  `bytes_deleted`, and `finch.duration` (the telemetry bridge only: a
   bounded numeric duration from the Finch stop event, never customer data).
 
   ## Forbidden (enforced by absence)
 
   Document bodies, document IDs (unbounded cardinality and customer data),
-  search text, revision IDs/bodies, full remote URLs, request bodies.
+  search text, revision IDs/bodies, attachment names, blob digests, physical
+  paths, content types, full remote URLs, request bodies.
   """
 
   @allowed [
@@ -54,6 +57,12 @@ defmodule ElixirDB.Observability.Attributes do
     source_epoch: :source_epoch,
     compaction_epoch: :compaction_epoch,
     retention_mode: :retention_mode,
+    logical_bytes: :logical_bytes,
+    stream_chunks: :stream_chunks,
+    compressed: :compressed,
+    deduplicated: :deduplicated,
+    blobs_deleted: :blobs_deleted,
+    bytes_deleted: :bytes_deleted,
     finch_duration: :"finch.duration"
   ]
 

@@ -32,4 +32,8 @@ config :opentelemetry, :processors,
 # wire a test exporter.
 config :opentelemetry_experimental, readers: []
 
+# Post-compact attachment GC is invoked from the runtime owner via configured MFA
+# so Reach layers stay acyclic (runtime must not depend on the application facade).
+config :elixir_db, :attachment_gc_module, ElixirDB.Attachments
+
 import_config "#{config_env()}.exs"

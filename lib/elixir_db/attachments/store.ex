@@ -12,7 +12,13 @@ defmodule ElixirDB.Attachments.Store do
               :ok | {:error, ElixirDB.Error.t()}
 
   @callback finish_put(writer :: term()) ::
-              {:ok, %{digest: binary(), logical_size: non_neg_integer()}}
+              {:ok,
+               %{
+                 digest: binary(),
+                 logical_size: non_neg_integer(),
+                 encoding: :raw | :compressed,
+                 deduplicated?: boolean()
+               }}
               | {:error, ElixirDB.Error.t()}
 
   @callback abort_put(writer :: term()) :: :ok

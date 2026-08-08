@@ -20,8 +20,12 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
 
   @doc """
   Runs structural and logical integrity validators for an open connection.
+
+  On success returns a report map. Unreferenced final blobs without unexpired
+  pending protection are counted as `reclaimable_blobs` (garbage, not corruption).
   """
-  @spec run(Connection.handle(), [map()], binary() | nil) :: :ok | {:error, ElixirDB.Error.t()}
+  @spec run(Connection.handle(), [map()], binary() | nil) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
   def run(conn, indexes, bundle_root \\ nil) when is_list(indexes) do
     with {:ok, [["ok"]]} <- Connection.pragma(conn, "integrity_check"),
          {:ok, []} <- Connection.pragma(conn, "foreign_key_check"),
@@ -36,15 +40,15 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
          :ok <- validate_retention_maintenance(conn),
          :ok <- validate_revision_rows(conn, boundaries),
          :ok <- validate_revision_attachments(conn),
-         :ok <- validate_physical_attachment_blobs(conn, bundle_root),
+         {:ok, attachment_report} <- validate_physical_attachment_blobs(conn, bundle_root),
          :ok <- validate_pending_blobs(conn),
          :ok <- validate_document_rows(conn),
          :ok <- validate_change_rows(conn, meta.retention_floor_sequence),
          :ok <- validate_checkpoints(conn, meta),
          :ok <- validate_index_rows(conn, indexes) do
-      :ok
+      {:ok, attachment_report}
     else
-      {:ok, rows} ->
+      {:ok, rows} when is_list(rows) ->
         {:error,
          ElixirDB.Error.integrity_violation("SQLite integrity check failed", %{results: rows})}
 
@@ -260,21 +264,71 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
     end
   end
 
-  defp validate_physical_attachment_blobs(_conn, nil), do: :ok
+  defp validate_physical_attachment_blobs(_conn, nil), do: {:ok, %{reclaimable_blobs: 0}}
 
   defp validate_physical_attachment_blobs(conn, bundle_root) when is_binary(bundle_root) do
+    with {:ok, referenced} <- referenced_attachment_sizes(conn),
+         :ok <- verify_referenced_blobs(bundle_root, referenced),
+         {:ok, live} <-
+           live_attachment_digests(
+             conn,
+             MapSet.new(Enum.map(referenced, fn {digest, _size} -> digest end))
+           ),
+         {:ok, physical} <- inventory_physical_blobs(bundle_root) do
+      reclaimable =
+        physical
+        |> MapSet.difference(live)
+        |> MapSet.size()
+
+      {:ok, %{reclaimable_blobs: reclaimable}}
+    end
+  end
+
+  defp referenced_attachment_sizes(conn) do
     case Connection.query(
            conn,
-           "SELECT blob_digest, logical_size FROM revision_attachments ORDER BY blob_digest"
+           """
+           SELECT blob_digest, logical_size
+           FROM revision_attachments
+           ORDER BY blob_digest, logical_size
+           """
          ) do
       {:ok, rows} ->
-        Enum.reduce_while(rows, :ok, fn [digest, logical_size], :ok ->
-          validate_physical_attachment_row(bundle_root, digest, logical_size)
-        end)
+        pairs = Enum.map(rows, fn [digest, size] -> {digest, size} end)
+
+        case inconsistent_digest_sizes(pairs) do
+          :ok -> {:ok, pairs}
+          {:error, _} = error -> error
+        end
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
     end
+  end
+
+  defp inconsistent_digest_sizes(pairs) do
+    pairs
+    |> Enum.group_by(fn {digest, _} -> digest end, fn {_, size} -> size end)
+    |> Enum.reduce_while(:ok, fn {digest, sizes}, :ok ->
+      case Enum.uniq(sizes) do
+        [_] ->
+          {:cont, :ok}
+
+        uniq ->
+          {:halt,
+           {:error,
+            ElixirDB.Error.integrity_violation(
+              "attachment digest has inconsistent logical sizes across retained manifests",
+              %{digest: digest, sizes: uniq}
+            )}}
+      end
+    end)
+  end
+
+  defp verify_referenced_blobs(bundle_root, referenced) do
+    Enum.reduce_while(referenced, :ok, fn {digest, logical_size}, :ok ->
+      validate_physical_attachment_row(bundle_root, digest, logical_size)
+    end)
   end
 
   defp validate_physical_attachment_row(bundle_root, digest, logical_size) do
@@ -289,6 +343,153 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
             "referenced attachment blob failed physical verification",
             %{digest: digest, cause: error.message}
           )}}
+    end
+  end
+
+  defp live_attachment_digests(conn, referenced) do
+    now_iso = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    case Connection.query(
+           conn,
+           """
+           SELECT blob_digest FROM pending_blobs
+           WHERE expires_at > ?
+           """,
+           [now_iso]
+         ) do
+      {:ok, rows} ->
+        pending = MapSet.new(rows, &List.first/1)
+        {:ok, MapSet.union(referenced, pending)}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp inventory_physical_blobs(bundle_root) do
+    blobs_path = Path.join(Path.expand(bundle_root), "blobs")
+
+    case File.ls(blobs_path) do
+      {:ok, entries} ->
+        Enum.reduce_while(entries, {:ok, MapSet.new()}, fn entry, {:ok, digests} ->
+          inventory_blob_prefix(blobs_path, entry, digests)
+        end)
+
+      {:error, :enoent} ->
+        {:ok, MapSet.new()}
+
+      {:error, reason} ->
+        {:error,
+         ElixirDB.Error.integrity_violation("attachment blobs directory is unreadable", %{
+           reason: inspect(reason)
+         })}
+    end
+  end
+
+  defp inventory_blob_prefix(blobs_path, entry, digests) do
+    path = Path.join(blobs_path, entry)
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:halt,
+         {:error, ElixirDB.Error.integrity_violation("attachment blob path contains a symlink")}}
+
+      {:ok, %File.Stat{type: :directory}} ->
+        inventory_directory_prefix(path, entry, digests)
+
+      {:ok, %File.Stat{type: :regular}} ->
+        {:halt,
+         {:error,
+          ElixirDB.Error.integrity_violation("attachment blobs root contains a non-directory entry")}}
+
+      {:error, reason} ->
+        {:halt,
+         {:error,
+          ElixirDB.Error.integrity_violation("attachment blob path is unreadable", %{
+            reason: inspect(reason)
+          })}}
+    end
+  end
+
+  defp inventory_directory_prefix(path, entry, digests) do
+    if Regex.match?(~r/^[0-9a-f]{2}$/, entry) do
+      continue_inventory(inventory_blob_files(path, entry, digests))
+    else
+      {:halt,
+       {:error, ElixirDB.Error.integrity_violation("attachment blob prefix directory is malformed")}}
+    end
+  end
+
+  defp continue_inventory({:ok, next}), do: {:cont, {:ok, next}}
+  defp continue_inventory({:error, _} = error), do: {:halt, error}
+
+  defp inventory_blob_files(prefix_path, prefix, digests) do
+    case File.ls(prefix_path) do
+      {:ok, files} ->
+        Enum.reduce_while(files, {:ok, digests}, &reduce_blob_file(prefix_path, prefix, &1, &2))
+
+      {:error, reason} ->
+        {:error,
+         ElixirDB.Error.integrity_violation("attachment blob prefix is unreadable", %{
+           reason: inspect(reason)
+         })}
+    end
+  end
+
+  defp reduce_blob_file(prefix_path, prefix, file, {:ok, acc}) do
+    case inventory_blob_file(prefix_path, prefix, file, acc) do
+      {:ok, next} -> {:cont, {:ok, next}}
+      {:error, _} = error -> {:halt, error}
+    end
+  end
+
+  defp inventory_blob_file(prefix_path, prefix, file, digests) do
+    path = Path.join(prefix_path, file)
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:error, ElixirDB.Error.integrity_violation("attachment blob representation is a symlink")}
+
+      {:ok, %File.Stat{type: :regular}} ->
+        accept_blob_filename(prefix, file, digests)
+
+      {:ok, _} ->
+        {:error, ElixirDB.Error.integrity_violation("attachment blob entry has an invalid type")}
+
+      {:error, reason} ->
+        {:error,
+         ElixirDB.Error.integrity_violation("attachment blob entry is unreadable", %{
+           reason: inspect(reason)
+         })}
+    end
+  end
+
+  defp accept_blob_filename(prefix, file, digests) do
+    case parse_blob_filename(prefix, file) do
+      {:ok, digest} ->
+        record_physical_digest(digests, digest)
+
+      :error ->
+        {:error, ElixirDB.Error.integrity_violation("attachment blob filename is malformed")}
+    end
+  end
+
+  defp record_physical_digest(digests, digest) do
+    if MapSet.member?(digests, digest) do
+      {:error,
+       ElixirDB.Error.integrity_violation("attachment has multiple physical representations")}
+    else
+      {:ok, MapSet.put(digests, digest)}
+    end
+  end
+
+  defp parse_blob_filename(prefix, file) do
+    case Regex.run(~r/^([0-9a-f]{64})\.(raw|zst)$/, file) do
+      [_, digest, _ext] ->
+        if String.slice(digest, 0, 2) == prefix, do: {:ok, digest}, else: :error
+
+      _ ->
+        :error
     end
   end
 

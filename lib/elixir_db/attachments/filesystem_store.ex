@@ -92,10 +92,18 @@ defmodule ElixirDB.Attachments.FilesystemStore do
            {:ok, state} <- maybe_decide_encoding(state),
            {:ok, state} <- finalize_physical(state),
            phase = state.phase,
+           encoding = encoding_from_phase(phase),
            :ok <- close_fd(state.fd),
            {:ok, digest, logical_size} <- finalize_digest(state),
-           :ok <- install(state.bundle_path, state.tmp_path, digest, logical_size, phase) do
-        {:ok, %{digest: digest, logical_size: logical_size}}
+           {:ok, install_kind} <-
+             install(state.bundle_path, state.tmp_path, digest, logical_size, phase) do
+        {:ok,
+         %{
+           digest: digest,
+           logical_size: logical_size,
+           encoding: encoding,
+           deduplicated?: install_kind == :deduplicated
+         }}
       end
 
     case result do
@@ -488,11 +496,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   end
 
   defp install(bundle_path, tmp_path, digest, logical_size, phase) do
-    encoding =
-      case phase do
-        {:writing, enc} -> enc
-        :probing -> :raw
-      end
+    encoding = encoding_from_phase(phase)
 
     case bundle_for(bundle_path) do
       {:ok, bundle} ->
@@ -504,6 +508,9 @@ defmodule ElixirDB.Attachments.FilesystemStore do
         error
     end
   end
+
+  defp encoding_from_phase({:writing, encoding}), do: encoding
+  defp encoding_from_phase(:probing), do: :raw
 
   defp install_into_bundle(bundle, tmp_path, digest, logical_size, encoding) do
     case resolve_representation(bundle.root, digest) do
@@ -522,7 +529,11 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   defp reuse_verified_blob(bundle_root, tmp_path, digest, logical_size) do
     result = verify(bundle_root, digest, logical_size)
     _ = File.rm(tmp_path)
-    result
+
+    case result do
+      :ok -> {:ok, :deduplicated}
+      {:error, _} = error -> error
+    end
   end
 
   defp install_new_blob(bundle, tmp_path, digest, logical_size, encoding) do
@@ -530,7 +541,10 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
     case atomic_install(tmp_path, dest) do
       :ok ->
-        DurableFS.sync_directory(Path.dirname(dest))
+        case DurableFS.sync_directory(Path.dirname(dest)) do
+          :ok -> {:ok, :new}
+          {:error, reason} -> {:error, reason}
+        end
 
       {:error, :collision} ->
         # Another writer won the race; reuse only after validating the winner.
@@ -544,8 +558,14 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
   defp reuse_after_collision(bundle_root, digest, logical_size) do
     case ensure_single_representation(bundle_root, digest) do
-      :ok -> verify(bundle_root, digest, logical_size)
-      {:error, _} = error -> error
+      :ok ->
+        case verify(bundle_root, digest, logical_size) do
+          :ok -> {:ok, :deduplicated}
+          {:error, _} = error -> error
+        end
+
+      {:error, _} = error ->
+        error
     end
   end
 

@@ -23,6 +23,14 @@ defmodule ElixirDB.Observability.Meters do
   | `elixir_db.replication.batch.duration` | histogram |
   | `elixir_db.replication.checkpoint.count` | counter |
   | `elixir_db.http.request.duration` | histogram |
+  | `elixir_db.attachment.read.count` | counter |
+  | `elixir_db.attachment.read.duration` | histogram |
+  | `elixir_db.attachment.write.count` | counter |
+  | `elixir_db.attachment.write.duration` | histogram |
+  | `elixir_db.attachment.gc.count` | counter |
+  | `elixir_db.attachment.gc.duration` | histogram |
+  | `elixir_db.replication.blob.transfer.count` | counter |
+  | `elixir_db.replication.blob.transfer.duration` | histogram |
   """
 
   alias ElixirDB.Observability.Attributes
@@ -41,7 +49,15 @@ defmodule ElixirDB.Observability.Meters do
     {:"elixir_db.replication.checkpoint.count", :counter},
     {:"elixir_db.replication.bootstrap.count", :counter},
     {:"elixir_db.import.stale_fence.count", :counter},
-    {:"elixir_db.http.request.duration", :histogram}
+    {:"elixir_db.http.request.duration", :histogram},
+    {:"elixir_db.attachment.read.count", :counter},
+    {:"elixir_db.attachment.read.duration", :histogram},
+    {:"elixir_db.attachment.write.count", :counter},
+    {:"elixir_db.attachment.write.duration", :histogram},
+    {:"elixir_db.attachment.gc.count", :counter},
+    {:"elixir_db.attachment.gc.duration", :histogram},
+    {:"elixir_db.replication.blob.transfer.count", :counter},
+    {:"elixir_db.replication.blob.transfer.duration", :histogram}
   ]
 
   @doc "Returns the instrument catalog declared by this module."
