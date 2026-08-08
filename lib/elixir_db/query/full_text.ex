@@ -54,6 +54,12 @@ defmodule ElixirDB.Query.FullText do
 
   defp query_matches?(query, values, "phrase"), do: phrase?(values, query)
 
+  defp query_matches?(query, values, "prefix") do
+    Enum.all?(query, fn query_token ->
+      Enum.any?(values, &String.starts_with?(&1, query_token))
+    end)
+  end
+
   defp query_matches?(query, values, mode) do
     initial = mode == "all"
     Enum.reduce_while(query, initial, &reduce_query_token(&1, &2, values, mode))

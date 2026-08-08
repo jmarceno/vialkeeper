@@ -1,7 +1,7 @@
 defmodule ElixirDB.Query.PlannerTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Query.{Planner, Projection}
+  alias ElixirDB.Query.{Plan, Planner, Projection, Regex}
 
   defp structured(id, fields) do
     %{
@@ -139,5 +139,114 @@ defmodule ElixirDB.Query.PlannerTest do
              revision: "1-abc",
              fields: %{"/title" => "Hello"}
            }
+  end
+
+  test "plan digest is storage-neutral and preserves ordered bindings" do
+    assert {:ok, regex} = Regex.compile("^open$")
+
+    attrs = %{
+      kind: :union,
+      scans: [
+        %{
+          branch: 0,
+          index_id: "idx-a",
+          constraint: {:eq, "open"},
+          compiled: regex,
+          physical_name: "sqlite_private_name"
+        },
+        %{
+          branch: 1,
+          index_id: "idx-b",
+          constraint: {:eq, "queued"},
+          sql: "private sql"
+        }
+      ],
+      selected_indexes: [
+        %{index_id: "idx-a", definition_digest: String.duplicate("a", 64)},
+        %{index_id: "idx-b", definition_digest: String.duplicate("b", 64)}
+      ],
+      sort_compatible?: false,
+      pagination: :union
+    }
+
+    assert {:ok, plan} = Plan.new(attrs)
+    assert [_, _] = Plan.index_bindings(plan)
+    refute Map.has_key?(Plan.canonical(plan)["scans"] |> hd(), "physical_name")
+    refute Map.has_key?(Plan.canonical(plan)["scans"] |> hd(), "compiled")
+    assert is_binary(plan.digest) and byte_size(plan.digest) == 64
+  end
+
+  test "enforces plan kind invariants and pagination" do
+    binding = %{index_id: "idx-a", definition_digest: String.duplicate("a", 64)}
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             Plan.new(%{
+               kind: :single,
+               scans: [],
+               selected_indexes: [],
+               sort_compatible?: false,
+               pagination: :indexed
+             })
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             Plan.new(%{
+               kind: :union,
+               scans: [%{"index_id" => "idx-a"}],
+               selected_indexes: [binding],
+               sort_compatible?: false,
+               pagination: :union
+             })
+
+    assert {:ok, _plan} =
+             Plan.new(%{
+               kind: :bounded_scan,
+               scans: [%{"constraint" => "post-filter"}],
+               selected_indexes: [],
+               sort_compatible?: false,
+               pagination: :bounded_scan
+             })
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             Plan.new(%{
+               kind: :bounded_scan,
+               scans: [%{"index_id" => "idx-a"}],
+               selected_indexes: [],
+               sort_compatible?: false,
+               pagination: :bounded_scan
+             })
+  end
+
+  test "strips forbidden runtime keys and rejects unsafe plan keys" do
+    binding = %{index_id: "idx-a", definition_digest: String.duplicate("a", 64)}
+
+    assert {:ok, plan} =
+             Plan.new(%{
+               kind: :single,
+               scans: [%{"index_id" => "idx-a", "pid" => self(), "sql" => "private"}],
+               selected_indexes: [binding],
+               sort_compatible?: false,
+               pagination: :indexed
+             })
+
+    refute Map.has_key?(hd(plan.scans), "pid")
+    refute Map.has_key?(hd(plan.scans), "sql")
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             Plan.new(%{
+               kind: :single,
+               scans: [%{:index_id => "idx-a", "index_id" => "idx-a"}],
+               selected_indexes: [binding],
+               sort_compatible?: false,
+               pagination: :indexed
+             })
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             Plan.new(%{
+               kind: :single,
+               scans: [%{"index_id" => "idx-a", "sql" => "one", :sql => "two"}],
+               selected_indexes: [binding],
+               sort_compatible?: false,
+               pagination: :indexed
+             })
   end
 end

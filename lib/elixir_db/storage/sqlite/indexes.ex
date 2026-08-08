@@ -303,6 +303,9 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
           "phrase" ->
             "\"" <> Enum.map_join(terms, " ", &String.replace(&1, "\"", "\"\"")) <> "\""
 
+          "prefix" ->
+            Enum.map_join(terms, " AND ", &prefix_term/1)
+
           _ ->
             Enum.join(escaped, " AND ")
         end
@@ -431,6 +434,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
 
   defp quote_identifier(value), do: "\"" <> String.replace(value, "\"", "\"\"") <> "\""
   defp quote_term(value), do: "\"" <> String.replace(value, "\"", "\"\"") <> "\""
+  defp prefix_term(value), do: quote_term(value) <> "*"
 
   defp normalize_result(:ok), do: :ok
   defp normalize_result({:error, %ElixirDB.Error{} = error}), do: {:error, error}

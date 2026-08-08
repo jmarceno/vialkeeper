@@ -13,6 +13,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Query
+  alias ElixirDB.Query.{Normalizer, Prepared}
 
   alias ElixirDB.Storage.SQLite.{
     Attachments,
@@ -35,6 +36,22 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   defstruct [:path, :conn, :identity, storage_mode: :disk, retention_fault: nil]
   @type storage_mode :: :disk | :memory
   @type retention_fault :: (atom() -> :ok | {:error, ElixirDB.Error.t()}) | nil
+  @query_public_keys [
+    :selector,
+    :sort,
+    :fields,
+    :limit,
+    :bookmark,
+    :index,
+    :search,
+    "selector",
+    "sort",
+    "fields",
+    "limit",
+    "bookmark",
+    "index",
+    "search"
+  ]
   @type t :: %__MODULE__{
           path: binary(),
           conn: Connection.handle(),
@@ -383,9 +400,16 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     # errors flow through the error.code/status policy (§5.5, §6.5). The
     # wrapper receives {result, examined_count} and returns the bare result
     # after recording the examined attribute.
+    prepared_request = prepare_query_request(request)
+
     result =
       Query.execute(uuid, 0, started_native, fn ->
-        res = QueryRunner.execute(adapter, request)
+        res =
+          case prepared_request do
+            {:ok, normalized} -> QueryRunner.execute(adapter, normalized)
+            {:error, _} = error -> error
+          end
+
         {res, examined_count(res)}
       end)
 
@@ -406,11 +430,44 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: {:error, ElixirDB.Error.invalid_request("query must be an object")}
 
   @impl true
-  def explain_query(%__MODULE__{} = adapter, request) when is_map(request),
-    do: QueryRunner.explain(adapter, request)
+  def explain_query(%__MODULE__{} = adapter, request) when is_map(request) do
+    case prepare_query_request(request) do
+      {:ok, normalized} -> QueryRunner.explain(adapter, normalized)
+      {:error, _} = error -> error
+    end
+  end
 
   def explain_query(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("query explanation must be an object")}
+
+  defp prepare_query_request(%Prepared{} = prepared) do
+    {:ok, Prepared.unwrap(prepared)}
+  end
+
+  defp prepare_query_request(request) when is_map(request) do
+    # Plain maps are always treated as untrusted public input. A client-supplied
+    # `:normalized` marker or `:predicate` must never bypass Normalizer.
+    normalize_public_query(request)
+  end
+
+  defp normalize_public_query(request) do
+    request
+    |> Map.take(@query_public_keys)
+    |> Normalizer.normalize()
+    |> preserve_query_cursor(request)
+  end
+
+  defp preserve_query_cursor({:ok, normalized}, request) do
+    {:ok,
+     normalized
+     |> maybe_put_internal(:after_id, MapAccess.get(request, :after_id))
+     |> maybe_put_internal(:after_ordering, MapAccess.get(request, :after_ordering))}
+  end
+
+  defp preserve_query_cursor(error, _request), do: error
+
+  defp maybe_put_internal(request, _key, nil), do: request
+  defp maybe_put_internal(request, key, value), do: Map.put(request, key, value)
 
   @impl true
   def resolve_attachment_ticket(%__MODULE__{} = adapter, request) when is_map(request),

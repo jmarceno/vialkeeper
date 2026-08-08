@@ -1,114 +1,182 @@
 defmodule ElixirDB.Query.Selector do
-  @moduledoc "The bounded storage-neutral selector subset."
+  @moduledoc "The storage-neutral evaluator for canonical query predicates."
 
   alias ElixirDB.JSON.Pointer
+  alias ElixirDB.Query.Predicate
 
-  @spec matches?(map(), map()) :: {:ok, boolean()} | {:error, ElixirDB.Error.t()}
-  def matches?(document, selector) when is_map(document) and is_map(selector) do
-    Enum.reduce_while(selector, {:ok, true}, fn entry, acc ->
-      match_entry(document, entry, acc)
-    end)
+  @safe_integer 9_007_199_254_740_991
+
+  @spec matches?(map(), Predicate.t()) :: {:ok, boolean()} | {:error, ElixirDB.Error.t()}
+  def matches?(document, predicate) when is_map(document) do
+    evaluate(document, predicate)
   end
 
-  def matches?(_, _), do: {:error, ElixirDB.Error.invalid_request("selector must be an object")}
+  def matches?(_, _),
+    do: {:error, ElixirDB.Error.invalid_request("selector predicate is invalid")}
 
-  defp match_entry(document, {"$and", clauses}, {:ok, true})
-       when is_list(clauses) and clauses != [] do
-    clauses
-    |> Enum.reduce_while({:ok, true}, fn clause, acc -> match_clause(document, clause, acc) end)
-    |> continue_or_halt()
-  end
+  defp evaluate(_document, :match_all), do: {:ok, true}
 
-  defp match_entry(_document, {"$and", _clauses}, _acc),
-    do: {:halt, {:error, ElixirDB.Error.invalid_request("$and must contain a non-empty array")}}
+  defp evaluate(document, {:and, predicates}),
+    do: evaluate_all(document, predicates)
 
-  defp match_entry(document, {path, condition}, {:ok, true}) when is_binary(path) do
-    match_field(document, path, condition) |> continue_or_halt()
-  end
+  defp evaluate(document, {:or, predicates}),
+    do: evaluate_any(document, predicates)
 
-  defp match_entry(_document, {_path, _condition}, _acc), do: {:cont, {:ok, false}}
-
-  defp match_clause(document, clause, {:ok, true}) do
-    case matches?(document, clause) do
-      {:ok, true} -> {:cont, {:ok, true}}
-      {:ok, false} -> {:halt, {:ok, false}}
-      {:error, _} = error -> {:halt, error}
-    end
-  end
-
-  defp match_clause(_document, _clause, {:ok, false} = acc), do: {:halt, acc}
-  defp match_clause(_document, _clause, {:error, _} = error), do: {:halt, error}
-
-  defp continue_or_halt({:ok, value}), do: {:cont, {:ok, value}}
-  defp continue_or_halt({:error, _} = error), do: {:halt, error}
-
-  defp match_field(document, path, condition) do
-    with {:ok, _tokens} <- Pointer.parse(path), false <- path == "" do
-      value = Pointer.get(document, path)
-      evaluate(value, condition)
-    else
-      true -> {:error, ElixirDB.Error.invalid_request("selector paths must not be empty")}
+  defp evaluate(document, {:not, predicate}) do
+    case evaluate(document, predicate) do
+      {:ok, value} -> {:ok, not value}
       {:error, _} = error -> error
     end
   end
 
-  defp evaluate(:missing, %{"$exists" => expected}) when is_boolean(expected),
-    do: {:ok, not expected}
+  defp evaluate(document, {:field, path, predicates}) when is_binary(path) do
+    with {:ok, [_ | _]} <- Pointer.parse(path),
+         value <- Pointer.get(document, path) do
+      evaluate_field_predicates(value, predicates)
+    else
+      {:error, _} = error -> error
+      _ -> {:error, ElixirDB.Error.invalid_request("selector path is invalid")}
+    end
+  end
 
-  defp evaluate(:missing, %{"$exists" => _}),
-    do: {:error, ElixirDB.Error.invalid_request("$exists requires a boolean")}
+  defp evaluate(_document, _predicate),
+    do: {:error, ElixirDB.Error.invalid_request("selector predicate is invalid")}
 
-  defp evaluate(:missing, _), do: {:ok, false}
+  defp evaluate_all(_document, []), do: {:ok, true}
 
-  defp evaluate({:ok, value}, condition) when is_map(condition),
-    do: evaluate_operators(value, condition)
-
-  defp evaluate({:ok, value}, condition), do: {:ok, value == condition}
-  defp evaluate(value, condition), do: evaluate({:ok, value}, condition)
-
-  defp evaluate_operators(value, operators) do
-    Enum.reduce_while(operators, {:ok, true}, fn
-      {"$eq", expected}, {:ok, true} ->
-        continue_compare(value, expected, &(&1 == &2))
-
-      {"$gt", expected}, {:ok, true} ->
-        continue_compare(value, expected, &(&1 > &2))
-
-      {"$gte", expected}, {:ok, true} ->
-        continue_compare(value, expected, &(&1 >= &2))
-
-      {"$lt", expected}, {:ok, true} ->
-        continue_compare(value, expected, &(&1 < &2))
-
-      {"$lte", expected}, {:ok, true} ->
-        continue_compare(value, expected, &(&1 <= &2))
-
-      {"$in", expected}, {:ok, true} when is_list(expected) and expected != [] ->
-        {:cont, {:ok, Enum.any?(expected, &(same_type?(&1, value) and &1 == value))}}
-
-      {"$in", _}, _ ->
-        {:halt, {:error, ElixirDB.Error.invalid_request("$in requires a non-empty array")}}
-
-      {"$exists", expected}, {:ok, true} when is_boolean(expected) ->
-        {:cont, {:ok, expected}}
-
-      {"$exists", _}, _ ->
-        {:halt, {:error, ElixirDB.Error.invalid_request("$exists requires a boolean")}}
-
-      {_operator, _value}, _ ->
-        {:halt, {:error, ElixirDB.Error.invalid_request("unsupported selector operator")}}
+  defp evaluate_all(document, [predicate | rest]) do
+    Enum.reduce_while([predicate | rest], {:ok, true}, fn child, {:ok, result} ->
+      case evaluate(document, child) do
+        {:ok, value} -> {:cont, {:ok, result and value}}
+        {:error, _} = error -> {:halt, error}
+      end
     end)
   end
 
-  defp continue_compare(value, expected, comparator) do
-    if same_type?(value, expected),
-      do: {:cont, {:ok, comparator.(value, expected)}},
-      else: {:cont, {:ok, false}}
+  defp evaluate_any(_document, []), do: {:ok, false}
+
+  defp evaluate_any(document, [predicate | rest]) do
+    Enum.reduce_while([predicate | rest], {:ok, false}, fn child, {:ok, result} ->
+      case evaluate(document, child) do
+        {:ok, value} -> {:cont, {:ok, result or value}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
-  defp same_type?(a, b) when is_number(a) and is_number(b), do: true
-  defp same_type?(a, b) when is_binary(a) and is_binary(b), do: true
-  defp same_type?(a, b) when is_boolean(a) and is_boolean(b), do: true
-  defp same_type?(nil, nil), do: true
-  defp same_type?(_, _), do: false
+  defp evaluate_field_predicates(value, predicates) do
+    Enum.reduce_while(predicates, {:ok, true}, fn predicate, {:ok, result} ->
+      case evaluate_field_predicate(value, predicate) do
+        {:ok, predicate_result} -> {:cont, {:ok, result and predicate_result}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp evaluate_field_predicate(:missing, {:exists, expected}), do: {:ok, not expected}
+  defp evaluate_field_predicate(:missing, _predicate), do: {:ok, false}
+
+  defp evaluate_field_predicate({:ok, value}, {:eq, expected}),
+    do: {:ok, Predicate.exact_equal?(value, expected)}
+
+  defp evaluate_field_predicate({:ok, value}, {:ne, expected}),
+    do: {:ok, not Predicate.exact_equal?(value, expected)}
+
+  defp evaluate_field_predicate({:ok, value}, {operator, expected})
+       when operator in [:gt, :gte, :lt, :lte] do
+    case Predicate.ordered_compare(value, expected) do
+      :incomparable -> {:ok, false}
+      comparison -> {:ok, comparison_satisfies?(comparison, operator)}
+    end
+  end
+
+  defp evaluate_field_predicate({:ok, value}, {:in, expected}),
+    do: {:ok, Enum.any?(expected, &Predicate.exact_equal?(value, &1))}
+
+  defp evaluate_field_predicate({:ok, value}, {:nin, expected}),
+    do:
+      {:ok,
+       Predicate.scalar?(value) and Enum.all?(expected, &(not Predicate.exact_equal?(value, &1)))}
+
+  defp evaluate_field_predicate({:ok, _value}, {:exists, _expected}), do: {:ok, true}
+
+  defp evaluate_field_predicate({:ok, value}, {:type, expected}),
+    do: {:ok, Predicate.json_type(value) == expected}
+
+  defp evaluate_field_predicate({:ok, value}, {:begins_with, prefix}) when is_binary(value),
+    do: {:ok, String.starts_with?(value, prefix)}
+
+  defp evaluate_field_predicate({:ok, _value}, {:begins_with, _prefix}), do: {:ok, false}
+
+  defp evaluate_field_predicate({:ok, value}, {:regex, regex}) when is_binary(value),
+    do: ElixirDB.Query.Regex.match?(regex, value)
+
+  defp evaluate_field_predicate({:ok, _value}, {:regex, _regex}), do: {:ok, false}
+
+  defp evaluate_field_predicate({:ok, value}, {:all, expected}) when is_list(value) do
+    {:ok,
+     Enum.all?(expected, fn operand -> Enum.any?(value, &Predicate.exact_equal?(&1, operand)) end)}
+  end
+
+  defp evaluate_field_predicate({:ok, _value}, {:all, _expected}), do: {:ok, false}
+
+  defp evaluate_field_predicate({:ok, values}, {:elem_match, predicate}) when is_list(values) do
+    Enum.reduce_while(values, {:ok, false}, fn
+      value, {:ok, false} when is_map(value) ->
+        case evaluate(value, predicate) do
+          {:ok, true} -> {:halt, {:ok, true}}
+          {:ok, false} -> {:cont, {:ok, false}}
+          {:error, _} = error -> {:halt, error}
+        end
+
+      _value, {:ok, false} ->
+        {:cont, {:ok, false}}
+
+      _value, {:ok, true} = result ->
+        {:halt, result}
+    end)
+  end
+
+  defp evaluate_field_predicate({:ok, _value}, {:elem_match, _predicate}), do: {:ok, false}
+
+  defp evaluate_field_predicate({:ok, value}, {:size, expected}) when is_list(value),
+    do: {:ok, length(value) == expected}
+
+  defp evaluate_field_predicate({:ok, _value}, {:size, _expected}), do: {:ok, false}
+
+  defp evaluate_field_predicate({:ok, _value}, {:mod, 0, _remainder}),
+    do: {:error, ElixirDB.Error.invalid_request("$mod divisor must not be zero")}
+
+  defp evaluate_field_predicate({:ok, value}, {:mod, divisor, remainder}) do
+    case exact_integer(value) do
+      {:ok, integer} -> {:ok, rem(integer, divisor) == remainder}
+      :error -> {:ok, false}
+    end
+  end
+
+  defp comparison_satisfies?(:lt, :gt), do: false
+  defp comparison_satisfies?(:lt, :gte), do: false
+  defp comparison_satisfies?(:lt, :lt), do: true
+  defp comparison_satisfies?(:lt, :lte), do: true
+  defp comparison_satisfies?(:eq, :gt), do: false
+  defp comparison_satisfies?(:eq, :gte), do: true
+  defp comparison_satisfies?(:eq, :lt), do: false
+  defp comparison_satisfies?(:eq, :lte), do: true
+  defp comparison_satisfies?(:gt, :gt), do: true
+  defp comparison_satisfies?(:gt, :gte), do: true
+  defp comparison_satisfies?(:gt, :lt), do: false
+  defp comparison_satisfies?(:gt, :lte), do: false
+
+  defp exact_integer(value) when is_integer(value) and abs(value) <= @safe_integer,
+    do: {:ok, value}
+
+  defp exact_integer(value) when is_float(value) do
+    integer = trunc(value)
+
+    if value == integer and abs(value) <= @safe_integer,
+      do: {:ok, integer},
+      else: :error
+  end
+
+  defp exact_integer(_value), do: :error
 end

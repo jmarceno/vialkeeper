@@ -40,6 +40,45 @@ defmodule ElixirDB.Query.QueryTest do
     assert fields == %{"/title" => "A"}
   end
 
+  test "adapter rebuilds predicates from the public selector", %{adapter: adapter} do
+    assert {:ok, _} =
+             Adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "open",
+               body: %{"state" => "open"}
+             })
+
+    assert {:ok, _} =
+             Adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "closed",
+               body: %{"state" => "closed"}
+             })
+
+    assert {:ok, %{results: [%{id: "open"}]}} =
+             Adapter.execute_query(adapter, %{
+               selector: %{"/state" => "open"},
+               predicate: :match_all,
+               limit: 10
+             })
+
+    # Foreign predicate-only maps are untrusted public input: the predicate is
+    # ignored and an empty selector matches all documents.
+    assert {:ok, %{results: results}} =
+             Adapter.execute_query(adapter, %{predicate: :match_all, limit: 10})
+
+    assert Enum.map(results, & &1.id) |> Enum.sort() == ["closed", "open"]
+
+    # A client-forged normalization marker must not execute a foreign predicate.
+    assert {:ok, %{results: [%{id: "open"}]}} =
+             Adapter.execute_query(adapter, %{
+               normalized: true,
+               selector: %{"/state" => "open"},
+               predicate: :match_all,
+               limit: 10
+             })
+  end
+
   test "full scan is permitted only below scan_threshold", %{adapter: adapter} do
     # QUERY-011: "only when the number of candidate documents is BELOW the configured scan
     # threshold." With scan_threshold = 1000, a database with exactly 1000 candidate docs

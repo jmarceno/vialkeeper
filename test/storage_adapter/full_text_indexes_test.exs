@@ -83,6 +83,89 @@ defmodule ElixirDB.StorageAdapter.FullTextIndexesTest do
     assert ids == ["both", "one"]
   end
 
+  test "prefix mode matches token prefixes, not middle substrings", %{adapter: adapter} do
+    assert {:ok, _} =
+             @adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "replication",
+               body: %{"title" => "replication checkpoint"}
+             })
+
+    assert {:ok, _} =
+             @adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "unrelated",
+               body: %{"title" => "application checkpoint"}
+             })
+
+    assert {:ok, %{"index_id" => _index_id}} = @adapter.create_index(adapter, @fts_definition)
+
+    assert {:ok, %{results: [%{id: "replication"}]}} =
+             @adapter.execute_query(adapter, %{
+               search: %{index: "titles", text: "checkp replic", mode: "prefix"},
+               limit: 10
+             })
+
+    assert {:ok, %{results: []}} =
+             @adapter.execute_query(adapter, %{
+               search: %{index: "titles", text: "plica", mode: "prefix"},
+               limit: 10
+             })
+  end
+
+  test "prefix search quotes tokenized client text before FTS compilation", %{adapter: adapter} do
+    assert {:ok, _} =
+             @adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "replication",
+               body: %{"title" => "replication"}
+             })
+
+    assert {:ok, %{"index_id" => _index_id}} = @adapter.create_index(adapter, @fts_definition)
+
+    # Without project tokenization and trusted quoting, `* OR` could turn this
+    # into an FTS expression matching the otherwise unrelated document.
+    assert {:ok, %{results: []}} =
+             @adapter.execute_query(adapter, %{
+               search: %{index: "titles", text: "replic* OR", mode: "prefix"},
+               limit: 10
+             })
+  end
+
+  test "full-text pagination continues by rank before document id", %{adapter: adapter} do
+    for {document_id, title} <- [
+          {"a", "replication"},
+          {"b", "replication replication"},
+          {"c", "replication checkpoint"}
+        ] do
+      assert {:ok, _} =
+               @adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: document_id,
+                 body: %{"title" => title}
+               })
+    end
+
+    assert {:ok, %{"index_id" => _index_id}} = @adapter.create_index(adapter, @fts_definition)
+
+    request = %{search: %{index: "titles", text: "replic", mode: "prefix"}, limit: 1}
+
+    assert {:ok, %{results: [%{id: first_id}], has_more: true, last_ordering_key: first_key}} =
+             @adapter.execute_query(adapter, request)
+
+    assert is_number(first_key["rank"])
+
+    assert {:ok, %{results: remaining}} =
+             @adapter.execute_query(
+               adapter,
+               request |> Map.put(:after_ordering, first_key) |> Map.put(:limit, 10)
+             )
+
+    remaining_ids = Enum.map(remaining, & &1.id)
+    assert first_id not in remaining_ids
+    assert MapSet.new([first_id | remaining_ids]) == MapSet.new(["a", "b", "c"])
+  end
+
   test "winner and tombstone refresh update full-text search results", %{adapter: adapter} do
     assert {:ok, %{revision: first}} =
              @adapter.apply_local_mutation(adapter, %{

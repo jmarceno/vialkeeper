@@ -10,7 +10,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   alias ElixirDB.JSON.Pointer
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.MapAccess
-  alias ElixirDB.Query.{Planner, Projection}
+  alias ElixirDB.Query.{Plan, Planner, Projection}
   alias ElixirDB.Query.Selector
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, IndexCatalog, QueryCompiler}
@@ -22,13 +22,16 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   def execute(adapter, request) do
     with {:ok, indexes} <- IndexCatalog.list(adapter.conn),
          {:ok, selected} <- Planner.select_index(indexes, request),
+         {:ok, plan_metadata} <- transitional_plan_metadata(selected),
          {:ok, documents, examined} <- candidate_documents(adapter, selected, request),
          {:ok, matched} <- filter_query(documents, request),
          identity <- adapter_identity(adapter),
          :ok <- enforce_scan_limit(selected, examined, identity),
          limit <-
-           MapAccess.get(request, :limit) ||
-             get_in(identity, [:config, "queries", "default_limit"]) || 50,
+           value_or_default(
+             MapAccess.get(request, :limit),
+             get_in(identity, [:config, "queries", "default_limit"]) || 50
+           ),
          ordered <- matched |> sort_documents(request) |> apply_after_cursor(request),
          values <- Enum.take(ordered, limit),
          {:ok, projected} <- project_documents(values, request) do
@@ -42,6 +45,9 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          sequence: identity.current_sequence,
          selected_index: selected && selected["index_id"],
          index_digest: selected && selected["definition_digest"],
+         plan_kind: plan_metadata.kind,
+         plan_digest: plan_metadata.digest,
+         index_bindings: plan_metadata.index_bindings,
          last_ordering_key: ordering_key(List.last(values), request)
        }}
     else
@@ -196,23 +202,32 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   end
 
   defp filter_query(documents, request) do
-    selector = MapAccess.get(request, :selector, %{})
+    predicate = MapAccess.get(request, :predicate)
 
-    result =
-      Enum.reduce_while(documents, {:ok, []}, fn document, {:ok, acc} ->
-        case Selector.matches?(document.body, selector) do
-          {:ok, true} -> {:cont, {:ok, [document | acc]}}
-          {:ok, false} -> {:cont, {:ok, acc}}
-          {:error, error} -> {:halt, {:error, error}}
-        end
-      end)
-
-    with {:ok, values} <- result do
-      values = values |> Enum.reverse() |> sort_documents(request)
-
-      {:ok, values}
+    if is_nil(predicate) do
+      {:error, ElixirDB.Error.invalid_request("normalized predicate is required")}
+    else
+      documents
+      |> filter_documents(predicate)
+      |> sort_filtered_documents(request)
     end
   end
+
+  defp filter_documents(documents, predicate) do
+    Enum.reduce_while(documents, {:ok, []}, fn document, {:ok, acc} ->
+      case Selector.matches?(document.body, predicate) do
+        {:ok, true} -> {:cont, {:ok, [document | acc]}}
+        {:ok, false} -> {:cont, {:ok, acc}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp sort_filtered_documents({:ok, values}, request) do
+    {:ok, values |> Enum.reverse() |> sort_documents(request)}
+  end
+
+  defp sort_filtered_documents(error, _request), do: error
 
   defp sort_documents(documents, request) do
     sort = MapAccess.get(request, :sort, [])
@@ -241,7 +256,18 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp compare_ordering_keys(left, right, []), do: compare_ids(left["id"], right["id"])
+  defp compare_ordering_keys(left, right, []) do
+    case {Map.get(left, "rank"), Map.get(right, "rank")} do
+      {left_rank, right_rank} when is_number(left_rank) and is_number(right_rank) ->
+        case compare_values({:ok, left_rank}, {:ok, right_rank}) do
+          :eq -> compare_ids(left["id"], right["id"])
+          comparison -> comparison
+        end
+
+      _ ->
+        compare_ids(left["id"], right["id"])
+    end
+  end
 
   defp compare_ordering_keys(left, right, [sort | rest]) do
     left_value = ordering_value(first_ordering_value(left))
@@ -260,7 +286,12 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   defp first_ordering_value(_), do: nil
 
   defp drop_ordering_key(value),
-    do: %{"sort" => Enum.drop(value["sort"] || [], 1), "id" => value["id"]}
+    do:
+      %{"sort" => Enum.drop(value["sort"] || [], 1), "id" => value["id"]}
+      |> maybe_put_rank(Map.get(value, "rank"))
+
+  defp maybe_put_rank(value, rank) when is_number(rank), do: Map.put(value, "rank", rank)
+  defp maybe_put_rank(value, _rank), do: value
 
   defp apply_ordering_direction(:lt, sort),
     do: if(MapAccess.get(sort, :direction, "asc") == "asc", do: :lt, else: :gt)
@@ -291,7 +322,13 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
       end)
 
     %{"sort" => values, "id" => document.id}
+    |> maybe_put_search_rank(document, sort)
   end
+
+  defp maybe_put_search_rank(ordering_key, %{rank: rank}, []) when is_number(rank),
+    do: Map.put(ordering_key, "rank", rank)
+
+  defp maybe_put_search_rank(ordering_key, _document, _sort), do: ordering_key
 
   defp compare_documents(left, right, []), do: left.id <= right.id
 
@@ -327,4 +364,34 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
 
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
+
+  defp transitional_plan_metadata(nil) do
+    with {:ok, digest} <- Plan.transitional_digest(:bounded_scan, []) do
+      {:ok, %{kind: :bounded_scan, digest: digest, index_bindings: []}}
+    end
+  end
+
+  defp transitional_plan_metadata(%{
+         "type" => type,
+         "index_id" => index_id,
+         "definition_digest" => digest
+       }) do
+    kind = if type == "full_text", do: :full_text, else: :single
+    binding = %{index_id: index_id, definition_digest: digest}
+
+    with {:ok, plan_digest} <- Plan.transitional_digest(kind, binding) do
+      {:ok,
+       %{
+         kind: kind,
+         digest: plan_digest,
+         index_bindings: [%{"index_id" => index_id, "definition_digest" => digest}]
+       }}
+    end
+  end
+
+  defp transitional_plan_metadata(_selected),
+    do: {:error, ElixirDB.Error.invalid_request("selected index metadata is invalid")}
+
+  defp value_or_default(nil, default), do: default
+  defp value_or_default(value, _default), do: value
 end

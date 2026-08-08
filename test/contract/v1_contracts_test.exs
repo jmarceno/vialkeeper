@@ -51,10 +51,12 @@ defmodule ElixirDB.Contract.V1ContractsTest do
     assert {:ok, bookmark} =
              BookmarkCodec.encode(%{
                "query_fingerprint" => "query",
+               "plan_digest" => String.duplicate("a", 64),
+               "index_bindings" => [
+                 %{"index_id" => "idx", "definition_digest" => String.duplicate("b", 64)}
+               ],
                "sequence" => 4,
                "last_id" => "doc",
-               "index_id" => "idx",
-               "index_digest" => "digest",
                "ordering_key" => ["ready", "doc"]
              })
 
