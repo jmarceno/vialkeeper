@@ -1,6 +1,7 @@
 defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   @moduledoc false
   use Plug.Router
+  alias ElixirDB.Domain.Checkpoint
   alias ElixirDB.HTTP.{Request, Response}
   alias ElixirDB.HTTP.Schemas
   alias ElixirDB.Replication.Wire
@@ -42,7 +43,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   post "/boundaries/install" do
     Request.call(
       conn,
-      Schemas.opts(:wire_boundaries, "boundary install request contains an unknown field"),
+      Schemas.opts(:wire_boundary_install, "boundary install request contains an unknown field"),
       fn body, conn ->
         Response.result(
           conn,
@@ -63,7 +64,15 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   end
 
   get "/local-origin" do
-    case DatabaseCatalog.command(Request.uuid(conn), {:command, :has_local_origin_changes}) do
+    conn = Plug.Conn.fetch_query_params(conn)
+    peer_database_uuid = conn.query_params["peer_database_uuid"]
+
+    command =
+      if is_binary(peer_database_uuid) and peer_database_uuid != "",
+        do: {:command, :has_local_origin_changes, peer_database_uuid},
+        else: {:command, :has_local_origin_changes}
+
+    case DatabaseCatalog.command(Request.uuid(conn), command) do
       {:ok, has_local?} when is_boolean(has_local?) ->
         Response.ok(conn, %{"has_local_origin_changes" => has_local?})
 
@@ -72,8 +81,21 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     end
   end
 
+  post "/local-origin/clear" do
+    Request.call(conn, fn body, conn ->
+      peer_database_uuid = body["peer_database_uuid"]
+
+      command =
+        if is_binary(peer_database_uuid) and peer_database_uuid != "",
+          do: {:command, :clear_pending_local_causal, peer_database_uuid},
+          else: {:command, :clear_pending_local_causal}
+
+      Response.result(conn, DatabaseCatalog.command(Request.uuid(conn), command))
+    end)
+  end
+
   get "/peers/:peer_database_uuid" do
-    with_path_id(conn, fn conn, peer_id ->
+    with_peer_path_id(conn, fn conn, peer_id ->
       Response.result(
         conn,
         DatabaseCatalog.command(
@@ -84,15 +106,41 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     end)
   end
 
+  get "/local-records/:namespace/:key" do
+    with_record_path(conn, fn conn, namespace, key ->
+      if namespace == "retention_boundary_state" do
+        Response.result(
+          conn,
+          DatabaseCatalog.command(
+            Request.uuid(conn),
+            {:command, :get_local_record, namespace, key}
+          )
+        )
+      else
+        Response.error(
+          conn,
+          ElixirDB.Error.invalid_request("local record namespace is not readable")
+        )
+      end
+    end)
+  end
+
   put "/peers/:peer_database_uuid" do
     Request.call(conn, fn body, conn ->
-      with_path_id(conn, fn conn, _ ->
-        peer_id = conn.path_params["peer_database_uuid"]
-
-        request =
+      with_peer_path_id(conn, fn conn, peer_id ->
+        peer_fields =
           body
           |> Map.new(fn {k, v} -> {to_string(k), v} end)
+          |> Map.delete("expected_version")
+          |> Map.delete("bootstrap_completed")
           |> Map.put("peer_database_uuid", peer_id)
+
+        request = %{
+          "expected_version" => Map.get(body, "expected_version", 0),
+          "bootstrap_completed" => Map.get(body, "bootstrap_completed", false),
+          "peer_database_uuid" => peer_id,
+          "value" => peer_fields
+        }
 
         Response.result(
           conn,
@@ -213,39 +261,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     )
   end
 
-  defp valid_checkpoint_put?(body) when is_map(body) do
-    validators = [
-      &valid_expected_checkpoint_version?/1,
-      &valid_checkpoint_version?/1,
-      &valid_replication_id?/1,
-      &valid_session_id?/1,
-      &valid_source_sequence?/1,
-      &valid_history?/1
-    ]
-
-    Enum.all?(validators, & &1.(body))
-  end
-
-  defp valid_checkpoint_put?(_), do: false
-
-  defp valid_expected_checkpoint_version?(body),
-    do: is_integer(body["expected_checkpoint_version"]) and body["expected_checkpoint_version"] >= 0
-
-  defp valid_checkpoint_version?(body),
-    do:
-      body["version"] == 1 and is_integer(body["checkpoint_version"]) and
-        body["checkpoint_version"] > 0
-
-  defp valid_replication_id?(body),
-    do: is_binary(body["replication_id"]) and body["replication_id"] != ""
-
-  defp valid_session_id?(body),
-    do: is_binary(body["session_id"]) and body["session_id"] != ""
-
-  defp valid_source_sequence?(body),
-    do: is_integer(body["source_sequence"]) and body["source_sequence"] >= 0
-
-  defp valid_history?(body), do: is_list(body["history"])
+  defp valid_checkpoint_put?(body), do: Checkpoint.valid_wire_put?(body)
 
   defp boundary_request(body) when is_map(body) do
     cursor = body["page_cursor"] || body["cursor"]
@@ -272,6 +288,22 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   defp with_path_id(conn, fun) do
     case Request.validate_path_id(conn.path_params["replication_id"]) do
       :ok -> fun.(conn, conn.path_params["replication_id"])
+      {:error, error} -> Response.error(conn, error)
+    end
+  end
+
+  defp with_peer_path_id(conn, fun) do
+    case Request.validate_path_id(conn.path_params["peer_database_uuid"]) do
+      :ok -> fun.(conn, conn.path_params["peer_database_uuid"])
+      {:error, error} -> Response.error(conn, error)
+    end
+  end
+
+  defp with_record_path(conn, fun) do
+    with :ok <- Request.validate_path_id(conn.path_params["namespace"]),
+         :ok <- Request.validate_path_id(conn.path_params["key"]) do
+      fun.(conn, conn.path_params["namespace"], conn.path_params["key"])
+    else
       {:error, error} -> Response.error(conn, error)
     end
   end

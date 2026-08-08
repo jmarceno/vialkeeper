@@ -127,17 +127,20 @@ defmodule ElixirDB.Domain.RetentionTypesTest do
              )
     end
 
-    test "regresses? detects rollback signals", %{peer: peer} do
+    test "regresses? detects rollback signals within the same epoch", %{peer: peer} do
       incoming = %{peer | safe_source_sequence: 5}
       assert PeerPosition.regresses?(peer, incoming)
 
       incoming = %{peer | installed_source_compaction_epoch: 1}
       assert PeerPosition.regresses?(peer, incoming)
 
-      incoming = %{peer | source_history_epoch: "epoch-2"}
-      assert PeerPosition.regresses?(peer, incoming)
-
       refute PeerPosition.regresses?(peer, %{peer | safe_source_sequence: 12})
+    end
+
+    test "epoch_changed? is separate from regresses?", %{peer: peer} do
+      incoming = %{peer | source_history_epoch: "epoch-2"}
+      assert PeerPosition.epoch_changed?(peer, incoming)
+      refute PeerPosition.regresses?(peer, incoming)
     end
   end
 

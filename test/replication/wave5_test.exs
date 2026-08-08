@@ -136,6 +136,7 @@ defmodule ElixirDB.Replication.Wave5Test do
 
     result =
       Frontier.compute(%{
+        source_database_uuid: a.database_uuid,
         source_history_epoch: epoch,
         current_sequence: MapAccess.get(identity, :current_sequence, 0),
         current_floor: 0,

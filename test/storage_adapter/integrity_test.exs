@@ -58,6 +58,7 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
       "source_sequence" => 3,
       "source_compaction_epoch" => 2,
       "installed_source_compaction_epoch" => 5,
+      "safe_source_sequence" => 3,
       "source_history_epoch" => identity_epoch(adapter),
       "history" => []
     }
@@ -85,6 +86,9 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
       "session_id" => "sess",
       "source_sequence" => 5,
       "source_history_epoch" => identity_epoch(adapter),
+      "source_compaction_epoch" => 0,
+      "safe_source_sequence" => 5,
+      "installed_source_compaction_epoch" => 0,
       "history" => [
         %{"session_id" => "a", "source_sequence" => 3},
         %{"session_id" => "b", "source_sequence" => 5}

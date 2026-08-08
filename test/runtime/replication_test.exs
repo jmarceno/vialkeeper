@@ -197,6 +197,13 @@ defmodule ElixirDB.Runtime.ReplicationTest do
                "one_shot"
              )
 
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
     parent = self()
 
     options = %{

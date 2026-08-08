@@ -12,6 +12,14 @@ defmodule ElixirDB.Storage.SQLite.Retention do
 
   @page_size 100
 
+  @spec clear_pending_local_causal(Connection.handle()) :: :ok | {:error, ElixirDB.Error.t()}
+  def clear_pending_local_causal(conn), do: clear_pending_local_causal(conn, nil)
+
+  @spec clear_pending_local_causal(Connection.handle(), binary() | nil) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def clear_pending_local_causal(conn, peer_database_uuid),
+    do: RetentionRecords.clear_pending_local_causal(conn, peer_database_uuid)
+
   @spec compact(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def compact(adapter, _request \\ %{}) do
     conn = adapter.conn
@@ -20,7 +28,8 @@ defmodule ElixirDB.Storage.SQLite.Retention do
 
     with {:ok, meta} <- Meta.load(conn),
          {:ok, peers} <- RetentionRecords.list_peers(conn),
-         {:ok, boundaries} <- RetentionRecords.list_boundaries(conn),
+         {:ok, boundaries} <-
+           RetentionRecords.list_boundaries(conn, source_database_uuid: meta.database_uuid),
          {:ok, maintenance_counter} <- RetentionRecords.maintenance_counter(conn),
          mode <- retention_mode(meta.config),
          {:ok, frontier} <-
@@ -72,8 +81,16 @@ defmodule ElixirDB.Storage.SQLite.Retention do
       ElixirDB.MapAccess.get(request, :peer_database_uuid) ||
         request |> ElixirDB.MapAccess.get(:value, %{}) |> peer_uuid_from_value()
 
-    with {:ok, peer} <- decode_peer(ElixirDB.MapAccess.get(request, :value)),
-         :ok <- validate_peer_regression(adapter.conn, peer),
+    with {:ok, meta} <- Meta.load(adapter.conn),
+         {:ok, peer} <- decode_peer(ElixirDB.MapAccess.get(request, :value)),
+         :ok <- validate_peer_source_database(meta, peer),
+         :ok <-
+           validate_peer_regression(
+             adapter.conn,
+             peer,
+             ElixirDB.MapAccess.get(request, :bootstrap_completed, false),
+             meta
+           ),
          wire <- peer_wire(peer) do
       LocalRecords.put_cas_tx(adapter, %{
         namespace: RetentionRecords.peer_ledger_namespace(),
@@ -96,15 +113,18 @@ defmodule ElixirDB.Storage.SQLite.Retention do
 
     with {:ok, meta} <- Meta.load(conn),
          :ok <- validate_boundary_request(meta, requested_history, requested_epoch),
-         {:ok, boundaries} <- RetentionRecords.list_boundaries(conn),
-         {:ok, page_boundaries, next_page} <- paginate_boundaries(boundaries, cursor, limit),
-         digest <- BoundaryPage.digest_for(Enum.map(page_boundaries, & &1.boundary)) do
+         :ok <- validate_pagination(cursor, limit),
+         {:ok, boundaries} <-
+           RetentionRecords.list_boundaries(conn, source_database_uuid: meta.database_uuid),
+         digest <- BoundaryPage.digest_for(Enum.map(boundaries, & &1.boundary)),
+         {:ok, page_boundaries, next_page} <- paginate_boundaries(boundaries, cursor, limit) do
       BoundaryPage.page(
         meta.history_epoch,
         meta.compaction_epoch,
         digest,
         next_page,
-        Enum.map(page_boundaries, & &1.boundary)
+        Enum.map(page_boundaries, & &1.boundary),
+        meta.database_uuid
       )
     end
   end
@@ -124,18 +144,62 @@ defmodule ElixirDB.Storage.SQLite.Retention do
 
   defp install_boundary_page(conn, page) do
     with {:ok, meta} <- Meta.load(conn),
-         :ok <- validate_boundary_install(meta, page),
-         :ok <- upsert_boundary_page(conn, page) do
-      digest = BoundaryPage.digest_for(page.boundaries)
-
-      {:ok,
-       %{
-         installed: length(page.boundaries),
-         boundary_digest: digest,
-         compaction_epoch: page.compaction_epoch
-       }}
+         :ok <- validate_boundary_page_fields(page),
+         :ok <- validate_boundary_install(conn, page) do
+      install_boundary_page_contents(conn, page, meta)
     end
   end
+
+  defp install_boundary_page_contents(conn, %{install_id: install_id} = page, _meta)
+       when is_binary(install_id) do
+    with :ok <- maybe_begin_boundary_install(conn, page),
+         :ok <- RetentionRecords.stage_boundary_page(conn, install_id, page) do
+      if is_nil(page.next_page) do
+        RetentionRecords.complete_boundary_install(conn, install_id)
+      else
+        {:ok,
+         %{
+           installed: length(page.boundaries),
+           boundary_digest: page.boundary_digest,
+           compaction_epoch: page.compaction_epoch
+         }}
+      end
+    end
+  end
+
+  defp install_boundary_page_contents(conn, %{install_id: nil, next_page: nil} = page, _meta) do
+    RetentionRecords.replace_boundary_set(
+      conn,
+      boundary_install_state_for_page(page),
+      page.boundaries
+    )
+  end
+
+  defp install_boundary_page_contents(_conn, %{install_id: nil}, _meta),
+    do:
+      {:error,
+       ElixirDB.Error.invalid_request(
+         "boundary install_id is required for a paginated boundary transfer"
+       )}
+
+  defp maybe_begin_boundary_install(conn, %{replace: true, install_id: install_id} = page) do
+    RetentionRecords.begin_boundary_install(
+      conn,
+      install_id,
+      boundary_install_state_for_page(page)
+    )
+  end
+
+  defp maybe_begin_boundary_install(_conn, %{replace: false, install_id: _install_id}), do: :ok
+
+  defp boundary_install_state_for_page(page),
+    do:
+      Map.take(page, [
+        :source_database_uuid,
+        :source_history_epoch,
+        :compaction_epoch,
+        :boundary_digest
+      ])
 
   defp decode_boundary_page(value) when is_map(value) do
     if Enum.any?(Map.keys(value), &is_atom/1),
@@ -146,6 +210,7 @@ defmodule ElixirDB.Storage.SQLite.Retention do
   defp compute_frontier(meta, peers, :disabled, _now, _now_ms) do
     {:ok,
      Frontier.compute(%{
+       source_database_uuid: meta.database_uuid,
        source_history_epoch: meta.history_epoch,
        current_sequence: meta.current_sequence,
        current_floor: meta.retention_floor_sequence,
@@ -158,6 +223,7 @@ defmodule ElixirDB.Storage.SQLite.Retention do
   defp compute_frontier(meta, peers, :stable_frontier, now, now_ms) do
     {:ok,
      Frontier.compute(%{
+       source_database_uuid: meta.database_uuid,
        source_history_epoch: meta.history_epoch,
        current_sequence: meta.current_sequence,
        current_floor: meta.retention_floor_sequence,
@@ -206,7 +272,8 @@ defmodule ElixirDB.Storage.SQLite.Retention do
 
   defp work_empty?(plan) do
     plan.removals == %{} and plan.boundaries_to_upsert == [] and
-      plan.boundaries_to_remove == [] and plan.change_sequences_to_delete == []
+      plan.boundaries_to_remove == [] and plan.delete_changes_through == 0 and
+      plan.documents_to_empty == []
   end
 
   defp apply_plan(adapter, meta, frontier, plan, peers, maintenance_counter) do
@@ -221,11 +288,20 @@ defmodule ElixirDB.Storage.SQLite.Retention do
     work? = not work_empty?(plan)
 
     with :ok <- persist_peer_statuses(conn, peers, now_ms),
-         :ok <- upsert_boundaries(conn, plan.boundaries_to_upsert, new_compaction_epoch),
-         :ok <- remove_boundaries(conn, plan.boundaries_to_remove),
+         :ok <-
+           upsert_boundaries(
+             conn,
+             plan.boundaries_to_upsert,
+             meta.database_uuid,
+             meta.history_epoch,
+             new_compaction_epoch
+           ),
+         :ok <- remove_boundaries(conn, plan.boundaries_to_remove, meta.database_uuid),
          :ok <- delete_revisions(conn, plan.removals),
-         :ok <- delete_changes(conn, plan.change_sequences_to_delete),
-         :ok <- update_meta(conn, new_floor, new_compaction_epoch, conn_digest(conn)),
+         :ok <- empty_documents(conn, plan.documents_to_empty),
+         :ok <- delete_changes(conn, plan.delete_changes_through),
+         :ok <-
+           update_meta(conn, new_floor, new_compaction_epoch, conn_digest(conn, meta.database_uuid)),
          :ok <- maybe_increment_maintenance(conn, maintenance_counter, work?),
          :ok <-
            RetentionRecords.put_last_result(conn, compaction_stats(meta, frontier, plan, work?)) do
@@ -260,10 +336,11 @@ defmodule ElixirDB.Storage.SQLite.Retention do
     }
   end
 
-  defp load_plan_input(conn, _meta, _candidate_floor) do
+  defp load_plan_input(conn, meta, candidate_floor) do
     case Connection.query(
            conn,
-           "SELECT doc_key, document_id, winning_revision, update_sequence FROM documents"
+           "SELECT doc_key, document_id, winning_revision, update_sequence FROM documents WHERE update_sequence <= ?",
+           [candidate_floor]
          ) do
       {:ok, rows} ->
         documents =
@@ -278,7 +355,7 @@ defmodule ElixirDB.Storage.SQLite.Retention do
             }
           end)
 
-        {:ok, %{documents: documents}}
+        {:ok, %{documents: documents, local_database_uuid: meta.database_uuid}}
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
@@ -311,6 +388,7 @@ defmodule ElixirDB.Storage.SQLite.Retention do
   defp delete_document_revisions(conn, document_id, revision_ids) do
     case doc_key_for(conn, document_id) do
       {:ok, doc_key} -> delete_revision_ids(conn, doc_key, revision_ids)
+      {:error, %ElixirDB.Error{code: :document_not_found}} -> :ok
       {:error, error} -> {:halt, error}
     end
   end
@@ -336,31 +414,44 @@ defmodule ElixirDB.Storage.SQLite.Retention do
     end
   end
 
+  defp empty_documents(_conn, []), do: :ok
+
+  defp empty_documents(conn, document_ids) do
+    Enum.reduce_while(document_ids, :ok, fn document_id, :ok ->
+      case Connection.execute(
+             conn,
+             "UPDATE documents SET winning_revision = NULL, winning_body_json = NULL, winning_deleted = 1, update_sequence = 0 WHERE document_id = ?",
+             [document_id]
+           ) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
+      end
+    end)
+  end
+
   defp normalize_delete_result(:ok), do: :ok
   defp normalize_delete_result({:error, error}), do: {:error, error}
 
-  defp delete_changes(_conn, []), do: :ok
+  defp delete_changes(_conn, 0), do: :ok
 
-  defp delete_changes(conn, sequences) do
-    max = Enum.max(sequences)
-
-    case Connection.execute(conn, "DELETE FROM changes WHERE sequence <= ?", [max]) do
+  defp delete_changes(conn, through) when is_integer(through) and through > 0 do
+    case Connection.execute(conn, "DELETE FROM changes WHERE sequence <= ?", [through]) do
       :ok -> :ok
       {:error, reason} -> {:error, normalize_error(reason)}
     end
   end
 
-  defp upsert_boundaries(_conn, [], _epoch), do: :ok
+  defp upsert_boundaries(_conn, [], _source_uuid, _source_epoch, _epoch), do: :ok
 
-  defp upsert_boundaries(conn, boundaries, epoch) do
+  defp upsert_boundaries(conn, boundaries, source_uuid, source_epoch, epoch) do
     Enum.reduce_while(boundaries, :ok, fn boundary, :ok ->
-      upsert_boundary(conn, boundary, epoch)
+      upsert_boundary(conn, boundary, source_uuid, source_epoch, epoch)
     end)
   end
 
-  defp upsert_boundary(conn, boundary, epoch) do
-    key = RetentionRecords.boundary_key(boundary.document_id, boundary.history_id)
-    value = RetentionRecords.encode_boundary(boundary, epoch)
+  defp upsert_boundary(conn, boundary, source_uuid, source_epoch, epoch) do
+    key = RetentionRecords.boundary_key(source_uuid, boundary.document_id, boundary.history_id)
+    value = RetentionRecords.encode_boundary(boundary, source_uuid, source_epoch, epoch)
 
     case Canonical.encode(value) do
       {:ok, json} -> execute_boundary_upsert(conn, key, json)
@@ -379,11 +470,11 @@ defmodule ElixirDB.Storage.SQLite.Retention do
     end
   end
 
-  defp remove_boundaries(_conn, []), do: :ok
+  defp remove_boundaries(_conn, [], _source_uuid), do: :ok
 
-  defp remove_boundaries(conn, boundaries) do
+  defp remove_boundaries(conn, boundaries, source_uuid) do
     Enum.reduce_while(boundaries, :ok, fn boundary, :ok ->
-      key = RetentionRecords.boundary_key(boundary.document_id, boundary.history_id)
+      key = RetentionRecords.boundary_key(source_uuid, boundary.document_id, boundary.history_id)
 
       case Connection.execute(
              conn,
@@ -408,8 +499,8 @@ defmodule ElixirDB.Storage.SQLite.Retention do
     end
   end
 
-  defp conn_digest(conn) do
-    case RetentionRecords.list_boundaries(conn) do
+  defp conn_digest(conn, source_database_uuid) do
+    case RetentionRecords.list_boundaries(conn, source_database_uuid: source_database_uuid) do
       {:ok, boundaries} ->
         BoundaryPage.digest_for(Enum.map(boundaries, & &1.boundary))
 
@@ -483,42 +574,87 @@ defmodule ElixirDB.Storage.SQLite.Retention do
          })}
   end
 
-  defp validate_boundary_install(meta, page) do
-    retention_mode = get_in(meta.config, ["retention", "mode"]) || "disabled"
-
+  defp validate_boundary_page_fields(page) do
     cond do
-      page.source_history_epoch != meta.history_epoch and retention_mode != "disabled" ->
-        {:error,
-         ElixirDB.Error.boundary_conflict("boundary page history epoch does not match", %{
-           expected: meta.history_epoch,
-           received: page.source_history_epoch
-         })}
+      not is_binary(page.source_history_epoch) or page.source_history_epoch == "" ->
+        {:error, ElixirDB.Error.invalid_request("boundary page source_history_epoch is required")}
 
-      page.compaction_epoch < meta.compaction_epoch ->
+      not is_integer(page.compaction_epoch) or page.compaction_epoch < 0 ->
         {:error,
-         ElixirDB.Error.boundary_conflict("boundary page compaction epoch regressed", %{
-           current: meta.compaction_epoch,
-           received: page.compaction_epoch
-         })}
+         ElixirDB.Error.invalid_request("boundary page compaction_epoch must be non-negative")}
 
-      page.boundary_digest != BoundaryPage.digest_for(page.boundaries) ->
-        {:error, ElixirDB.Error.boundary_conflict("boundary page digest mismatch")}
+      not is_binary(page.boundary_digest) or page.boundary_digest == "" ->
+        {:error, ElixirDB.Error.invalid_request("boundary page boundary_digest is required")}
+
+      not is_list(page.boundaries) ->
+        {:error, ElixirDB.Error.invalid_request("boundary page boundaries must be an array")}
 
       true ->
         :ok
     end
   end
 
-  defp upsert_boundary_page(conn, page) do
-    Enum.reduce_while(page.boundaries, :ok, fn boundary, :ok ->
-      upsert_boundaries(conn, [boundary], page.compaction_epoch)
-    end)
+  defp validate_boundary_install(conn, page) do
+    source_uuid = page.source_database_uuid
+
+    with :ok <- validate_source_uuid(source_uuid),
+         {:ok, installed} <- RetentionRecords.boundary_install_state(conn, source_uuid) do
+      validate_boundary_epoch(installed, page)
+    end
+  end
+
+  defp validate_boundary_epoch(nil, _page), do: :ok
+
+  defp validate_boundary_epoch(
+         %{compaction_epoch: installed_epoch, source_history_epoch: installed_history},
+         page
+       ) do
+    replacing? = page.replace or is_nil(page.install_id)
+
+    cond do
+      page.compaction_epoch < installed_epoch ->
+        {:error,
+         ElixirDB.Error.boundary_conflict("boundary page compaction epoch regressed for source", %{
+           received: page.compaction_epoch,
+           installed: installed_epoch
+         })}
+
+      page.source_history_epoch != installed_history and not replacing? ->
+        {:error,
+         ElixirDB.Error.boundary_conflict("boundary page history epoch changed mid-install")}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_source_uuid(uuid) when is_binary(uuid) and uuid != "", do: :ok
+
+  defp validate_source_uuid(_),
+    do: {:error, ElixirDB.Error.invalid_request("boundary page source_database_uuid is required")}
+
+  defp validate_pagination(cursor, limit) do
+    max = ElixirDB.Config.host_limits()[:max_bulk_operations] || 500
+    clamped = if is_integer(limit) and limit > 0, do: min(limit, max), else: nil
+
+    cond do
+      not is_nil(cursor) and not is_binary(cursor) ->
+        {:error, ElixirDB.Error.invalid_request("boundary page cursor must be a binary or null")}
+
+      is_nil(clamped) ->
+        {:error, ElixirDB.Error.invalid_request("boundary page limit must be a positive integer")}
+
+      true ->
+        :ok
+    end
   end
 
   defp paginate_boundaries(boundaries, cursor, limit) do
+    max = ElixirDB.Config.host_limits()[:max_bulk_operations] || 500
+    page_limit = if is_integer(limit) and limit > 0, do: min(limit, max), else: @page_size
     sorted = sort_boundaries(boundaries)
     start_index = boundary_start_index(sorted, cursor)
-    page = Enum.slice(sorted, start_index, limit)
+    page = Enum.slice(sorted, start_index, page_limit)
     next_page = next_boundary_cursor(sorted, start_index, page)
     {:ok, page, next_page}
   end
@@ -532,8 +668,9 @@ defmodule ElixirDB.Storage.SQLite.Retention do
   defp boundary_start_index(_sorted, nil), do: 0
 
   defp boundary_start_index(sorted, key) when is_binary(key) do
-    case Enum.find_index(sorted, fn %{boundary: boundary} ->
-           RetentionRecords.boundary_key(boundary.document_id, boundary.history_id) == key
+    case Enum.find_index(sorted, fn %{boundary: boundary, source_database_uuid: source_uuid} ->
+           RetentionRecords.boundary_key(source_uuid, boundary.document_id, boundary.history_id) ==
+             key
          end) do
       nil -> 0
       index -> index + 1
@@ -542,34 +679,84 @@ defmodule ElixirDB.Storage.SQLite.Retention do
 
   defp next_boundary_cursor(sorted, start_index, page) do
     case Enum.at(sorted, start_index + length(page)) do
-      %{boundary: boundary} ->
-        RetentionRecords.boundary_key(boundary.document_id, boundary.history_id)
+      %{boundary: boundary, source_database_uuid: source_uuid} ->
+        RetentionRecords.boundary_key(source_uuid, boundary.document_id, boundary.history_id)
 
       _ ->
         nil
     end
   end
 
-  defp validate_peer_regression(conn, incoming) do
+  defp validate_peer_source_database(meta, peer) do
+    if peer.source_database_uuid == meta.database_uuid,
+      do: :ok,
+      else:
+        {:error,
+         ElixirDB.Error.invalid_request("peer source_database_uuid does not match local database")}
+  end
+
+  defp validate_peer_regression(conn, incoming, bootstrap_completed, meta) do
     case RetentionRecords.list_peers(conn) do
-      {:ok, peers} -> check_peer_regression(peers, incoming)
+      {:ok, peers} -> check_peer_regression(peers, incoming, bootstrap_completed, meta)
       {:error, error} -> {:error, error}
     end
   end
 
-  defp check_peer_regression(peers, incoming) do
+  defp check_peer_regression(peers, incoming, bootstrap_completed, meta) do
     case Enum.find(peers, &(&1.peer_database_uuid == incoming.peer_database_uuid)) do
       nil ->
         :ok
 
       previous ->
-        if PeerPosition.regresses?(previous, incoming),
-          do:
-            {:error,
-             ElixirDB.Error.rebase_required("peer position regressed", %{
-               peer_database_uuid: incoming.peer_database_uuid
-             })},
-          else: :ok
+        check_previous_peer(previous, incoming, bootstrap_completed, meta)
+    end
+  end
+
+  defp check_previous_peer(previous, incoming, bootstrap_completed, meta) do
+    cond do
+      PeerPosition.history_changed?(previous, incoming) ->
+        check_peer_history_change(incoming, bootstrap_completed, meta)
+
+      PeerPosition.regresses?(previous, incoming) ->
+        {:error,
+         ElixirDB.Error.rebase_required("peer position regressed", %{
+           peer_database_uuid: incoming.peer_database_uuid
+         })}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp check_peer_history_change(incoming, false, _meta) do
+    if incoming.status == :bootstrap_required do
+      :ok
+    else
+      peer_history_rebase_error(incoming.peer_database_uuid)
+    end
+  end
+
+  defp check_peer_history_change(incoming, true, meta),
+    do: validate_bootstrap_replacement(incoming, meta)
+
+  defp peer_history_rebase_error(peer_database_uuid) do
+    {:error,
+     ElixirDB.Error.rebase_required("peer history changed; bootstrap is required", %{
+       peer_database_uuid: peer_database_uuid
+     })}
+  end
+
+  defp validate_bootstrap_replacement(peer, meta) do
+    if peer.status == :active and
+         peer.source_history_epoch == meta.history_epoch and
+         peer.safe_source_sequence >= meta.retention_floor_sequence and
+         peer.installed_source_compaction_epoch >= meta.compaction_epoch do
+      :ok
+    else
+      {:error,
+       ElixirDB.Error.rebase_required("peer bootstrap replacement is incomplete", %{
+         peer_database_uuid: peer.peer_database_uuid
+       })}
     end
   end
 

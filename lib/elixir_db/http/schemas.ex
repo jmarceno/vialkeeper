@@ -50,9 +50,9 @@ defmodule ElixirDB.HTTP.Schemas do
   ]
 
   @wire_changes ["since", "limit", "wait_ms"]
-  @wire_diff ["documents"]
+  @wire_diff ["documents", "source_database_uuid"]
   @wire_get_chains ["documents", "bootstrap", "cursor", "page_cursor", "limit"]
-  @wire_put_chains ["chains"]
+  @wire_put_chains ["chains", "purged_boundaries", "source_database_uuid"]
   @wire_checkpoint [
     "expected_checkpoint_version",
     "version",
@@ -67,6 +67,16 @@ defmodule ElixirDB.HTTP.Schemas do
     "installed_source_compaction_epoch"
   ]
   @wire_boundaries ["source_history_epoch", "compaction_epoch", "page_cursor", "cursor", "limit"]
+  @wire_boundary_install [
+    "source_database_uuid",
+    "source_history_epoch",
+    "compaction_epoch",
+    "boundary_digest",
+    "next_page",
+    "boundaries",
+    "install_id",
+    "replace"
+  ]
   @compact_retention []
 
   def allowed(:document_get), do: @document_get
@@ -86,6 +96,7 @@ defmodule ElixirDB.HTTP.Schemas do
   def allowed(:wire_put_chains), do: @wire_put_chains
   def allowed(:wire_checkpoint), do: @wire_checkpoint
   def allowed(:wire_boundaries), do: @wire_boundaries
+  def allowed(:wire_boundary_install), do: @wire_boundary_install
   def allowed(:compact_retention), do: @compact_retention
 
   def opts(schema, message) when is_atom(schema) and is_binary(message) do

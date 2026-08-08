@@ -97,16 +97,13 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   """
   @spec has_local_origin_changes?(Connection.handle()) ::
           {:ok, boolean()} | {:error, ElixirDB.Error.t()}
-  def has_local_origin_changes?(conn) do
-    case Connection.query(
-           conn,
-           "SELECT 1 FROM changes WHERE origin = 'local' LIMIT 1",
-           []
-         ) do
-      {:ok, []} -> {:ok, false}
-      {:ok, [_ | _]} -> {:ok, true}
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
+  def has_local_origin_changes?(conn), do: has_local_origin_changes?(conn, nil)
+
+  @spec has_local_origin_changes?(Connection.handle(), binary() | nil) ::
+          {:ok, boolean()} | {:error, ElixirDB.Error.t()}
+  def has_local_origin_changes?(conn, peer_database_uuid) do
+    alias ElixirDB.Storage.SQLite.RetentionRecords
+    RetentionRecords.pending_local_causal?(conn, peer_database_uuid)
   end
 
   @doc """

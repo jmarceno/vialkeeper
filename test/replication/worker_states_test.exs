@@ -56,6 +56,13 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
                "one_shot"
              )
 
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
     options = %{
       source: source,
       target: target,
@@ -117,6 +124,13 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
                "push",
                "one_shot"
              )
+
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
 
     # Inject one retryable fault at the :import phase hook; the worker must enter :backoff
     # then retry and complete. :backoff is only entered for retryable errors

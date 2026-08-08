@@ -46,6 +46,13 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
                "one_shot"
              )
 
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
     options = %{
       source: source,
       target: target,

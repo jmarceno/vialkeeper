@@ -60,6 +60,24 @@ defmodule ElixirDB.FaultEndpoint do
     do: invoke(endpoint, :has_local_origin_changes?, &LocalEndpoint.has_local_origin_changes?/1)
 
   @impl true
+  def has_local_origin_changes?(%__MODULE__{} = endpoint, peer_database_uuid),
+    do:
+      invoke(endpoint, :has_local_origin_changes?, fn ep ->
+        LocalEndpoint.has_local_origin_changes?(ep, peer_database_uuid)
+      end)
+
+  @impl true
+  def clear_pending_local_causal(%__MODULE__{} = endpoint),
+    do: invoke(endpoint, :clear_pending_local_causal, &LocalEndpoint.clear_pending_local_causal/1)
+
+  @impl true
+  def clear_pending_local_causal(%__MODULE__{} = endpoint, peer_database_uuid),
+    do:
+      invoke(endpoint, :clear_pending_local_causal, fn ep ->
+        LocalEndpoint.clear_pending_local_causal(ep, peer_database_uuid)
+      end)
+
+  @impl true
   def read_changes(%__MODULE__{} = endpoint, request),
     do: invoke(endpoint, :read_changes, &LocalEndpoint.read_changes(&1, request))
 

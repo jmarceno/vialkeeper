@@ -12,22 +12,37 @@ defmodule ElixirDB.Domain.BoundaryPage do
     :boundaries
   ]
   defstruct [
+    :source_database_uuid,
     :source_history_epoch,
     :compaction_epoch,
     :boundary_digest,
     :next_page,
-    :boundaries
+    :boundaries,
+    :install_id,
+    :replace
   ]
 
   @type t :: %__MODULE__{
+          source_database_uuid: binary() | nil,
           source_history_epoch: binary(),
           compaction_epoch: non_neg_integer(),
           boundary_digest: binary(),
           next_page: binary() | nil,
-          boundaries: [RetentionBoundary.t()]
+          boundaries: [RetentionBoundary.t()],
+          install_id: binary() | nil,
+          replace: boolean()
         }
 
-  @known [:source_history_epoch, :compaction_epoch, :boundary_digest, :next_page, :boundaries]
+  @known [
+    :source_database_uuid,
+    :source_history_epoch,
+    :compaction_epoch,
+    :boundary_digest,
+    :next_page,
+    :boundaries,
+    :install_id,
+    :replace
+  ]
 
   @spec new(map()) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
   def new(attrs) when is_map(attrs) do
@@ -41,11 +56,14 @@ defmodule ElixirDB.Domain.BoundaryPage do
   @spec from_wire(map()) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
   def from_wire(attrs) when is_map(attrs) do
     allowed = [
+      "source_database_uuid",
       "source_history_epoch",
       "compaction_epoch",
       "boundary_digest",
       "next_page",
-      "boundaries"
+      "boundaries",
+      "install_id",
+      "replace"
     ]
 
     if Enum.any?(Map.keys(attrs), &(&1 not in allowed)) do
@@ -81,12 +99,21 @@ defmodule ElixirDB.Domain.BoundaryPage do
           non_neg_integer(),
           binary(),
           binary() | nil,
-          [RetentionBoundary.t()]
+          [RetentionBoundary.t()],
+          binary() | nil
         ) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
-  def page(source_history_epoch, compaction_epoch, boundary_digest, next_page, boundaries) do
+  def page(
+        source_history_epoch,
+        compaction_epoch,
+        boundary_digest,
+        next_page,
+        boundaries,
+        source_database_uuid \\ nil
+      ) do
     new(
       page_attrs(
         %{
+          source_database_uuid: source_database_uuid,
           source_history_epoch: source_history_epoch,
           compaction_epoch: compaction_epoch,
           boundary_digest: boundary_digest,
@@ -99,21 +126,27 @@ defmodule ElixirDB.Domain.BoundaryPage do
 
   defp page_attrs(attrs, boundaries) do
     %{
+      source_database_uuid: attrs[:source_database_uuid],
       source_history_epoch: attrs[:source_history_epoch],
       compaction_epoch: attrs[:compaction_epoch],
       boundary_digest: attrs[:boundary_digest],
       next_page: attrs[:next_page],
-      boundaries: boundaries
+      boundaries: boundaries,
+      install_id: attrs[:install_id],
+      replace: attrs[:replace] || false
     }
   end
 
   defp wire_page_attrs(attrs, boundaries) do
     %{
+      source_database_uuid: attrs["source_database_uuid"],
       source_history_epoch: attrs["source_history_epoch"],
       compaction_epoch: attrs["compaction_epoch"],
       boundary_digest: attrs["boundary_digest"],
       next_page: attrs["next_page"],
-      boundaries: boundaries
+      boundaries: boundaries,
+      install_id: attrs["install_id"],
+      replace: attrs["replace"] || false
     }
   end
 
@@ -149,7 +182,9 @@ defmodule ElixirDB.Domain.BoundaryPage do
       fn -> validate_source_history_epoch(attrs[:source_history_epoch]) end,
       fn -> validate_compaction_epoch(attrs[:compaction_epoch]) end,
       fn -> validate_boundary_digest(attrs[:boundary_digest]) end,
-      fn -> validate_next_page(attrs[:next_page]) end
+      fn -> validate_next_page(attrs[:next_page]) end,
+      fn -> validate_install_id(attrs[:install_id]) end,
+      fn -> validate_replace(attrs[:replace]) end
     ]
 
     case Enum.find_value(validators, & &1.()) do
@@ -182,6 +217,18 @@ defmodule ElixirDB.Domain.BoundaryPage do
 
   defp validate_next_page(_),
     do: {:error, ElixirDB.Error.invalid_request("boundary page next_page must be a binary or null")}
+
+  defp validate_install_id(nil), do: nil
+  defp validate_install_id(value) when is_binary(value) and value != "", do: nil
+
+  defp validate_install_id(_),
+    do:
+      {:error, ElixirDB.Error.invalid_request("boundary page install_id must be a binary or null")}
+
+  defp validate_replace(value) when is_boolean(value), do: nil
+
+  defp validate_replace(_),
+    do: {:error, ElixirDB.Error.invalid_request("boundary page replace must be boolean")}
 
   defp boundary_digest_entry(%RetentionBoundary{} = boundary) do
     %{

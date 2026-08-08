@@ -263,17 +263,29 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
     concrete =
       case model_next.last_concrete_op do
         %{op: op_name} = concrete when op_name == op.op ->
-          # Prefer the concrete op produced for this step (resolved :winner, etc.).
-          concrete
+          enrich_concrete_for_adapter(model_next, concrete)
 
         _ ->
-          materialize_for_adapter(model, op)
+          materialize_for_adapter(model_next, op)
       end
 
     adapter_result = apply_adapter_op(adapter, concrete, concrete)
     assert_matching_results(model_next.last_result, adapter_result)
     {model_next, adapter, concrete}
   end
+
+  defp enrich_concrete_for_adapter(model, %{op: :put} = concrete) do
+    if is_nil(concrete[:if_revision]) do
+      case root_history_id(model, concrete.document_id) do
+        nil -> concrete
+        history_id -> Map.put(concrete, :history_id, history_id)
+      end
+    else
+      concrete
+    end
+  end
+
+  defp enrich_concrete_for_adapter(_model, concrete), do: concrete
 
   defp materialize_for_adapter(model, %{op: :put} = op) do
     parent =
@@ -282,7 +294,16 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
         other -> other
       end
 
-    %{op: :put, document_id: op.document_id, body: op.body, if_revision: parent}
+    base = %{op: :put, document_id: op.document_id, body: op.body, if_revision: parent}
+
+    if is_nil(parent) do
+      case root_history_id(model, op.document_id) do
+        nil -> base
+        history_id -> Map.put(base, :history_id, history_id)
+      end
+    else
+      base
+    end
   end
 
   defp materialize_for_adapter(model, %{op: :delete} = op) do
@@ -296,6 +317,17 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
   end
 
   defp materialize_for_adapter(_model, op), do: op
+
+  defp root_history_id(model, document_id) do
+    model.revisions
+    |> Map.values()
+    |> Enum.filter(&(&1.document_id == document_id))
+    |> Enum.max_by(& &1.generation, fn -> nil end)
+    |> case do
+      nil -> nil
+      %{history_id: history_id} -> history_id
+    end
+  end
 
   defp apply_adapter_op(adapter, %{op: :replay_last}, last_req) when is_map(last_req) do
     apply_adapter_op(adapter, last_req, last_req)
@@ -311,6 +343,13 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
       body: op.body,
       if_revision: op[:if_revision]
     }
+
+    request =
+      if is_binary(op[:history_id]) do
+        Map.put(request, :history_id, op.history_id)
+      else
+        request
+      end
 
     normalize_adapter_result(Adapter.apply_local_mutation(adapter, request))
   end

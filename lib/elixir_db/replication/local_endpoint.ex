@@ -18,6 +18,18 @@ defmodule ElixirDB.Replication.LocalEndpoint do
     do: DatabaseCatalog.command(uuid, {:command, :has_local_origin_changes})
 
   @impl true
+  def has_local_origin_changes?(%__MODULE__{database_uuid: uuid}, peer_database_uuid),
+    do: DatabaseCatalog.command(uuid, {:command, :has_local_origin_changes, peer_database_uuid})
+
+  @impl true
+  def clear_pending_local_causal(%__MODULE__{database_uuid: uuid}),
+    do: DatabaseCatalog.command(uuid, {:command, :clear_pending_local_causal})
+
+  @impl true
+  def clear_pending_local_causal(%__MODULE__{database_uuid: uuid}, peer_database_uuid),
+    do: DatabaseCatalog.command(uuid, {:command, :clear_pending_local_causal, peer_database_uuid})
+
+  @impl true
   def read_changes(%__MODULE__{database_uuid: uuid}, request),
     do:
       if(MapAccess.get(request, :wait_ms, 0) > 0,

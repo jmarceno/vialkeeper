@@ -204,6 +204,10 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
          "replication_id" => replication_id,
          "session_id" => session_id,
          "source_sequence" => 0,
+         "source_history_epoch" => "epoch-matrix",
+         "source_compaction_epoch" => 0,
+         "safe_source_sequence" => 0,
+         "installed_source_compaction_epoch" => 0,
          "history" => []
        }, 200, &assert_data_map/1},
       # Destructive routes last so earlier matrix entries keep a valid setup.

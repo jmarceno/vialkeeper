@@ -18,9 +18,10 @@ defmodule ElixirDB.Storage.SQLite.Chains do
   @spec diff(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def diff(adapter, request) do
     documents = MapAccess.get(request, :documents, [])
+    source_uuid = MapAccess.get(request, :source_database_uuid)
 
     with :ok <- validate_documents_batch(documents),
-         {:ok, boundaries} <- RetentionRecords.list_boundaries(adapter.conn),
+         {:ok, boundaries} <- boundaries_for_diff(adapter.conn, source_uuid),
          {:ok, result} <-
            Enum.reduce_while(documents, {:ok, []}, fn entry, {:ok, acc} ->
              diff_document(adapter, entry, boundaries, acc)
@@ -32,6 +33,11 @@ defmodule ElixirDB.Storage.SQLite.Chains do
       {:ok, %{documents: result}}
     end
   end
+
+  defp boundaries_for_diff(conn, nil), do: RetentionRecords.list_boundaries(conn)
+
+  defp boundaries_for_diff(conn, source_uuid) when is_binary(source_uuid),
+    do: RetentionRecords.list_boundaries(conn, source_database_uuid: source_uuid)
 
   @doc """
   Loads parent-ordered revision chains for requested leaves.
@@ -73,9 +79,12 @@ defmodule ElixirDB.Storage.SQLite.Chains do
       MapAccess.get(request, :limit) || MapAccess.get(request, "limit") ||
         bootstrap_page_size()
 
-    with {:ok, identity} <- Adapter.identity(adapter),
+    with :ok <- validate_bootstrap_limit(limit),
+         :ok <- validate_bootstrap_cursor(cursor),
+         {:ok, identity} <- Adapter.identity(adapter),
          {:ok, {document_ids, next_cursor}} <- Documents.list_page(adapter.conn, cursor, limit),
-         {:ok, chains} <- bootstrap_chains(adapter, document_ids) do
+         {:ok, chains} <- bootstrap_chains(adapter, document_ids),
+         {:ok, purged_boundaries} <- bootstrap_purged_boundaries(adapter, document_ids) do
       {:ok,
        %{
          source_history_epoch: Map.get(identity, :history_epoch),
@@ -83,7 +92,8 @@ defmodule ElixirDB.Storage.SQLite.Chains do
          retention_floor: Map.get(identity, :retention_floor_sequence, 0),
          retention_boundary_digest: Map.get(identity, :retention_boundary_digest),
          continuation_cursor: next_cursor,
-         chains: chains
+         chains: chains,
+         purged_boundaries: purged_boundaries
        }}
     end
   end
@@ -96,6 +106,19 @@ defmodule ElixirDB.Storage.SQLite.Chains do
     Enum.reduce_while(document_ids, {:ok, []}, fn document_id, {:ok, acc} ->
       bootstrap_document_chain(adapter, document_id, acc)
     end)
+  end
+
+  defp bootstrap_purged_boundaries(adapter, document_ids) do
+    document_ids = MapSet.new(document_ids)
+
+    with {:ok, boundaries} <- RetentionRecords.list_boundaries(adapter.conn) do
+      {:ok,
+       boundaries
+       |> Enum.filter(fn %{boundary: boundary} ->
+         boundary.retired and MapSet.member?(document_ids, boundary.document_id)
+       end)
+       |> Enum.map(&RetentionRecords.encode_stored_boundary/1)}
+    end
   end
 
   defp bootstrap_document_chain(adapter, document_id, acc) do
@@ -208,26 +231,32 @@ defmodule ElixirDB.Storage.SQLite.Chains do
     end
   end
 
+  defp boundary_covers_leaf?(_boundaries, _document_id, nil, _revision_id), do: false
+
   defp boundary_covers_leaf?(boundaries, document_id, history_id, revision_id) do
     Enum.any?(boundaries, fn %{boundary: boundary} ->
-      boundary.document_id == document_id and
-        (history_id == nil or boundary.history_id == history_id) and
+      boundary.document_id == document_id and boundary.history_id == history_id and
         boundary_covers_revision?(boundary, revision_id)
     end)
   end
 
   defp boundary_covers_revision?(%{retired: true}, _revision_id), do: true
 
-  defp boundary_covers_revision?(%{retired_branch_roots: roots}, revision_id) when is_list(roots) do
-    revision_id in roots or roots != []
+  defp boundary_covers_revision?(boundary, revision_id) do
+    generation_covers?(boundary, revision_id) or root_covers?(boundary, revision_id)
   end
 
-  defp boundary_covers_revision?(%{minimum_retained_generation: generation}, revision_id)
+  defp generation_covers?(%{minimum_retained_generation: generation}, revision_id)
        when is_integer(generation) do
     revision_generation(revision_id) < generation
   end
 
-  defp boundary_covers_revision?(_boundary, _revision_id), do: true
+  defp generation_covers?(_boundary, _revision_id), do: false
+
+  defp root_covers?(%{retired_branch_roots: roots}, revision_id) when is_list(roots),
+    do: revision_id in roots
+
+  defp root_covers?(_boundary, _revision_id), do: false
 
   defp revision_generation(revision_id) when is_binary(revision_id) do
     case Integer.parse(revision_id) do
@@ -260,6 +289,13 @@ defmodule ElixirDB.Storage.SQLite.Chains do
     requested = MapAccess.get(entry, :leaf_revisions, [])
     truncated = MapAccess.get(entry, :truncated, false)
 
+    case validate_truncated_flag(truncated) do
+      :ok -> find_document_chains(adapter, id, truncated, requested, acc)
+      {:error, error} -> {:halt, {:error, error}}
+    end
+  end
+
+  defp find_document_chains(adapter, id, truncated, requested, acc) do
     case Documents.find(adapter.conn, id) do
       {:ok, nil} ->
         {:cont, {:ok, acc}}
@@ -393,4 +429,20 @@ defmodule ElixirDB.Storage.SQLite.Chains do
 
   defp revision_wire(%Revision{} = revision, document_id),
     do: Wire.from_revision(revision, document_id)
+
+  defp validate_bootstrap_limit(limit) when is_integer(limit) and limit > 0, do: :ok
+
+  defp validate_bootstrap_limit(_),
+    do: {:error, ElixirDB.Error.invalid_request("bootstrap limit must be a positive integer")}
+
+  defp validate_bootstrap_cursor(nil), do: :ok
+  defp validate_bootstrap_cursor(cursor) when is_binary(cursor), do: :ok
+
+  defp validate_bootstrap_cursor(_),
+    do: {:error, ElixirDB.Error.invalid_request("bootstrap cursor must be a binary or null")}
+
+  defp validate_truncated_flag(value) when value in [true, false], do: :ok
+
+  defp validate_truncated_flag(_),
+    do: {:error, ElixirDB.Error.invalid_request("truncated must be a boolean")}
 end

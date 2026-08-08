@@ -67,6 +67,18 @@ defmodule ElixirDB.Storage.FaultAdapter do
     do: inner_module(inner).has_local_origin_changes?(inner)
 
   @impl true
+  def has_local_origin_changes?(%__MODULE__{inner: inner}, peer_database_uuid),
+    do: inner_module(inner).has_local_origin_changes?(inner, peer_database_uuid)
+
+  @impl true
+  def clear_pending_local_causal(%__MODULE__{inner: inner}),
+    do: inner_module(inner).clear_pending_local_causal(inner)
+
+  @impl true
+  def clear_pending_local_causal(%__MODULE__{inner: inner}, peer_database_uuid),
+    do: inner_module(inner).clear_pending_local_causal(inner, peer_database_uuid)
+
+  @impl true
   def diff_revisions(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).diff_revisions(inner, request)
 

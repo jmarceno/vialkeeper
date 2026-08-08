@@ -153,6 +153,13 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
                  "one_shot"
                )
 
+      :ok =
+        ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+          a.database_uuid,
+          b.database_uuid,
+          replication_id
+        )
+
       options = %{options | replication_id: replication_id, source: source, target: target}
 
       assert {:ok, pid} = Worker.start_link(options)
@@ -208,6 +215,13 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
                  "push",
                  "continuous"
                )
+
+      :ok =
+        ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+          a.database_uuid,
+          b.database_uuid,
+          replication_id
+        )
 
       options = %{
         source: source,
@@ -317,6 +331,13 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
                "one_shot"
              )
 
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
     options = %{
       source: source,
       target: target,
@@ -357,6 +378,13 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
                "push",
                "one_shot"
              )
+
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
 
     parent = self()
 

@@ -12,7 +12,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   alias ElixirDB.Revisions.ConflictResolution
   alias ElixirDB.Revisions.{Id, Winner}
   alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.{Changes, Documents, IndexCatalog, Revisions}
+  alias ElixirDB.Storage.SQLite.{Changes, Documents, IndexCatalog, RetentionRecords, Revisions}
   alias ElixirDB.UUID
 
   @doc """
@@ -23,6 +23,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     operation = MapAccess.get(request, :operation, :put)
     document_id = MapAccess.get(request, :document_id)
     if_revision = MapAccess.get(request, :if_revision)
+    history_id = MapAccess.get(request, :history_id)
     deleted = operation in [:delete, "delete"]
     body = if deleted, do: nil, else: MapAccess.get(request, :body)
 
@@ -31,7 +32,16 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current} <- current_winner(adapter, doc),
          {:ok, candidate} <-
-           candidate_revision(adapter, doc, document_id, if_revision, current, deleted, body) do
+           candidate_revision(
+             adapter,
+             doc,
+             document_id,
+             if_revision,
+             current,
+             deleted,
+             body,
+             history_id
+           ) do
       # TX-006: insert_local_revision owns the single unified replay/winner check. An
       # identical existing revision replays only when it is still the winner; a
       # superseded retry surfaces revision_conflict with operation_already_committed: true.
@@ -214,20 +224,31 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
-  defp candidate_revision(adapter, doc, document_id, if_revision, current, deleted, body) do
+  defp candidate_revision(
+         adapter,
+         doc,
+         document_id,
+         if_revision,
+         current,
+         deleted,
+         body,
+         history_id
+       ) do
     if is_nil(current) and not is_nil(if_revision) do
       {:error, ElixirDB.Error.revision_conflict("document does not have the expected parent")}
     else
-      with {:ok, {parent, history_id}} <-
+      with {:ok, {parent, resolved_history_id}} <-
              revision_parent_and_history(
                adapter,
                doc,
                document_id,
                current,
                if_revision,
-               deleted
+               deleted,
+               history_id
              ),
-           {:ok, revision} <- build_revision(document_id, history_id, parent, deleted, body) do
+           {:ok, revision} <-
+             build_revision(document_id, resolved_history_id, parent, deleted, body) do
         candidate_from_revision(adapter, doc, if_revision, current, revision)
       end
     end
@@ -320,7 +341,8 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          {:ok, sequence} <- Changes.allocate_sequence(adapter.conn),
          :ok <- Documents.update(adapter.conn, doc_key, winner, sequence),
          :ok <-
-           Changes.insert(adapter.conn, sequence, doc_key, document_id, winner, leaf_json, "local") do
+           Changes.insert(adapter.conn, sequence, doc_key, document_id, winner, leaf_json, "local"),
+         :ok <- RetentionRecords.mark_pending_local_causal(adapter.conn) do
       publishless = %{
         revision: winner.revision_id,
         sequence: sequence,
@@ -377,6 +399,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     operation = MapAccess.get(request, :operation, :put)
     document_id = MapAccess.get(request, :document_id)
     if_revision = MapAccess.get(request, :if_revision)
+    history_id = MapAccess.get(request, :history_id)
     deleted = operation in [:delete, "delete"]
     body = if(deleted, do: nil, else: MapAccess.get(request, :body))
 
@@ -385,7 +408,16 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current} <- current_winner(adapter, doc),
          {:ok, candidate_state} <-
-           candidate_revision(adapter, doc, document_id, if_revision, current, deleted, body) do
+           candidate_revision(
+             adapter,
+             doc,
+             document_id,
+             if_revision,
+             current,
+             deleted,
+             body,
+             history_id
+           ) do
       prepare_bulk_document(adapter, doc, candidate_state, document_id)
     end
   end
@@ -630,21 +662,49 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
-  defp revision_parent_and_history(_adapter, nil, document_id, nil, nil, _deleted) do
-    {:ok, {nil, UUID.document_history_id(document_id)}}
+  defp revision_parent_and_history(_adapter, nil, _document_id, nil, nil, _deleted, history_id) do
+    {:ok, {nil, root_history_id(history_id)}}
   end
 
-  defp revision_parent_and_history(_adapter, _doc, _document_id, current, nil, false)
+  defp revision_parent_and_history(
+         _adapter,
+         _doc,
+         _document_id,
+         nil,
+         nil,
+         _deleted,
+         history_id
+       ) do
+    {:ok, {nil, root_history_id(history_id)}}
+  end
+
+  defp revision_parent_and_history(_adapter, _doc, _document_id, current, nil, false, _history_id)
        when not current.deleted do
     {:ok, {nil, current.history_id}}
   end
 
-  defp revision_parent_and_history(_adapter, _doc, _document_id, current, _if_revision, false)
+  defp revision_parent_and_history(
+         _adapter,
+         _doc,
+         _document_id,
+         current,
+         _if_revision,
+         false,
+         history_id
+       )
        when not is_nil(current) and current.deleted do
-    {:ok, {nil, fresh_history_id()}}
+    {:ok, {nil, root_history_id(history_id)}}
   end
 
-  defp revision_parent_and_history(adapter, doc, _document_id, _current, if_revision, _deleted)
+  defp revision_parent_and_history(
+         adapter,
+         doc,
+         _document_id,
+         _current,
+         if_revision,
+         _deleted,
+         _history_id
+       )
        when is_binary(if_revision) do
     case Revisions.find(adapter.conn, doc.doc_key, if_revision) do
       {:ok, parent} ->
@@ -658,8 +718,19 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
-  defp revision_parent_and_history(_adapter, _doc, _document_id, _current, _if_revision, _deleted),
-    do: {:error, ElixirDB.Error.revision_conflict("document does not have the expected parent")}
+  defp revision_parent_and_history(
+         _adapter,
+         _doc,
+         _document_id,
+         _current,
+         _if_revision,
+         _deleted,
+         _history_id
+       ),
+       do: {:error, ElixirDB.Error.revision_conflict("document does not have the expected parent")}
+
+  defp root_history_id(history_id) when is_binary(history_id) and history_id != "", do: history_id
+  defp root_history_id(_), do: fresh_history_id()
 
   defp build_revision(document_id, history_id, parent, deleted, body) do
     with {:ok, id} <- Id.calculate(document_id, history_id, parent, deleted, body),
@@ -688,6 +759,8 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   end
 
   defp current_winner(_adapter, nil), do: {:ok, nil}
+
+  defp current_winner(_adapter, %{winning_revision: nil}), do: {:ok, nil}
 
   defp current_winner(adapter, doc),
     do: Revisions.find(adapter.conn, doc.doc_key, doc.winning_revision)

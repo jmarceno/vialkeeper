@@ -22,7 +22,8 @@ defmodule ElixirDB.Retention.SafeReport do
           required(:boundaries_installed_through) => non_neg_integer(),
           required(:position_durably_applied) => boolean(),
           required(:has_unacknowledged_local_mutations) => boolean(),
-          required(:checkpoint_only) => boolean()
+          required(:checkpoint_only) => boolean(),
+          optional(:bootstrap_applied) => boolean()
         }
 
   @type result :: Result.t()
@@ -77,6 +78,14 @@ defmodule ElixirDB.Retention.SafeReport do
     do: Map.fetch!(input, :has_unacknowledged_local_mutations)
 
   defp epoch_mismatch?(input) do
+    if Map.get(input, :bootstrap_applied, false) do
+      false
+    else
+      epoch_mismatch_without_bootstrap?(input)
+    end
+  end
+
+  defp epoch_mismatch_without_bootstrap?(input) do
     current = Map.fetch!(input, :source_history_epoch)
     checkpoint = Map.get(input, :checkpoint_source_history_epoch)
 

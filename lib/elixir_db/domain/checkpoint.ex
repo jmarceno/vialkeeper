@@ -29,10 +29,10 @@ defmodule ElixirDB.Domain.Checkpoint do
           session_id: binary(),
           source_sequence: non_neg_integer(),
           history: list(),
-          source_history_epoch: binary() | nil,
-          source_compaction_epoch: non_neg_integer() | nil,
-          safe_source_sequence: non_neg_integer() | nil,
-          installed_source_compaction_epoch: non_neg_integer() | nil
+          source_history_epoch: binary(),
+          source_compaction_epoch: non_neg_integer(),
+          safe_source_sequence: non_neg_integer(),
+          installed_source_compaction_epoch: non_neg_integer()
         }
 
   @known [
@@ -92,6 +92,33 @@ defmodule ElixirDB.Domain.Checkpoint do
 
   def from_wire(_), do: {:error, ElixirDB.Error.invalid_request("checkpoint must be an object")}
 
+  @wire_fields [
+    "version",
+    "replication_id",
+    "checkpoint_version",
+    "session_id",
+    "source_sequence",
+    "history",
+    "source_history_epoch",
+    "source_compaction_epoch",
+    "safe_source_sequence",
+    "installed_source_compaction_epoch"
+  ]
+
+  @spec valid_wire_put?(map()) :: boolean()
+  def valid_wire_put?(body) when is_map(body) do
+    with true <-
+           is_integer(body["expected_checkpoint_version"]) and
+             body["expected_checkpoint_version"] >= 0,
+         {:ok, _} <- from_wire(Map.take(body, @wire_fields)) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  def valid_wire_put?(_), do: false
+
   defp build(attrs) do
     case validation_error(attrs) do
       nil -> {:ok, struct(__MODULE__, attrs)}
@@ -150,25 +177,19 @@ defmodule ElixirDB.Domain.Checkpoint do
   defp validate_history(_),
     do: ElixirDB.Error.invalid_request("checkpoint history must be an array")
 
-  defp validate_source_history_epoch(%{source_history_epoch: nil}), do: nil
-
   defp validate_source_history_epoch(%{source_history_epoch: value})
        when is_binary(value) and value != "",
        do: nil
 
   defp validate_source_history_epoch(_),
-    do: ElixirDB.Error.invalid_request("checkpoint source_history_epoch is invalid")
-
-  defp validate_source_compaction_epoch(%{source_compaction_epoch: nil}), do: nil
+    do: ElixirDB.Error.invalid_request("checkpoint source_history_epoch is required")
 
   defp validate_source_compaction_epoch(%{source_compaction_epoch: value})
        when is_integer(value) and value >= 0,
        do: nil
 
   defp validate_source_compaction_epoch(_),
-    do: ElixirDB.Error.invalid_request("source_compaction_epoch must be non-negative")
-
-  defp validate_safe_source_sequence(%{safe_source_sequence: nil}), do: nil
+    do: ElixirDB.Error.invalid_request("checkpoint source_compaction_epoch is required")
 
   defp validate_safe_source_sequence(%{safe_source_sequence: value, source_sequence: source})
        when is_integer(value) and value >= 0 and is_integer(source) and value <= source,
@@ -179,15 +200,12 @@ defmodule ElixirDB.Domain.Checkpoint do
        do: nil
 
   defp validate_safe_source_sequence(_),
-    do: ElixirDB.Error.invalid_request("safe_source_sequence is invalid")
-
-  defp validate_installed_source_compaction_epoch(%{installed_source_compaction_epoch: nil}),
-    do: nil
+    do: ElixirDB.Error.invalid_request("checkpoint safe_source_sequence is required")
 
   defp validate_installed_source_compaction_epoch(%{installed_source_compaction_epoch: value})
        when is_integer(value) and value >= 0,
        do: nil
 
   defp validate_installed_source_compaction_epoch(_),
-    do: ElixirDB.Error.invalid_request("installed_source_compaction_epoch must be non-negative")
+    do: ElixirDB.Error.invalid_request("checkpoint installed_source_compaction_epoch is required")
 end

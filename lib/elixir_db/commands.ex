@@ -199,7 +199,12 @@ defmodule ElixirDB.Commands do
 
   defmodule HasLocalOriginChanges do
     @moduledoc false
-    defstruct []
+    defstruct [:peer_database_uuid]
+  end
+
+  defmodule ClearPendingLocalCausal do
+    @moduledoc false
+    defstruct [:peer_database_uuid]
   end
 
   defmodule Close do
@@ -276,6 +281,14 @@ defmodule ElixirDB.Commands do
     do: %InstallBoundaryPages{request: request}
 
   def normalize({:command, :has_local_origin_changes}), do: %HasLocalOriginChanges{}
+
+  def normalize({:command, :has_local_origin_changes, peer_database_uuid}),
+    do: %HasLocalOriginChanges{peer_database_uuid: peer_database_uuid}
+
+  def normalize({:command, :clear_pending_local_causal}), do: %ClearPendingLocalCausal{}
+
+  def normalize({:command, :clear_pending_local_causal, peer_database_uuid}),
+    do: %ClearPendingLocalCausal{peer_database_uuid: peer_database_uuid}
 
   def normalize({:command, :close}), do: %Close{}
   def normalize(other), do: other

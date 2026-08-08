@@ -258,6 +258,10 @@ defmodule ElixirDB.Replication.Worker do
         data = start_batch_span(data)
         enter_phase(:install_boundaries, data)
 
+      context.boundary_refresh_required ->
+        data = start_batch_span(data)
+        enter_phase(:install_boundaries, data)
+
       Replication.caught_up?(context) ->
         data = start_batch_span(data)
         enter_phase(:checkpoint_target, data)
@@ -268,8 +272,18 @@ defmodule ElixirDB.Replication.Worker do
     end
   end
 
-  defp handle_phase_result(:install_boundaries, {:ok, context}, data),
-    do: enter_phase(:bootstrap, %{data | context: context})
+  defp handle_phase_result(:install_boundaries, {:ok, context}, data) do
+    cond do
+      context.bootstrap_required ->
+        enter_phase(:bootstrap, %{data | context: context})
+
+      Replication.caught_up?(context) ->
+        enter_phase(:checkpoint_target, %{data | context: context})
+
+      true ->
+        enter_phase(:read_changes, %{data | context: context})
+    end
+  end
 
   defp handle_phase_result(:bootstrap, {:ok, context}, data),
     do:

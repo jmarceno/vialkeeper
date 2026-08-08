@@ -72,6 +72,10 @@
           "checkpoint_version": 2,
           "session_id": "sess-a",
           "source_sequence": 99,
+          "source_history_epoch": "epoch-a",
+          "source_compaction_epoch": 1,
+          "safe_source_sequence": 0,
+          "installed_source_compaction_epoch": 0,
           "history": []
         },
         "expect": {"ok": false, "error_code": "checkpoint_conflict"}

@@ -448,14 +448,14 @@ defmodule ElixirDB.RevisionHistoryModel do
     parent_revision_parent_and_history(state, parent_revision_id, deleted, document_id)
   end
 
-  defp root_revision_parent_and_history(state, false, document_id) do
+  defp root_revision_parent_and_history(state, false, _document_id) do
     history_id =
       if map_size(state.revisions) == 0 do
-        UUID.document_history_id(document_id)
+        UUID.v4()
       else
         case projection_winner(state) do
           {:ok, winner} -> winner.history_id
-          _ -> UUID.document_history_id(document_id)
+          _ -> UUID.v4()
         end
       end
 
@@ -472,11 +472,11 @@ defmodule ElixirDB.RevisionHistoryModel do
     end
   end
 
-  defp parent_revision_parent_and_history(state, parent_revision_id, true, document_id) do
+  defp parent_revision_parent_and_history(state, parent_revision_id, true, _document_id) do
     history_id =
       case Map.get(state.revisions, parent_revision_id) do
         %{history_id: history_id} -> history_id
-        _ -> UUID.document_history_id(document_id)
+        _ -> UUID.v4()
       end
 
     {parent_revision_id, history_id}

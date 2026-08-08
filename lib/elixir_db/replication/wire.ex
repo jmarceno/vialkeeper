@@ -28,11 +28,14 @@ defmodule ElixirDB.Replication.Wire do
   @spec boundary_page(BoundaryPage.t()) :: map()
   def boundary_page(%BoundaryPage{} = page) do
     %{
+      "source_database_uuid" => page.source_database_uuid,
       "source_history_epoch" => page.source_history_epoch,
       "compaction_epoch" => page.compaction_epoch,
       "boundary_digest" => page.boundary_digest,
       "next_page" => page.next_page,
-      "boundaries" => Enum.map(page.boundaries, &boundary/1)
+      "boundaries" => Enum.map(page.boundaries, &boundary/1),
+      "install_id" => page.install_id,
+      "replace" => page.replace
     }
   end
 

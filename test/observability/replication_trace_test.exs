@@ -69,6 +69,13 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     {:ok, replication_id} =
       Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
     options = %{
       source: source,
       target: target,
@@ -139,6 +146,13 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
 
     {:ok, replication_id} =
       Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
+
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
 
     assert {:ok, %{status: 201, body: %{"data" => %{"job_id" => _job_id}}}} =
              Req.post(server_a.base_url <> "/v1/databases/#{a.database_uuid}/replications",

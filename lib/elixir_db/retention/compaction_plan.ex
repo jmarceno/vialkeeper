@@ -22,14 +22,17 @@ defmodule ElixirDB.Retention.CompactionPlan do
 
   @type stored_boundary :: %{
           required(:boundary) => RetentionBoundary.t(),
-          required(:compaction_epoch) => non_neg_integer()
+          required(:compaction_epoch) => non_neg_integer(),
+          optional(:source_database_uuid) => binary(),
+          optional(:source_history_epoch) => binary()
         }
 
   @type t :: %__MODULE__{
           removals: %{binary() => [binary()]},
           boundaries_to_upsert: [RetentionBoundary.t()],
           boundaries_to_remove: [RetentionBoundary.t()],
-          change_sequences_to_delete: [non_neg_integer()],
+          documents_to_empty: [binary()],
+          delete_changes_through: non_neg_integer(),
           stats: map()
         }
 
@@ -37,7 +40,8 @@ defmodule ElixirDB.Retention.CompactionPlan do
     :removals,
     :boundaries_to_upsert,
     :boundaries_to_remove,
-    :change_sequences_to_delete,
+    :documents_to_empty,
+    :delete_changes_through,
     :stats
   ]
 
@@ -46,6 +50,7 @@ defmodule ElixirDB.Retention.CompactionPlan do
           required(:history_depth) => non_neg_integer(),
           optional(:documents) => [document_input()],
           optional(:boundaries) => [stored_boundary()],
+          optional(:local_database_uuid) => binary(),
           optional(:peer_installed_epochs) => %{optional(binary()) => non_neg_integer()},
           optional(:compaction_epoch) => non_neg_integer(),
           optional(:peers) => [PeerPosition.t()],
@@ -59,11 +64,10 @@ defmodule ElixirDB.Retention.CompactionPlan do
     documents = Map.get(opts, :documents, [])
     boundaries = Map.get(opts, :boundaries, [])
     peer_epochs = Map.get(opts, :peer_installed_epochs, %{})
-    compaction_epoch = Map.get(opts, :compaction_epoch, 0)
 
-    {removals, upserts, _removed_boundaries, stats} =
+    {removals, upserts, documents_to_empty, stats} =
       Enum.reduce(documents, {%{}, [], [], init_stats()}, fn doc, acc ->
-        plan_document(doc, candidate_floor, history_depth, compaction_epoch, acc)
+        plan_document(doc, candidate_floor, history_depth, acc)
       end)
 
     boundaries_to_remove =
@@ -74,22 +78,18 @@ defmodule ElixirDB.Retention.CompactionPlan do
         Map.get(opts, :now_ms)
       )
 
-    change_sequences =
-      if candidate_floor > 0,
-        do: Enum.to_list(1..candidate_floor),
-        else: []
-
     %__MODULE__{
       removals: removals,
       boundaries_to_upsert: Enum.reverse(upserts),
       boundaries_to_remove: boundaries_to_remove,
-      change_sequences_to_delete: change_sequences,
+      documents_to_empty: documents_to_empty,
+      delete_changes_through: candidate_floor,
       stats:
         stats
         |> Map.put(:documents_compacted, map_size(removals))
         |> Map.put(:boundaries_upserted, length(upserts))
         |> Map.put(:boundaries_removed, length(boundaries_to_remove))
-        |> Map.put(:changes_removed, length(change_sequences))
+        |> Map.put(:changes_removed, candidate_floor)
         |> Map.put(:revisions_removed, count_removals(removals))
     }
   end
@@ -109,11 +109,10 @@ defmodule ElixirDB.Retention.CompactionPlan do
          },
          candidate_floor,
          _history_depth,
-         _compaction_epoch,
-         {removals, upserts, removed_boundaries, stats}
+         {removals, upserts, documents_to_empty, stats}
        )
        when latest > candidate_floor do
-    {removals, upserts, removed_boundaries, stats}
+    {removals, upserts, documents_to_empty, stats}
   end
 
   defp plan_document(
@@ -123,11 +122,10 @@ defmodule ElixirDB.Retention.CompactionPlan do
          },
          _candidate_floor,
          _history_depth,
-         _compaction_epoch,
-         {removals, upserts, removed_boundaries, stats}
+         {removals, upserts, documents_to_empty, stats}
        )
        when revisions == [] or is_nil(winner_id) do
-    {removals, upserts, removed_boundaries, stats}
+    {removals, upserts, documents_to_empty, stats}
   end
 
   defp plan_document(
@@ -139,8 +137,7 @@ defmodule ElixirDB.Retention.CompactionPlan do
          },
          _candidate_floor,
          history_depth,
-         _compaction_epoch,
-         {removals, upserts, removed_boundaries, stats}
+         {removals, upserts, documents_to_empty, stats}
        ) do
     by_id = Map.new(revisions, &{&1.revision_id, &1})
     winner = Map.fetch!(by_id, winner_id)
@@ -148,20 +145,18 @@ defmodule ElixirDB.Retention.CompactionPlan do
 
     if all_leaves_deleted?(leaves) do
       retired = plan_retired_histories(document_id, revisions, leaves)
-
-      removable =
-        Enum.reject(revisions, &(&1.revision_id == winner_id)) |> Enum.map(& &1.revision_id)
+      removable = Enum.map(revisions, & &1.revision_id)
 
       {
         Map.put(removals, document_id, removable),
         upserts ++ retired,
-        removed_boundaries,
+        [document_id | documents_to_empty],
         %{stats | revisions_removed: stats.revisions_removed + length(removable)}
       }
     else
       retained = retained_winning_ids(winner, by_id, history_depth)
       removable = removable_ids(revisions, retained, winner_id)
-      {new_upserts, _truncated_roots} = boundary_upserts(document_id, revisions, retained, by_id)
+      new_upserts = boundary_upserts(document_id, revisions, retained, removable, by_id)
 
       {
         if(removable == [],
@@ -169,7 +164,7 @@ defmodule ElixirDB.Retention.CompactionPlan do
           else: Map.put(removals, document_id, removable)
         ),
         upserts ++ new_upserts,
-        removed_boundaries,
+        documents_to_empty,
         %{stats | revisions_removed: stats.revisions_removed + length(removable)}
       }
     end
@@ -203,23 +198,87 @@ defmodule ElixirDB.Retention.CompactionPlan do
     |> Enum.map(& &1.revision_id)
   end
 
-  defp boundary_upserts(document_id, revisions, retained, by_id) do
-    Enum.reduce(revisions, {[], []}, fn revision, {upserts, roots} ->
-      if MapSet.member?(retained, revision.revision_id) and
-           parent_missing?(revision, by_id, retained) do
-        boundary =
+  defp boundary_upserts(document_id, revisions, retained, removable, by_id) do
+    removable_set = MapSet.new(removable)
+
+    retired_roots =
+      revisions
+      |> Enum.filter(fn revision ->
+        MapSet.member?(removable_set, revision.revision_id) and
+          (is_nil(revision.parent_revision) or
+             MapSet.member?(retained, revision.parent_revision))
+      end)
+      |> Enum.map(& &1.revision_id)
+      |> Enum.uniq()
+
+    truncation_upserts =
+      Enum.reduce(revisions, [], fn revision, upserts ->
+        if MapSet.member?(retained, revision.revision_id) and
+             parent_missing?(revision, by_id, retained) do
+          [
+            RetentionBoundary.active(
+              document_id,
+              revision.history_id,
+              revision.generation,
+              retired_roots_for_history(retired_roots, revisions, revision.history_id)
+            )
+            | upserts
+          ]
+        else
+          upserts
+        end
+      end)
+
+    branch_upserts = branch_boundary_upserts(document_id, revisions, retained, retired_roots)
+
+    (truncation_upserts ++ branch_upserts)
+    |> Enum.uniq_by(fn boundary -> {boundary.document_id, boundary.history_id} end)
+  end
+
+  defp branch_boundary_upserts(_document_id, _revisions, _retained, []), do: []
+
+  defp branch_boundary_upserts(document_id, revisions, retained, retired_roots) do
+    revisions
+    |> Enum.map(& &1.history_id)
+    |> Enum.uniq()
+    |> Enum.flat_map(
+      &branch_boundary_for_history(document_id, revisions, retained, retired_roots, &1)
+    )
+  end
+
+  defp branch_boundary_for_history(document_id, revisions, retained, retired_roots, history_id) do
+    case retired_roots_for_history(retired_roots, revisions, history_id) do
+      [] ->
+        []
+
+      roots ->
+        [
           RetentionBoundary.active(
             document_id,
-            revision.history_id,
-            revision.generation,
-            roots_for_history(revisions, revision.history_id)
+            history_id,
+            minimum_generation_for_history(revisions, retained, history_id),
+            roots
           )
+        ]
+    end
+  end
 
-        {[boundary | upserts], roots}
-      else
-        {upserts, roots}
-      end
+  defp retired_roots_for_history(retired_roots, revisions, history_id) do
+    retired_roots
+    |> Enum.filter(fn root_id ->
+      match?(%{history_id: ^history_id}, Enum.find(revisions, &(&1.revision_id == root_id)))
     end)
+    |> Enum.sort()
+  end
+
+  defp minimum_generation_for_history(revisions, retained, history_id) do
+    revisions
+    |> Enum.filter(&(&1.history_id == history_id and MapSet.member?(retained, &1.revision_id)))
+    |> Enum.map(& &1.generation)
+    |> case do
+      [] -> 1
+      generations -> Enum.min(generations)
+    end
   end
 
   defp parent_missing?(%Revision{parent_revision: nil}, _by_id, _retained), do: false

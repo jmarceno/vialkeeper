@@ -97,6 +97,16 @@ defmodule ElixirDB.Storage.SQLite.Documents do
     )
   end
 
+  @doc "Marks a document whose complete history has been purged as an empty placeholder."
+  @spec empty(Connection.handle(), integer()) :: :ok | {:error, term()}
+  def empty(conn, doc_key) do
+    Connection.execute(
+      conn,
+      "UPDATE documents SET winning_revision = NULL, winning_body_json = NULL, winning_deleted = 1, update_sequence = 0 WHERE doc_key = ?",
+      [doc_key]
+    )
+  end
+
   @doc """
   Lists document ids in stable order for paginated bootstrap pages.
   """

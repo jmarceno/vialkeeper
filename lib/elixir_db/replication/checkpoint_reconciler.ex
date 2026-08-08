@@ -41,19 +41,26 @@ defmodule ElixirDB.Replication.CheckpointReconciler do
     source_epoch = identity_epoch(source_identity)
     floor = retention_floor(source_identity)
     compaction_epoch = MapAccess.get(source_identity, :compaction_epoch, 0) || 0
-
     checkpoint_epoch = checkpoint_epoch_for(target_value, source_value)
     since = common_sequence(source_value, target_value)
 
+    reconcile_decision(checkpoint_epoch, source_epoch, floor, compaction_epoch, since)
+  end
+
+  defp reconcile_decision(checkpoint_epoch, source_epoch, floor, compaction_epoch, since) do
+    bootstrap = fn reason ->
+      reconcile_result(floor, true, reason, source_epoch, compaction_epoch, floor)
+    end
+
     cond do
-      epoch_mismatch?(checkpoint_epoch, source_epoch) ->
-        reconcile_result(floor, true, :epoch_mismatch, source_epoch, compaction_epoch, floor)
+      epoch_mismatch?(checkpoint_epoch, source_epoch) or missing_epoch?(checkpoint_epoch) ->
+        bootstrap.(:epoch_mismatch)
 
       floor > 0 and since < floor ->
-        reconcile_result(floor, true, :below_floor, source_epoch, compaction_epoch, floor)
+        bootstrap.(:below_floor)
 
       since == 0 and floor > 0 and no_valid_epoch?(checkpoint_epoch, source_epoch) ->
-        reconcile_result(floor, true, :no_common_history, source_epoch, compaction_epoch, floor)
+        bootstrap.(:no_common_history)
 
       true ->
         reconcile_result(max(since, floor), false, :ok, source_epoch, compaction_epoch, floor)
@@ -107,6 +114,9 @@ defmodule ElixirDB.Replication.CheckpointReconciler do
     is_binary(checkpoint_epoch) and checkpoint_epoch != "" and is_binary(source_epoch) and
       checkpoint_epoch != source_epoch
   end
+
+  defp missing_epoch?(checkpoint_epoch),
+    do: not is_binary(checkpoint_epoch) or checkpoint_epoch == ""
 
   defp no_valid_epoch?(checkpoint_epoch, source_epoch) do
     not is_binary(checkpoint_epoch) or checkpoint_epoch == "" or checkpoint_epoch != source_epoch

@@ -33,7 +33,14 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
 
   @impl true
   def has_local_origin_changes?(endpoint) do
-    case call(endpoint, :get, "/v1/databases/#{endpoint.database_uuid}/replication/local-origin") do
+    has_local_origin_changes?(endpoint, nil)
+  end
+
+  @impl true
+  def has_local_origin_changes?(endpoint, peer_database_uuid) do
+    path = local_origin_path(endpoint, peer_database_uuid)
+
+    case call(endpoint, :get, path) do
       {:ok, %{"has_local_origin_changes" => value}} when is_boolean(value) ->
         {:ok, value}
 
@@ -44,6 +51,34 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
         other
     end
   end
+
+  @impl true
+  def clear_pending_local_causal(endpoint), do: clear_pending_local_causal(endpoint, nil)
+
+  @impl true
+  def clear_pending_local_causal(endpoint, peer_database_uuid) do
+    body =
+      if is_binary(peer_database_uuid),
+        do: %{"peer_database_uuid" => peer_database_uuid},
+        else: %{}
+
+    case call(
+           endpoint,
+           :post,
+           "/v1/databases/#{endpoint.database_uuid}/replication/local-origin/clear",
+           body
+         ) do
+      {:ok, _} -> {:ok, :cleared}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp local_origin_path(endpoint, nil),
+    do: "/v1/databases/#{endpoint.database_uuid}/replication/local-origin"
+
+  defp local_origin_path(endpoint, peer_database_uuid),
+    do:
+      "/v1/databases/#{endpoint.database_uuid}/replication/local-origin?peer_database_uuid=#{URI.encode_www_form(peer_database_uuid)}"
 
   @impl true
   def read_changes(endpoint, request),
@@ -107,7 +142,7 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
       if namespace == "peer_ledger" do
         "/v1/databases/#{endpoint.database_uuid}/replication/peers/#{key}"
       else
-        "/v1/databases/#{endpoint.database_uuid}/replication/local-records/#{namespace}/#{key}"
+        "/v1/databases/#{endpoint.database_uuid}/replication/local-records/#{URI.encode_www_form(namespace)}/#{URI.encode_www_form(key)}"
       end
 
     call(endpoint, :get, path)

@@ -231,6 +231,22 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: Changes.has_local_origin_changes?(conn)
 
   @impl true
+  def has_local_origin_changes?(%__MODULE__{conn: conn}, peer_database_uuid),
+    do: Changes.has_local_origin_changes?(conn, peer_database_uuid)
+
+  @impl true
+  def clear_pending_local_causal(%__MODULE__{} = adapter),
+    do: clear_pending_local_causal(adapter, nil)
+
+  @impl true
+  def clear_pending_local_causal(%__MODULE__{conn: conn}, peer_database_uuid) do
+    case Retention.clear_pending_local_causal(conn, peer_database_uuid) do
+      :ok -> {:ok, :cleared}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @impl true
   def diff_revisions(%__MODULE__{} = adapter, request) when is_map(request),
     do: Chains.diff(adapter, request)
 
@@ -246,7 +262,12 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def import_revision_chains(adapter, request) when is_map(request) do
-    with :ok <- Import.validate_chain_batch(MapAccess.get(request, :chains, [])) do
+    with :ok <- Import.validate_chain_batch(MapAccess.get(request, :chains, [])),
+         :ok <-
+           Import.validate_purged_boundaries(
+             MapAccess.get(request, :purged_boundaries, []),
+             MapAccess.get(request, :source_database_uuid)
+           ) do
       transaction(adapter, fn -> Import.import_tx(adapter, request) end)
     end
   end

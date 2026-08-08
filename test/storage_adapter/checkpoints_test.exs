@@ -10,6 +10,10 @@ defmodule ElixirDB.StorageAdapter.CheckpointsTest do
       "session_id" => ElixirDB.UUID.v4(),
       "source_sequence" => 3,
       "checkpoint_version" => 1,
+      "source_history_epoch" => "epoch-test",
+      "source_compaction_epoch" => 0,
+      "safe_source_sequence" => 0,
+      "installed_source_compaction_epoch" => 0,
       "history" => []
     }
 

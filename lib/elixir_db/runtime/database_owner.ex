@@ -169,8 +169,19 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp handle_command(%Commands.InstallBoundaryPages{request: request}, _from, state),
     do: reply(Adapter.install_boundary_pages(state.adapter, request), state)
 
-  defp handle_command(%Commands.HasLocalOriginChanges{}, _from, state),
-    do: reply(Adapter.has_local_origin_changes?(state.adapter), state)
+  defp handle_command(
+         %Commands.HasLocalOriginChanges{peer_database_uuid: peer_database_uuid},
+         _from,
+         state
+       ),
+       do: reply(Adapter.has_local_origin_changes?(state.adapter, peer_database_uuid), state)
+
+  defp handle_command(
+         %Commands.ClearPendingLocalCausal{peer_database_uuid: peer_database_uuid},
+         _from,
+         state
+       ),
+       do: reply(Adapter.clear_pending_local_causal(state.adapter, peer_database_uuid), state)
 
   defp handle_command(%Commands.Close{}, _from, state),
     do: {:stop, :shutdown, :ok, state}

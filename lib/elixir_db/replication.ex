@@ -1,10 +1,11 @@
 defmodule ElixirDB.Replication do
   @moduledoc "One-shot and continuous replication orchestration."
   alias ElixirDB.Changes.Request
+  alias ElixirDB.Domain.BoundaryPage
   alias ElixirDB.JSON.{Canonical, Stringify}
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationModule
-  alias ElixirDB.Replication.{CheckpointReconciler, Id}
+  alias ElixirDB.Replication.{CheckpointReconciler, Id, Wire}
   alias ElixirDB.Replication.LocalEndpoint
   alias ElixirDB.Retention.SafeReport
   @default_batch 100
@@ -64,6 +65,16 @@ defmodule ElixirDB.Replication do
            ),
          {:ok, source_checkpoint} <- endpoint_call(source, :get_checkpoint, [replication_id]),
          {:ok, target_checkpoint} <- endpoint_call(target, :get_checkpoint, [replication_id]),
+         {:ok, target_boundary_state} <-
+           endpoint_call(target, :get_local_record, [
+             "retention_boundary_state",
+             source_uuid(source_identity)
+           ]),
+         {:ok, peer_record} <-
+           endpoint_call(source, :get_local_record, [
+             "peer_ledger",
+             source_uuid(target_identity)
+           ]),
          reconcile <-
            CheckpointReconciler.reconcile(
              value(source_checkpoint),
@@ -76,21 +87,31 @@ defmodule ElixirDB.Replication do
         replication_id: replication_id,
         since: reconcile.since,
         terminal: terminal,
-        bootstrap_required: reconcile.bootstrap_required,
-        reconcile_reason: reconcile.reason,
+        bootstrap_required:
+          reconcile.bootstrap_required or
+            peer_history_replacement_required?(peer_record, target_identity),
+        reconcile_reason:
+          if(peer_history_replacement_required?(peer_record, target_identity),
+            do: :peer_history_reset,
+            else: reconcile.reason
+          ),
         source_identity: source_identity,
         target_identity: target_identity,
         source_checkpoint: source_checkpoint,
         target_checkpoint: target_checkpoint,
-        installed_source_compaction_epoch:
-          installed_compaction_epoch(target_checkpoint) ||
-            reconcile.source_compaction_epoch,
-        boundaries_installed_through: 0,
+        installed_source_compaction_epoch: boundary_state_epoch(target_boundary_state) || 0,
+        installed_source_boundary_digest: boundary_state_digest(target_boundary_state),
+        boundaries_installed_through: boundary_state_epoch(target_boundary_state) || 0,
         selected: [],
         documents: [],
         chains: [],
         imported: nil,
-        bootstrap_cursor: nil
+        bootstrap_cursor: nil,
+        bootstrap_applied: false,
+        boundary_refresh_required:
+          boundary_refresh_required?(source_identity, target_checkpoint, target_boundary_state),
+        peer_history_replacement_required:
+          peer_history_replacement_required?(peer_record, target_identity)
       }
 
       with :ok <- phase_hook(options, :after_handshake, context) do
@@ -103,7 +124,15 @@ defmodule ElixirDB.Replication do
   def install_boundaries(source, target, context, options) do
     with :ok <- phase_hook(options, :install_boundaries, context),
          {:ok, installed_through} <- install_boundary_pages(source, target, context) do
-      context = %{context | boundaries_installed_through: installed_through}
+      context =
+        context
+        |> Map.put(:boundaries_installed_through, installed_through)
+        |> Map.put(:installed_source_compaction_epoch, installed_through)
+        |> Map.put(:boundary_refresh_required, false)
+        |> Map.put(
+          :installed_source_boundary_digest,
+          get(context.source_identity, :retention_boundary_digest)
+        )
 
       with :ok <- phase_hook(options, :after_install_boundaries, context) do
         {:ok, context}
@@ -163,7 +192,7 @@ defmodule ElixirDB.Replication do
   @doc "Diff selected change leaves against the target."
   def diff(target, context, options) do
     with :ok <- phase_hook(options, :diff, context),
-         {:ok, documents} <- target_diff(target, context.selected) do
+         {:ok, documents} <- target_diff(target, context) do
       context = %{context | documents: documents}
 
       with :ok <- phase_hook(options, :after_diff, context) do
@@ -267,8 +296,11 @@ defmodule ElixirDB.Replication do
 
   @doc "Report the target safe position and renew the peer lease on the source."
   def report_peer(source, target, context, options) do
+    target_uuid = source_uuid(context.target_identity || target)
+
     with :ok <- phase_hook(options, :report_peer, context),
-         {:ok, _result} <- report_peer_position(source, target, context, options) do
+         {:ok, _result} <- report_peer_position(source, target, context, options),
+         :ok <- clear_pending_local_causal(source, target_uuid) do
       with :ok <- phase_hook(options, :after_report_peer, context) do
         {:ok, context}
       end
@@ -351,11 +383,26 @@ defmodule ElixirDB.Replication do
       context.bootstrap_required ->
         finish_bootstrap(source, target, context, options)
 
+      context.boundary_refresh_required ->
+        finish_boundary_refresh(source, target, context, options)
+
       caught_up?(context) ->
         checkpoint_caught_up(source, target, context, options)
 
       true ->
         process_batches(source, target, context, options)
+    end
+  end
+
+  defp finish_boundary_refresh(source, target, context, options) do
+    with {:ok, context} <- install_boundaries(source, target, context, options) do
+      context = %{context | boundary_refresh_required: false}
+
+      if caught_up?(context) do
+        checkpoint_caught_up(source, target, context, options)
+      else
+        process_batches(source, target, context, options)
+      end
     end
   end
 
@@ -426,6 +473,10 @@ defmodule ElixirDB.Replication do
     finish_bootstrap(source, target, context, options)
   end
 
+  defp continue_wait_loop(source, target, %{boundary_refresh_required: true} = context, options) do
+    finish_boundary_refresh(source, target, context, options)
+  end
+
   defp continue_wait_loop(source, target, context, options) do
     if context.selected == [] and context.terminal <= context.since do
       wait_loop(source, target, context, options)
@@ -458,7 +509,13 @@ defmodule ElixirDB.Replication do
            ]),
          :ok <- verify_bootstrap_identity(context, page),
          {:ok, imported} <-
-           endpoint_call(target, :import_revision_chains, [%{chains: get(page, :chains) || []}]),
+           endpoint_call(target, :import_revision_chains, [
+             %{
+               chains: get(page, :chains) || [],
+               purged_boundaries: get(page, :purged_boundaries) || [],
+               source_database_uuid: get(context.source_identity, :database_uuid)
+             }
+           ]),
          {:ok, _confirmed} <-
            endpoint_call(target, :confirm_durable_commit, [%{imported: imported}]) do
       terminal = get(context.source_identity, :current_sequence) || context.terminal
@@ -485,7 +542,13 @@ defmodule ElixirDB.Replication do
       if next_cursor do
         bootstrap_pages(source, target, context, options)
       else
-        {:ok, %{context | since: terminal, bootstrap_required: false}}
+        {:ok,
+         %{
+           context
+           | since: terminal,
+             bootstrap_required: false,
+             bootstrap_applied: true
+         }}
       end
     else
       {:error, %ElixirDB.Error{code: :integrity_violation}} ->
@@ -513,6 +576,7 @@ defmodule ElixirDB.Replication do
     cursor = nil
     compaction_epoch = get(source_identity, :compaction_epoch) || 0
     history_epoch = get(source_identity, :history_epoch)
+    install_id = "#{context.session_id}-boundaries"
 
     install_boundary_pages_loop(
       source,
@@ -520,7 +584,8 @@ defmodule ElixirDB.Replication do
       history_epoch,
       compaction_epoch,
       cursor,
-      0
+      0,
+      install_id
     )
   end
 
@@ -530,7 +595,8 @@ defmodule ElixirDB.Replication do
          history_epoch,
          compaction_epoch,
          cursor,
-         installed
+         installed,
+         install_id
        ) do
     request = %{
       source_history_epoch: history_epoch,
@@ -539,7 +605,8 @@ defmodule ElixirDB.Replication do
     }
 
     with {:ok, page} <- endpoint_call(source, :read_boundary_pages, [request]),
-         {:ok, install_result} <- endpoint_call(target, :install_boundary_pages, [page]),
+         install_page <- boundary_install_page(page, source, install_id, is_nil(cursor)),
+         {:ok, install_result} <- endpoint_call(target, :install_boundary_pages, [install_page]),
          next_cursor <- get(page, :next_page),
          installed_through <-
            max(installed, MapAccess.get(install_result, :compaction_epoch, compaction_epoch)) do
@@ -550,7 +617,8 @@ defmodule ElixirDB.Replication do
           history_epoch,
           compaction_epoch,
           next_cursor,
-          installed_through
+          installed_through,
+          install_id
         )
       else
         {:ok, installed_through}
@@ -632,7 +700,8 @@ defmodule ElixirDB.Replication do
          context,
          options
        ) do
-    has_local = unacknowledged_local_mutations?(target, options)
+    has_local =
+      unacknowledged_local_mutations?(target, get(source_identity, :database_uuid), options)
 
     SafeReport.decide(%{
       source_history_epoch: get(source_identity, :history_epoch),
@@ -645,52 +714,94 @@ defmodule ElixirDB.Replication do
       boundaries_installed_through: context.boundaries_installed_through,
       position_durably_applied: true,
       has_unacknowledged_local_mutations: has_local,
-      checkpoint_only: imported_count(context.imported) == 0 and context.selected == []
+      checkpoint_only:
+        not Map.get(context, :bootstrap_applied, false) and
+          imported_count(context.imported) == 0 and context.selected == [],
+      bootstrap_applied: Map.get(context, :bootstrap_applied, false)
     })
   end
 
   defp report_peer_position(source, _target, context, _options) do
-    safe_sequence = Map.get(context, :safe_source_sequence)
+    case Map.get(context, :safe_source_sequence) do
+      nil -> {:ok, %{skipped: true}}
+      safe_sequence -> report_peer_position_value(source, context, safe_sequence)
+    end
+  end
 
-    if safe_sequence != nil do
-      source_identity = context.source_identity || %{}
-      target_identity = context.target_identity || %{}
-      peer_uuid = source_uuid(target_identity)
-      now = DateTime.utc_now()
-      expiry_ms = peer_expiry_ms(source_identity)
+  defp report_peer_position_value(source, context, safe_sequence) do
+    source_identity = context.source_identity || %{}
+    target_identity = context.target_identity || %{}
+    peer_uuid = source_uuid(target_identity)
+    now = DateTime.utc_now()
+    expiry_ms = peer_expiry_ms(source_identity)
+    lease_expires_at = DateTime.add(now, expiry_ms, :millisecond) |> DateTime.to_iso8601()
 
-      lease_expires_at =
-        DateTime.add(now, expiry_ms, :millisecond) |> DateTime.to_iso8601()
+    value = %{
+      "peer_database_uuid" => peer_uuid,
+      "peer_history_epoch" => get(target_identity, :history_epoch),
+      "source_database_uuid" => source_uuid(source_identity),
+      "source_history_epoch" => get(source_identity, :history_epoch),
+      "safe_source_sequence" => safe_sequence,
+      "installed_source_compaction_epoch" => context.installed_source_compaction_epoch || 0,
+      "last_seen_at" => DateTime.to_iso8601(now),
+      "lease_expires_at" => lease_expires_at,
+      "status" => "active"
+    }
 
-      value = %{
-        "peer_database_uuid" => peer_uuid,
-        "peer_history_epoch" => get(target_identity, :history_epoch),
-        "source_database_uuid" => source_uuid(source_identity),
-        "source_history_epoch" => get(source_identity, :history_epoch),
-        "safe_source_sequence" => safe_sequence,
-        "installed_source_compaction_epoch" => context.installed_source_compaction_epoch || 0,
-        "last_seen_at" => DateTime.to_iso8601(now),
-        "lease_expires_at" => lease_expires_at,
-        "status" => "active"
+    bootstrap_completed =
+      Map.get(context, :bootstrap_applied, false) or
+        Map.get(context, :peer_history_replacement_required, false)
+
+    endpoint_call(source, :put_peer_position, [
+      %{
+        peer_database_uuid: peer_uuid,
+        expected_version: peer_record_version(source, peer_uuid),
+        bootstrap_completed: bootstrap_completed,
+        value: value
       }
+    ])
+  end
 
-      expected =
-        case endpoint_call(source, :get_local_record, ["peer_ledger", peer_uuid]) do
-          {:ok, nil} -> 0
-          {:ok, %{version: version}} -> version
-          {:ok, %{"version" => version}} -> version
-          _ -> 0
-        end
+  defp peer_record_version(source, peer_uuid) do
+    case endpoint_call(source, :get_local_record, ["peer_ledger", peer_uuid]) do
+      {:ok, nil} -> 0
+      {:ok, %{version: version}} -> version
+      {:ok, %{"version" => version}} -> version
+      _ -> 0
+    end
+  end
 
-      endpoint_call(source, :put_peer_position, [
-        %{
-          peer_database_uuid: peer_uuid,
-          expected_version: expected,
-          value: value
-        }
-      ])
-    else
-      {:ok, %{skipped: true}}
+  defp boundary_install_page(page, source, install_id, replace) do
+    source_uuid = source_uuid(source)
+
+    page =
+      case page do
+        %BoundaryPage{} = boundary_page ->
+          %{boundary_page | source_database_uuid: source_uuid}
+
+        map when is_map(map) ->
+          Map.put(map, "source_database_uuid", source_uuid)
+      end
+
+    case page do
+      %BoundaryPage{} = boundary_page ->
+        boundary_page
+        |> Wire.boundary_page()
+        |> Map.put("install_id", install_id)
+        |> Map.put("replace", replace)
+
+      wire when is_map(wire) ->
+        wire
+        |> Map.put("install_id", install_id)
+        |> Map.put("replace", replace)
+    end
+  end
+
+  defp clear_pending_local_causal(endpoint, peer_database_uuid) do
+    case endpoint_call(endpoint, :clear_pending_local_causal, [peer_database_uuid]) do
+      {:ok, _} -> :ok
+      {:error, _} = error -> error
+      _ -> :ok
     end
   end
 
@@ -710,15 +821,22 @@ defmodule ElixirDB.Replication do
   defp apply_read_changes_result({:error, error}, _context), do: {:error, error}
 
   defp maybe_mark_bootstrap(context, reconcile, source_identity) do
-    if reconcile.bootstrap_required do
-      %{
-        context
-        | bootstrap_required: true,
-          source_identity: source_identity,
-          since: reconcile.since
-      }
+    context =
+      if reconcile.bootstrap_required do
+        %{
+          context
+          | bootstrap_required: true,
+            source_identity: source_identity,
+            since: reconcile.since
+        }
+      else
+        %{context | source_identity: source_identity}
+      end
+
+    if boundary_refresh_required?(source_identity, context) do
+      %{context | boundary_refresh_required: true}
     else
-      %{context | source_identity: source_identity}
+      context
     end
   end
 
@@ -809,15 +927,29 @@ defmodule ElixirDB.Replication do
     end
   end
 
-  defp target_diff(_target, []), do: {:ok, []}
+  defp target_diff(_target, %{selected: []}), do: {:ok, []}
 
-  defp target_diff(target, changes) do
+  defp target_diff(target, context) do
+    source_uuid =
+      context.source_identity
+      |> case do
+        nil -> nil
+        identity -> get(identity, :database_uuid)
+      end
+
     request = %{
+      source_database_uuid: source_uuid,
       documents:
-        Enum.map(changes, fn change ->
+        Enum.map(context.selected, fn change ->
           %{
             document_id: get(change, :document_id),
-            leaf_revisions: Enum.map(get(change, :leaf_revisions) || [], &get(&1, :revision))
+            leaf_revisions:
+              Enum.map(get(change, :leaf_revisions) || [], fn leaf ->
+                %{
+                  revision: get(leaf, :revision),
+                  history_id: get(leaf, :history_id)
+                }
+              end)
           }
         end)
     }
@@ -866,12 +998,53 @@ defmodule ElixirDB.Replication do
   defp imported_count(nil), do: 0
   defp imported_count(imported), do: get(imported, :revisions_inserted) || 0
 
-  defp installed_compaction_epoch(checkpoint) do
-    value(checkpoint)
-    |> case do
-      nil -> nil
-      map -> int_field(map, :installed_source_compaction_epoch)
+  defp boundary_state_epoch(state) do
+    case value(state) do
+      map when is_map(map) -> int_field(map, :compaction_epoch)
+      _ -> nil
     end
+  end
+
+  defp boundary_state_digest(state) do
+    case value(state) do
+      map when is_map(map) -> get(map, :boundary_digest)
+      _ -> nil
+    end
+  end
+
+  defp peer_history_replacement_required?(record, target_identity) do
+    case value(record) do
+      peer when is_map(peer) ->
+        peer_epoch = get(peer, :peer_history_epoch)
+        target_epoch = get(target_identity, :history_epoch)
+        is_binary(peer_epoch) and is_binary(target_epoch) and peer_epoch != target_epoch
+
+      _ ->
+        false
+    end
+  end
+
+  defp boundary_refresh_required?(source_identity, _target_checkpoint, target_state) do
+    installed_epoch = boundary_state_epoch(target_state) || 0
+    installed_digest = boundary_state_digest(target_state)
+    boundary_refresh_needed?(source_identity, installed_epoch, installed_digest)
+  end
+
+  defp boundary_refresh_needed?(source_identity, installed_epoch, installed_digest) do
+    source_epoch = get(source_identity, :compaction_epoch) || 0
+    source_digest = get(source_identity, :retention_boundary_digest)
+
+    source_epoch > installed_epoch or
+      (is_binary(source_digest) and is_binary(installed_digest) and
+         source_digest != installed_digest)
+  end
+
+  defp boundary_refresh_required?(source_identity, context) do
+    boundary_refresh_needed?(
+      source_identity,
+      Map.get(context, :installed_source_compaction_epoch, 0) || 0,
+      Map.get(context, :installed_source_boundary_digest)
+    )
   end
 
   defp int_field(map, key) when is_map(map) do
@@ -928,11 +1101,11 @@ defmodule ElixirDB.Replication do
 
   defp value(_other), do: nil
 
-  defp unacknowledged_local_mutations?(target, options) do
+  defp unacknowledged_local_mutations?(target, source_database_uuid, options) do
     if explicit_local_mutations_option?(options) do
       option(options, :has_unacknowledged_local_mutations, true)
     else
-      case endpoint_call(target, :has_local_origin_changes?, []) do
+      case endpoint_call(target, :has_local_origin_changes?, [source_database_uuid]) do
         {:ok, value} when is_boolean(value) -> value
         _ -> true
       end

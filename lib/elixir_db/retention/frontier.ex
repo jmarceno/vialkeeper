@@ -14,6 +14,7 @@ defmodule ElixirDB.Retention.Frontier do
         }
 
   @type opts :: %{
+          required(:source_database_uuid) => binary(),
           required(:source_history_epoch) => binary(),
           required(:current_sequence) => non_neg_integer(),
           required(:current_floor) => non_neg_integer(),
@@ -24,6 +25,7 @@ defmodule ElixirDB.Retention.Frontier do
 
   @spec compute(opts()) :: compute_result()
   def compute(opts) when is_map(opts) do
+    source_database_uuid = Map.fetch!(opts, :source_database_uuid)
     source_history_epoch = Map.fetch!(opts, :source_history_epoch)
     current_sequence = Map.fetch!(opts, :current_sequence)
     current_floor = Map.fetch!(opts, :current_floor)
@@ -45,7 +47,14 @@ defmodule ElixirDB.Retention.Frontier do
     else
       {expired_peer_count, bootstrap_required_count, admitted_safes, active_peer_count} =
         Enum.reduce(peers, {0, 0, [], 0}, fn peer, counts ->
-          accumulate_peer(peer, source_history_epoch, current_sequence, now_ms, counts)
+          accumulate_peer(
+            peer,
+            source_database_uuid,
+            source_history_epoch,
+            current_sequence,
+            now_ms,
+            counts
+          )
         end)
 
       frontier =
@@ -71,12 +80,13 @@ defmodule ElixirDB.Retention.Frontier do
 
   defp accumulate_peer(
          peer,
+         source_database_uuid,
          source_history_epoch,
          current_sequence,
          now_ms,
          {expired, bootstrap, safes, active}
        ) do
-    case classify_peer(peer, source_history_epoch, current_sequence, now_ms) do
+    case classify_peer(peer, source_database_uuid, source_history_epoch, current_sequence, now_ms) do
       :expired -> {expired + 1, bootstrap, safes, active}
       :bootstrap -> {expired, bootstrap + 1, safes, active}
       :inactive -> {expired, bootstrap, safes, active}
@@ -84,8 +94,9 @@ defmodule ElixirDB.Retention.Frontier do
     end
   end
 
-  defp classify_peer(peer, source_history_epoch, current_sequence, now_ms) do
+  defp classify_peer(peer, source_database_uuid, source_history_epoch, current_sequence, now_ms) do
     cond do
+      peer.source_database_uuid != source_database_uuid -> :inactive
       PeerPosition.expired?(peer, now_ms) -> :expired
       peer.source_history_epoch != source_history_epoch -> :bootstrap
       peer.status == :bootstrap_required -> :bootstrap

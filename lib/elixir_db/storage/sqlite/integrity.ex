@@ -27,7 +27,8 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
          :ok <- required_tables_present(conn),
          {:ok, meta} <- Meta.load(conn),
          :ok <- validate_db_meta(meta),
-         {:ok, boundaries} <- RetentionRecords.list_boundaries(conn),
+         {:ok, boundaries} <-
+           RetentionRecords.list_boundaries(conn, source_database_uuid: meta.database_uuid),
          :ok <- validate_boundary_records(boundaries, meta),
          {:ok, peers} <- RetentionRecords.list_peers(conn),
          :ok <- validate_peer_records(peers, meta),
@@ -591,7 +592,6 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
 
   defp validate_checkpoint_fields(%Checkpoint{} = checkpoint, _meta) do
     validators = [
-      fn -> validate_checkpoint_history_epoch(checkpoint) end,
       fn -> validate_checkpoint_safe_sequence(checkpoint) end,
       fn -> validate_checkpoint_installed_epoch(checkpoint) end,
       fn -> validate_checkpoint_history(checkpoint) end
@@ -603,30 +603,18 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
     end
   end
 
-  defp validate_checkpoint_history_epoch(%Checkpoint{source_history_epoch: nil}), do: nil
-
-  defp validate_checkpoint_history_epoch(%Checkpoint{source_history_epoch: epoch})
-       when is_binary(epoch) and epoch != "",
-       do: nil
-
-  defp validate_checkpoint_history_epoch(_checkpoint),
-    do: {:error, ElixirDB.Error.integrity_violation("checkpoint source_history_epoch is invalid")}
-
   defp validate_checkpoint_safe_sequence(checkpoint) do
-    if is_integer(checkpoint.safe_source_sequence) and
-         checkpoint.safe_source_sequence > checkpoint.source_sequence,
-       do:
-         {:error,
-          ElixirDB.Error.integrity_violation("checkpoint safe sequence exceeds source sequence")}
+    if checkpoint.safe_source_sequence > checkpoint.source_sequence,
+      do:
+        {:error,
+         ElixirDB.Error.integrity_violation("checkpoint safe sequence exceeds source sequence")}
   end
 
   defp validate_checkpoint_installed_epoch(checkpoint) do
-    if is_integer(checkpoint.installed_source_compaction_epoch) and
-         is_integer(checkpoint.source_compaction_epoch) and
-         checkpoint.installed_source_compaction_epoch > checkpoint.source_compaction_epoch,
-       do:
-         {:error,
-          ElixirDB.Error.integrity_violation("checkpoint installed compaction epoch regressed")}
+    if checkpoint.installed_source_compaction_epoch > checkpoint.source_compaction_epoch,
+      do:
+        {:error,
+         ElixirDB.Error.integrity_violation("checkpoint installed compaction epoch regressed")}
   end
 
   defp validate_checkpoint_history(checkpoint) do

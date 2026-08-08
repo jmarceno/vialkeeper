@@ -89,7 +89,8 @@ defmodule ElixirDB.Retention.CompactionPlanTest do
     assert [%{retired: true, retired_branch_roots: [root]}] = plan.boundaries_to_upsert
     root_revision = Enum.find(revisions, &is_nil(&1.parent_revision))
     assert root == root_revision.revision_id
-    refute List.last(revisions).revision_id in Map.get(plan.removals, "doc", [])
+    assert List.last(revisions).revision_id in Map.get(plan.removals, "doc", [])
+    assert "doc" in plan.documents_to_empty
   end
 
   test "documents above the floor are untouched" do
@@ -142,7 +143,7 @@ defmodule ElixirDB.Retention.CompactionPlanTest do
 
     assert attachment_plan.removals == plain_plan.removals
     assert attachment_plan.boundaries_to_upsert == plain_plan.boundaries_to_upsert
-    assert attachment_plan.change_sequences_to_delete == plain_plan.change_sequences_to_delete
+    assert attachment_plan.delete_changes_through == plain_plan.delete_changes_through
   end
 
   defp plan!(opts), do: CompactionPlan.plan(opts)

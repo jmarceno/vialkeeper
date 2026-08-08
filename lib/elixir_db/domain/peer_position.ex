@@ -120,6 +120,24 @@ defmodule ElixirDB.Domain.PeerPosition do
       is_integer(peer.safe_source_sequence) and peer.safe_source_sequence >= 0
   end
 
+  @spec epoch_changed?(t(), t()) :: boolean()
+  def epoch_changed?(
+        %__MODULE__{source_history_epoch: previous_epoch},
+        %__MODULE__{source_history_epoch: incoming_epoch}
+      ),
+      do: previous_epoch != incoming_epoch
+
+  @spec peer_history_changed?(t(), t()) :: boolean()
+  def peer_history_changed?(
+        %__MODULE__{peer_history_epoch: previous_epoch},
+        %__MODULE__{peer_history_epoch: incoming_epoch}
+      ),
+      do: previous_epoch != incoming_epoch
+
+  @spec history_changed?(t(), t()) :: boolean()
+  def history_changed?(previous, incoming),
+    do: epoch_changed?(previous, incoming) or peer_history_changed?(previous, incoming)
+
   @spec regresses?(t(), t()) :: boolean()
   def regresses?(
         %__MODULE__{
@@ -133,8 +151,8 @@ defmodule ElixirDB.Domain.PeerPosition do
           installed_source_compaction_epoch: incoming_compaction
         }
       ) do
-    previous_epoch != incoming_epoch or incoming_safe < previous_safe or
-      incoming_compaction < previous_compaction
+    previous_epoch == incoming_epoch and
+      (incoming_safe < previous_safe or incoming_compaction < previous_compaction)
   end
 
   defp peer_position_validation_error(attrs) do
