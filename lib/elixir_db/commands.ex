@@ -212,6 +212,42 @@ defmodule ElixirDB.Commands do
     defstruct []
   end
 
+  defmodule ResolveAttachmentTicket do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule ResolveBlobMetadata do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule ProtectPendingBlob do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule RemovePendingBlobProtection do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule ListLiveAttachmentDigests do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule CleanupExpiredPendingBlobs do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
   @doc "Converts tagged owner tuples and already-normalized structs into command structs."
   @spec normalize(term()) :: struct() | term()
   def normalize(%_{} = command), do: command
@@ -289,6 +325,24 @@ defmodule ElixirDB.Commands do
 
   def normalize({:command, :clear_pending_local_causal, peer_database_uuid}),
     do: %ClearPendingLocalCausal{peer_database_uuid: peer_database_uuid}
+
+  def normalize({:command, :resolve_attachment_ticket, request}),
+    do: %ResolveAttachmentTicket{request: request}
+
+  def normalize({:command, :resolve_blob_metadata, request}),
+    do: %ResolveBlobMetadata{request: request}
+
+  def normalize({:command, :protect_pending_blob, request}),
+    do: %ProtectPendingBlob{request: request}
+
+  def normalize({:command, :remove_pending_blob_protection, request}),
+    do: %RemovePendingBlobProtection{request: request}
+
+  def normalize({:command, :list_live_attachment_digests, request}),
+    do: %ListLiveAttachmentDigests{request: request}
+
+  def normalize({:command, :cleanup_expired_pending_blobs, request}),
+    do: %CleanupExpiredPendingBlobs{request: request}
 
   def normalize({:command, :close}), do: %Close{}
   def normalize(other), do: other

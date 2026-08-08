@@ -7,8 +7,11 @@ defmodule ElixirDB.HTTP.Schemas do
   """
 
   @document_get ["id", "revision", "include_conflicts"]
-  @document_put ["id", "if_revision", "body"]
+  @document_put ["id", "if_revision", "body", "attachments"]
   @document_delete ["id", "if_revision"]
+
+  @attachment_get ["id", "revision", "name"]
+  @attachment_upload []
 
   @document_resolve [
     "id",
@@ -82,6 +85,8 @@ defmodule ElixirDB.HTTP.Schemas do
   def allowed(:document_get), do: @document_get
   def allowed(:document_put), do: @document_put
   def allowed(:document_delete), do: @document_delete
+  def allowed(:attachment_get), do: @attachment_get
+  def allowed(:attachment_upload), do: @attachment_upload
   def allowed(:document_resolve), do: @document_resolve
   def allowed(:database_create), do: @database_create
   def allowed(:database_register), do: @database_register

@@ -10,7 +10,7 @@ defmodule ElixirDB.Runtime.OwnerCrashTest do
   alias ElixirDB.Runtime.{DatabaseCatalog, FileLease}
 
   setup do
-    relative = "owner-crash-#{System.unique_integer([:positive])}.db"
+    relative = "owner-crash-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
     ElixirDB.TempDatabase.cleanup(absolute)
 
@@ -44,7 +44,7 @@ defmodule ElixirDB.Runtime.OwnerCrashTest do
     assert Process.alive?(lease_pid)
 
     assert {:error, %ElixirDB.Error{code: :database_in_use}} =
-             GenServer.start(FileLease, absolute)
+             GenServer.start(FileLease, ElixirDB.TempDatabase.sqlite_path(absolute))
 
     assert {:ok, %{revision: revision}} =
              ElixirDB.Documents.put(uuid, %{id: "crash-doc", body: %{"n" => 1}})
@@ -95,7 +95,7 @@ defmodule ElixirDB.Runtime.OwnerCrashTest do
     assert [] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
     refute Process.alive?(lease_pid)
 
-    assert {:ok, lease} = GenServer.start(FileLease, absolute)
+    assert {:ok, lease} = GenServer.start(FileLease, ElixirDB.TempDatabase.sqlite_path(absolute))
     assert :ok = GenServer.stop(lease)
 
     assert {:ok, _} = DatabaseCatalog.open(uuid)

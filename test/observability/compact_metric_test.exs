@@ -9,7 +9,7 @@ defmodule ElixirDB.Observability.CompactMetricTest do
   @compact_metric "elixir_db.database.compact.count"
 
   setup do
-    rel = "obs-compact-#{System.unique_integer([:positive])}.db"
+    rel = "obs-compact-#{System.unique_integer([:positive])}.elixirdb"
     {:ok, %{database_uuid: uuid}} = DatabaseCatalog.create(rel)
 
     on_exit(fn ->

@@ -9,7 +9,7 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
 
     assert {:ok, %{status: 400, body: body}} =
              Req.post(server.base_url <> "/v1/registrations",
-               json: %{"path" => "http-unknown-reg.db", "extra" => true}
+               json: %{"path" => "http-unknown-reg.elixirdb", "extra" => true}
              )
 
     assert %{"error" => %{"code" => "invalid_request", "retryable" => false}} = body
@@ -17,7 +17,7 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
 
   test "GET databases plus table-driven unknown fields over Bandit" do
     server = TestServer.start_supervised!()
-    path = "http-list-#{System.unique_integer([:positive])}.db"
+    path = "http-list-#{System.unique_integer([:positive])}.elixirdb"
 
     assert {:ok, %{status: 201, body: created}} =
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})

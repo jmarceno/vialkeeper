@@ -12,7 +12,7 @@ defmodule ElixirDB.HTTP.NdjsonChangesTest do
 
   test "changes stream emits change, caught_up, heartbeat, closed, and error events" do
     server = ElixirDB.TestServer.start_supervised!()
-    path = "ndjson-#{System.unique_integer([:positive])}.db"
+    path = "ndjson-#{System.unique_integer([:positive])}.elixirdb"
 
     {:ok, create_resp} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})

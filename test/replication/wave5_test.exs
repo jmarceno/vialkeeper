@@ -13,8 +13,8 @@ defmodule ElixirDB.Replication.Wave5Test do
 
   setup do
     prefix = "wave5-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
     root = ElixirDB.Config.database_root()
 
     for path <- [a_path, b_path] do
@@ -72,7 +72,8 @@ defmodule ElixirDB.Replication.Wave5Test do
   end
 
   test "checkpoint CAS rejects safe sequence regression", %{a: a} do
-    {:ok, path} = TempDatabase.create(prefix: "wave5-cas")
+    {:ok, bundle_path} = TempDatabase.create(prefix: "wave5-cas")
+    path = TempDatabase.sqlite_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{database_uuid: a.database_uuid})
 
     try do
@@ -112,7 +113,7 @@ defmodule ElixirDB.Replication.Wave5Test do
                })
     after
       Adapter.close(adapter)
-      TempDatabase.cleanup(path)
+      TempDatabase.cleanup(bundle_path)
     end
   end
 

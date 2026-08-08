@@ -12,7 +12,7 @@ defmodule ElixirDB.Runtime.AdmissionTest do
       Application.put_env(:elixir_db, :host_limits, previous)
     end)
 
-    relative = "admission-#{System.unique_integer([:positive])}.db"
+    relative = "admission-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
     ElixirDB.TempDatabase.cleanup(absolute)
 

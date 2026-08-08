@@ -6,8 +6,8 @@ defmodule ElixirDB.EndToEnd.LocalConvergenceTest do
   @tag :slow
   test "two-database local convergence replicates documents from A to B" do
     prefix = "e2e-conv-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
 
     for path <- [a_path, b_path] do
       ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))

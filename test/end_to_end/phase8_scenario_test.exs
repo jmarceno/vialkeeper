@@ -17,8 +17,8 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
   test "Architecture §21 Phase 8 scenario with local endpoints" do
     root = ElixirDB.Config.database_root()
     prefix = "phase8-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
 
     for path <- [a_path, b_path] do
       ElixirDB.TempDatabase.cleanup(Path.join(root, path))
@@ -258,10 +258,10 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
     assert :ok = DatabaseCatalog.close(b_uuid)
 
     # Steps 12–16 — OS copy, re-register, rebuild indexes, verify integrity.
-    a_copy = prefix <> "-a-copy.db"
-    b_copy = prefix <> "-b-copy.db"
-    File.cp!(Path.join(root, a_path), Path.join(root, a_copy))
-    File.cp!(Path.join(root, b_path), Path.join(root, b_copy))
+    a_copy = prefix <> "-a-copy.elixirdb"
+    b_copy = prefix <> "-b-copy.elixirdb"
+    File.cp_r!(Path.join(root, a_path), Path.join(root, a_copy))
+    File.cp_r!(Path.join(root, b_path), Path.join(root, b_copy))
 
     on_exit(fn ->
       for path <- [a_copy, b_copy] do
@@ -314,8 +314,8 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
 
     root = ElixirDB.Config.database_root()
     prefix = "phase8-del-conflict-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
 
     for path <- [a_path, b_path] do
       ElixirDB.TempDatabase.cleanup(Path.join(root, path))
@@ -339,9 +339,9 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
     root_body = %{"role" => "root"}
     left_body = %{"role" => "left"}
     history_id = RevisionFixtures.shared_history_id()
-    {:ok, root_rev} = RevisionId.calculate(document_id, history_id, nil, false, root_body)
-    {:ok, left} = RevisionId.calculate(document_id, history_id, root_rev, false, left_body)
-    {:ok, right_deleted} = RevisionId.calculate(document_id, history_id, root_rev, true, nil)
+    {:ok, root_rev} = RevisionId.calculate(document_id, history_id, nil, false, root_body, %{})
+    {:ok, left} = RevisionId.calculate(document_id, history_id, root_rev, false, left_body, %{})
+    {:ok, right_deleted} = RevisionId.calculate(document_id, history_id, root_rev, true, nil, %{})
 
     assert {:ok, _} =
              DatabaseCatalog.command(a_uuid, {

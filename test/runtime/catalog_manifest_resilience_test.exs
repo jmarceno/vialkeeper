@@ -51,8 +51,8 @@ defmodule ElixirDB.Runtime.CatalogManifestResilienceTest do
     assert_catalog_survives(
       manifest,
       ~s|{"version":1,"databases":[| <>
-        ~s|{"path":"same.db","uuid":"11111111-1111-4111-8111-111111111111"},| <>
-        ~s|{"path":"same.db","uuid":"22222222-2222-4222-8222-222222222222"}]}|
+        ~s|{"path":"same.elixirdb","uuid":"11111111-1111-4111-8111-111111111111"},| <>
+        ~s|{"path":"same.elixirdb","uuid":"22222222-2222-4222-8222-222222222222"}]}|
     )
   end
 
@@ -62,8 +62,8 @@ defmodule ElixirDB.Runtime.CatalogManifestResilienceTest do
     assert_catalog_survives(
       manifest,
       ~s|{"version":1,"databases":[| <>
-        ~s|{"path":"a.db","uuid":"11111111-1111-4111-8111-111111111111"},| <>
-        ~s|{"path":"b.db","uuid":"11111111-1111-4111-8111-111111111111"}]}|
+        ~s|{"path":"a.elixirdb","uuid":"11111111-1111-4111-8111-111111111111"},| <>
+        ~s|{"path":"b.elixirdb","uuid":"11111111-1111-4111-8111-111111111111"}]}|
     )
   end
 
@@ -74,7 +74,7 @@ defmodule ElixirDB.Runtime.CatalogManifestResilienceTest do
   test "an entry missing its uuid degrades to an empty catalog instead of crashing", %{
     manifest: manifest
   } do
-    assert_catalog_survives(manifest, ~s|{"version":1,"databases":[{"path":"a.db"}]}|)
+    assert_catalog_survives(manifest, ~s|{"version":1,"databases":[{"path":"a.elixirdb"}]}|)
   end
 
   test "an unsupported manifest version degrades to an empty catalog instead of crashing", %{

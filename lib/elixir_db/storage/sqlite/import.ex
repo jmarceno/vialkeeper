@@ -266,7 +266,9 @@ defmodule ElixirDB.Storage.SQLite.Import do
       "parent_revision",
       "history_id",
       "deleted",
-      "body"
+      "body",
+      :attachments,
+      "attachments"
     ]
 
     if Enum.all?(Map.keys(raw), &(&1 in allowed_keys)) do
@@ -278,7 +280,15 @@ defmodule ElixirDB.Storage.SQLite.Import do
       body = MapAccess.get(raw, :body)
 
       with :ok <- validate_import_history_id(history_id),
-           {:ok, calculated} <- Id.calculate(document_id, history_id, parent, deleted, body),
+           {:ok, calculated} <-
+             Id.calculate(
+               document_id,
+               history_id,
+               parent,
+               deleted,
+               body,
+               attachments_for_import(raw)
+             ),
            true <- calculated == revision_id,
            {:ok, generation} <- Id.generation(revision_id),
            true <- generation_value == generation,
@@ -294,7 +304,8 @@ defmodule ElixirDB.Storage.SQLite.Import do
            parent_revision: parent,
            digest: digest(revision_id),
            deleted: deleted,
-           body: body
+           body: body,
+           attachments: attachments_for_import(raw)
          }}
       else
         false -> {:error, ElixirDB.Error.integrity_violation("revision chain validation failed")}
@@ -689,6 +700,14 @@ defmodule ElixirDB.Storage.SQLite.Import do
   end
 
   defp digest(id), do: id |> String.split("-", parts: 2) |> List.last()
+
+  defp attachments_for_import(raw) do
+    case MapAccess.get(raw, :attachments) || MapAccess.get(raw, "attachments") do
+      nil -> %{}
+      attachments when is_map(attachments) -> attachments
+      _ -> %{}
+    end
+  end
 
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})

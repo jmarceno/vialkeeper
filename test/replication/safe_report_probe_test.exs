@@ -18,8 +18,8 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
 
   setup do
     prefix = "safe-probe-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
     root = ElixirDB.Config.database_root()
 
     for path <- [a_path, b_path] do
@@ -44,7 +44,8 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
   end
 
   test "adapter reports local-origin changes on target", %{b: b} do
-    {:ok, path} = ElixirDB.TempDatabase.create(prefix: "safe-probe-adapter")
+    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "safe-probe-adapter")
+    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{database_uuid: b.database_uuid})
 
     try do
@@ -60,7 +61,7 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
       assert {:ok, true} = Adapter.has_local_origin_changes?(adapter)
     after
       Adapter.close(adapter)
-      ElixirDB.TempDatabase.cleanup(path)
+      ElixirDB.TempDatabase.cleanup(bundle_path)
     end
   end
 

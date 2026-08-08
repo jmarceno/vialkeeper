@@ -19,7 +19,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
   alias ElixirDB.Runtime.DatabaseCatalog
 
   setup do
-    path = "safety-#{System.unique_integer([:positive])}.db"
+    path = "safety-#{System.unique_integer([:positive])}.elixirdb"
 
     conn =
       call(:post, "/v1/databases", %{"path" => path})
@@ -209,7 +209,9 @@ defmodule ElixirDB.Safety.InputContainmentTest do
   describe "duplicate JSON keys" do
     test "duplicate object keys are rejected by the strict decoder at the boundary" do
       # Duplicate keys are invalid JSON per the project's strict decoder.
-      conn = call_raw(:post, "/v1/registrations", ~s({"path":"dup.db","path":"dup2.db"}))
+      conn =
+        call_raw(:post, "/v1/registrations", ~s({"path":"dup.elixirdb","path":"dup2.elixirdb"}))
+
       assert conn.status == 400
       assert_catalog_alive()
     end
@@ -335,14 +337,14 @@ defmodule ElixirDB.Safety.InputContainmentTest do
 
     test "path traversal returns a typed 400" do
       assert_typed_error(
-        call(:post, "/v1/databases", %{"path" => "../escape.db"}),
+        call(:post, "/v1/databases", %{"path" => "../escape.elixirdb"}),
         400
       )
     end
 
     test "non-object config returns a typed 400" do
       assert_typed_error(
-        call(:post, "/v1/databases", %{"path" => "x.db", "config" => "nope"}),
+        call(:post, "/v1/databases", %{"path" => "x.elixirdb", "config" => "nope"}),
         400
       )
     end
@@ -350,7 +352,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
     test "config with negative limit returns a typed 400" do
       assert_typed_error(
         call(:post, "/v1/databases", %{
-          "path" => "neg.db",
+          "path" => "neg.elixirdb",
           "config" => %{"documents" => %{"max_document_bytes" => -1}}
         }),
         400
@@ -360,7 +362,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
     test "config with unknown field returns a typed 400" do
       assert_typed_error(
         call(:post, "/v1/databases", %{
-          "path" => "unk.db",
+          "path" => "unk.elixirdb",
           "config" => %{"mystery" => 1}
         }),
         400
@@ -493,9 +495,9 @@ defmodule ElixirDB.Safety.InputContainmentTest do
       %{path: rel_path} = Enum.find(entries, &(&1.database_uuid == uuid))
 
       src = Path.join(ElixirDB.Config.database_root(), rel_path)
-      copy_path = "dup-uuid-#{System.unique_integer([:positive])}.db"
+      copy_path = "dup-uuid-#{System.unique_integer([:positive])}.elixirdb"
       dst = Path.join(ElixirDB.Config.database_root(), copy_path)
-      File.cp!(src, dst)
+      File.cp_r!(src, dst)
 
       on_exit(fn -> ElixirDB.TempDatabase.cleanup(dst) end)
 

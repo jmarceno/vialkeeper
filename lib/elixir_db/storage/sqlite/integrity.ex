@@ -121,7 +121,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
     body = revision_body(deleted, body_json)
 
     with true <- is_binary(history_id) and history_id != "",
-         {:ok, calculated} <- Id.calculate(document_id, history_id, parent, deleted == 1, body),
+         {:ok, calculated} <- Id.calculate(document_id, history_id, parent, deleted == 1, body, %{}),
          true <- calculated == revision_id,
          true <- digest == revision_digest_part(revision_id),
          {:ok, expected_generation} <- Id.generation(revision_id),

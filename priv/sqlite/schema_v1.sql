@@ -91,3 +91,23 @@ CREATE TABLE IF NOT EXISTS index_definitions (
   lifecycle_state TEXT NOT NULL,
   adapter_metadata_json TEXT NOT NULL
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS revision_attachments (
+  doc_key INTEGER NOT NULL,
+  revision_id TEXT NOT NULL,
+  attachment_name TEXT NOT NULL,
+  blob_digest TEXT NOT NULL,
+  logical_size INTEGER NOT NULL CHECK (logical_size >= 0),
+  content_type TEXT NOT NULL,
+  PRIMARY KEY (doc_key, revision_id, attachment_name),
+  FOREIGN KEY (doc_key, revision_id) REFERENCES revisions(doc_key, revision_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS revision_attachments_blob_digest ON revision_attachments(blob_digest);
+
+CREATE TABLE IF NOT EXISTS pending_blobs (
+  blob_digest TEXT PRIMARY KEY,
+  logical_size INTEGER NOT NULL CHECK (logical_size >= 0),
+  expires_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;

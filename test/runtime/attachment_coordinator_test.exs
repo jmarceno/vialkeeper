@@ -1,0 +1,304 @@
+defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
+  use ExUnit.Case, async: false
+
+  alias ElixirDB.Eventual
+  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
+
+  setup do
+    relative = "attachment-coordinator-#{System.unique_integer([:positive])}.elixirdb"
+    absolute = Path.join(ElixirDB.Config.database_root(), relative)
+    ElixirDB.TempDatabase.cleanup(absolute)
+
+    assert {:ok, identity} = DatabaseCatalog.create(relative)
+    assert {:ok, _} = DatabaseCatalog.open(identity.database_uuid)
+
+    on_exit(fn ->
+      _ = DatabaseCatalog.close(identity.database_uuid)
+      _ = DatabaseCatalog.unregister(identity.database_uuid)
+      ElixirDB.TempDatabase.cleanup(absolute)
+    end)
+
+    {:ok, uuid: identity.database_uuid}
+  end
+
+  defp set_limits(uuid, read_limit, write_limit) do
+    assert {:ok, _} =
+             DatabaseCatalog.command(
+               uuid,
+               {:command, :update_config,
+                %{
+                  "attachments" => %{
+                    "max_concurrent_attachment_reads" => read_limit,
+                    "max_concurrent_attachment_writes" => write_limit
+                  }
+                }}
+             )
+  end
+
+  defp hold_read(uuid, parent, gate) do
+    Task.async(fn ->
+      assert {:ok, token} = AttachmentCoordinator.acquire_read(uuid, self())
+      send(parent, {:held, :read, gate, token})
+
+      receive do
+        {:release, ^gate} -> :ok
+      end
+
+      assert :ok = AttachmentCoordinator.release(uuid, token)
+      :released
+    end)
+  end
+
+  test "configured read limit is exact", %{uuid: uuid} do
+    set_limits(uuid, 2, 8)
+
+    assert {:ok, t1} = AttachmentCoordinator.acquire_read(uuid)
+    assert {:ok, t2} = AttachmentCoordinator.acquire_read(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_read(uuid)
+
+    assert :ok = AttachmentCoordinator.release(uuid, t1)
+    assert {:ok, _} = AttachmentCoordinator.acquire_read(uuid)
+    assert :ok = AttachmentCoordinator.release(uuid, t2)
+  end
+
+  test "configured write limit is exact", %{uuid: uuid} do
+    set_limits(uuid, 8, 2)
+
+    assert {:ok, t1, _} = AttachmentCoordinator.acquire_write(uuid)
+    assert {:ok, t2, _} = AttachmentCoordinator.acquire_write(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_write(uuid)
+
+    assert :ok = AttachmentCoordinator.release(uuid, t1)
+    assert {:ok, _, _} = AttachmentCoordinator.acquire_write(uuid)
+    assert :ok = AttachmentCoordinator.release(uuid, t2)
+  end
+
+  test "reads and writes use independent counters", %{uuid: uuid} do
+    set_limits(uuid, 1, 1)
+
+    assert {:ok, read_token} = AttachmentCoordinator.acquire_read(uuid)
+    assert {:ok, write_token, _} = AttachmentCoordinator.acquire_write(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_read(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_write(uuid)
+
+    assert :ok = AttachmentCoordinator.release(uuid, read_token)
+    assert :ok = AttachmentCoordinator.release(uuid, write_token)
+  end
+
+  test "reference guards do not consume read or write quota", %{uuid: uuid} do
+    set_limits(uuid, 1, 1)
+
+    assert {:ok, read_token} = AttachmentCoordinator.acquire_read(uuid)
+    assert {:ok, write_token, _} = AttachmentCoordinator.acquire_write(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_read(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_write(uuid)
+
+    assert {:ok, ref_token} = AttachmentCoordinator.acquire_reference(uuid)
+    assert :ok = AttachmentCoordinator.release(uuid, ref_token)
+    assert :ok = AttachmentCoordinator.release(uuid, read_token)
+    assert :ok = AttachmentCoordinator.release(uuid, write_token)
+  end
+
+  test "dead caller releases guard through monitor", %{uuid: uuid} do
+    set_limits(uuid, 1, 8)
+    parent = self()
+    gate = make_ref()
+
+    holder =
+      spawn(fn ->
+        {:ok, _token} = AttachmentCoordinator.acquire_read(uuid, self())
+        send(parent, {:held, gate})
+
+        receive do
+          :die -> :ok
+        end
+      end)
+
+    assert_receive {:held, ^gate}, 1_000
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_read(uuid)
+
+    send(holder, :die)
+    ref = Process.monitor(holder)
+    assert_receive {:DOWN, ^ref, :process, ^holder, _}, 1_000
+
+    assert {:ok, token} = AttachmentCoordinator.acquire_read(uuid)
+    assert :ok = AttachmentCoordinator.release(uuid, token)
+  end
+
+  test "lowering limit does not kill active streams and rejects new ones", %{uuid: uuid} do
+    parent = self()
+    gate = make_ref()
+
+    holder = hold_read(uuid, parent, gate)
+    assert_receive {:held, :read, ^gate, _token}, 1_000
+
+    set_limits(uuid, 1, 8)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_read(uuid)
+
+    send(holder.pid, {:release, gate})
+    assert :released = Task.await(holder)
+
+    assert {:ok, new_token} = AttachmentCoordinator.acquire_read(uuid)
+    assert :ok = AttachmentCoordinator.release(uuid, new_token)
+  end
+
+  test "gc waits for existing guards before granting token", %{uuid: uuid} do
+    set_limits(uuid, 4, 4)
+    parent = self()
+    gate = make_ref()
+
+    holder = hold_read(uuid, parent, gate)
+    assert_receive {:held, :read, ^gate, _token}, 1_000
+
+    gc_task =
+      Task.async(fn ->
+        result = AttachmentCoordinator.begin_gc(uuid)
+        send(parent, {:gc_done, result})
+        result
+      end)
+
+    assert Eventual.eventually(
+             fn ->
+               case AttachmentCoordinator.status(uuid) do
+                 %{gc_barrier: true} -> true
+                 _ -> false
+               end
+             end,
+             timeout: 1_000,
+             message: "gc barrier was not armed"
+           )
+
+    refute_receive {:gc_done, _}, 200
+
+    send(holder.pid, {:release, gate})
+    assert :released = Task.await(holder)
+
+    assert {:ok, gc_token} = Task.await(gc_task)
+    assert :ok = AttachmentCoordinator.end_gc(uuid, gc_token)
+  end
+
+  test "concurrent close callers all drain successfully", %{uuid: uuid} do
+    parent = self()
+    gate = make_ref()
+    holder = hold_read(uuid, parent, gate)
+    assert_receive {:held, :read, ^gate, _token}, 1_000
+
+    first = Task.async(fn -> AttachmentCoordinator.begin_close(uuid) end)
+    second = Task.async(fn -> AttachmentCoordinator.begin_close(uuid) end)
+    Process.sleep(50)
+    refute Task.yield(first, 0)
+    refute Task.yield(second, 0)
+
+    send(holder.pid, {:release, gate})
+    assert :released = Task.await(holder)
+    assert :ok = Task.await(first)
+    assert :ok = Task.await(second)
+  end
+
+  test "dead gc caller releases a pending barrier", %{uuid: uuid} do
+    parent = self()
+    gate = make_ref()
+    holder = hold_read(uuid, parent, gate)
+    assert_receive {:held, :read, ^gate, _token}, 1_000
+
+    gc_pid = spawn(fn -> AttachmentCoordinator.begin_gc(uuid) end)
+    gc_ref = Process.monitor(gc_pid)
+
+    assert Eventual.eventually(
+             fn ->
+               case AttachmentCoordinator.status(uuid) do
+                 %{gc_barrier: true} -> true
+                 _ -> false
+               end
+             end,
+             timeout: 1_000
+           )
+
+    Process.exit(gc_pid, :kill)
+    assert_receive {:DOWN, ^gc_ref, :process, ^gc_pid, _}, 1_000
+    send(holder.pid, {:release, gate})
+    assert :released = Task.await(holder)
+
+    assert {:ok, token} = AttachmentCoordinator.acquire_read(uuid)
+    assert :ok = AttachmentCoordinator.release(uuid, token)
+  end
+
+  test "new guards are rejected while gc barrier is active", %{uuid: uuid} do
+    set_limits(uuid, 4, 4)
+
+    assert {:ok, gc_token} = AttachmentCoordinator.begin_gc(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_read(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_write(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+             AttachmentCoordinator.acquire_reference(uuid)
+
+    assert :ok = AttachmentCoordinator.end_gc(uuid, gc_token)
+
+    assert {:ok, token} = AttachmentCoordinator.acquire_read(uuid)
+    assert :ok = AttachmentCoordinator.release(uuid, token)
+  end
+
+  test "write guard captures max_attachment_bytes at admission", %{uuid: uuid} do
+    assert {:ok, first_token, first_max} = AttachmentCoordinator.acquire_write(uuid)
+
+    assert {:ok, _} =
+             DatabaseCatalog.command(
+               uuid,
+               {:command, :update_config,
+                %{"attachments" => %{"max_attachment_bytes" => first_max + 1_024}}}
+             )
+
+    assert {:ok, second_token, second_max} = AttachmentCoordinator.acquire_write(uuid)
+    assert second_max == first_max + 1_024
+
+    status = AttachmentCoordinator.status(uuid)
+    assert status.max_attachment_bytes == first_max + 1_024
+
+    assert :ok = AttachmentCoordinator.release(uuid, first_token)
+    assert :ok = AttachmentCoordinator.release(uuid, second_token)
+  end
+
+  test "coordinator restart reloads limits from owner identity", %{uuid: uuid} do
+    set_limits(uuid, 3, 3)
+
+    [{pid, _}] =
+      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid})
+
+    Process.exit(pid, :kill)
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
+
+    assert Eventual.eventually(
+             fn ->
+               case AttachmentCoordinator.status(uuid) do
+                 {:error, _} -> false
+                 %{read_limit: 3, write_limit: 3} -> true
+                 _ -> false
+               end
+             end,
+             timeout: 5_000,
+             message: "attachment coordinator did not restart with persisted limits"
+           )
+  end
+end

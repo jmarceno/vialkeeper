@@ -408,6 +408,35 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   def explain_query(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("query explanation must be an object")}
 
+  @impl true
+  def resolve_attachment_ticket(_adapter, _request),
+    do: attachment_not_implemented(:resolve_attachment_ticket)
+
+  @impl true
+  def resolve_blob_metadata(_adapter, _request),
+    do: attachment_not_implemented(:resolve_blob_metadata)
+
+  @impl true
+  def protect_pending_blob(_adapter, _request),
+    do: attachment_not_implemented(:protect_pending_blob)
+
+  @impl true
+  def remove_pending_blob_protection(_adapter, _request),
+    do: attachment_not_implemented(:remove_pending_blob_protection)
+
+  @impl true
+  def list_live_attachment_digests(_adapter, _request),
+    do: attachment_not_implemented(:list_live_attachment_digests)
+
+  @impl true
+  def cleanup_expired_pending_blobs(_adapter, _request),
+    do: attachment_not_implemented(:cleanup_expired_pending_blobs)
+
+  defp attachment_not_implemented(operation) do
+    {:error,
+     ElixirDB.Error.internal_error("attachment adapter operation not implemented: #{operation}")}
+  end
+
   defp transaction(%__MODULE__{conn: conn}, fun) do
     case Connection.execute(conn, "BEGIN IMMEDIATE") do
       :ok ->

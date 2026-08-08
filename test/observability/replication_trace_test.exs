@@ -26,8 +26,8 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
   setup do
     root = ElixirDB.Config.database_root()
     prefix = "obs-repl-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
 
     for path <- [a_path, b_path] do
       ElixirDB.TempDatabase.cleanup(Path.join(root, path))

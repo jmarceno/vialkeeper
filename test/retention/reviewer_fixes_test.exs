@@ -730,19 +730,20 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
   end
 
   defp open_db(prefix) do
-    path = "#{prefix}-#{System.unique_integer([:positive])}.db"
+    path = "#{prefix}-#{System.unique_integer([:positive])}.elixirdb"
     root = Config.database_root()
     TempDatabase.cleanup(Path.join(root, path))
     DatabaseCatalog.create(path)
   end
 
   defp open_adapter(prefix) do
-    {:ok, path} = TempDatabase.create(prefix: prefix)
+    {:ok, bundle_path} = TempDatabase.create(prefix: prefix)
+    path = TempDatabase.sqlite_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
 
     on_exit(fn ->
       Adapter.close(adapter)
-      TempDatabase.cleanup(path)
+      TempDatabase.cleanup(bundle_path)
     end)
 
     {:ok, adapter}

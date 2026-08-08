@@ -13,7 +13,7 @@ defmodule ElixirDB.HTTP.Routes.Databases do
       conn,
       Schemas.opts(:database_create, "database creation contains an unknown field"),
       fn body, conn ->
-        path = body["path"] || "#{ElixirDB.UUID.v4()}.db"
+        path = body["path"] || "#{ElixirDB.UUID.v4()}.elixirdb"
 
         if Map.has_key?(body, "path") and not is_binary(body["path"]) do
           Response.error(conn, ElixirDB.Error.invalid_request("database path must be a string"))

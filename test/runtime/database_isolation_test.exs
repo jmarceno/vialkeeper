@@ -11,8 +11,8 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
   alias ElixirDB.Runtime.DatabaseCatalog
 
   setup do
-    a_rel = "iso-a-#{System.unique_integer([:positive])}.db"
-    b_rel = "iso-b-#{System.unique_integer([:positive])}.db"
+    a_rel = "iso-a-#{System.unique_integer([:positive])}.elixirdb"
+    b_rel = "iso-b-#{System.unique_integer([:positive])}.elixirdb"
     root = ElixirDB.Config.database_root()
     a_abs = Path.join(root, a_rel)
     b_abs = Path.join(root, b_rel)

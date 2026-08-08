@@ -169,7 +169,8 @@ defmodule ElixirDB.Retention.CompactionPlanTest do
         parent_revision: parent,
         digest: "d#{generation}",
         deleted: false,
-        body: %{"n" => generation}
+        body: %{"n" => generation},
+        attachments: %{}
       }
 
       {revision.revision_id, [revision | acc]}
@@ -189,7 +190,8 @@ defmodule ElixirDB.Retention.CompactionPlanTest do
       parent_revision: nil,
       digest: "d1",
       deleted: false,
-      body: %{"n" => 1}
+      body: %{"n" => 1},
+      attachments: %{}
     }
 
     winner = %Revision{
@@ -200,7 +202,8 @@ defmodule ElixirDB.Retention.CompactionPlanTest do
       parent_revision: root.revision_id,
       digest: "d3",
       deleted: false,
-      body: %{"n" => 3}
+      body: %{"n" => 3},
+      attachments: %{}
     }
 
     loser = %Revision{
@@ -211,7 +214,8 @@ defmodule ElixirDB.Retention.CompactionPlanTest do
       parent_revision: root.revision_id,
       digest: "d3l",
       deleted: true,
-      body: nil
+      body: nil,
+      attachments: %{}
     }
 
     [root, winner, loser]
@@ -228,7 +232,8 @@ defmodule ElixirDB.Retention.CompactionPlanTest do
       parent_revision: nil,
       digest: "d1",
       deleted: true,
-      body: nil
+      body: nil,
+      attachments: %{}
     }
 
     tombstone = %Revision{
@@ -239,7 +244,8 @@ defmodule ElixirDB.Retention.CompactionPlanTest do
       parent_revision: root.revision_id,
       digest: "d2",
       deleted: true,
-      body: nil
+      body: nil,
+      attachments: %{}
     }
 
     [root, tombstone]

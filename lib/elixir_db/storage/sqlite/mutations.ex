@@ -6,6 +6,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   transaction provided by the adapter. Index refresh goes through `IndexCatalog`.
   """
 
+  alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.MapAccess
@@ -732,9 +733,10 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   defp root_history_id(history_id) when is_binary(history_id) and history_id != "", do: history_id
   defp root_history_id(_), do: fresh_history_id()
 
-  defp build_revision(document_id, history_id, parent, deleted, body) do
-    with {:ok, id} <- Id.calculate(document_id, history_id, parent, deleted, body),
+  defp build_revision(document_id, history_id, parent, deleted, body, attachments \\ %{}) do
+    with {:ok, id} <- Id.calculate(document_id, history_id, parent, deleted, body, attachments),
          {:ok, generation} <- Id.generation(id),
+         {:ok, normalized_attachments} <- normalize_attachments(attachments, deleted),
          do:
            {:ok,
             %Revision{
@@ -745,8 +747,15 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
               parent_revision: parent,
               digest: digest(id),
               deleted: deleted,
-              body: body
+              body: body,
+              attachments: normalized_attachments
             }}
+  end
+
+  defp normalize_attachments(_attachments, true), do: {:ok, %{}}
+
+  defp normalize_attachments(attachments, false) do
+    Manifest.normalize(attachments)
   end
 
   defp fresh_history_id, do: UUID.v4()

@@ -176,6 +176,30 @@ defmodule ElixirDB.Storage.FaultAdapter do
   def explain_query(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).explain_query(inner, request)
 
+  @impl true
+  def resolve_attachment_ticket(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).resolve_attachment_ticket(inner, request)
+
+  @impl true
+  def resolve_blob_metadata(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).resolve_blob_metadata(inner, request)
+
+  @impl true
+  def protect_pending_blob(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).protect_pending_blob(inner, request)
+
+  @impl true
+  def remove_pending_blob_protection(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).remove_pending_blob_protection(inner, request)
+
+  @impl true
+  def list_live_attachment_digests(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).list_live_attachment_digests(inner, request)
+
+  @impl true
+  def cleanup_expired_pending_blobs(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).cleanup_expired_pending_blobs(inner, request)
+
   defp fail_after_compact(%__MODULE__{fault: fault}, result) do
     case Fault.maybe_fail(fault, :after_compact_retention) do
       {:ok, _} -> result

@@ -18,8 +18,8 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
 
   setup do
     prefix = "worker-states-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
     root = ElixirDB.Config.database_root()
 
     for path <- [a_path, b_path] do

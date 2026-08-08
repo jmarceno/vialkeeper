@@ -23,7 +23,8 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
             history <- ModelGenerators.revision_operation_history(),
             max_runs: 40
           ) do
-      {:ok, path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-props")
+      {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-props")
+      path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
       {:ok, adapter} = Adapter.create(path, %{})
 
       try do
@@ -43,7 +44,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
           _ = Adapter.close(reopened)
         end
       after
-        ElixirDB.TempDatabase.cleanup(path)
+        ElixirDB.TempDatabase.cleanup(bundle_path)
       end
     end
   end
@@ -57,7 +58,8 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
               ]),
             max_runs: 25
           ) do
-      {:ok, path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-resolve")
+      {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-resolve")
+      path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
       {:ok, adapter} = Adapter.create(path, %{})
 
       try do
@@ -83,7 +85,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
           _ = Adapter.close(reopened)
         end
       after
-        ElixirDB.TempDatabase.cleanup(path)
+        ElixirDB.TempDatabase.cleanup(bundle_path)
       end
     end
   end
@@ -99,7 +101,8 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
       body = Map.put(body, "_v", 1)
       next_body = Map.put(next_body, "_v", 2)
       stale_body = Map.put(stale_body, "_v", 3)
-      {:ok, path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-stale")
+      {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-stale")
+      path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
       {:ok, adapter} = Adapter.create(path, %{})
 
       try do
@@ -139,7 +142,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
         assert_materialized_document(adapter, model_snap, document_id)
       after
         _ = Adapter.close(adapter)
-        ElixirDB.TempDatabase.cleanup(path)
+        ElixirDB.TempDatabase.cleanup(bundle_path)
       end
     end
   end
@@ -150,7 +153,8 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
 
     snapshots =
       Enum.map(import_order_permutations(), fn order ->
-        {:ok, path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-order")
+        {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-order")
+        path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
         {:ok, adapter} = Adapter.create(path, %{})
 
         try do
@@ -164,7 +168,7 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
           adapter_snapshot(adapter, document_id)
         after
           _ = Adapter.close(adapter)
-          ElixirDB.TempDatabase.cleanup(path)
+          ElixirDB.TempDatabase.cleanup(bundle_path)
         end
       end)
 
@@ -367,9 +371,9 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
   defp apply_adapter_op(adapter, %{op: :import_siblings} = op, _) do
     document_id = op.document_id
     history_id = RevisionFixtures.shared_history_id()
-    {:ok, root} = Id.calculate(document_id, history_id, nil, false, op.root_body)
-    {:ok, left} = Id.calculate(document_id, history_id, root, false, op.left_body)
-    {:ok, right} = Id.calculate(document_id, history_id, root, false, op.right_body)
+    {:ok, root} = Id.calculate(document_id, history_id, nil, false, op.root_body, %{})
+    {:ok, left} = Id.calculate(document_id, history_id, root, false, op.left_body, %{})
+    {:ok, right} = Id.calculate(document_id, history_id, root, false, op.right_body, %{})
 
     left_chain = %{
       document_id: document_id,
@@ -605,7 +609,8 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
         generation: generation,
         parent_revision: parent,
         deleted: deleted == 1,
-        body: body
+        body: body,
+        attachments: %{}
       }
     end)
   end
@@ -655,10 +660,10 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
 
     history_id = RevisionFixtures.shared_history_id()
 
-    {:ok, root} = Id.calculate(document_id, history_id, nil, false, root_body)
-    {:ok, left} = Id.calculate(document_id, history_id, root, false, left_body)
-    {:ok, right} = Id.calculate(document_id, history_id, root, false, right_body)
-    {:ok, tombstone} = Id.calculate(document_id, history_id, root, true, nil)
+    {:ok, root} = Id.calculate(document_id, history_id, nil, false, root_body, %{})
+    {:ok, left} = Id.calculate(document_id, history_id, root, false, left_body, %{})
+    {:ok, right} = Id.calculate(document_id, history_id, root, false, right_body, %{})
+    {:ok, tombstone} = Id.calculate(document_id, history_id, root, true, nil, %{})
 
     leaves = [
       %ElixirDB.Domain.Revision{
@@ -668,7 +673,8 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
         generation: 2,
         parent_revision: root,
         deleted: false,
-        body: left_body
+        body: left_body,
+        attachments: %{}
       },
       %ElixirDB.Domain.Revision{
         document_id: document_id,
@@ -677,7 +683,8 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
         generation: 2,
         parent_revision: root,
         deleted: false,
-        body: right_body
+        body: right_body,
+        attachments: %{}
       },
       %ElixirDB.Domain.Revision{
         document_id: document_id,
@@ -686,7 +693,8 @@ defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
         generation: 2,
         parent_revision: root,
         deleted: true,
-        body: nil
+        body: nil,
+        attachments: %{}
       }
     ]
 

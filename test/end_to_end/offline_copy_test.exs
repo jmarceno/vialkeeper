@@ -5,8 +5,8 @@ defmodule ElixirDB.EndToEnd.OfflineCopyTest do
 
   @tag :slow
   test "offline copy, registration, derived index rebuild, and integrity" do
-    source_rel = "e2e-offline-src-#{System.unique_integer([:positive])}.db"
-    dest_rel = "e2e-offline-dst-#{System.unique_integer([:positive])}.db"
+    source_rel = "e2e-offline-src-#{System.unique_integer([:positive])}.elixirdb"
+    dest_rel = "e2e-offline-dst-#{System.unique_integer([:positive])}.elixirdb"
     root = ElixirDB.Config.database_root()
     source_abs = Path.join(root, source_rel)
     dest_abs = Path.join(root, dest_rel)
@@ -56,9 +56,10 @@ defmodule ElixirDB.EndToEnd.OfflineCopyTest do
 
     # Closed copy — LIFE-009: database must be closed before offline portability.
     assert :ok = DatabaseCatalog.close(source_uuid)
-    refute File.exists?(source_abs <> "-journal")
-    refute File.exists?(source_abs <> "-wal")
-    File.cp!(source_abs, dest_abs)
+    source_sqlite = ElixirDB.TempDatabase.sqlite_path(source_abs)
+    refute File.exists?(source_sqlite <> "-journal")
+    refute File.exists?(source_sqlite <> "-wal")
+    File.cp_r!(source_abs, dest_abs)
 
     # Same UUID cannot register twice on this host; unregister the source route first.
     assert :ok = DatabaseCatalog.unregister(source_uuid)

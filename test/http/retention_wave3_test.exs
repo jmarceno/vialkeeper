@@ -6,7 +6,7 @@ defmodule ElixirDB.HTTP.RetentionWave3Test do
 
   test "identity includes retention handshake fields" do
     server = TestServer.start_supervised!()
-    path = "retention-identity-#{System.unique_integer([:positive])}.db"
+    path = "retention-identity-#{System.unique_integer([:positive])}.elixirdb"
 
     {:ok, %{status: 201, body: created}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -41,7 +41,7 @@ defmodule ElixirDB.HTTP.RetentionWave3Test do
 
   test "compact returns bounded retention stats" do
     server = TestServer.start_supervised!()
-    path = "retention-compact-#{System.unique_integer([:positive])}.db"
+    path = "retention-compact-#{System.unique_integer([:positive])}.elixirdb"
 
     {:ok, %{status: 201, body: created}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -91,7 +91,7 @@ defmodule ElixirDB.HTTP.RetentionWave3Test do
 
   test "changes below retention floor return HTTP 410 history_truncated" do
     server = TestServer.start_supervised!()
-    path = "retention-truncated-#{System.unique_integer([:positive])}.db"
+    path = "retention-truncated-#{System.unique_integer([:positive])}.elixirdb"
 
     {:ok, %{status: 201, body: created}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -131,7 +131,7 @@ defmodule ElixirDB.HTTP.RetentionWave3Test do
 
   test "boundary page endpoint returns API-015 shape" do
     server = TestServer.start_supervised!()
-    path = "retention-boundaries-#{System.unique_integer([:positive])}.db"
+    path = "retention-boundaries-#{System.unique_integer([:positive])}.elixirdb"
 
     {:ok, %{status: 201, body: created}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})

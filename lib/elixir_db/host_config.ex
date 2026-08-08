@@ -33,7 +33,10 @@ defmodule ElixirDB.HostConfig do
     "max_open_databases" => 64,
     "max_replication_workers" => 32,
     "admission_limit" => 128,
-    "max_json_nesting_depth" => 100
+    "max_json_nesting_depth" => 100,
+    "max_attachment_bytes" => 1_099_511_627_776,
+    "max_concurrent_attachment_reads" => 1024,
+    "max_concurrent_attachment_writes" => 256
   }
 
   @limit_key_atoms %{
@@ -53,7 +56,10 @@ defmodule ElixirDB.HostConfig do
     "max_open_databases" => :max_open_databases,
     "max_replication_workers" => :max_replication_workers,
     "admission_limit" => :admission_limit,
-    "max_json_nesting_depth" => :max_json_nesting_depth
+    "max_json_nesting_depth" => :max_json_nesting_depth,
+    "max_attachment_bytes" => :max_attachment_bytes,
+    "max_concurrent_attachment_reads" => :max_concurrent_attachment_reads,
+    "max_concurrent_attachment_writes" => :max_concurrent_attachment_writes
   }
 
   @default_auth %{"enabled" => false, "tokens" => []}

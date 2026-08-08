@@ -105,7 +105,7 @@ defmodule ElixirDB.RevisionHistoryModel do
     right_body = op.right_body
 
     {:ok, root_id} =
-      Id.calculate(document_id, RevisionFixtures.shared_history_id(), nil, false, root_body)
+      Id.calculate(document_id, RevisionFixtures.shared_history_id(), nil, false, root_body, %{})
 
     {:ok, left_id} =
       Id.calculate(
@@ -113,7 +113,8 @@ defmodule ElixirDB.RevisionHistoryModel do
         RevisionFixtures.shared_history_id(),
         root_id,
         false,
-        left_body
+        left_body,
+        %{}
       )
 
     {:ok, right_id} =
@@ -122,7 +123,8 @@ defmodule ElixirDB.RevisionHistoryModel do
         RevisionFixtures.shared_history_id(),
         root_id,
         false,
-        right_body
+        right_body,
+        %{}
       )
 
     root =
@@ -486,7 +488,7 @@ defmodule ElixirDB.RevisionHistoryModel do
     {parent, history_id} =
       revision_parent_and_history(state, parent_revision_id, deleted, document_id)
 
-    with {:ok, revision_id} <- Id.calculate(document_id, history_id, parent, deleted, body),
+    with {:ok, revision_id} <- Id.calculate(document_id, history_id, parent, deleted, body, %{}),
          {:ok, generation} <- Id.generation(revision_id) do
       Revision.new(
         Wire.new(document_id, history_id, revision_id, generation, parent, deleted, body)
@@ -496,7 +498,7 @@ defmodule ElixirDB.RevisionHistoryModel do
 
   defp build_revision_from_leaf(document_id, leaf, deleted, body) do
     with {:ok, revision_id} <-
-           Id.calculate(document_id, leaf.history_id, leaf.revision_id, deleted, body),
+           Id.calculate(document_id, leaf.history_id, leaf.revision_id, deleted, body, %{}),
          {:ok, generation} <- Id.generation(revision_id) do
       Revision.new(
         Wire.new(

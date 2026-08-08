@@ -1,6 +1,7 @@
 defmodule ElixirDB.Revisions.Wire do
   @moduledoc "Canonical wire revision maps shared by replication and revision fixtures."
 
+  alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.Revision
 
   @spec new(
@@ -10,9 +11,19 @@ defmodule ElixirDB.Revisions.Wire do
           pos_integer(),
           binary() | nil,
           boolean(),
-          map() | nil
+          map() | nil,
+          Manifest.t() | map()
         ) :: map()
-  def new(document_id, history_id, revision_id, generation, parent_revision, deleted, body) do
+  def new(
+        document_id,
+        history_id,
+        revision_id,
+        generation,
+        parent_revision,
+        deleted,
+        body,
+        attachments \\ %{}
+      ) do
     %{
       document_id: document_id,
       history_id: history_id,
@@ -20,7 +31,8 @@ defmodule ElixirDB.Revisions.Wire do
       generation: generation,
       parent_revision: parent_revision,
       deleted: deleted,
-      body: body
+      body: body,
+      attachments: wire_attachments(attachments, deleted)
     }
   end
 
@@ -34,6 +46,18 @@ defmodule ElixirDB.Revisions.Wire do
         revision.generation,
         revision.parent_revision,
         revision.deleted,
-        revision.body
+        revision.body,
+        revision.attachments
       )
+
+  defp wire_attachments(_attachments, true), do: %{}
+
+  defp wire_attachments(attachments, false) when is_map(attachments) do
+    case Manifest.canonical_for_hash(attachments) do
+      {:ok, canonical} -> canonical
+      {:error, _} -> %{}
+    end
+  end
+
+  defp wire_attachments(_, _), do: %{}
 end

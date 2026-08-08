@@ -66,7 +66,14 @@ defmodule ElixirDB.ModelGenerators do
           right_body = Map.put(right_body, "_side", "right")
 
           {:ok, root_id} =
-            Id.calculate(document_id, RevisionFixtures.shared_history_id(), nil, false, root_body)
+            Id.calculate(
+              document_id,
+              RevisionFixtures.shared_history_id(),
+              nil,
+              false,
+              root_body,
+              %{}
+            )
 
           {:ok, left_id} =
             Id.calculate(
@@ -74,7 +81,8 @@ defmodule ElixirDB.ModelGenerators do
               RevisionFixtures.shared_history_id(),
               root_id,
               false,
-              left_body
+              left_body,
+              %{}
             )
 
           {:ok, right_id} =
@@ -83,7 +91,8 @@ defmodule ElixirDB.ModelGenerators do
               RevisionFixtures.shared_history_id(),
               root_id,
               false,
-              right_body
+              right_body,
+              %{}
             )
 
           revisions = [
@@ -134,7 +143,7 @@ defmodule ElixirDB.ModelGenerators do
       StreamData.tuple({document_id(), document_body(), StreamData.boolean()}),
       fn {document_id, body, delete?} ->
         {:ok, root_id} =
-          Id.calculate(document_id, RevisionFixtures.shared_history_id(), nil, false, body)
+          Id.calculate(document_id, RevisionFixtures.shared_history_id(), nil, false, body, %{})
 
         root =
           revision!(
@@ -154,7 +163,8 @@ defmodule ElixirDB.ModelGenerators do
                 RevisionFixtures.shared_history_id(),
                 root_id,
                 true,
-                nil
+                nil,
+                %{}
               )
 
             [
@@ -363,7 +373,8 @@ defmodule ElixirDB.ModelGenerators do
             RevisionFixtures.shared_history_id(),
             parent,
             false,
-            body
+            body,
+            %{}
           )
 
         {

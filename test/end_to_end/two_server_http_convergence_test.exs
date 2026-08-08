@@ -19,8 +19,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   test "two Bandit servers converge over remote wire across mid-replication restart" do
     root = ElixirDB.Config.database_root()
     prefix = "e2e-two-http-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
 
     for path <- [a_path, b_path] do
       ElixirDB.TempDatabase.cleanup(Path.join(root, path))
@@ -216,8 +216,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   test "continuous push starts while target is offline and converges after recovery" do
     root = ElixirDB.Config.database_root()
     prefix = "e2e-offline-start-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
 
     for path <- [a_path, b_path] do
       ElixirDB.TempDatabase.cleanup(Path.join(root, path))
@@ -313,8 +313,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   test "continuous push resumes from checkpoint after mid-batch target drop" do
     root = ElixirDB.Config.database_root()
     prefix = "e2e-mid-batch-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
 
     for path <- [a_path, b_path] do
       ElixirDB.TempDatabase.cleanup(Path.join(root, path))

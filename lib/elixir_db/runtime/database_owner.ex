@@ -2,13 +2,16 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   @moduledoc false
   use GenServer
   alias ElixirDB.Commands
+  alias ElixirDB.DatabaseBundle
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Compact
-  alias ElixirDB.Runtime.{ChangeNotifier, RetentionScheduler}
+  alias ElixirDB.Runtime.{AttachmentCoordinator, ChangeNotifier, RetentionScheduler}
   alias ElixirDB.Storage.Results
   alias ElixirDB.Storage.SQLite.Adapter
 
-  def start_link({uuid, path}), do: GenServer.start_link(__MODULE__, {uuid, path}, name: via(uuid))
+  def start_link({uuid, %DatabaseBundle{} = bundle}),
+    do: GenServer.start_link(__MODULE__, {uuid, bundle}, name: via(uuid))
+
   def via(uuid), do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}}}
 
   def command(uuid, command, timeout \\ 30_000) do
@@ -19,12 +22,14 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   end
 
   @impl true
-  def init({uuid, path}) do
+  def init({uuid, %DatabaseBundle{} = bundle}) do
+    path = DatabaseBundle.sqlite_path(bundle)
+
     case Adapter.open(path) do
       {:ok, adapter} ->
         case Map.get(adapter.identity, :database_uuid) do
           ^uuid ->
-            {:ok, %{uuid: uuid, path: path, adapter: adapter}}
+            {:ok, %{uuid: uuid, path: path, bundle: bundle, adapter: adapter}}
 
           actual ->
             _ = Adapter.close(adapter)
@@ -52,8 +57,9 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
 
   defp handle_command(%Commands.UpdateConfig{request: request}, _from, state) do
     case Adapter.update_config(state.adapter, request) do
-      {:ok, _config} = ok ->
+      {:ok, config} = ok ->
         RetentionScheduler.reschedule(state.uuid)
+        AttachmentCoordinator.update_limits(state.uuid, Map.get(config, "attachments", %{}))
         {:reply, ok, state}
 
       {:error, _} = error ->
@@ -182,6 +188,24 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
          state
        ),
        do: reply(Adapter.clear_pending_local_causal(state.adapter, peer_database_uuid), state)
+
+  defp handle_command(%Commands.ResolveAttachmentTicket{request: request}, _from, state),
+    do: reply(Adapter.resolve_attachment_ticket(state.adapter, request), state)
+
+  defp handle_command(%Commands.ResolveBlobMetadata{request: request}, _from, state),
+    do: reply(Adapter.resolve_blob_metadata(state.adapter, request), state)
+
+  defp handle_command(%Commands.ProtectPendingBlob{request: request}, _from, state),
+    do: reply(Adapter.protect_pending_blob(state.adapter, request), state)
+
+  defp handle_command(%Commands.RemovePendingBlobProtection{request: request}, _from, state),
+    do: reply(Adapter.remove_pending_blob_protection(state.adapter, request), state)
+
+  defp handle_command(%Commands.ListLiveAttachmentDigests{request: request}, _from, state),
+    do: reply(Adapter.list_live_attachment_digests(state.adapter, request), state)
+
+  defp handle_command(%Commands.CleanupExpiredPendingBlobs{request: request}, _from, state),
+    do: reply(Adapter.cleanup_expired_pending_blobs(state.adapter, request), state)
 
   defp handle_command(%Commands.Close{}, _from, state),
     do: {:stop, :shutdown, :ok, state}

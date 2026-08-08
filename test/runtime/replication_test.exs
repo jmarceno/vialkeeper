@@ -8,8 +8,8 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
   setup do
     prefix = "runtime-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
     ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), a_path))
     ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), b_path))
     {:ok, a} = DatabaseCatalog.create(a_path)

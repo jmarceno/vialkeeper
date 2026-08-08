@@ -1,13 +1,14 @@
 defmodule ElixirDB.Runtime.CatalogLifecycleTest do
   use ExUnit.Case, async: false
 
+  alias ElixirDB.DatabaseBundle
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Storage.SQLite.Adapter
 
   setup do
     prefix = "uuid-mismatch-#{System.unique_integer([:positive])}"
-    registered_path = prefix <> "-registered.db"
-    replacement_path = prefix <> "-replacement.db"
+    registered_path = prefix <> "-registered.elixirdb"
+    replacement_path = prefix <> "-replacement.elixirdb"
     root = ElixirDB.Config.database_root()
 
     for path <- [registered_path, replacement_path] do
@@ -34,17 +35,20 @@ defmodule ElixirDB.Runtime.CatalogLifecycleTest do
     replacement_path: replacement_path,
     root: root
   } do
-    absolute = Path.join(root, registered_path)
-    replacement_absolute = Path.join(root, replacement_path)
+    registered_bundle = Path.join(root, registered_path)
+    replacement_bundle = Path.join(root, replacement_path)
+    registered_sqlite = ElixirDB.TempDatabase.sqlite_path(registered_bundle)
+    replacement_sqlite = ElixirDB.TempDatabase.sqlite_path(replacement_bundle)
 
     assert :ok = DatabaseCatalog.close(uuid)
 
-    {:ok, other} = Adapter.create(replacement_absolute)
+    assert {:ok, bundle} = DatabaseBundle.create(replacement_bundle)
+    {:ok, other} = Adapter.create(DatabaseBundle.sqlite_path(bundle))
     {:ok, other_identity} = Adapter.identity(other)
     :ok = Adapter.close(other)
     assert other_identity.database_uuid != uuid
 
-    File.cp!(replacement_absolute, absolute)
+    File.cp!(replacement_sqlite, registered_sqlite)
 
     assert {:error, %ElixirDB.Error{code: :database_unavailable, details: details}} =
              DatabaseCatalog.open(uuid)

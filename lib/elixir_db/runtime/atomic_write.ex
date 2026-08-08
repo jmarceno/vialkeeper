@@ -8,6 +8,8 @@ defmodule ElixirDB.Runtime.AtomicWrite do
   discipline required by `LIFE-007` is reused for `CONFIG-001`.
   """
 
+  alias ElixirDB.DurableFS
+
   @doc """
   Writes `contents` to `path` atomically.
 
@@ -24,7 +26,7 @@ defmodule ElixirDB.Runtime.AtomicWrite do
          :ok <- File.write(temp, contents),
          :ok <- sync(temp),
          :ok <- File.rename(temp, path),
-         :ok <- sync_directory(root) do
+         :ok <- DurableFS.sync_directory(root) do
       :ok
     else
       {:error, reason} ->
@@ -55,14 +57,6 @@ defmodule ElixirDB.Runtime.AtomicWrite do
   defp sync(file) do
     case File.open(file, [:read, :write], fn io -> :file.sync(io) end) do
       {:ok, :ok} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp sync_directory(directory) do
-    case File.open(directory, [:read], fn io -> :file.sync(io) end) do
-      {:ok, :ok} -> :ok
-      {:error, reason} when reason in [:eperm, :eisdir, :enotsup] -> :ok
       {:error, reason} -> {:error, reason}
     end
   end

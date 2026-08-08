@@ -22,8 +22,8 @@ defmodule ElixirDB.Contract.JSONAndRevisionTest do
 
   test "revision identity is independent of local sequence" do
     history_id = RevisionFixtures.shared_history_id()
-    assert {:ok, first} = Id.calculate("doc", history_id, nil, false, %{"x" => 1})
-    assert {:ok, second} = Id.calculate("doc", history_id, nil, false, %{"x" => 1})
+    assert {:ok, first} = Id.calculate("doc", history_id, nil, false, %{"x" => 1}, %{})
+    assert {:ok, second} = Id.calculate("doc", history_id, nil, false, %{"x" => 1}, %{})
     assert first == second
     assert String.starts_with?(first, "1-")
   end

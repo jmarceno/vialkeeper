@@ -4,7 +4,7 @@ defmodule ElixirDB.Runtime.OwnerUniquenessTest do
   alias ElixirDB.Runtime.{DatabaseCatalog, FileLease}
 
   setup do
-    relative = "owner-#{System.unique_integer([:positive])}.db"
+    relative = "owner-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
     ElixirDB.TempDatabase.cleanup(absolute)
 
@@ -31,8 +31,10 @@ defmodule ElixirDB.Runtime.OwnerUniquenessTest do
     assert Process.alive?(owner_pid)
 
     # Unlinked start so a failed lease init does not exit the test process.
+    sqlite_path = ElixirDB.TempDatabase.sqlite_path(absolute)
+
     assert {:error, %ElixirDB.Error{code: :database_in_use}} =
-             GenServer.start(FileLease, absolute)
+             GenServer.start(FileLease, sqlite_path)
 
     assert [{^owner_pid, _}] =
              Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, identity.database_uuid})
@@ -44,9 +46,9 @@ defmodule ElixirDB.Runtime.OwnerUniquenessTest do
   } do
     assert :ok = DatabaseCatalog.close(identity.database_uuid)
 
-    copy = "owner-copy-#{System.unique_integer([:positive])}.db"
+    copy = "owner-copy-#{System.unique_integer([:positive])}.elixirdb"
     copy_abs = Path.join(ElixirDB.Config.database_root(), copy)
-    File.cp!(absolute, copy_abs)
+    File.cp_r!(absolute, copy_abs)
 
     on_exit(fn ->
       ElixirDB.TempDatabase.cleanup(copy_abs)

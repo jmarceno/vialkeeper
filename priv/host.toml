@@ -33,6 +33,9 @@ max_open_databases            = 64
 max_replication_workers       = 32
 admission_limit               = 128
 max_json_nesting_depth        = 100
+max_attachment_bytes          = 1099511627776
+max_concurrent_attachment_reads = 1024
+max_concurrent_attachment_writes = 256
 
 # Bearer-token authentication (AUTH-001). When enabled, every request must
 # present `Authorization: Bearer <token>`. Tokens are stored as SHA-256 hex

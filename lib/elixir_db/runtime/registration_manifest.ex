@@ -1,9 +1,10 @@
 defmodule ElixirDB.Runtime.RegistrationManifest do
+  @moduledoc "Atomic, routing-only registration manifest."
+
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.PathSafety
   alias ElixirDB.Runtime.AtomicWrite
-  alias ElixirDB.Runtime.PathSafety
-  @moduledoc "Atomic, routing-only registration manifest."
 
   @spec path() :: binary()
   def path do
@@ -57,7 +58,15 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
          :ok <- ensure_unique(values) do
       {:ok,
        Enum.map(values, fn %{"uuid" => uuid, "path" => relative} ->
-         %{uuid: uuid, path: relative, absolute_path: Path.join(root, relative), status: :unknown}
+         bundle_root = Path.join(root, relative)
+
+         %{
+           uuid: uuid,
+           path: relative,
+           bundle_root: bundle_root,
+           sqlite_path: Path.join(bundle_root, "database.sqlite3"),
+           status: :unknown
+         }
        end)}
     else
       false ->

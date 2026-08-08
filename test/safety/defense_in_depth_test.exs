@@ -28,7 +28,7 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
 
   describe "catalog dispatch safety net" do
     setup do
-      path = "dd-#{System.unique_integer([:positive])}.db"
+      path = "dd-#{System.unique_integer([:positive])}.elixirdb"
       conn = call(:post, "/v1/databases", %{"path" => path})
       assert conn.status == 201
       {:ok, %{"data" => %{"database_uuid" => uuid}}} = decode(conn.resp_body)
@@ -54,8 +54,8 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
     test "the shared catalog survives a raise and keeps serving other databases" do
       # Open two databases; force a failure on one and confirm the catalog (and the
       # other database) remain fully usable afterward.
-      path_a = "dd-a-#{System.unique_integer([:positive])}.db"
-      path_b = "dd-b-#{System.unique_integer([:positive])}.db"
+      path_a = "dd-a-#{System.unique_integer([:positive])}.elixirdb"
+      path_b = "dd-b-#{System.unique_integer([:positive])}.elixirdb"
 
       {:ok, %{database_uuid: uuid_a}} = DatabaseCatalog.create(path_a, %{})
       {:ok, %{database_uuid: uuid_b}} = DatabaseCatalog.create(path_b, %{})
@@ -123,7 +123,7 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
     test "the real Router survives repeated malformed requests and stays responsive" do
       # Hammer the router with a variety of bodies that would have crashed before the
       # safety pass; assert every one returns a JSON envelope and the router keeps going.
-      path = "dd-hammer-#{System.unique_integer([:positive])}.db"
+      path = "dd-hammer-#{System.unique_integer([:positive])}.elixirdb"
 
       create = call(:post, "/v1/databases", %{"path" => path})
       {:ok, %{"data" => %{"database_uuid" => uuid}}} = decode(create.resp_body)

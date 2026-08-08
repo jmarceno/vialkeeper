@@ -1,6 +1,8 @@
 defmodule ElixirDB.Domain.Revision do
   @moduledoc "Validated immutable document revision state."
 
+  alias ElixirDB.Attachments.Manifest
+
   @enforce_keys [
     :document_id,
     :history_id,
@@ -8,7 +10,8 @@ defmodule ElixirDB.Domain.Revision do
     :generation,
     :parent_revision,
     :deleted,
-    :body
+    :body,
+    :attachments
   ]
   defstruct [
     :document_id,
@@ -19,6 +22,7 @@ defmodule ElixirDB.Domain.Revision do
     :digest,
     :deleted,
     :body,
+    :attachments,
     :insertion_sequence
   ]
 
@@ -31,14 +35,20 @@ defmodule ElixirDB.Domain.Revision do
           digest: binary() | nil,
           deleted: boolean(),
           body: map() | nil,
+          attachments: Manifest.t(),
           insertion_sequence: non_neg_integer() | nil
         }
 
   def new(attrs) when is_map(attrs) do
     with :ok <- validate_attrs(attrs),
          {:ok, generation} <- generation(attrs),
-         :ok <- validate_body(attrs) do
-      {:ok, struct(__MODULE__, Map.put(attrs, :generation, generation))}
+         :ok <- validate_body(attrs),
+         {:ok, attachments} <- validate_attachments(attrs) do
+      {:ok,
+       struct(
+         __MODULE__,
+         Map.put(attrs, :generation, generation) |> Map.put(:attachments, attachments)
+       )}
     end
   end
 
@@ -63,4 +73,32 @@ defmodule ElixirDB.Domain.Revision do
 
   defp validate_body(_),
     do: {:error, ElixirDB.Error.invalid_request("revision body does not match deletion state")}
+
+  defp validate_attachments(%{deleted: true, attachments: attachments}) do
+    case attachments do
+      nil -> Manifest.normalize(%{})
+      other -> Manifest.normalize(other)
+    end
+    |> case do
+      {:ok, empty} when map_size(empty) == 0 ->
+        {:ok, empty}
+
+      {:ok, _} ->
+        {:error,
+         ElixirDB.Error.invalid_request(
+           "tombstone revisions must have an empty attachment manifest"
+         )}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp validate_attachments(%{attachments: attachments})
+       when is_map(attachments) or is_nil(attachments) do
+    Manifest.normalize(attachments || %{})
+  end
+
+  defp validate_attachments(_),
+    do: {:error, ElixirDB.Error.invalid_request("revision attachments must be a map")}
 end

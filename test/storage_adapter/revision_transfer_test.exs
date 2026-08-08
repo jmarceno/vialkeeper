@@ -5,12 +5,13 @@ defmodule ElixirDB.StorageAdapter.RevisionTransferTest do
   alias ElixirDB.TestRevisionId, as: Id
 
   test "diff and import transfer a root-to-leaf chain", %{adapter: source} do
-    {:ok, dest_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-dest")
+    {:ok, dest_bundle} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-dest")
+    dest_path = ElixirDB.TempDatabase.sqlite_path(dest_bundle)
     assert {:ok, dest} = @adapter.create(dest_path, %{})
 
     on_exit(fn ->
       _ = @adapter.close(dest)
-      ElixirDB.TempDatabase.cleanup(dest_path)
+      ElixirDB.TempDatabase.cleanup(dest_bundle)
     end)
 
     assert {:ok, %{revision: root}} =

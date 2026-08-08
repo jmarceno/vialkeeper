@@ -13,15 +13,16 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
   alias ElixirDB.Storage.SQLite.Adapter
 
   setup do
-    {:ok, path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-lease")
-    {:ok, adapter} = Adapter.create(path, %{})
+    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-lease")
+    sqlite_path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
+    {:ok, adapter} = Adapter.create(sqlite_path, %{})
     :ok = Adapter.close(adapter)
 
     on_exit(fn ->
-      ElixirDB.TempDatabase.cleanup(path)
+      ElixirDB.TempDatabase.cleanup(bundle_path)
     end)
 
-    {:ok, path: path}
+    {:ok, path: sqlite_path, bundle_path: bundle_path}
   end
 
   test "acquire succeeds, second holder gets database_in_use, release allows re-acquire", %{
@@ -43,7 +44,7 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
   end
 
   test "catalog open holds the lease so a raw FileLease cannot steal ownership" do
-    relative = "lease-catalog-#{System.unique_integer([:positive])}.db"
+    relative = "lease-catalog-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
     ElixirDB.TempDatabase.cleanup(absolute)
 
@@ -57,12 +58,14 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
 
     assert {:ok, _} = DatabaseCatalog.open(identity.database_uuid)
 
+    sqlite_path = ElixirDB.TempDatabase.sqlite_path(absolute)
+
     assert {:error, %ElixirDB.Error{code: :database_in_use}} =
-             GenServer.start(FileLease, absolute)
+             GenServer.start(FileLease, sqlite_path)
 
     assert :ok = DatabaseCatalog.close(identity.database_uuid)
 
-    assert {:ok, lease} = GenServer.start(FileLease, absolute)
+    assert {:ok, lease} = GenServer.start(FileLease, sqlite_path)
     assert :ok = GenServer.stop(lease)
   end
 end

@@ -14,8 +14,8 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   test "API-010 through API-015 method/path matrix over Bandit+Req" do
     server = TestServer.start_supervised!()
 
-    path_a = "matrix-a-#{System.unique_integer([:positive])}.db"
-    path_b = "matrix-b-#{System.unique_integer([:positive])}.db"
+    path_a = "matrix-a-#{System.unique_integer([:positive])}.elixirdb"
+    path_b = "matrix-b-#{System.unique_integer([:positive])}.elixirdb"
 
     {:ok, %{status: 201, body: created_a}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path_a})
@@ -70,7 +70,7 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
     replication_id = "rep_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
 
-    closed_path = "matrix-closed-#{System.unique_integer([:positive])}.db"
+    closed_path = "matrix-closed-#{System.unique_integer([:positive])}.elixirdb"
 
     {:ok, %{status: 201, body: closed_body}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => closed_path})
@@ -82,7 +82,7 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
     on_exit(fn -> cleanup(closed_uuid, closed_path) end)
 
-    extra_path = "matrix-extra-#{System.unique_integer([:positive])}.db"
+    extra_path = "matrix-extra-#{System.unique_integer([:positive])}.elixirdb"
     on_exit(fn -> cleanup_path(extra_path) end)
 
     session_id = ElixirDB.UUID.v4()

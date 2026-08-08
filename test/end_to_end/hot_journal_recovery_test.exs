@@ -19,10 +19,11 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     root = ElixirDB.Config.database_root()
     File.mkdir_p!(root)
 
-    rel = "e2e-hot-journal-#{System.unique_integer([:positive])}.db"
+    rel = "e2e-hot-journal-#{System.unique_integer([:positive])}.elixirdb"
     abs = Path.join(root, rel)
-    journal = abs <> "-journal"
-    copy_rel = String.replace_suffix(rel, ".db", "-copy.db")
+    sqlite = ElixirDB.TempDatabase.sqlite_path(abs)
+    journal = sqlite <> "-journal"
+    copy_rel = String.replace_suffix(rel, ".elixirdb", "-copy.elixirdb")
     copy_abs = Path.join(root, copy_rel)
 
     for path <- [abs, copy_abs] do
@@ -45,11 +46,11 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     assert :ok = DatabaseCatalog.close(uuid)
 
     # Project default is rollback-journal DELETE — no WAL sidecars when closed.
-    refute File.exists?(abs <> "-wal")
-    refute File.exists?(abs <> "-shm")
+    refute File.exists?(sqlite <> "-wal")
+    refute File.exists?(sqlite <> "-shm")
     refute File.exists?(journal)
 
-    holder = hold_hot_journal_via_adapter!(abs)
+    holder = hold_hot_journal_via_adapter!(sqlite)
     on_exit(fn -> reap_holder(holder) end)
 
     assert File.exists?(journal)
@@ -86,10 +87,10 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
 
     assert :ok = DatabaseCatalog.close(uuid)
     refute File.exists?(journal)
-    refute File.exists?(abs <> "-wal")
+    refute File.exists?(sqlite <> "-wal")
 
-    # Offline-portable: ordinary OS copy of the single canonical file.
-    File.cp!(abs, copy_abs)
+    # Offline-portable: ordinary OS copy of the closed bundle directory.
+    File.cp_r!(abs, copy_abs)
     assert :ok = DatabaseCatalog.unregister(uuid)
     assert {:ok, restored} = DatabaseCatalog.register(copy_rel)
     assert restored.database_uuid == uuid
@@ -104,9 +105,9 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
              DatabaseCatalog.command(uuid, {:command, :integrity_check, %{}})
   end
 
-  defp hold_hot_journal_via_adapter!(abs_path) do
-    ready = abs_path <> ".ready"
-    pid_file = abs_path <> ".holder_pid"
+  defp hold_hot_journal_via_adapter!(sqlite_path) do
+    ready = sqlite_path <> ".ready"
+    pid_file = sqlite_path <> ".holder_pid"
     _ = File.rm(ready)
     _ = File.rm(pid_file)
 
@@ -115,7 +116,7 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     script = """
     ready = #{inspect(ready)}
     pid_file = #{inspect(pid_file)}
-    path = #{inspect(abs_path)}
+    path = #{inspect(sqlite_path)}
     File.write!(pid_file, System.pid())
     {:ok, _} = Application.ensure_all_started(:exqlite)
     {:ok, adapter} = ElixirDB.Storage.SQLite.Adapter.open(path)
@@ -152,7 +153,7 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     )
 
     pid = String.trim(File.read!(pid_file)) |> String.to_integer()
-    assert File.exists?(abs_path <> "-journal")
+    assert File.exists?(sqlite_path <> "-journal")
 
     %{port: port, pid: pid, ready: ready, pid_file: pid_file}
   end

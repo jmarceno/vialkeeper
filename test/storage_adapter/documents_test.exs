@@ -4,12 +4,13 @@ defmodule ElixirDB.StorageAdapter.DocumentsTest do
   alias ElixirDB.Storage.SQLite.Adapter
 
   setup do
-    path = Path.join(System.tmp_dir!(), "elixirdb-test-#{System.unique_integer([:positive])}.db")
+    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-test")
 
     on_exit(fn ->
-      ElixirDB.TempDatabase.cleanup(path)
+      ElixirDB.TempDatabase.cleanup(bundle_path)
     end)
 
+    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
     on_exit(fn -> Adapter.close(adapter) end)
     {:ok, adapter: adapter}

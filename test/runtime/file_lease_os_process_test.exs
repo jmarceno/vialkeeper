@@ -14,7 +14,8 @@ defmodule ElixirDB.Runtime.FileLeaseOsProcessTest do
   @moduletag :slow
 
   setup do
-    {:ok, path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-os-lease")
+    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-os-lease")
+    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
     :ok = Adapter.close(adapter)
 
@@ -23,12 +24,12 @@ defmodule ElixirDB.Runtime.FileLeaseOsProcessTest do
 
     on_exit(fn ->
       _ = File.write(stop, "stop")
-      ElixirDB.TempDatabase.cleanup(path)
+      ElixirDB.TempDatabase.cleanup(bundle_path)
       _ = File.rm(ready)
       _ = File.rm(stop)
     end)
 
-    {:ok, path: path, ready: ready, stop: stop}
+    {:ok, path: path, bundle_path: bundle_path, ready: ready, stop: stop}
   end
 
   test "separate OS process holding FileLease yields database_in_use in parent", %{

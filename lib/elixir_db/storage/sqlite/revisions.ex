@@ -205,7 +205,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
     do:
       a.revision_id == b.revision_id and a.generation == b.generation and
         a.parent_revision == b.parent_revision and a.history_id == b.history_id and
-        a.deleted == b.deleted and a.body == b.body
+        a.deleted == b.deleted and a.body == b.body and a.attachments == b.attachments
 
   @doc false
   def from_row([
@@ -227,6 +227,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
       digest: digest_value,
       deleted: deleted == 1,
       body: if(body_json, do: decode_json!(body_json)),
+      attachments: %{},
       insertion_sequence: sequence
     }
   end

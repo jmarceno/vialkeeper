@@ -73,7 +73,9 @@ defmodule ElixirDB.MixProject do
       {:ex_dna, "1.5.4", only: [:dev, :test], runtime: false},
       # Reach 2.8 currently requires the 0.12 ExAST API line.
       {:ex_ast, "0.12.10", only: [:dev, :test], runtime: false},
-      {:reach, "2.8.2", only: [:dev, :test], runtime: false}
+      {:reach, "2.8.2", only: [:dev, :test], runtime: false},
+      # Streaming Zstandard for attachment physical encoding (Wave 1 gate).
+      {:ezstd, "~> 1.1"}
     ]
   end
 

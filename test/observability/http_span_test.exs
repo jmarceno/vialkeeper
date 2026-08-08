@@ -17,7 +17,7 @@ defmodule ElixirDB.Observability.HTTPSpanTest do
   setup do
     server = TestServer.start_supervised!()
     root = ElixirDB.Config.database_root()
-    path = "http-span-#{System.unique_integer([:positive])}.db"
+    path = "http-span-#{System.unique_integer([:positive])}.elixirdb"
 
     # Leftover files from a previous VM run would fail creation with
     # "database file already exists"; remove ours on exit.

@@ -18,7 +18,7 @@ defmodule ElixirDB.Observability.CommandSpanTest do
     # The catalog creates the file under database_root; clean up THERE (a
     # leftover from a previous run would fail create with "database file
     # already exists").
-    rel = "obs-cmd-#{System.unique_integer([:positive])}.db"
+    rel = "obs-cmd-#{System.unique_integer([:positive])}.elixirdb"
     {:ok, %{database_uuid: uuid}} = DatabaseCatalog.create(rel)
 
     on_exit(fn ->

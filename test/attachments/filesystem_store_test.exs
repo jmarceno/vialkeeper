@@ -1,0 +1,333 @@
+defmodule ElixirDB.Attachments.FilesystemStoreTest do
+  use ExUnit.Case, async: false
+
+  alias ElixirDB.Attachments.FilesystemStore
+  alias ElixirDB.DatabaseBundle
+
+  @moduletag :attachments
+
+  setup do
+    root = Path.join(System.tmp_dir!(), "elixirdb-store-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, bundle} = DatabaseBundle.create(root)
+    File.write!(DatabaseBundle.sqlite_path(bundle), "sqlite")
+
+    %{bundle: bundle, root: bundle.root}
+  end
+
+  test "incremental hash over many chunks", %{bundle: bundle} do
+    chunks = for i <- 1..64, do: <<i::8, i::8, i::8, i::8>>
+    payload = IO.iodata_to_binary(chunks)
+    expected_digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+
+    assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, 1_000_000, %{})
+    Enum.each(chunks, fn chunk -> :ok = FilesystemStore.write_chunk(writer, chunk) end)
+    assert {:ok, %{digest: digest, logical_size: size}} = FilesystemStore.finish_put(writer)
+
+    assert digest == expected_digest
+    assert size == byte_size(payload)
+    assert FilesystemStore.verify(bundle.root, digest, size) == :ok
+  end
+
+  test "accepts exact max size and rejects max plus one", %{bundle: bundle} do
+    max = 1_024
+    exact = :binary.copy(<<1>>, max)
+    over = <<exact::binary, 0>>
+
+    assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, max, %{})
+    assert :ok = FilesystemStore.write_chunk(writer, exact)
+    assert {:ok, _} = FilesystemStore.finish_put(writer)
+
+    assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, max, %{})
+
+    assert {:error, %ElixirDB.Error{code: :payload_too_large}} =
+             FilesystemStore.write_chunk(writer, over)
+  end
+
+  test "chunk boundary independence produces identical digest", %{bundle: bundle} do
+    payload = :crypto.strong_rand_bytes(8_192)
+
+    {:ok, %{digest: one}} = put_chunks(bundle.root, chunk_binary(payload, 17))
+    {:ok, %{digest: two}} = put_chunks(bundle.root, chunk_binary(payload, 503))
+
+    assert one == two
+    assert FilesystemStore.exists?(bundle.root, one)
+  end
+
+  test "dedup leaves one final blob", %{bundle: bundle} do
+    payload = compressible_payload()
+
+    assert {:ok, first} = put_whole(bundle.root, payload)
+    assert {:ok, second} = put_whole(bundle.root, payload)
+
+    assert first.digest == second.digest
+    assert {:ok, digests} = FilesystemStore.list_digests(bundle.root)
+    assert digests == [first.digest]
+
+    prefix = String.slice(first.digest, 0, 2)
+    blob_dir = Path.join([bundle.root, "blobs", prefix])
+    entries = File.ls!(blob_dir)
+    assert [_single] = entries
+  end
+
+  test "dedup rejects corrupted existing blob instead of silently reusing", %{bundle: bundle} do
+    payload = "validate-existing"
+    assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)
+
+    prefix = String.slice(digest, 0, 2)
+    path = Path.join([bundle.root, "blobs", prefix, digest <> ".raw"])
+    File.write!(path, "corrupted")
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             put_whole(bundle.root, payload)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.verify(bundle.root, digest, size)
+  end
+
+  test "failed install removes the private temporary upload", %{bundle: bundle} do
+    payload = "failed-install"
+    digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+    prefix = String.slice(digest, 0, 2)
+    dir = Path.join([bundle.root, "blobs", prefix])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, digest <> ".raw"), "corrupt")
+
+    assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, byte_size(payload), %{})
+    tmp_path = FilesystemStore.writer_tmp_path(writer)
+    assert :ok = FilesystemStore.write_chunk(writer, payload)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.finish_put(writer)
+
+    refute File.exists?(tmp_path)
+  end
+
+  test "blob prefix symlinks cannot redirect installation", %{bundle: bundle} do
+    payload = "symlinked-prefix"
+    digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+    prefix = String.slice(digest, 0, 2)
+    outside = Path.join(System.tmp_dir!(), "elixirdb-outside-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(outside)
+    File.ln_s!(outside, Path.join([bundle.root, "blobs", prefix]))
+
+    on_exit(fn -> File.rm_rf(outside) end)
+
+    assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, byte_size(payload), %{})
+    assert :ok = FilesystemStore.write_chunk(writer, payload)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.finish_put(writer)
+
+    assert File.ls!(outside) == []
+  end
+
+  test "concurrent same-digest install leaves one valid blob", %{bundle: bundle} do
+    payload = compressible_payload()
+
+    results =
+      1..4
+      |> Task.async_stream(fn _ -> put_whole(bundle.root, payload) end, timeout: :infinity)
+      |> Enum.map(fn {:ok, {:ok, result}} -> result end)
+
+    digests = Enum.map(results, & &1.digest)
+    assert Enum.uniq(digests) == [hd(digests)]
+    assert FilesystemStore.verify(bundle.root, hd(digests), byte_size(payload)) == :ok
+
+    assert {:ok, listed} = FilesystemStore.list_digests(bundle.root)
+    assert listed == [hd(digests)]
+  end
+
+  test "user attachment names never affect blob paths", %{bundle: bundle} do
+    payload = "diagram-bytes"
+    assert {:ok, %{digest: digest}} = put_whole(bundle.root, payload)
+
+    path = blob_path_for(bundle.root, digest)
+    refute String.contains?(path, "diagram")
+    refute String.contains?(path, "svg")
+    assert String.ends_with?(path, ".raw") or String.ends_with?(path, ".zst")
+  end
+
+  test "malformed digest cannot escape blob root", %{bundle: bundle} do
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             FilesystemStore.open_read(bundle.root, "../../../etc/passwd")
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             FilesystemStore.delete(bundle.root, String.duplicate("G", 64))
+
+    refute File.exists?(Path.join([bundle.root, "blobs", "et"]))
+  end
+
+  test "abort removes temp file", %{bundle: bundle} do
+    assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, 1_000, %{})
+    tmp_path = FilesystemStore.writer_tmp_path(writer)
+    assert File.regular?(tmp_path)
+    :ok = FilesystemStore.abort_put(writer)
+    refute File.exists?(tmp_path)
+  end
+
+  test "raw read returns exact bytes", %{bundle: bundle} do
+    payload = :crypto.strong_rand_bytes(4_096)
+    assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)
+
+    assert {:ok, %{encoding: :raw}} = FilesystemStore.stat(bundle.root, digest)
+    assert {:ok, reader} = FilesystemStore.open_read(bundle.root, digest)
+    assert collect_reader(reader) == payload
+    assert size == byte_size(payload)
+  end
+
+  @tag :compressed
+  test "compressed read returns exact original bytes when worthwhile", %{bundle: bundle} do
+    payload = compressible_payload()
+    assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)
+
+    assert {:ok, %{encoding: encoding}} = FilesystemStore.stat(bundle.root, digest)
+    assert encoding == :compressed
+
+    assert {:ok, reader} = FilesystemStore.open_read(bundle.root, digest)
+    assert collect_reader(reader) == payload
+    assert size == byte_size(payload)
+  end
+
+  test "corruption is detected on verify", %{bundle: bundle} do
+    payload = "integrity-check"
+    assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)
+
+    path = blob_path_for(bundle.root, digest)
+    File.write!(path, "corrupt")
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.verify(bundle.root, digest, size)
+  end
+
+  test "both raw and zst representations are integrity violations", %{bundle: bundle} do
+    digest = String.duplicate("a", 64)
+    prefix = String.slice(digest, 0, 2)
+    dir = Path.join([bundle.root, "blobs", prefix])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, digest <> ".raw"), "raw")
+    File.write!(Path.join(dir, digest <> ".zst"), "zst")
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.verify(bundle.root, digest, 3)
+  end
+
+  test "large stream memory remains bounded during read and write", %{bundle: bundle} do
+    chunk = 4 * 1024
+    chunks = Stream.repeatedly(fn -> :crypto.strong_rand_bytes(chunk) end) |> Enum.take(512)
+    payload = IO.iodata_to_binary(chunks)
+    peak = :atomics.new(1, signed: false)
+
+    assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, byte_size(payload) + 1, %{})
+
+    Enum.each(chunks, fn part ->
+      track_peak(peak, part)
+      :ok = FilesystemStore.write_chunk(writer, part)
+    end)
+
+    assert {:ok, %{digest: digest}} = FilesystemStore.finish_put(writer)
+    assert :atomics.get(peak, 1) <= 2 * chunk
+
+    assert {:ok, reader} = FilesystemStore.open_read(bundle.root, digest)
+    read = collect_reader(reader)
+
+    assert byte_size(read) == byte_size(payload)
+    assert :atomics.get(peak, 1) <= 2 * chunk
+  end
+
+  test "cleanup_tmp removes only expired temp files", %{bundle: bundle} do
+    old = Path.join([bundle.root, "tmp", "old-upload"])
+    new = Path.join([bundle.root, "tmp", "new-upload"])
+    File.write!(old, "old")
+    File.write!(new, "new")
+
+    old_time = {{2000, 1, 1}, {0, 0, 0}}
+    File.touch!(old, old_time)
+
+    cutoff = DateTime.utc_now() |> DateTime.add(-60, :second)
+    assert :ok = FilesystemStore.cleanup_tmp(bundle.root, cutoff)
+
+    refute File.exists?(old)
+    assert File.exists?(new)
+  end
+
+  test "delete removes installed blob", %{bundle: bundle} do
+    assert {:ok, %{digest: digest}} = put_whole(bundle.root, "delete-me")
+    assert FilesystemStore.exists?(bundle.root, digest)
+    assert :ok = FilesystemStore.delete(bundle.root, digest)
+    refute FilesystemStore.exists?(bundle.root, digest)
+  end
+
+  defp put_whole(bundle_path, payload) do
+    with {:ok, writer} <- FilesystemStore.begin_put(bundle_path, byte_size(payload) + 1, %{}),
+         :ok <- FilesystemStore.write_chunk(writer, payload) do
+      FilesystemStore.finish_put(writer)
+    end
+  end
+
+  defp put_chunks(bundle_path, chunks) do
+    total = Enum.reduce(chunks, 0, fn c, acc -> acc + byte_size(c) end)
+
+    with {:ok, writer} <- FilesystemStore.begin_put(bundle_path, total + 1, %{}),
+         :ok <-
+           Enum.reduce(chunks, :ok, fn chunk, :ok -> FilesystemStore.write_chunk(writer, chunk) end) do
+      FilesystemStore.finish_put(writer)
+    end
+  end
+
+  defp collect_reader(reader) do
+    collect_reader_loop(reader, <<>>)
+  end
+
+  defp collect_reader_loop(reader, acc) do
+    case FilesystemStore.read_chunks(reader) do
+      {:ok, chunk} ->
+        collect_reader_loop(reader, acc <> chunk)
+
+      {:done, _} ->
+        FilesystemStore.close_read(reader)
+        acc
+
+      {:error, reason} ->
+        flunk("read failed: #{inspect(reason)}")
+    end
+  end
+
+  defp chunk_binary(binary, size) do
+    Stream.unfold(binary, fn
+      <<>> ->
+        nil
+
+      rest when byte_size(rest) <= size ->
+        {rest, <<>>}
+
+      rest ->
+        part = binary_part(rest, 0, size)
+        tail = binary_part(rest, size, byte_size(rest) - size)
+        {part, tail}
+    end)
+    |> Enum.to_list()
+  end
+
+  defp blob_path_for(bundle_root, digest) do
+    case FilesystemStore.stat(bundle_root, digest) do
+      {:ok, %{encoding: :raw}} ->
+        Path.join([bundle_root, "blobs", String.slice(digest, 0, 2), digest <> ".raw"])
+
+      {:ok, %{encoding: :compressed}} ->
+        Path.join([bundle_root, "blobs", String.slice(digest, 0, 2), digest <> ".zst"])
+    end
+  end
+
+  defp compressible_payload do
+    :binary.copy(<<0>>, 300 * 1024)
+  end
+
+  defp track_peak(peak, data) do
+    size = if(is_binary(data), do: byte_size(data), else: IO.iodata_length(data))
+    current = :atomics.get(peak, 1)
+    if size > current, do: :atomics.put(peak, 1, size)
+  end
+end

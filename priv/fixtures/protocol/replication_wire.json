@@ -70,7 +70,8 @@
       "generation": 3,
       "parent_revision": "2-parent-digest",
       "deleted": false,
-      "body": {"example": true}
+      "body": {"example": true},
+      "attachments": {}
     }
   },
   {

@@ -34,20 +34,20 @@ defmodule ElixirDB.Runtime.ManifestAtomicityTest do
     uuid_a: uuid_a,
     uuid_b: uuid_b
   } do
-    assert :ok = RegistrationManifest.write([%{uuid: uuid_a, path: "prior.db"}])
+    assert :ok = RegistrationManifest.write([%{uuid: uuid_a, path: "prior.elixirdb"}])
     prior_bytes = File.read!(manifest)
 
-    assert {:ok, [%{uuid: ^uuid_a, path: "prior.db"}]} = RegistrationManifest.read()
+    assert {:ok, [%{uuid: ^uuid_a, path: "prior.elixirdb"}]} = RegistrationManifest.read()
 
     File.chmod!(dir, 0o555)
 
     assert {:error, %ElixirDB.Error{code: :database_unavailable}} =
-             RegistrationManifest.write([%{uuid: uuid_b, path: "next.db"}])
+             RegistrationManifest.write([%{uuid: uuid_b, path: "next.elixirdb"}])
 
     File.chmod!(dir, 0o755)
 
     assert File.read!(manifest) == prior_bytes
-    assert {:ok, [%{uuid: ^uuid_a, path: "prior.db"}]} = RegistrationManifest.read()
+    assert {:ok, [%{uuid: ^uuid_a, path: "prior.elixirdb"}]} = RegistrationManifest.read()
   end
 
   test "orphan temp file from interrupted rename does not replace or corrupt read", %{
@@ -55,29 +55,29 @@ defmodule ElixirDB.Runtime.ManifestAtomicityTest do
     manifest: manifest,
     uuid_a: uuid_a
   } do
-    assert :ok = RegistrationManifest.write([%{uuid: uuid_a, path: "stable.db"}])
+    assert :ok = RegistrationManifest.write([%{uuid: uuid_a, path: "stable.elixirdb"}])
     prior_bytes = File.read!(manifest)
 
     orphan = Path.join(dir, "registrations.json.tmp.#{System.unique_integer([:positive])}")
 
     File.write!(
       orphan,
-      "{\"version\":1,\"databases\":[{\"uuid\":\"not-a-uuid\",\"path\":\"x.db\"}]}"
+      "{\"version\":1,\"databases\":[{\"uuid\":\"not-a-uuid\",\"path\":\"x.elixirdb\"}]}"
     )
 
     assert File.exists?(orphan)
     assert File.read!(manifest) == prior_bytes
-    assert {:ok, [%{uuid: ^uuid_a, path: "stable.db"}]} = RegistrationManifest.read()
+    assert {:ok, [%{uuid: ^uuid_a, path: "stable.elixirdb"}]} = RegistrationManifest.read()
 
     assert :ok =
              RegistrationManifest.write([
-               %{uuid: uuid_a, path: "stable.db"},
-               %{uuid: "33333333-3333-4333-8333-333333333333", path: "added.db"}
+               %{uuid: uuid_a, path: "stable.elixirdb"},
+               %{uuid: "33333333-3333-4333-8333-333333333333", path: "added.elixirdb"}
              ])
 
     assert {:ok, entries} = RegistrationManifest.read()
     assert [_, _] = entries
-    assert Enum.any?(entries, &(&1.path == "stable.db"))
-    assert Enum.any?(entries, &(&1.path == "added.db"))
+    assert Enum.any?(entries, &(&1.path == "stable.elixirdb"))
+    assert Enum.any?(entries, &(&1.path == "added.elixirdb"))
   end
 end

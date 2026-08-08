@@ -8,7 +8,7 @@ defmodule ElixirDB.Runtime.CompactionWaiterTest do
   alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
 
   setup do
-    relative = "compaction-waiter-#{System.unique_integer([:positive])}.db"
+    relative = "compaction-waiter-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
     ElixirDB.TempDatabase.cleanup(absolute)
 

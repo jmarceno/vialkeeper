@@ -57,7 +57,8 @@ defmodule ElixirDB.Contract.RevisionModelPropertiesTest do
             rev.history_id,
             rev.parent_revision,
             rev.deleted,
-            rev.body
+            rev.body,
+            rev.attachments || %{}
           )
 
         assert calculated == rev.revision_id

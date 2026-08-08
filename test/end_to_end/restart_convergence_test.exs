@@ -11,8 +11,8 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
   @tag :slow
   test "replication converges across close/reopen of source and target owners" do
     prefix = "e2e-restart-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
     root = ElixirDB.Config.database_root()
 
     for path <- [a_path, b_path] do
@@ -90,8 +90,8 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
   @tag :slow
   test "repeated one_shot replication is idempotent and does not advance checkpoints" do
     prefix = "e2e-idempotent-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.db"
-    b_path = prefix <> "-b.db"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
     root = ElixirDB.Config.database_root()
 
     for path <- [a_path, b_path] do

@@ -7,15 +7,16 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   alias ElixirDB.Replication.JobManager
 
   alias ElixirDB.Runtime.{
+    AttachmentCoordinator,
+    ChangeNotifier,
     DatabaseAdmission,
     DatabaseOwner,
     DatabaseRuntimeSupervisor,
-    PathSafety,
     RegistrationManifest
   }
 
-  alias ElixirDB.Runtime.ChangeNotifier
-  alias ElixirDB.Runtime.DatabaseAdmission
+  alias ElixirDB.DatabaseBundle
+  alias ElixirDB.PathSafety
   alias ElixirDB.Storage.SQLite.Adapter
   def start_link(_args), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
@@ -72,20 +73,22 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     # would crash the shared catalog. Catch and convert to a typed error.
     safe(
       fn ->
-        with {:ok, absolute} <- safe_path(state.root, relative_path),
-             false <- File.exists?(absolute),
+        with {:ok, bundle_root} <- safe_path(state.root, relative_path),
+             false <- File.exists?(bundle_root),
+             {:ok, bundle} <- DatabaseBundle.create(bundle_root),
              {:ok, config} <-
                ElixirDB.Config.merge_and_bound(
                  MapAccess.get(options, :config, ElixirDB.Config.defaults())
                ),
-             {:ok, adapter} <- Adapter.create(absolute, Map.put(options, :config, config)),
+             {:ok, adapter} <-
+               Adapter.create(DatabaseBundle.sqlite_path(bundle), Map.put(options, :config, config)),
              {:ok, identity} <- Adapter.identity(adapter),
              :ok <- Adapter.close(adapter),
-             {:ok, state} <- put_entry(state, identity.database_uuid, relative_path) do
+             {:ok, state} <- put_entry(state, identity.database_uuid, relative_path, bundle) do
           {:reply, {:ok, identity}, state}
         else
           true ->
-            {:reply, {:error, ElixirDB.Error.invalid_request("database file already exists")},
+            {:reply, {:error, ElixirDB.Error.invalid_request("database bundle already exists")},
              state}
 
           {:error, %ElixirDB.Error{} = error} ->
@@ -108,19 +111,20 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     # would crash the shared catalog. Catch and convert to a typed error.
     safe(
       fn ->
-        with {:ok, absolute} <- safe_path(state.root, relative_path),
-             true <- File.regular?(absolute),
-             :ok <- ensure_path_not_open(state, absolute),
-             {:ok, adapter} <- Adapter.open(absolute),
+        with {:ok, bundle_root} <- safe_path(state.root, relative_path),
+             true <- File.dir?(bundle_root),
+             :ok <- ensure_path_not_open(state, bundle_root),
+             {:ok, bundle} <- DatabaseBundle.validate(bundle_root),
+             {:ok, adapter} <- Adapter.open(DatabaseBundle.sqlite_path(bundle)),
              {:ok, identity} <- Adapter.identity(adapter),
              :ok <- Adapter.close(adapter),
-             :ok <- no_duplicate_uuid(state, identity.database_uuid, absolute),
-             {:ok, next} <- put_entry(state, identity.database_uuid, relative_path) do
+             :ok <- no_duplicate_uuid(state, identity.database_uuid, bundle_root),
+             {:ok, next} <- put_entry(state, identity.database_uuid, relative_path, bundle) do
           {:reply, {:ok, identity}, next}
         else
           false ->
             {:reply,
-             {:error, ElixirDB.Error.database_unavailable("registered database file is missing")},
+             {:error, ElixirDB.Error.database_unavailable("registered database bundle is missing")},
              state}
 
           {:error, %ElixirDB.Error{} = error} ->
@@ -304,7 +308,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       nil ->
         {:error, ElixirDB.Error.database_not_registered("database is not registered"), state}
 
-      %{absolute_path: _path} = entry ->
+      %{bundle_root: _root} = entry ->
         open_registered_entry(state, uuid, entry)
     end
   end
@@ -319,30 +323,37 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
-  defp start_registered_entry(state, uuid, %{absolute_path: path} = entry) do
+  defp start_registered_entry(state, uuid, %{bundle_root: bundle_root} = entry) do
     cond do
-      not File.regular?(path) ->
-        error = ElixirDB.Error.database_unavailable("registered database file is missing")
+      not File.dir?(bundle_root) ->
+        error = ElixirDB.Error.database_unavailable("registered database bundle is missing")
         {:error, error, mark_status(state, uuid, :unavailable)}
 
       open_count() >= (ElixirDB.Config.host_limits()[:max_open_databases] || 64) ->
         {:error, ElixirDB.Error.resource_limit("maximum open database count reached", %{}), state}
 
       true ->
-        start_database_runtime(state, uuid, entry, path)
+        start_database_runtime(state, uuid, entry, bundle_root)
     end
   end
 
-  defp start_database_runtime(state, uuid, entry, path) do
-    case DynamicSupervisor.start_child(
-           ElixirDB.Runtime.DatabaseSupervisor,
-           {DatabaseRuntimeSupervisor, %{uuid: uuid, path: path}}
-         ) do
-      {:ok, _pid} ->
-        {:ok, %{database_uuid: uuid, runtime_state: :open}, mark_status(state, uuid, :registered)}
+  defp start_database_runtime(state, uuid, entry, bundle_root) do
+    case DatabaseBundle.prepare_for_open(bundle_root) do
+      {:ok, bundle} ->
+        case DynamicSupervisor.start_child(
+               ElixirDB.Runtime.DatabaseSupervisor,
+               {DatabaseRuntimeSupervisor, %{uuid: uuid, bundle: bundle}}
+             ) do
+          {:ok, _pid} ->
+            {:ok, %{database_uuid: uuid, runtime_state: :open},
+             mark_status(state, uuid, :registered)}
 
-      {:error, reason} ->
-        error = open_failure_error(reason, entry)
+          {:error, reason} ->
+            error = open_failure_error(reason, entry)
+            {:error, error, maybe_mark_unavailable(state, uuid, error)}
+        end
+
+      {:error, error} ->
         {:error, error, maybe_mark_unavailable(state, uuid, error)}
     end
   end
@@ -398,11 +409,12 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
-  defp put_entry(state, uuid, relative) do
+  defp put_entry(state, uuid, relative, %DatabaseBundle{} = bundle) do
     entry = %{
       uuid: uuid,
       path: relative,
-      absolute_path: Path.join(state.root, relative),
+      bundle_root: DatabaseBundle.root(bundle),
+      sqlite_path: DatabaseBundle.sqlite_path(bundle),
       status: :registered
     }
 
@@ -414,16 +426,16 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
-  defp no_duplicate_uuid(state, uuid, absolute_path) do
+  defp no_duplicate_uuid(state, uuid, bundle_root) do
     case Map.get(state.entries, uuid) do
       nil -> :ok
-      %{absolute_path: ^absolute_path} -> :ok
+      %{bundle_root: ^bundle_root} -> :ok
       _ -> {:error, ElixirDB.Error.duplicate_database_uuid("database UUID is already registered")}
     end
   end
 
-  defp ensure_path_not_open(state, absolute_path) do
-    case Enum.find(state.entries, fn {_uuid, entry} -> entry.absolute_path == absolute_path end) do
+  defp ensure_path_not_open(state, bundle_root) do
+    case Enum.find(state.entries, fn {_uuid, entry} -> entry.bundle_root == bundle_root end) do
       {_uuid, %{uuid: uuid}} ->
         case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
           [] ->
@@ -471,7 +483,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
         [] ->
           cond do
             Map.get(entry, :status) == :unavailable -> :unavailable
-            File.exists?(entry.absolute_path) -> :registered
+            File.dir?(entry.bundle_root) -> :registered
             true -> :unavailable
           end
       end
@@ -480,8 +492,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   defp inspect_entry(entry) do
-    if File.exists?(entry.absolute_path) do
-      case Adapter.open(entry.absolute_path) do
+    if File.dir?(entry.bundle_root) do
+      case Adapter.open(entry.sqlite_path) do
         {:ok, adapter} ->
           inspect_open_adapter(adapter, entry)
 
@@ -489,7 +501,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
           {:error, error}
       end
     else
-      {:error, ElixirDB.Error.database_unavailable("registered database file is missing")}
+      {:error, ElixirDB.Error.database_unavailable("registered database bundle is missing")}
     end
   end
 
@@ -542,6 +554,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
               {:error, error} ->
                 error
             end),
+         :ok <- AttachmentCoordinator.begin_close(uuid),
          :ok <- ChangeNotifier.close(uuid),
          runtime when not is_nil(runtime) <- runtime_pid(uuid) do
       if Process.alive?(runtime),

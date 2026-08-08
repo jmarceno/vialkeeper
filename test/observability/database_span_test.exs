@@ -14,7 +14,7 @@ defmodule ElixirDB.Observability.DatabaseOpenSpanTest do
     # The catalog creates the file under database_root; clean up THERE (a
     # leftover from a previous run would fail create with "database file
     # already exists").
-    rel = "obs-open-#{System.unique_integer([:positive])}.db"
+    rel = "obs-open-#{System.unique_integer([:positive])}.elixirdb"
     {:ok, %{database_uuid: uuid}} = DatabaseCatalog.create(rel)
 
     on_exit(fn ->

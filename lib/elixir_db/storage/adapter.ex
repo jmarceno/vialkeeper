@@ -41,4 +41,16 @@ defmodule ElixirDB.Storage.Adapter do
   @callback list_indexes(term()) :: {:ok, list()} | {:error, ElixirDB.Error.t()}
   @callback execute_query(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback explain_query(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback resolve_attachment_ticket(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback resolve_blob_metadata(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback protect_pending_blob(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback remove_pending_blob_protection(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback list_live_attachment_digests(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback cleanup_expired_pending_blobs(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
 end

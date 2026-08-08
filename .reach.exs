@@ -6,10 +6,15 @@
       "ElixirDB.Changes",
       "ElixirDB.Query",
       "ElixirDB.Replication",
+      "ElixirDB.Attachments",
       "ElixirDB.Observability.Dashboard"
     ],
-    runtime: "ElixirDB.Runtime.*",
-    storage: "ElixirDB.Storage.*",
+    runtime: ["ElixirDB.Runtime.*"],
+    storage: [
+      "ElixirDB.Storage.*",
+      "ElixirDB.Attachments.FilesystemStore",
+      "ElixirDB.Attachments.Compression"
+    ],
     core: [
       "ElixirDB.Domain.*",
       "ElixirDB.Revisions.*",
@@ -17,7 +22,14 @@
       "ElixirDB.Commands",
       "ElixirDB.Query.*",
       "ElixirDB.Error",
-      "ElixirDB.UUID"
+      "ElixirDB.UUID",
+      "ElixirDB.DurableFS",
+      "ElixirDB.PathSafety",
+      "ElixirDB.DatabaseBundle",
+      "ElixirDB.Attachments.Manifest",
+      "ElixirDB.Attachments.Ticket",
+      "ElixirDB.Attachments.Store",
+      "ElixirDB.Replication.BlobStream"
     ],
     observability: "ElixirDB.Observability.*"
   ],

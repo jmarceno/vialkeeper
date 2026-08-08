@@ -41,15 +41,17 @@ defmodule ElixirDB.Storage.AdapterCase do
   """
   @spec open_temp_adapter(module(), map()) :: {:ok, keyword()}
   def open_temp_adapter(adapter_mod, _context) when is_atom(adapter_mod) do
-    {:ok, path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-adapter")
-    {:ok, adapter} = adapter_mod.create(path, %{})
+    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-adapter")
+    sqlite_path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
+    {:ok, adapter} = adapter_mod.create(sqlite_path, %{})
 
     ExUnit.Callbacks.on_exit(fn ->
       _ = safe_close(adapter_mod, adapter)
-      ElixirDB.TempDatabase.cleanup(path)
+      ElixirDB.TempDatabase.cleanup(bundle_path)
     end)
 
-    {:ok, adapter: adapter, path: path, adapter_module: adapter_mod}
+    {:ok,
+     adapter: adapter, path: sqlite_path, bundle_path: bundle_path, adapter_module: adapter_mod}
   end
 
   @doc """

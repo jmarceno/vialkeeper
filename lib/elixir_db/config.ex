@@ -27,6 +27,11 @@ defmodule ElixirDB.Config do
       "history_depth" => 0,
       "peer_expiry_ms" => 86_400_000,
       "schedule" => "disabled"
+    },
+    "attachments" => %{
+      "max_attachment_bytes" => 68_719_476_736,
+      "max_concurrent_attachment_reads" => 16,
+      "max_concurrent_attachment_writes" => 4
     }
   }
 
@@ -124,7 +129,25 @@ defmodule ElixirDB.Config do
            ),
          :ok <- validate_retry_order(merged),
          :ok <- bound_retention_peer_expiry(merged, limits),
-         :ok <- bound_retention_schedule(merged, limits) do
+         :ok <- bound_retention_schedule(merged, limits),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["attachments", "max_attachment_bytes"],
+             limits[:max_attachment_bytes]
+           ),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["attachments", "max_concurrent_attachment_reads"],
+             limits[:max_concurrent_attachment_reads]
+           ),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["attachments", "max_concurrent_attachment_writes"],
+             limits[:max_concurrent_attachment_writes]
+           ) do
       {:ok, merged}
     end
   end
@@ -149,7 +172,15 @@ defmodule ElixirDB.Config do
   end
 
   defp validate_shape(config) do
-    known = ["version", "documents", "queries", "changes", "replication", "retention"]
+    known = [
+      "version",
+      "documents",
+      "queries",
+      "changes",
+      "replication",
+      "retention",
+      "attachments"
+    ]
 
     if Enum.all?(Map.keys(config), &(&1 in known)) do
       validate_nested_shape(config)
@@ -165,6 +196,11 @@ defmodule ElixirDB.Config do
       "changes" => ["default_batch", "max_batch", "max_wait_ms"],
       "replication" => ["batch_documents", "batch_bytes", "retry"],
       "retention" => ["mode", "history_depth", "peer_expiry_ms", "schedule"],
+      "attachments" => [
+        "max_attachment_bytes",
+        "max_concurrent_attachment_reads",
+        "max_concurrent_attachment_writes"
+      ],
       "retry" => ["max_attempts", "base_delay_ms", "max_delay_ms", "jitter_ms"]
     }
 
@@ -222,7 +258,10 @@ defmodule ElixirDB.Config do
       ["replication", "retry", "max_attempts"],
       ["replication", "retry", "base_delay_ms"],
       ["replication", "retry", "max_delay_ms"],
-      ["replication", "retry", "jitter_ms"]
+      ["replication", "retry", "jitter_ms"],
+      ["attachments", "max_attachment_bytes"],
+      ["attachments", "max_concurrent_attachment_reads"],
+      ["attachments", "max_concurrent_attachment_writes"]
     ]
 
     Enum.reduce_while(values, :ok, fn path, :ok ->

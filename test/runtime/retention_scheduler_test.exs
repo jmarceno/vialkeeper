@@ -6,7 +6,7 @@ defmodule ElixirDB.Runtime.RetentionSchedulerTest do
 
   @tag :slow
   test "scheduled compaction runs through the owner without contacting peers" do
-    relative = "retention-scheduler-#{System.unique_integer([:positive])}.db"
+    relative = "retention-scheduler-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
     ElixirDB.TempDatabase.cleanup(absolute)
 
@@ -55,7 +55,7 @@ defmodule ElixirDB.Runtime.RetentionSchedulerTest do
   end
 
   test "disabled schedule does not arm compaction timer" do
-    relative = "retention-scheduler-off-#{System.unique_integer([:positive])}.db"
+    relative = "retention-scheduler-off-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
     ElixirDB.TempDatabase.cleanup(absolute)
 

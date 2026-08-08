@@ -69,7 +69,8 @@ defmodule ElixirDB.Contract.FixturesTest do
                      history_id: fixture["history_id"],
                      parent_revision: fixture["parent_revision"],
                      deleted: fixture["deleted"],
-                     body: fixture["body"]
+                     body: fixture["body"],
+                     attachments: Map.get(fixture, "attachments", %{})
                    })
 
           assert Atom.to_string(actual_code) == code
@@ -81,7 +82,8 @@ defmodule ElixirDB.Contract.FixturesTest do
                      history_id,
                      fixture["parent_revision"],
                      fixture["deleted"],
-                     fixture["body"]
+                     fixture["body"],
+                     Map.get(fixture, "attachments", %{})
                    )
 
           assert actual == expected, "revision id mismatch for #{fixture["id"]}"
@@ -94,7 +96,8 @@ defmodule ElixirDB.Contract.FixturesTest do
               "history_id" => history_id,
               "parent_revision" => fixture["parent_revision"],
               "deleted" => fixture["deleted"],
-              "body" => fixture["body"]
+              "body" => fixture["body"],
+              "attachments" => Map.get(fixture, "attachments", %{})
             })
 
           assert canonical == fixture["canonical_payload"],
@@ -250,7 +253,8 @@ defmodule ElixirDB.Contract.FixturesTest do
   end
 
   defp execute_checkpoint_cas_scenario(fixture) do
-    {:ok, path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-fixture-cas")
+    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-fixture-cas")
+    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
     assert {:ok, adapter} = Adapter.create(path, %{})
 
     try do
@@ -293,13 +297,15 @@ defmodule ElixirDB.Contract.FixturesTest do
       end
     after
       _ = Adapter.close(adapter)
-      ElixirDB.TempDatabase.cleanup(path)
+      ElixirDB.TempDatabase.cleanup(bundle_path)
     end
   end
 
   defp fts5_token_counts(input, remove_diacritics) do
-    path = Path.join(System.tmp_dir!(), "elixirdb-fts5-#{System.unique_integer([:positive])}.db")
-    ElixirDB.TempDatabase.cleanup(path)
+    {:ok, bundle_path} =
+      ElixirDB.TempDatabase.create(prefix: "elixirdb-fts5-#{System.unique_integer([:positive])}")
+
+    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
     {:ok, conn} = Exqlite.Sqlite3.open(path)
 
     try do
@@ -337,7 +343,7 @@ defmodule ElixirDB.Contract.FixturesTest do
       rows
     after
       Exqlite.Sqlite3.close(conn)
-      ElixirDB.TempDatabase.cleanup(path)
+      ElixirDB.TempDatabase.cleanup(bundle_path)
     end
   end
 
