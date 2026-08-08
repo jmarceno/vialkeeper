@@ -3,7 +3,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   Version 1 SQLite storage adapter.
 
   Orchestrates transactions and the Storage.Adapter behaviour. Per-concern SQL
-  lives in `Documents`, `Revisions`, `Changes`, `LocalRecords`,
+  lives in `Documents`, `Revisions`, `Attachments`, `Changes`, `LocalRecords`,
   `ReplicationJobs`, `Integrity`, `QueryRunner`, `IndexCatalog`, `Chains`,
   `Mutations`, and `Import`. Physical index DDL remains in `Indexes`, with thin
   facades in `StructuredIndexes` / `FullTextIndexes`.
@@ -15,6 +15,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   alias ElixirDB.Observability.Instrumentation.Query
 
   alias ElixirDB.Storage.SQLite.{
+    Attachments,
     Chains,
     Changes,
     Connection,
@@ -128,7 +129,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @impl true
   def integrity_check(%__MODULE__{} = adapter, _options) do
     with {:ok, indexes} <- list_indexes(adapter),
-         :ok <- Integrity.run(adapter.conn, indexes) do
+         :ok <- Integrity.run(adapter.conn, indexes, attachment_bundle_root(adapter)) do
       {:ok, %{ok: true, indexes: length(indexes)}}
     else
       {:error, %ElixirDB.Error{} = error} ->
@@ -409,32 +410,56 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: {:error, ElixirDB.Error.invalid_request("query explanation must be an object")}
 
   @impl true
+  def resolve_attachment_ticket(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Attachments.resolve_attachment_ticket(adapter, request)
+
   def resolve_attachment_ticket(_adapter, _request),
-    do: attachment_not_implemented(:resolve_attachment_ticket)
+    do: {:error, ElixirDB.Error.invalid_request("attachment ticket request must be an object")}
 
   @impl true
+  def resolve_blob_metadata(%__MODULE__{conn: conn}, request) when is_map(request),
+    do: Attachments.resolve_blob_metadata(conn, request)
+
   def resolve_blob_metadata(_adapter, _request),
-    do: attachment_not_implemented(:resolve_blob_metadata)
+    do: {:error, ElixirDB.Error.invalid_request("blob metadata request must be an object")}
 
   @impl true
+  def protect_pending_blob(%__MODULE__{} = adapter, request) when is_map(request) do
+    transaction(adapter, fn -> Attachments.protect_pending_blob(adapter.conn, request) end)
+  end
+
   def protect_pending_blob(_adapter, _request),
-    do: attachment_not_implemented(:protect_pending_blob)
+    do:
+      {:error, ElixirDB.Error.invalid_request("pending blob protection request must be an object")}
 
   @impl true
+  def remove_pending_blob_protection(%__MODULE__{} = adapter, request) when is_map(request) do
+    transaction(adapter, fn ->
+      Attachments.remove_pending_blob_protection(adapter.conn, request)
+    end)
+  end
+
   def remove_pending_blob_protection(_adapter, _request),
-    do: attachment_not_implemented(:remove_pending_blob_protection)
+    do:
+      {:error,
+       ElixirDB.Error.invalid_request("remove pending blob protection request must be an object")}
 
   @impl true
+  def list_live_attachment_digests(%__MODULE__{conn: conn}, request) when is_map(request),
+    do: Attachments.list_live_attachment_digests(conn, request)
+
   def list_live_attachment_digests(_adapter, _request),
-    do: attachment_not_implemented(:list_live_attachment_digests)
+    do: {:error, ElixirDB.Error.invalid_request("live attachment digest request must be an object")}
 
   @impl true
-  def cleanup_expired_pending_blobs(_adapter, _request),
-    do: attachment_not_implemented(:cleanup_expired_pending_blobs)
+  def cleanup_expired_pending_blobs(%__MODULE__{} = adapter, request) when is_map(request) do
+    transaction(adapter, fn ->
+      Attachments.cleanup_expired_pending_blobs(adapter.conn, request)
+    end)
+  end
 
-  defp attachment_not_implemented(operation) do
-    {:error,
-     ElixirDB.Error.internal_error("attachment adapter operation not implemented: #{operation}")}
+  def cleanup_expired_pending_blobs(%__MODULE__{} = adapter, _request) do
+    cleanup_expired_pending_blobs(adapter, %{})
   end
 
   defp transaction(%__MODULE__{conn: conn}, fun) do
@@ -555,6 +580,10 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       _ -> nil
     end
   end
+
+  defp attachment_bundle_root(%__MODULE__{storage_mode: :memory}), do: nil
+
+  defp attachment_bundle_root(%__MODULE__{path: path}), do: Path.dirname(Path.expand(path))
 
   # The candidate count the query runner computes (plan §5.5), bound as
   # `examined` on the span/metric. Returns 0 when unavailable.

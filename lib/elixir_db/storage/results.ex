@@ -10,7 +10,7 @@ defmodule ElixirDB.Storage.Results do
   defmodule GetDocument do
     @moduledoc false
     @enforce_keys [:id, :revision, :deleted, :body, :sequence]
-    defstruct [:id, :revision, :deleted, :body, :sequence, :conflicts]
+    defstruct [:id, :revision, :deleted, :body, :sequence, :conflicts, :attachments]
 
     @type t :: %__MODULE__{
             id: binary(),
@@ -18,14 +18,15 @@ defmodule ElixirDB.Storage.Results do
             deleted: boolean(),
             body: map() | nil,
             sequence: non_neg_integer(),
-            conflicts: [map()] | nil
+            conflicts: [map()] | nil,
+            attachments: map() | nil
           }
   end
 
   defmodule PutDocument do
     @moduledoc false
     @enforce_keys [:revision, :sequence, :replayed]
-    defstruct [:id, :revision, :deleted, :body, :sequence, :replayed]
+    defstruct [:id, :revision, :deleted, :body, :sequence, :replayed, :attachments]
 
     @type t :: %__MODULE__{
             id: binary() | nil,
@@ -33,7 +34,8 @@ defmodule ElixirDB.Storage.Results do
             deleted: boolean() | nil,
             body: map() | nil,
             sequence: non_neg_integer(),
-            replayed: boolean()
+            replayed: boolean(),
+            attachments: map() | nil
           }
   end
 
@@ -62,7 +64,8 @@ defmodule ElixirDB.Storage.Results do
       deleted: MapAccess.get(map, :deleted, false),
       body: MapAccess.get(map, :body),
       sequence: MapAccess.get(map, :sequence, 0),
-      conflicts: MapAccess.get(map, :conflicts)
+      conflicts: MapAccess.get(map, :conflicts),
+      attachments: MapAccess.get(map, :attachments)
     }
   end
 
@@ -76,7 +79,8 @@ defmodule ElixirDB.Storage.Results do
       deleted: MapAccess.get(map, :deleted),
       body: MapAccess.get(map, :body),
       sequence: MapAccess.get(map, :sequence, 0),
-      replayed: MapAccess.get(map, :replayed, false)
+      replayed: MapAccess.get(map, :replayed, false),
+      attachments: MapAccess.get(map, :attachments)
     }
   end
 
@@ -100,7 +104,8 @@ defmodule ElixirDB.Storage.Results do
       "revision" => result.revision,
       "deleted" => result.deleted,
       "body" => result.body,
-      "sequence" => result.sequence
+      "sequence" => result.sequence,
+      "attachments" => public_attachments(result.attachments)
     }
 
     if is_list(result.conflicts),
@@ -115,7 +120,8 @@ defmodule ElixirDB.Storage.Results do
       "deleted" => result.deleted,
       "body" => result.body,
       "sequence" => result.sequence,
-      "replayed" => result.replayed
+      "replayed" => result.replayed,
+      "attachments" => public_attachments(result.attachments)
     }
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Map.new()
@@ -137,6 +143,28 @@ defmodule ElixirDB.Storage.Results do
 
   def to_public(%_{} = struct), do: struct |> Map.from_struct() |> to_public()
   def to_public(other), do: other
+
+  defp public_attachments(nil), do: %{}
+
+  defp public_attachments(attachments) when is_map(attachments) do
+    Map.new(attachments, fn {name, entry} ->
+      {to_string(name), public_attachment_entry(entry)}
+    end)
+  end
+
+  defp public_attachment_entry(entry) when is_map(entry) do
+    digest = MapAccess.get(entry, :digest) || MapAccess.get(entry, :blob)
+    length = MapAccess.get(entry, :length)
+    content_type = MapAccess.get(entry, :content_type)
+
+    %{
+      "blob" => digest,
+      "length" => length,
+      "content_type" => content_type
+    }
+  end
+
+  defp public_attachment_entry(other), do: other
 
   defp public_key(key) when is_atom(key), do: Atom.to_string(key)
   defp public_key(key), do: key

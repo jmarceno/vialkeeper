@@ -1,0 +1,93 @@
+defmodule ElixirDB.HTTP.Routes.Attachments do
+  @moduledoc false
+  use Plug.Router
+
+  alias ElixirDB.Attachments
+  alias ElixirDB.HTTP.{Request, Response, Schemas}
+
+  plug(:match)
+  plug(:dispatch)
+
+  post "/upload" do
+    uuid = Request.uuid(conn)
+
+    case require_octet_stream(conn) do
+      :ok ->
+        case Attachments.upload_stream(uuid, conn) do
+          {:ok, data} -> Response.ok(conn, data, 201)
+          {:error, error} -> Response.error(conn, error)
+        end
+
+      {:error, error} ->
+        Response.error(conn, error)
+    end
+  end
+
+  post "/get" do
+    Request.call(
+      conn,
+      Schemas.opts(:attachment_get, "attachment get contains an unknown field"),
+      fn body, conn ->
+        case Attachments.open_stream(Request.uuid(conn), body) do
+          {:ok, stream} -> send_attachment(conn, stream)
+          {:error, error} -> Response.error(conn, error)
+        end
+      end
+    )
+  end
+
+  match _ do
+    Response.error(
+      conn,
+      ElixirDB.Error.invalid_request("route not found", %{path: conn.request_path})
+    )
+  end
+
+  defp require_octet_stream(conn) do
+    content_type = conn |> Plug.Conn.get_req_header("content-type") |> List.first()
+
+    cond do
+      is_nil(content_type) ->
+        {:error,
+         ElixirDB.Error.invalid_request(
+           "attachment upload content type must be application/octet-stream"
+         )}
+
+      String.starts_with?(content_type, "application/octet-stream") ->
+        :ok
+
+      true ->
+        {:error,
+         ElixirDB.Error.invalid_request(
+           "attachment upload content type must be application/octet-stream"
+         )}
+    end
+  end
+
+  defp send_attachment(conn, stream) do
+    request_id = Response.request_id(conn)
+
+    try do
+      conn =
+        conn
+        |> Plug.Conn.put_resp_header("x-request-id", request_id)
+        |> Plug.Conn.put_resp_header("content-type", stream.content_type)
+        |> Plug.Conn.put_resp_header("content-length", Integer.to_string(stream.content_length))
+        |> Plug.Conn.put_resp_header("etag", stream.etag)
+        |> Plug.Conn.send_chunked(200)
+
+      Enum.reduce_while(stream.body, conn, fn
+        {:error, %ElixirDB.Error{}}, conn ->
+          {:halt, conn}
+
+        chunk, conn when is_binary(chunk) ->
+          case Plug.Conn.chunk(conn, chunk) do
+            {:ok, conn} -> {:cont, conn}
+            {:error, :closed} -> {:halt, conn}
+          end
+      end)
+    after
+      stream.close.()
+    end
+  end
+end

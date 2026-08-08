@@ -112,6 +112,16 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
        &assert_data(&1, fn data ->
          data["id"] == "doc" and data["revision"] == revision and is_map(data["body"])
        end)},
+      {:post, "/v1/databases/#{uuid}/attachments/upload", "matrix-bytes", 201,
+       &assert_attachment_upload/1},
+      {:post, "/v1/databases/#{uuid}/attachments/get",
+       %{"id" => "doc", "revision" => nil, "name" => "missing.bin"}, :error,
+       &assert_error_code(&1, [
+         "attachment_not_found",
+         "document_not_found",
+         "attachment_blob_not_found",
+         "internal_error"
+       ])},
       {:post, "/v1/databases/#{uuid}/documents/put",
        %{"id" => "doc-2", "body" => %{"kind" => "note"}}, 201,
        &assert_data(&1, fn data -> is_binary(data["revision"]) and data["replayed"] == false end)},
@@ -259,6 +269,19 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
     %{status: response.status, headers: response.headers, body: decode_body(response)}
   end
 
+  defp http!(server, method, path, body) when is_binary(body) do
+    assert {:ok, response} =
+             Req.request(
+               method: method,
+               url: server.base_url <> path,
+               body: body,
+               headers: [{"content-type", "application/octet-stream"}],
+               decode_body: false
+             )
+
+    %{status: response.status, headers: response.headers, body: decode_body(response)}
+  end
+
   defp http!(server, method, path, body) when is_map(body) or is_list(body) do
     opts = [method: method, url: server.base_url <> path, json: body, decode_body: false]
 
@@ -321,6 +344,14 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   defp assert_data_map(response) do
     assert response.status in 200..299
     assert is_map(response.body["data"])
+  end
+
+  defp assert_attachment_upload(response) do
+    assert response.status in 200..299
+    data = response.body["data"]
+    assert is_binary(data["blob"])
+    assert is_integer(data["length"])
+    assert is_binary(data["expires_at"])
   end
 
   defp assert_data(response, fun) when is_function(fun, 1) do

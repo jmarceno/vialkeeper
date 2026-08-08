@@ -13,7 +13,16 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   alias ElixirDB.Revisions.ConflictResolution
   alias ElixirDB.Revisions.{Id, Winner}
   alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.{Changes, Documents, IndexCatalog, RetentionRecords, Revisions}
+
+  alias ElixirDB.Storage.SQLite.{
+    Attachments,
+    Changes,
+    Documents,
+    IndexCatalog,
+    RetentionRecords,
+    Revisions
+  }
+
   alias ElixirDB.UUID
 
   @doc """
@@ -33,16 +42,15 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current} <- current_winner(adapter, doc),
          {:ok, candidate} <-
-           candidate_revision(
-             adapter,
-             doc,
-             document_id,
-             if_revision,
-             current,
-             deleted,
-             body,
-             history_id
-           ) do
+           candidate_revision(adapter, doc, %{
+             document_id: document_id,
+             if_revision: if_revision,
+             current: current,
+             deleted: deleted,
+             body: body,
+             history_id: history_id,
+             request: request
+           }) do
       # TX-006: insert_local_revision owns the single unified replay/winner check. An
       # identical existing revision replays only when it is still the winner; a
       # superseded retry surfaces revision_conflict with operation_already_committed: true.
@@ -87,7 +95,14 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          {:ok, current_leaves} <- Revisions.load_leaves(adapter.conn, doc.doc_key),
          :ok <- ConflictResolution.validate_leaf_set(current_leaves, expected),
          {:ok, revisions} <-
-           build_resolution_revisions(document_id, current_leaves, request, body, delete_all),
+           build_resolution_revisions(
+             adapter,
+             document_id,
+             current_leaves,
+             request,
+             body,
+             delete_all
+           ),
          {:ok, status} <- resolution_status(adapter, doc.doc_key, revisions) do
       resolve_conflict_status(adapter, doc, document_id, revisions, status)
     else
@@ -108,6 +123,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
 
   defp resolve_conflict_status(adapter, doc, document_id, revisions, :new) do
     with :ok <- insert_resolution_revisions(adapter, doc.doc_key, revisions),
+         :ok <- remove_pending_for_revisions(adapter, revisions),
          {:ok, result} <-
            finalize_document(adapter, doc.doc_key, document_id, List.first(revisions)) do
       {:ok, Map.put(result, :replayed, false)}
@@ -225,16 +241,17 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
-  defp candidate_revision(
-         adapter,
-         doc,
-         document_id,
-         if_revision,
-         current,
-         deleted,
-         body,
-         history_id
-       ) do
+  defp candidate_revision(adapter, doc, attrs) do
+    %{
+      document_id: document_id,
+      if_revision: if_revision,
+      current: current,
+      deleted: deleted,
+      body: body,
+      history_id: history_id,
+      request: request
+    } = attrs
+
     if is_nil(current) and not is_nil(if_revision) do
       {:error, ElixirDB.Error.revision_conflict("document does not have the expected parent")}
     else
@@ -248,8 +265,25 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
                deleted,
                history_id
              ),
+           {:ok, attachments} <-
+             resolve_mutation_attachments(
+               adapter,
+               doc,
+               request,
+               deleted,
+               parent,
+               current,
+               :mutation
+             ),
            {:ok, revision} <-
-             build_revision(document_id, resolved_history_id, parent, deleted, body) do
+             build_revision(
+               document_id,
+               resolved_history_id,
+               parent,
+               deleted,
+               body,
+               attachments
+             ) do
         candidate_from_revision(adapter, doc, if_revision, current, revision)
       end
     end
@@ -293,6 +327,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   defp insert_local_revision(adapter, nil, %Revision{} = candidate, _if_revision, _operation) do
     with {:ok, doc_key} <- Documents.insert(adapter.conn, candidate.document_id),
          :ok <- Revisions.insert(adapter.conn, doc_key, candidate),
+         :ok <- Attachments.remove_pending_for_manifest(adapter.conn, candidate.attachments),
          {:ok, result} <- finalize_document(adapter, doc_key, candidate.document_id, candidate) do
       {:ok, Map.put(result, :replayed, false)}
     end
@@ -306,6 +341,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
       {:error, %ElixirDB.Error{code: :revision_not_found}} ->
         with :ok <- Revisions.ensure_parent(adapter.conn, doc.doc_key, candidate.parent_revision),
              :ok <- Revisions.insert(adapter.conn, doc.doc_key, candidate),
+             :ok <- Attachments.remove_pending_for_manifest(adapter.conn, candidate.attachments),
              {:ok, result} <-
                finalize_document(adapter, doc.doc_key, candidate.document_id, candidate) do
           {:ok, Map.put(result, :replayed, false)}
@@ -409,16 +445,15 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current} <- current_winner(adapter, doc),
          {:ok, candidate_state} <-
-           candidate_revision(
-             adapter,
-             doc,
-             document_id,
-             if_revision,
-             current,
-             deleted,
-             body,
-             history_id
-           ) do
+           candidate_revision(adapter, doc, %{
+             document_id: document_id,
+             if_revision: if_revision,
+             current: current,
+             deleted: deleted,
+             body: body,
+             history_id: history_id,
+             request: request
+           }) do
       prepare_bulk_document(adapter, doc, candidate_state, document_id)
     end
   end
@@ -426,6 +461,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   defp prepare_bulk_document(adapter, nil, candidate, document_id) do
     with {:ok, doc_key} <- Documents.insert(adapter.conn, document_id),
          :ok <- Revisions.insert(adapter.conn, doc_key, candidate),
+         :ok <- Attachments.remove_pending_for_manifest(adapter.conn, candidate.attachments),
          :ok <- update_pending_document(adapter, doc_key, candidate) do
       {:ok,
        bulk_effect(doc_key, document_id, true, false, %{
@@ -443,6 +479,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
       {:error, %ElixirDB.Error{code: :revision_not_found}} ->
         with :ok <- Revisions.ensure_parent(adapter.conn, doc.doc_key, candidate.parent_revision),
              :ok <- Revisions.insert(adapter.conn, doc.doc_key, candidate),
+             :ok <- Attachments.remove_pending_for_manifest(adapter.conn, candidate.attachments),
              :ok <- update_pending_document(adapter, doc.doc_key, candidate) do
           {:ok,
            bulk_effect(
@@ -504,7 +541,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          {:ok, leaves} <- Revisions.load_leaves(adapter.conn, doc.doc_key),
          :ok <- ConflictResolution.validate_leaf_set(leaves, expected),
          {:ok, revisions} <-
-           build_resolution_revisions(document_id, leaves, request, body, delete_all),
+           build_resolution_revisions(adapter, document_id, leaves, request, body, delete_all),
          {:ok, status} <- resolution_status(adapter, doc.doc_key, revisions) do
       prepare_resolution_status(adapter, doc, document_id, revisions, status)
     else
@@ -535,6 +572,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
 
   defp prepare_resolution_status(adapter, doc, document_id, revisions, :new) do
     with :ok <- insert_resolution_revisions(adapter, doc.doc_key, revisions),
+         :ok <- remove_pending_for_revisions(adapter, revisions),
          :ok <- update_pending_document(adapter, doc.doc_key, List.first(revisions)) do
       {:ok,
        bulk_effect(
@@ -622,7 +660,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end)
   end
 
-  defp build_resolution_revisions(document_id, leaves, request, body, delete_all) do
+  defp build_resolution_revisions(adapter, document_id, leaves, request, body, delete_all) do
     chosen = MapAccess.get(request, :chosen_parent_revision)
     live = Enum.reject(leaves, & &1.deleted)
 
@@ -632,25 +670,30 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
 
       delete_all ->
         Enum.map(live, fn leaf ->
-          build_revision(document_id, leaf.history_id, leaf.revision_id, true, nil)
+          build_revision(document_id, leaf.history_id, leaf.revision_id, true, nil, %{})
         end)
         |> collect_ok()
 
       true ->
         with true <- chosen in Enum.map(live, & &1.revision_id),
              chosen_leaf = Enum.find(live, &(&1.revision_id == chosen)),
+             {:ok, attachments} <-
+               resolve_conflict_attachments(adapter, request, chosen_leaf),
              {:ok, survivor} <-
                build_revision(
                  document_id,
                  chosen_leaf.history_id,
                  chosen,
                  false,
-                 body
+                 body,
+                 attachments
                ),
              {:ok, tombstones} <-
                live
                |> Enum.reject(&(&1.revision_id == chosen))
-               |> Enum.map(&build_revision(document_id, &1.history_id, &1.revision_id, true, nil))
+               |> Enum.map(
+                 &build_revision(document_id, &1.history_id, &1.revision_id, true, nil, %{})
+               )
                |> collect_ok() do
           {:ok, [survivor | tombstones]}
         else
@@ -661,6 +704,140 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
             {:error, error}
         end
     end
+  end
+
+  defp resolve_conflict_attachments(adapter, request, chosen_leaf) do
+    case attachment_intent(request) do
+      :omitted ->
+        Manifest.resolve_inheritance(:resolve_conflict, :omitted, chosen_leaf.attachments)
+
+      :inherit ->
+        Manifest.resolve_inheritance(:resolve_conflict, :omitted, chosen_leaf.attachments)
+
+      explicit when is_map(explicit) ->
+        with {:ok, coerced} <- coerce_attachment_entries(explicit),
+             {:ok, normalized} <- Manifest.normalize(coerced),
+             :ok <- Attachments.ensure_reachable(adapter.conn, normalized) do
+          {:ok, normalized}
+        end
+
+      _ ->
+        {:error, ElixirDB.Error.invalid_request("attachments must be an object")}
+    end
+  end
+
+  defp resolve_mutation_attachments(
+         adapter,
+         doc,
+         request,
+         deleted,
+         parent_revision_id,
+         current,
+         _kind
+       ) do
+    if deleted do
+      {:ok, %{}}
+    else
+      intent = attachment_intent(request)
+      operation = attachment_operation(parent_revision_id, current)
+
+      with {:ok, parent_manifest} <-
+             parent_manifest_for(adapter, doc, parent_revision_id, intent, operation),
+           {:ok, manifest} <- resolve_attachment_intent(operation, intent, parent_manifest),
+           :ok <- Attachments.ensure_reachable(adapter.conn, manifest) do
+        {:ok, manifest}
+      end
+    end
+  end
+
+  defp attachment_intent(request) when is_map(request) do
+    cond do
+      Map.has_key?(request, :attachments) ->
+        normalize_intent_value(Map.get(request, :attachments))
+
+      Map.has_key?(request, "attachments") ->
+        normalize_intent_value(Map.get(request, "attachments"))
+
+      true ->
+        :omitted
+    end
+  end
+
+  defp normalize_intent_value(:inherit), do: :inherit
+  defp normalize_intent_value("inherit"), do: :inherit
+  defp normalize_intent_value(value), do: value
+
+  defp attachment_operation(nil, nil), do: :create
+  defp attachment_operation(nil, _current), do: :create
+  defp attachment_operation(_parent, _current), do: :update
+
+  defp parent_manifest_for(_adapter, _doc, _parent, intent, :create)
+       when intent in [:omitted, :inherit],
+       do: {:ok, nil}
+
+  defp parent_manifest_for(_adapter, _doc, _parent, intent, _operation)
+       when is_map(intent),
+       do: {:ok, nil}
+
+  defp parent_manifest_for(adapter, doc, parent_revision_id, intent, :update)
+       when intent in [:omitted, :inherit] and is_binary(parent_revision_id) do
+    case Revisions.find(adapter.conn, doc.doc_key, parent_revision_id) do
+      {:ok, parent} -> {:ok, parent.attachments}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp parent_manifest_for(_adapter, _doc, _parent, intent, :update)
+       when intent in [:omitted, :inherit],
+       do: {:ok, nil}
+
+  defp resolve_attachment_intent(operation, intent, parent)
+       when intent in [:omitted, :inherit] do
+    Manifest.resolve_inheritance(operation, :omitted, parent)
+  end
+
+  defp resolve_attachment_intent(_operation, explicit, _parent) do
+    if is_map(explicit) do
+      with {:ok, coerced} <- coerce_attachment_entries(explicit) do
+        Manifest.normalize(coerced)
+      end
+    else
+      {:error, ElixirDB.Error.invalid_request("attachments must be an object")}
+    end
+  end
+
+  defp coerce_attachment_entries(manifest) when is_map(manifest) do
+    Enum.reduce_while(manifest, {:ok, %{}}, fn {name, entry}, {:ok, acc} ->
+      case coerce_attachment_entry(entry) do
+        {:ok, coerced} -> {:cont, {:ok, Map.put(acc, name, coerced)}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp coerce_attachment_entry(entry) when is_map(entry) do
+    digest = MapAccess.get(entry, :digest) || MapAccess.get(entry, :blob)
+    length = MapAccess.get(entry, :length) || MapAccess.get(entry, :logical_size)
+    content_type = MapAccess.get(entry, :content_type)
+
+    {:ok,
+     %{
+       "digest" => digest,
+       "length" => length,
+       "content_type" => content_type
+     }}
+  end
+
+  defp coerce_attachment_entry(_),
+    do: {:error, ElixirDB.Error.invalid_request("attachment entry must be an object")}
+
+  defp remove_pending_for_revisions(adapter, revisions) do
+    Enum.reduce_while(revisions, :ok, fn revision, :ok ->
+      case Attachments.remove_pending_for_manifest(adapter.conn, revision.attachments) do
+        :ok -> {:cont, :ok}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
   end
 
   defp revision_parent_and_history(_adapter, nil, _document_id, nil, nil, _deleted, history_id) do
@@ -733,7 +910,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   defp root_history_id(history_id) when is_binary(history_id) and history_id != "", do: history_id
   defp root_history_id(_), do: fresh_history_id()
 
-  defp build_revision(document_id, history_id, parent, deleted, body, attachments \\ %{}) do
+  defp build_revision(document_id, history_id, parent, deleted, body, attachments) do
     with {:ok, id} <- Id.calculate(document_id, history_id, parent, deleted, body, attachments),
          {:ok, generation} <- Id.generation(id),
          {:ok, normalized_attachments} <- normalize_attachments(attachments, deleted),

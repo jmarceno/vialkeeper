@@ -1,5 +1,7 @@
 defmodule ElixirDB.Documents do
   @moduledoc "Validated document operations over the database runtime."
+  alias ElixirDB.Attachments
+  alias ElixirDB.Attachments.Manifest
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.MapAccess
@@ -12,8 +14,17 @@ defmodule ElixirDB.Documents do
   end
 
   def put(uuid, request) do
-    with {:ok, request} <- validate_mutation(request, false) do
-      DatabaseCatalog.command(uuid, {:command, :put, request})
+    with {:ok, request} <- validate_mutation(request, false),
+         {:ok, attachments, guard} <-
+           Attachments.resolve_manifest_for_mutation(uuid, request.attachments) do
+      try do
+        DatabaseCatalog.command(
+          uuid,
+          {:command, :put, Map.put(request, :attachments, attachments)}
+        )
+      after
+        Attachments.release_guard(uuid, guard)
+      end
     end
   end
 
@@ -24,8 +35,17 @@ defmodule ElixirDB.Documents do
   end
 
   def resolve(uuid, request) do
-    with {:ok, normalized} <- validate_resolution(request) do
-      DatabaseCatalog.command(uuid, {:command, :resolve, normalized})
+    with {:ok, normalized} <- validate_resolution(request),
+         {:ok, attachments, guard} <-
+           Attachments.resolve_manifest_for_mutation(uuid, normalized.attachments) do
+      try do
+        DatabaseCatalog.command(
+          uuid,
+          {:command, :resolve, Map.put(normalized, :attachments, attachments)}
+        )
+      after
+        Attachments.release_guard(uuid, guard)
+      end
     end
   end
 
@@ -51,19 +71,109 @@ defmodule ElixirDB.Documents do
     do: {:error, ElixirDB.Error.invalid_request("bulk-get body must be an array")}
 
   def bulk_write(uuid, operations) when is_list(operations) do
-    if length(operations) <= (ElixirDB.Config.host_limits()[:max_bulk_operations] || 500),
-      do:
-        DatabaseCatalog.command(
-          uuid,
-          {:command, :bulk_write, %{operations: Enum.map(operations, &normalize_bulk_operation/1)}}
-        ),
-      else:
-        {:error, ElixirDB.Error.resource_limit("bulk-write operation count exceeds the host limit")}
+    limit = ElixirDB.Config.host_limits()[:max_bulk_operations] || 500
+
+    if length(operations) > limit do
+      {:error, ElixirDB.Error.resource_limit("bulk-write operation count exceeds the host limit")}
+    else
+      case prepare_bulk_operations(uuid, operations) do
+        {:ok, normalized, guard} ->
+          try do
+            DatabaseCatalog.command(uuid, {:command, :bulk_write, %{operations: normalized}})
+          after
+            Attachments.release_guard(uuid, guard)
+          end
+
+        {:error, _} = error ->
+          error
+      end
+    end
   end
 
   # SAFETY: see bulk_get/2 — a non-array body must not raise FunctionClauseError.
   def bulk_write(_uuid, _operations),
     do: {:error, ElixirDB.Error.invalid_request("bulk-write body must be an array")}
+
+  defp prepare_bulk_operations(uuid, operations) do
+    with {:ok, normalized} <- map_bulk_operations(operations) do
+      if bulk_needs_reference_guard?(normalized) do
+        prepare_bulk_with_guard(uuid, normalized)
+      else
+        {:ok, normalized, nil}
+      end
+    end
+  end
+
+  defp bulk_needs_reference_guard?(operations) do
+    Enum.any?(operations, &operation_needs_reference_guard?/1)
+  end
+
+  defp operation_needs_reference_guard?(op) do
+    case Map.get(op, :attachments, :omitted) do
+      :omitted -> op.operation in [:put, :resolve] and not Map.get(op, :delete_all, false)
+      map when is_map(map) -> map != %{}
+      _ -> false
+    end
+  end
+
+  defp map_bulk_operations(operations) do
+    Enum.reduce_while(operations, {:ok, []}, fn operation, {:ok, acc} ->
+      case normalize_bulk_operation(operation) do
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp prepare_bulk_with_guard(uuid, operations) do
+    case Attachments.resolve_manifest_for_mutation(uuid, :omitted) do
+      {:ok, :omitted, guard} ->
+        case materialize_bulk_explicit(uuid, operations) do
+          {:ok, prepared} ->
+            {:ok, prepared, guard}
+
+          {:error, _} = error ->
+            Attachments.release_guard(uuid, guard)
+            error
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp materialize_bulk_explicit(uuid, operations) do
+    Enum.reduce_while(operations, {:ok, []}, fn operation, {:ok, acc} ->
+      materialize_one_bulk_operation(uuid, operation, acc)
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp materialize_one_bulk_operation(uuid, operation, acc) do
+    case Map.get(operation, :attachments, :omitted) do
+      :omitted ->
+        {:cont, {:ok, [operation | acc]}}
+
+      %{} = refs when map_size(refs) == 0 ->
+        {:cont, {:ok, [operation | acc]}}
+
+      refs when is_map(refs) ->
+        case Attachments.materialize_references(uuid, refs) do
+          {:ok, manifest} ->
+            {:cont, {:ok, [Map.put(operation, :attachments, manifest) | acc]}}
+
+          {:error, _} = error ->
+            {:halt, error}
+        end
+    end
+  end
 
   defp validate_get(request) when is_map(request) do
     with :ok <-
@@ -99,7 +209,17 @@ defmodule ElixirDB.Documents do
   end
 
   defp validate_mutation(request, false) when is_map(request) do
-    with :ok <- known(request, [:id, :if_revision, :body, "id", "if_revision", "body"]) do
+    with :ok <-
+           known(request, [
+             :id,
+             :if_revision,
+             :body,
+             :attachments,
+             "id",
+             "if_revision",
+             "body",
+             "attachments"
+           ]) do
       validate_put(request)
     end
   end
@@ -115,8 +235,15 @@ defmodule ElixirDB.Documents do
          true <- is_map(body),
          {:ok, canonical} <- Canonical.encode(body),
          {:ok, normalized} <- StrictDecoder.decode(canonical),
-         {:ok, revision} <- expected_revision(request) do
-      {:ok, %{document_id: id, if_revision: revision, body: normalized}}
+         {:ok, revision} <- expected_revision(request),
+         {:ok, attachments} <- parse_attachments_field(request) do
+      {:ok,
+       %{
+         document_id: id,
+         if_revision: revision,
+         body: normalized,
+         attachments: attachments
+       }}
     else
       false -> {:error, ElixirDB.Error.invalid_request("document body must be an object")}
       {:error, error} -> {:error, error}
@@ -139,12 +266,14 @@ defmodule ElixirDB.Documents do
       :chosen_parent_revision,
       :body,
       :delete_all,
+      :attachments,
       "id",
       "document_id",
       "expected_live_revisions",
       "chosen_parent_revision",
       "body",
-      "delete_all"
+      "delete_all",
+      "attachments"
     ]
 
     if Enum.all?(Map.keys(request), &(&1 in allowed)) do
@@ -160,14 +289,16 @@ defmodule ElixirDB.Documents do
            true <- is_list(expected) and Enum.all?(expected, &is_binary/1),
            true <- is_boolean(delete_all),
            true <- delete_all or (is_binary(chosen) and is_map(body)),
-           {:ok, normalized_body} <- normalize_resolution_body(delete_all, body) do
+           {:ok, normalized_body} <- normalize_resolution_body(delete_all, body),
+           {:ok, attachments} <- parse_resolution_attachments(request, delete_all) do
         {:ok,
          %{
            document_id: id,
            expected_live_revisions: expected,
            chosen_parent_revision: chosen,
            body: normalized_body,
-           delete_all: delete_all
+           delete_all: delete_all,
+           attachments: attachments
          }}
       else
         false -> {:error, ElixirDB.Error.invalid_request("conflict resolution request is invalid")}
@@ -188,6 +319,32 @@ defmodule ElixirDB.Documents do
       StrictDecoder.decode(canonical)
     end
   end
+
+  defp parse_resolution_attachments(_request, true), do: {:ok, %{}}
+
+  defp parse_resolution_attachments(request, false), do: parse_attachments_field(request)
+
+  defp parse_attachments_field(request) when is_map(request) do
+    cond do
+      Map.has_key?(request, :attachments) ->
+        normalize_client_attachments(Map.get(request, :attachments))
+
+      Map.has_key?(request, "attachments") ->
+        normalize_client_attachments(Map.get(request, "attachments"))
+
+      true ->
+        {:ok, :omitted}
+    end
+  end
+
+  defp normalize_client_attachments(attachments) when attachments == %{}, do: {:ok, %{}}
+
+  defp normalize_client_attachments(attachments) when is_map(attachments) do
+    Manifest.normalize_references(attachments)
+  end
+
+  defp normalize_client_attachments(_),
+    do: {:error, ElixirDB.Error.invalid_request("attachments must be an object")}
 
   defp expected_revision(request) do
     revision = MapAccess.get(request, :if_revision)
@@ -230,43 +387,51 @@ defmodule ElixirDB.Documents do
       else: {:error, ElixirDB.Error.invalid_request("request contains an unknown field")}
   end
 
-  defp normalize_bulk_operation(%{"type" => "delete", "id" => id} = operation),
-    do: %{operation: :delete, document_id: id, if_revision: bulk_if_revision(operation)}
+  defp normalize_bulk_operation(%{"type" => "delete", "id" => id} = operation) do
+    {:ok, %{operation: :delete, document_id: id, if_revision: bulk_if_revision(operation)}}
+  end
 
-  defp normalize_bulk_operation(%{"type" => "put", "id" => id, "body" => body} = operation),
-    do: %{
-      operation: :put,
-      document_id: id,
-      if_revision: bulk_if_revision(operation),
-      body: body
-    }
-
-  defp normalize_bulk_operation(%{type: :delete, id: id} = operation),
-    do: %{operation: :delete, document_id: id, if_revision: bulk_if_revision(operation)}
-
-  defp normalize_bulk_operation(%{type: :put, id: id, body: body} = operation),
-    do: %{
-      operation: :put,
-      document_id: id,
-      if_revision: bulk_if_revision(operation),
-      body: body
-    }
-
-  defp normalize_bulk_operation(%{
-         "type" => "resolve",
-         "id" => id,
-         "expected_live_revisions" => expected,
-         "chosen_parent_revision" => chosen,
-         "body" => body
-       }),
-       do: %{
-         operation: :resolve,
+  defp normalize_bulk_operation(%{"type" => "put", "id" => id, "body" => body} = operation) do
+    with {:ok, attachments} <- parse_attachments_field(operation) do
+      {:ok,
+       %{
+         operation: :put,
          document_id: id,
-         expected_live_revisions: expected,
-         chosen_parent_revision: chosen,
+         if_revision: bulk_if_revision(operation),
          body: body,
-         delete_all: false
-       }
+         attachments: attachments
+       }}
+    end
+  end
+
+  defp normalize_bulk_operation(%{type: :delete, id: id} = operation) do
+    {:ok, %{operation: :delete, document_id: id, if_revision: bulk_if_revision(operation)}}
+  end
+
+  defp normalize_bulk_operation(%{type: :put, id: id, body: body} = operation) do
+    with {:ok, attachments} <- parse_attachments_field(operation) do
+      {:ok,
+       %{
+         operation: :put,
+         document_id: id,
+         if_revision: bulk_if_revision(operation),
+         body: body,
+         attachments: attachments
+       }}
+    end
+  end
+
+  defp normalize_bulk_operation(
+         %{
+           "type" => "resolve",
+           "id" => id,
+           "expected_live_revisions" => expected,
+           "chosen_parent_revision" => chosen,
+           "body" => body
+         } = operation
+       ) do
+    normalize_bulk_resolve(id, expected, chosen, body, operation)
+  end
 
   defp normalize_bulk_operation(%{
          "type" => "resolve",
@@ -274,43 +439,65 @@ defmodule ElixirDB.Documents do
          "expected_live_revisions" => expected,
          "delete_all" => true
        }),
-       do: %{
-         operation: :resolve,
-         document_id: id,
-         expected_live_revisions: expected,
-         delete_all: true
-       }
+       do:
+         {:ok,
+          %{
+            operation: :resolve,
+            document_id: id,
+            expected_live_revisions: expected,
+            delete_all: true,
+            attachments: %{}
+          }}
+
+  defp normalize_bulk_operation(
+         %{
+           type: :resolve,
+           id: id,
+           expected_live_revisions: expected,
+           chosen_parent_revision: chosen,
+           body: body
+         } = operation
+       ) do
+    normalize_bulk_resolve(id, expected, chosen, body, operation)
+  end
 
   defp normalize_bulk_operation(%{
          type: :resolve,
          id: id,
          expected_live_revisions: expected,
-         chosen_parent_revision: chosen,
-         body: body
+         delete_all: true
        }),
-       do: %{
+       do:
+         {:ok,
+          %{
+            operation: :resolve,
+            document_id: id,
+            expected_live_revisions: expected,
+            delete_all: true,
+            attachments: %{}
+          }}
+
+  defp normalize_bulk_operation(operation),
+    do:
+      {:error,
+       ElixirDB.Error.invalid_request("bulk-write operation is invalid", %{
+         operation: inspect(operation)
+       })}
+
+  defp normalize_bulk_resolve(id, expected, chosen, body, operation) do
+    with {:ok, attachments} <- parse_attachments_field(operation) do
+      {:ok,
+       %{
          operation: :resolve,
          document_id: id,
          expected_live_revisions: expected,
          chosen_parent_revision: chosen,
          body: body,
-         delete_all: false
-       }
-
-  defp normalize_bulk_operation(%{
-         type: :resolve,
-         id: id,
-         expected_live_revisions: expected,
-         delete_all: true
-       }),
-       do: %{
-         operation: :resolve,
-         document_id: id,
-         expected_live_revisions: expected,
-         delete_all: true
-       }
-
-  defp normalize_bulk_operation(operation), do: operation
+         delete_all: false,
+         attachments: attachments
+       }}
+    end
+  end
 
   defp bulk_if_revision(operation), do: MapAccess.get(operation, :if_revision)
 end

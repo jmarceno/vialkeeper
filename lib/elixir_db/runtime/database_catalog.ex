@@ -29,6 +29,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   def info(uuid), do: GenServer.call(__MODULE__, {:info, uuid})
   def close(uuid), do: GenServer.call(__MODULE__, {:close, uuid}, 30_000)
 
+  @doc "Returns the absolute bundle root for a registered database UUID."
+  def bundle_root(uuid), do: GenServer.call(__MODULE__, {:bundle_root, uuid})
+
   # Plan §5.1: the database.open span is created HERE, in the caller process,
   # before the GenServer.call — so the span is a child of the caller's trace
   # (e.g. the HTTP request that triggered the open) and covers call latency.
@@ -167,6 +170,22 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   @impl true
   def handle_call(:list, _from, state),
     do: {:reply, {:ok, Enum.map(Map.values(state.entries), &entry_status/1)}, state}
+
+  @impl true
+  def handle_call({:bundle_root, uuid}, _from, state) do
+    case Map.get(state.entries, uuid) do
+      %{bundle_root: bundle_root} when is_binary(bundle_root) ->
+        {:reply, {:ok, bundle_root}, state}
+
+      nil ->
+        {:reply, {:error, ElixirDB.Error.database_not_registered("database is not registered")},
+         state}
+
+      _entry ->
+        {:reply, {:error, ElixirDB.Error.database_unavailable("database bundle root is missing")},
+         state}
+    end
+  end
 
   @impl true
   def handle_call({:info, uuid}, _from, state) do

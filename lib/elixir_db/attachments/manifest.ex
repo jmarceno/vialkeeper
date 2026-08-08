@@ -96,7 +96,8 @@ defmodule ElixirDB.Attachments.Manifest do
   def normalize_references(references) when is_map(references) do
     Enum.reduce_while(references, {:ok, %{}}, fn {name, ref}, {:ok, acc} ->
       with {:ok, validated_name} <- validate_name(name),
-           {:ok, digest} <- validate_digest(MapAccess.get(ref, :blob)),
+           :ok <- known_reference_fields(ref),
+           {:ok, digest} <- validate_digest(reference_digest(ref)),
            {:ok, content_type} <- validate_content_type(MapAccess.get(ref, :content_type)),
            :ok <- reject_client_length(ref) do
         {:cont, {:ok, Map.put(acc, validated_name, %{digest: digest, content_type: content_type})}}
@@ -109,6 +110,13 @@ defmodule ElixirDB.Attachments.Manifest do
   def normalize_references(_),
     do: {:error, ElixirDB.Error.invalid_request("attachment references must be an object")}
 
+  @doc "Builds one normalized immutable attachment entry."
+  @spec entry(binary(), non_neg_integer(), binary()) :: map()
+  def entry(digest, length, content_type)
+      when is_binary(digest) and is_integer(length) and length >= 0 and is_binary(content_type) do
+    %{digest: digest, length: length, content_type: content_type}
+  end
+
   @doc "Builds immutable manifest entries from validated local blob metadata."
   @spec from_blob_metadata(map(), map()) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
   def from_blob_metadata(%{} = references, %{} = metadata_by_digest) do
@@ -117,13 +125,7 @@ defmodule ElixirDB.Attachments.Manifest do
            {:ok, digest} <- validate_digest(ref.digest),
            {:ok, content_type} <- validate_content_type(ref.content_type),
            {:ok, length} <- lookup_length(metadata_by_digest, digest) do
-        {:cont,
-         {:ok,
-          Map.put(acc, validated_name, %{
-            digest: digest,
-            length: length,
-            content_type: content_type
-          })}}
+        {:cont, {:ok, Map.put(acc, validated_name, entry(digest, length, content_type))}}
       else
         {:error, error} -> {:halt, {:error, error}}
       end
@@ -192,7 +194,7 @@ defmodule ElixirDB.Attachments.Manifest do
     with {:ok, digest} <- validate_digest(MapAccess.get(entry, :digest)),
          {:ok, content_type} <- validate_content_type(MapAccess.get(entry, :content_type)),
          length when is_integer(length) and length >= 0 <- MapAccess.get(entry, :length) do
-      {:ok, %{digest: digest, length: length, content_type: content_type}}
+      {:ok, entry(digest, length, content_type)}
     else
       {:error, _} = error -> error
       _ -> {:error, ElixirDB.Error.invalid_request("attachment entry fields are invalid")}
@@ -206,13 +208,36 @@ defmodule ElixirDB.Attachments.Manifest do
     Enum.any?(:binary.bin_to_list(name), fn code -> code < 32 or code == 127 end)
   end
 
+  defp reference_digest(ref) when is_map(ref) do
+    MapAccess.get(ref, :blob) || MapAccess.get(ref, :digest)
+  end
+
+  defp known_reference_fields(ref) when is_map(ref) do
+    allowed = [
+      :blob,
+      :content_type,
+      :digest,
+      :length,
+      "blob",
+      "content_type",
+      "digest",
+      "length"
+    ]
+
+    if Enum.all?(Map.keys(ref), &(&1 in allowed)),
+      do: :ok,
+      else:
+        {:error, ElixirDB.Error.invalid_request("attachment reference contains an unknown field")}
+  end
+
+  defp known_reference_fields(_),
+    do: {:error, ElixirDB.Error.invalid_request("attachment reference must be an object")}
+
   defp reject_client_length(ref) when is_map(ref) do
-    if is_nil(MapAccess.get(ref, :length)),
+    if is_nil(MapAccess.get(ref, :length)) and is_nil(MapAccess.get(ref, "length")),
       do: :ok,
       else: {:error, ElixirDB.Error.invalid_request("attachment length is server-derived")}
   end
-
-  defp reject_client_length(_), do: :ok
 
   defp lookup_length(metadata_by_digest, digest) do
     case MapAccess.get(Map.get(metadata_by_digest, digest, %{}), :length) do

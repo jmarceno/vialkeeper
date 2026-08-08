@@ -5,6 +5,7 @@ defmodule ElixirDB.HTTP.Router do
   alias ElixirDB.HTTP.Response
 
   alias ElixirDB.HTTP.Routes.{
+    Attachments,
     Changes,
     Databases,
     Documents,
@@ -34,6 +35,7 @@ defmodule ElixirDB.HTTP.Router do
 
   # More specific database-scoped resources first so they are not swallowed by
   # the `/v1/databases` forward below.
+  forward("/v1/databases/:uuid/attachments", to: Attachments)
   forward("/v1/databases/:uuid/documents", to: Documents)
   forward("/v1/databases/:uuid/changes", to: Changes)
   forward("/v1/databases/:uuid/indexes", to: Indexes)

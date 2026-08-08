@@ -151,7 +151,8 @@ defmodule ElixirDB.Storage.SQLite.Documents do
       revision: revision.revision_id,
       deleted: revision.deleted,
       body: revision.body,
-      sequence: doc.update_sequence
+      sequence: doc.update_sequence,
+      attachments: revision.attachments || %{}
     }
 
     if leaves == [],

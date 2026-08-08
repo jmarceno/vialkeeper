@@ -3,14 +3,16 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   Revision-row SQL helpers for the Version 1 SQLite adapter.
 
   Owns find/insert/leaf queries against the `revisions` table, parent checks,
-  and leaf-set encoding used by change-feed rows. Chain reads live in `Chains`;
-  import writes live in `Import`. Transaction boundaries remain in the adapter.
+  and leaf-set encoding used by change-feed rows. Attachment manifests are
+  loaded and written through `Attachments` in the same SQLite transaction.
+  Chain reads live in `Chains`; import writes live in `Import`. Transaction
+  boundaries remain in the adapter.
   """
 
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.Connection
+  alias ElixirDB.Storage.SQLite.{Attachments, Connection}
   @doc false
   def get(adapter, request), do: Adapter.get_revision(adapter, request)
 
@@ -21,7 +23,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
     do: Adapter.get_revision_chains(adapter, request)
 
   @doc """
-  Loads one revision by document key and revision id.
+  Loads one revision by document key and revision id, including attachments.
   """
   @spec find(Connection.handle(), integer(), binary() | nil) ::
           {:ok, Revision.t()} | {:error, ElixirDB.Error.t()}
@@ -35,17 +37,22 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
            [doc_key, revision_id]
          ) do
       {:ok, [[id, generation, parent, history_id, digest_value, deleted, body_json, sequence]]} ->
-        {:ok,
-         from_row([
-           id,
-           generation,
-           parent,
-           history_id,
-           digest_value,
-           deleted,
-           body_json,
-           sequence
-         ])}
+        with {:ok, attachments} <- Attachments.load_manifest(conn, doc_key, revision_id) do
+          {:ok,
+           from_row(
+             [
+               id,
+               generation,
+               parent,
+               history_id,
+               digest_value,
+               deleted,
+               body_json,
+               sequence
+             ],
+             attachments
+           )}
+        end
 
       {:ok, []} ->
         {:error, ElixirDB.Error.revision_not_found("revision not found", %{revision: revision_id})}
@@ -56,7 +63,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   end
 
   @doc """
-  Loads all leaf revisions for a document key.
+  Loads all leaf revisions for a document key, including attachments.
   """
   @spec load_leaves(Connection.handle(), integer()) ::
           {:ok, [Revision.t()]} | {:error, ElixirDB.Error.t()}
@@ -67,33 +74,35 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
            [doc_key]
          ) do
       {:ok, rows} ->
-        {:ok,
-         Enum.map(rows, fn [
-                             id,
-                             generation,
-                             parent,
-                             history_id,
-                             digest_value,
-                             deleted,
-                             body_json,
-                             sequence
-                           ] ->
-           from_row([
-             id,
-             generation,
-             parent,
-             history_id,
-             digest_value,
-             deleted,
-             body_json,
-             sequence
-           ])
-         end)}
+        rows
+        |> Enum.reduce_while({:ok, []}, &append_leaf_revision(conn, doc_key, &1, &2))
+        |> reverse_leaves()
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
     end
   end
+
+  defp append_leaf_revision(conn, doc_key, row, {:ok, acc}) do
+    [id, generation, parent, history_id, digest_value, deleted, body_json, sequence] = row
+
+    case Attachments.load_manifest(conn, doc_key, id) do
+      {:ok, attachments} ->
+        revision =
+          from_row(
+            [id, generation, parent, history_id, digest_value, deleted, body_json, sequence],
+            attachments
+          )
+
+        {:cont, {:ok, [revision | acc]}}
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
+  defp reverse_leaves({:ok, revisions}), do: {:ok, Enum.reverse(revisions)}
+  defp reverse_leaves(error), do: error
 
   @doc """
   Returns leaf revisions, or `[]` when the leaf query fails.
@@ -107,7 +116,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   end
 
   @doc """
-  Inserts a revision and clears the parent's leaf marker.
+  Inserts a revision, its attachment manifest, and clears the parent's leaf marker.
   """
   @spec insert(Connection.handle(), integer(), Revision.t()) ::
           :ok | {:error, ElixirDB.Error.t()}
@@ -134,6 +143,13 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
                if(revision.deleted, do: 1, else: 0),
                body
              ]
+           ),
+         :ok <-
+           Attachments.insert_manifest(
+             conn,
+             doc_key,
+             revision.revision_id,
+             revision.attachments || %{}
            ) do
       :ok
     else
@@ -208,16 +224,22 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
         a.deleted == b.deleted and a.body == b.body and a.attachments == b.attachments
 
   @doc false
-  def from_row([
-        id,
-        generation,
-        parent,
-        history_id,
-        digest_value,
-        deleted,
-        body_json,
-        sequence
-      ]) do
+  def from_row(row, attachments \\ %{})
+
+  def from_row(
+        [
+          id,
+          generation,
+          parent,
+          history_id,
+          digest_value,
+          deleted,
+          body_json,
+          sequence
+        ],
+        attachments
+      )
+      when is_map(attachments) do
     %Revision{
       document_id: nil,
       history_id: history_id,
@@ -227,7 +249,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
       digest: digest_value,
       deleted: deleted == 1,
       body: if(body_json, do: decode_json!(body_json)),
-      attachments: %{},
+      attachments: attachments,
       insertion_sequence: sequence
     }
   end
@@ -238,6 +260,8 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
       _ -> nil
     end
   end
+
+  defp normalize_error(%ElixirDB.Error{} = error), do: error
 
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})

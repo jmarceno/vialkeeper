@@ -35,6 +35,51 @@ defmodule ElixirDB.Attachments.Ticket do
           attachment_name: binary()
         }
 
+  @spec build(
+          binary(),
+          binary(),
+          binary(),
+          non_neg_integer(),
+          binary(),
+          binary(),
+          binary(),
+          binary()
+        ) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
+  def build(
+        database_uuid,
+        bundle_path,
+        blob_digest,
+        logical_size,
+        content_type,
+        document_id,
+        revision_id,
+        attachment_name
+      ) do
+    with {:ok, digest} <- Manifest.validate_digest(blob_digest),
+         {:ok, content_type} <- Manifest.validate_content_type(content_type),
+         {:ok, name} <- Manifest.validate_name(attachment_name),
+         true <- is_binary(database_uuid),
+         true <- is_binary(bundle_path),
+         true <- is_binary(document_id),
+         true <- is_binary(revision_id),
+         true <- is_integer(logical_size) and logical_size >= 0 do
+      {:ok,
+       %__MODULE__{
+         database_uuid: database_uuid,
+         bundle_path: Path.expand(bundle_path),
+         blob_digest: digest,
+         logical_size: logical_size,
+         content_type: content_type,
+         document_id: document_id,
+         revision_id: revision_id,
+         attachment_name: name
+       }}
+    else
+      false -> {:error, ElixirDB.Error.invalid_request("invalid attachment ticket fields")}
+      {:error, _} = error -> error
+    end
+  end
+
   @spec new(map()) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
   def new(attrs) when is_map(attrs) do
     required = [
@@ -49,29 +94,16 @@ defmodule ElixirDB.Attachments.Ticket do
     ]
 
     if Enum.all?(required, &Map.has_key?(attrs, &1)) do
-      with {:ok, digest} <- Manifest.validate_digest(attrs.blob_digest),
-           {:ok, content_type} <- Manifest.validate_content_type(attrs.content_type),
-           {:ok, name} <- Manifest.validate_name(attrs.attachment_name),
-           true <- is_binary(attrs.database_uuid),
-           true <- is_binary(attrs.bundle_path),
-           true <- is_binary(attrs.document_id),
-           true <- is_binary(attrs.revision_id),
-           true <- is_integer(attrs.logical_size) and attrs.logical_size >= 0 do
-        {:ok,
-         struct(__MODULE__, %{
-           database_uuid: attrs.database_uuid,
-           bundle_path: Path.expand(attrs.bundle_path),
-           blob_digest: digest,
-           logical_size: attrs.logical_size,
-           content_type: content_type,
-           document_id: attrs.document_id,
-           revision_id: attrs.revision_id,
-           attachment_name: name
-         })}
-      else
-        false -> {:error, ElixirDB.Error.invalid_request("invalid attachment ticket fields")}
-        {:error, _} = error -> error
-      end
+      build(
+        attrs.database_uuid,
+        attrs.bundle_path,
+        attrs.blob_digest,
+        attrs.logical_size,
+        attrs.content_type,
+        attrs.document_id,
+        attrs.revision_id,
+        attrs.attachment_name
+      )
     else
       {:error, ElixirDB.Error.invalid_request("invalid attachment ticket fields")}
     end

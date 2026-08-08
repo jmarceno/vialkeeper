@@ -19,7 +19,8 @@ defmodule ElixirDB.HTTP.Schemas do
     "expected_live_revisions",
     "chosen_parent_revision",
     "body",
-    "delete_all"
+    "delete_all",
+    "attachments"
   ]
 
   @database_create ["path", "config"]

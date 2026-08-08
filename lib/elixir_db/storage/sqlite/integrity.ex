@@ -8,6 +8,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
   centralization remains in the adapter.
   """
 
+  alias ElixirDB.Attachments.{FilesystemStore, Manifest}
   alias ElixirDB.Domain.{BoundaryPage, Checkpoint, PeerPosition, RetentionBoundary}
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.MapAccess
@@ -20,8 +21,8 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
   @doc """
   Runs structural and logical integrity validators for an open connection.
   """
-  @spec run(Connection.handle(), [map()]) :: :ok | {:error, ElixirDB.Error.t()}
-  def run(conn, indexes) when is_list(indexes) do
+  @spec run(Connection.handle(), [map()], binary() | nil) :: :ok | {:error, ElixirDB.Error.t()}
+  def run(conn, indexes, bundle_root \\ nil) when is_list(indexes) do
     with {:ok, [["ok"]]} <- Connection.pragma(conn, "integrity_check"),
          {:ok, []} <- Connection.pragma(conn, "foreign_key_check"),
          :ok <- required_tables_present(conn),
@@ -34,6 +35,9 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
          :ok <- validate_peer_records(peers, meta),
          :ok <- validate_retention_maintenance(conn),
          :ok <- validate_revision_rows(conn, boundaries),
+         :ok <- validate_revision_attachments(conn),
+         :ok <- validate_physical_attachment_blobs(conn, bundle_root),
+         :ok <- validate_pending_blobs(conn),
          :ok <- validate_document_rows(conn),
          :ok <- validate_change_rows(conn, meta.retention_floor_sequence),
          :ok <- validate_checkpoints(conn, meta),
@@ -54,12 +58,12 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
 
   defp required_tables_present(conn) do
     required =
-      ~w(db_meta documents revisions changes local_records replication_jobs index_definitions)
+      ~w(db_meta documents revisions changes local_records replication_jobs index_definitions revision_attachments pending_blobs)
 
     with {:ok, rows} <-
            Connection.query(
              conn,
-             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('db_meta', 'documents', 'revisions', 'changes', 'local_records', 'replication_jobs', 'index_definitions')"
+             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('db_meta', 'documents', 'revisions', 'changes', 'local_records', 'replication_jobs', 'index_definitions', 'revision_attachments', 'pending_blobs')"
            ) do
       present = MapSet.new(rows, &List.first/1)
 
@@ -73,7 +77,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
     with {:ok, rows} <-
            Connection.query(
              conn,
-             "SELECT d.document_id, r.revision_id, r.generation, r.parent_revision, r.history_id, r.digest, r.deleted, r.body_json, r.is_leaf FROM revisions AS r JOIN documents AS d ON d.doc_key = r.doc_key ORDER BY d.document_id, r.revision_id"
+             "SELECT d.document_id, r.doc_key, r.revision_id, r.generation, r.parent_revision, r.history_id, r.digest, r.deleted, r.body_json, r.is_leaf FROM revisions AS r JOIN documents AS d ON d.doc_key = r.doc_key ORDER BY d.document_id, r.revision_id"
            ) do
       Enum.reduce_while(rows, :ok, fn row, :ok ->
         validate_revision_row(conn, boundaries, revision_row(row))
@@ -83,6 +87,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
 
   defp revision_row([
          document_id,
+         doc_key,
          revision_id,
          generation,
          parent,
@@ -94,6 +99,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
        ]) do
     %{
       document_id: document_id,
+      doc_key: doc_key,
       revision_id: revision_id,
       generation: generation,
       parent: parent,
@@ -106,22 +112,23 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
   end
 
   defp validate_revision_row(conn, boundaries, row) do
-    %{
-      document_id: document_id,
-      revision_id: revision_id,
-      generation: generation,
-      parent: parent,
-      history_id: history_id,
-      digest: digest,
-      deleted: deleted,
-      body_json: body_json,
-      leaf: leaf
-    } = row
+    document_id = row.document_id
+    doc_key = row.doc_key
+    revision_id = row.revision_id
+    generation = row.generation
+    parent = row.parent
+    history_id = row.history_id
+    digest = row.digest
+    deleted = row.deleted
+    body_json = row.body_json
+    leaf = row.leaf
 
     body = revision_body(deleted, body_json)
 
     with true <- is_binary(history_id) and history_id != "",
-         {:ok, calculated} <- Id.calculate(document_id, history_id, parent, deleted == 1, body, %{}),
+         {:ok, attachments} <- load_revision_attachments(conn, doc_key, revision_id, deleted),
+         {:ok, calculated} <-
+           Id.calculate(document_id, history_id, parent, deleted == 1, body, attachments),
          true <- calculated == revision_id,
          true <- digest == revision_digest_part(revision_id),
          {:ok, expected_generation} <- Id.generation(revision_id),
@@ -150,6 +157,191 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
         {:halt, {:error, error}}
     end
   end
+
+  defp load_revision_attachments(conn, doc_key, revision_id, 1) do
+    case query_revision_attachments(conn, doc_key, revision_id) do
+      {:ok, []} ->
+        {:ok, %{}}
+
+      {:ok, _rows} ->
+        {:error,
+         ElixirDB.Error.integrity_violation(
+           "tombstone revisions must have an empty attachment manifest",
+           %{revision: revision_id}
+         )}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp load_revision_attachments(conn, doc_key, revision_id, _deleted) do
+    case query_revision_attachments(conn, doc_key, revision_id) do
+      {:ok, rows} ->
+        {:ok,
+         Map.new(rows, fn [name, digest, logical_size, content_type] ->
+           {name, Manifest.entry(digest, logical_size, content_type)}
+         end)}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp query_revision_attachments(conn, doc_key, revision_id) do
+    case Connection.query(
+           conn,
+           """
+           SELECT attachment_name, blob_digest, logical_size, content_type
+           FROM revision_attachments
+           WHERE doc_key = ? AND revision_id = ?
+           ORDER BY attachment_name
+           """,
+           [doc_key, revision_id]
+         ) do
+      {:ok, rows} -> {:ok, rows}
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  defp validate_revision_attachments(conn) do
+    with {:ok, orphan_rows} <-
+           Connection.query(
+             conn,
+             """
+             SELECT ra.revision_id FROM revision_attachments AS ra
+             LEFT JOIN revisions AS r
+               ON r.doc_key = ra.doc_key AND r.revision_id = ra.revision_id
+             WHERE r.revision_id IS NULL
+             LIMIT 1
+             """
+           ),
+         :ok <-
+           (case orphan_rows do
+              [] ->
+                :ok
+
+              _ ->
+                {:error,
+                 ElixirDB.Error.integrity_violation(
+                   "revision_attachments row references a missing revision"
+                 )}
+            end),
+         {:ok, invalid_rows} <-
+           Connection.query(
+             conn,
+             """
+             SELECT attachment_name, blob_digest, logical_size, content_type
+             FROM revision_attachments
+             WHERE logical_size < 0
+                OR length(blob_digest) != 64
+                OR content_type = ''
+             LIMIT 1
+             """
+           ) do
+      case invalid_rows do
+        [] ->
+          validate_revision_attachment_digests(conn)
+
+        _ ->
+          {:error,
+           ElixirDB.Error.integrity_violation("revision_attachments row fields are invalid")}
+      end
+    end
+  end
+
+  defp validate_revision_attachment_digests(conn) do
+    case Connection.query(conn, "SELECT blob_digest FROM revision_attachments") do
+      {:ok, rows} ->
+        Enum.reduce_while(rows, :ok, &validate_attachment_digest_row/2)
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp validate_physical_attachment_blobs(_conn, nil), do: :ok
+
+  defp validate_physical_attachment_blobs(conn, bundle_root) when is_binary(bundle_root) do
+    case Connection.query(
+           conn,
+           "SELECT blob_digest, logical_size FROM revision_attachments ORDER BY blob_digest"
+         ) do
+      {:ok, rows} ->
+        Enum.reduce_while(rows, :ok, fn [digest, logical_size], :ok ->
+          validate_physical_attachment_row(bundle_root, digest, logical_size)
+        end)
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp validate_physical_attachment_row(bundle_root, digest, logical_size) do
+    case FilesystemStore.verify(bundle_root, digest, logical_size) do
+      :ok ->
+        {:cont, :ok}
+
+      {:error, %ElixirDB.Error{} = error} ->
+        {:halt,
+         {:error,
+          ElixirDB.Error.integrity_violation(
+            "referenced attachment blob failed physical verification",
+            %{digest: digest, cause: error.message}
+          )}}
+    end
+  end
+
+  defp validate_attachment_digest_row([digest], :ok) do
+    if valid_digest?(digest) do
+      {:cont, :ok}
+    else
+      {:halt,
+       {:error,
+        ElixirDB.Error.integrity_violation("revision_attachments digest is invalid", %{
+          digest: digest
+        })}}
+    end
+  end
+
+  defp validate_pending_blobs(conn) do
+    case Connection.query(
+           conn,
+           """
+           SELECT blob_digest, logical_size, expires_at, updated_at FROM pending_blobs
+           """
+         ) do
+      {:ok, rows} ->
+        Enum.reduce_while(rows, :ok, &validate_pending_blob_row/2)
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp validate_pending_blob_row([digest, size, expires_at, updated_at], :ok) do
+    if valid_digest?(digest) and is_integer(size) and size >= 0 and valid_iso8601?(expires_at) and
+         valid_iso8601?(updated_at) do
+      {:cont, :ok}
+    else
+      {:halt,
+       {:error,
+        ElixirDB.Error.integrity_violation("pending_blobs row fields are invalid", %{
+          digest: digest
+        })}}
+    end
+  end
+
+  defp valid_digest?(digest) when is_binary(digest),
+    do: Regex.match?(~r/^[0-9a-f]{64}$/, digest)
+
+  defp valid_digest?(_), do: false
+
+  defp valid_iso8601?(value) when is_binary(value) do
+    match?({:ok, _, _}, DateTime.from_iso8601(value))
+  end
+
+  defp valid_iso8601?(_), do: false
 
   defp revision_body(1, _body_json), do: nil
   defp revision_body(_deleted, body_json), do: StrictDecoder.decode_or_nil(body_json)
