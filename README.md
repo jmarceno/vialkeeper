@@ -153,6 +153,40 @@ Successful responses use `{"request_id","data"}`; failures use
 `{"request_id","error":{"code","message","retryable",...}}`. Document IDs and
 mutation fields travel in the JSON body, not in the URL path.
 
+### Queries
+
+Queries accept storage-neutral selectors and never accept SQL or raw FTS5
+syntax. Boolean, negative, type, exact-prefix, bounded-regex, array, modulo,
+and exact object/array equality predicates are supported:
+
+```typescript
+const query = await postJson<{ plan_kind: string; documents: unknown[]; bookmark?: string }>(
+  `/v1/databases/${uuid}/query`,
+  {
+    selector: {
+      $or: [
+        { "/status": "open" },
+        { "/priority": { $gte: 5 } },
+      ],
+      "/title": { $beginsWith: "rep" },
+    },
+    limit: 20,
+  },
+);
+
+console.log(query.envelope.data?.plan_kind, query.envelope.data?.documents);
+
+const explain = await postJson(`/v1/databases/${uuid}/query/explain`, {
+  selector: { "/title": { $regex: "^rep" } },
+});
+console.log(explain.envelope.data);
+```
+
+Full-text search uses a named index configured with the `unicode_words_v1`
+tokenizer strategy and supports `all`, `any`, `phrase`, and `prefix` modes. A
+returned `bookmark` is opaque and binds the query, database sequence, and
+complete candidate plan; send it unchanged in the next request to continue.
+
 ### Attachments
 
 Upload raw bytes, then reference the returned blob digest in a document
