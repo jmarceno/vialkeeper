@@ -1,6 +1,8 @@
 defmodule ElixirDB.StorageAdapter.RevisionTransferTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  alias ElixirDB.Attachments.FilesystemStore
+  alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Storage.SQLite.Connection
   alias ElixirDB.TestRevisionId, as: Id
 
@@ -52,6 +54,56 @@ defmodule ElixirDB.StorageAdapter.RevisionTransferTest do
              @adapter.diff_revisions(dest, %{
                documents: [%{document_id: "doc", leaf_revisions: [leaf]}]
              })
+  end
+
+  test "import refuses missing physical attachment dependency", %{
+    adapter: source,
+    bundle_path: source_bundle
+  } do
+    payload = "attachment-bytes"
+    {:ok, digest, length} = install_blob(source_bundle, payload)
+
+    attachments = %{
+      "file.bin" => Manifest.entry(digest, length, "application/octet-stream")
+    }
+
+    assert {:ok, _} =
+             @adapter.protect_pending_blob(source, %{digest: digest, logical_size: length})
+
+    assert {:ok, %{revision: revision}} =
+             @adapter.apply_local_mutation(source, %{
+               operation: :put,
+               document_id: "attached",
+               body: %{"n" => 1},
+               attachments: attachments
+             })
+
+    assert {:ok, %{chains: [chain]}} =
+             @adapter.get_revision_chains(source, %{
+               documents: [%{document_id: "attached", leaf_revisions: [revision]}]
+             })
+
+    {:ok, dest_bundle} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-missing-blob")
+    dest_path = ElixirDB.TempDatabase.sqlite_path(dest_bundle)
+    assert {:ok, dest} = @adapter.create(dest_path, %{})
+
+    on_exit(fn ->
+      _ = @adapter.close(dest)
+      ElixirDB.TempDatabase.cleanup(dest_bundle)
+    end)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+             @adapter.import_revision_chains(dest, %{chains: [chain]})
+
+    assert {:ok, ^digest, ^length} = install_blob(dest_bundle, payload)
+
+    assert {:ok, %{revisions_inserted: 1, documents_changed: 1}} =
+             @adapter.import_revision_chains(dest, %{chains: [chain]})
+
+    assert {:ok, %{revision: ^revision, attachments: imported}} =
+             @adapter.get_document(dest, %{document_id: "attached"})
+
+    assert Map.fetch!(imported, "file.bin").digest == digest
   end
 
   test "dangling parent chains are rejected atomically", %{adapter: adapter} do
@@ -166,5 +218,12 @@ defmodule ElixirDB.StorageAdapter.RevisionTransferTest do
              })
 
     assert message =~ "differs" or message =~ "content"
+  end
+
+  defp install_blob(bundle_path, payload) when is_binary(bundle_path) and is_binary(payload) do
+    assert {:ok, writer} = FilesystemStore.begin_put(bundle_path, byte_size(payload) + 1, %{})
+    assert :ok = FilesystemStore.write_chunk(writer, payload)
+    assert {:ok, %{digest: digest, logical_size: length}} = FilesystemStore.finish_put(writer)
+    {:ok, digest, length}
   end
 end

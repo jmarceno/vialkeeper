@@ -76,16 +76,7 @@ defmodule ElixirDB.HTTP.Routes.Attachments do
         |> Plug.Conn.put_resp_header("etag", stream.etag)
         |> Plug.Conn.send_chunked(200)
 
-      Enum.reduce_while(stream.body, conn, fn
-        {:error, %ElixirDB.Error{}}, conn ->
-          {:halt, conn}
-
-        chunk, conn when is_binary(chunk) ->
-          case Plug.Conn.chunk(conn, chunk) do
-            {:ok, conn} -> {:cont, conn}
-            {:error, :closed} -> {:halt, conn}
-          end
-      end)
+      Response.stream_chunks(conn, stream.body)
     after
       stream.close.()
     end

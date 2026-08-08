@@ -9,6 +9,7 @@ defmodule ElixirDB.Attachments do
 
   alias ElixirDB.Attachments.{FilesystemStore, Manifest, Ticket}
   alias ElixirDB.MapAccess
+  alias ElixirDB.Replication.BlobStream
   alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
 
   @store FilesystemStore
@@ -176,6 +177,123 @@ defmodule ElixirDB.Attachments do
   def gc(_uuid),
     do: {:error, ElixirDB.Error.internal_error("attachment gc is not implemented")}
 
+  @doc """
+  Returns digests whose physical blob is not durably present in the local CAS.
+
+  Preserves request order. Each digest must be lowercase SHA-256 hex.
+  """
+  @spec diff_blobs(binary(), [binary()]) :: {:ok, [binary()]} | {:error, ElixirDB.Error.t()}
+  def diff_blobs(uuid, digests) when is_binary(uuid) and is_list(digests) do
+    with :ok <- ensure_open(uuid),
+         {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
+         {:ok, validated} <- validate_digest_list(digests) do
+      {:ok, missing_digests(uuid, bundle_root, validated)}
+    end
+  end
+
+  def diff_blobs(_uuid, _digests),
+    do: {:error, ElixirDB.Error.invalid_request("blob digests must be a list")}
+
+  @doc """
+  Opens a lazy original-byte stream for a digest under a read guard.
+
+  The returned `BlobStream` body enumerable releases the reader and guard when
+  consumed or abandoned.
+  """
+  @spec open_blob(binary(), binary()) :: {:ok, BlobStream.t()} | {:error, ElixirDB.Error.t()}
+  def open_blob(uuid, digest) when is_binary(uuid) do
+    with :ok <- ensure_open(uuid),
+         {:ok, digest} <- Manifest.validate_digest(digest),
+         {:ok, read_guard} <- AttachmentCoordinator.acquire_read(uuid) do
+      try do
+        open_blob_under_guard(uuid, digest, read_guard)
+      rescue
+        exception in @release_on_raise ->
+          _ = AttachmentCoordinator.release(uuid, read_guard)
+          reraise(exception, __STACKTRACE__)
+      catch
+        kind, reason ->
+          _ = AttachmentCoordinator.release(uuid, read_guard)
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+    end
+  end
+
+  @doc """
+  Installs original bytes through the public write path and pending protection.
+
+  Validates the finished digest and logical size against the request. `source`
+  may be a `BlobStream`, `Plug.Conn`, enumerable, or zero-arity chunk function.
+  """
+  @spec put_blob(binary(), BlobStream.t()) :: :ok | {:error, ElixirDB.Error.t()}
+  def put_blob(uuid, %BlobStream{digest: digest, length: length, body: body})
+      when is_binary(uuid) do
+    put_blob(uuid, digest, length, body)
+  end
+
+  @spec put_blob(binary(), binary(), non_neg_integer(), chunk_source()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def put_blob(uuid, digest, length, source)
+      when is_binary(uuid) and is_integer(length) and length >= 0 do
+    with :ok <- ensure_open(uuid),
+         {:ok, digest} <- Manifest.validate_digest(digest),
+         {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
+         {:ok, write_guard, max_bytes} <- AttachmentCoordinator.acquire_write(uuid) do
+      try do
+        put_blob_under_guard(uuid, bundle_root, digest, length, source, max_bytes)
+      after
+        _ = AttachmentCoordinator.release(uuid, write_guard)
+      end
+    end
+  end
+
+  def put_blob(_uuid, _digest, _length, _source),
+    do: {:error, ElixirDB.Error.invalid_request("invalid blob put")}
+
+  defp put_blob_under_guard(uuid, bundle_root, digest, length, source, max_bytes) do
+    case @store.begin_put(bundle_root, max_bytes, %{}) do
+      {:ok, writer} ->
+        try do
+          with :ok <- write_all_chunks(writer, source),
+               {:ok, %{digest: computed, logical_size: logical_size}} <- @store.finish_put(writer),
+               :ok <- match_blob_identity(digest, length, computed, logical_size),
+               {:ok, _} <- protect_uploaded_blob(uuid, digest, logical_size) do
+            :ok
+          else
+            {:error, _} = error ->
+              abort_writer(writer)
+              error
+          end
+        rescue
+          exception in @release_on_raise ->
+            abort_writer(writer)
+            reraise(exception, __STACKTRACE__)
+        catch
+          kind, reason ->
+            abort_writer(writer)
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp match_blob_identity(expected_digest, expected_length, computed, logical_size) do
+    cond do
+      computed != expected_digest ->
+        {:error,
+         ElixirDB.Error.integrity_violation("attachment digest does not match streamed bytes")}
+
+      logical_size != expected_length ->
+        {:error,
+         ElixirDB.Error.integrity_violation("attachment length does not match streamed bytes")}
+
+      true ->
+        :ok
+    end
+  end
+
   defp do_upload(uuid, bundle_root, source, max_bytes, opts) do
     case @store.begin_put(bundle_root, max_bytes, Map.new(opts)) do
       {:ok, writer} ->
@@ -201,6 +319,99 @@ defmodule ElixirDB.Attachments do
       {:error, _} = error ->
         error
     end
+  end
+
+  defp validate_digest_list(digests) do
+    digests
+    |> Enum.reduce_while({:ok, []}, &append_validated_digest/2)
+    |> reverse_digest_list()
+  end
+
+  defp append_validated_digest(digest, {:ok, acc}) do
+    case Manifest.validate_digest(digest) do
+      {:ok, validated} -> {:cont, {:ok, [validated | acc]}}
+      {:error, _} = error -> {:halt, error}
+    end
+  end
+
+  defp reverse_digest_list({:ok, reversed}), do: {:ok, Enum.reverse(reversed)}
+  defp reverse_digest_list({:error, _} = error), do: error
+
+  defp durable_blob?(uuid, bundle_root, digest) do
+    with {:ok, metadata} <-
+           DatabaseCatalog.command(uuid, {:command, :resolve_blob_metadata, %{digest: digest}}),
+         length when is_integer(length) and length >= 0 <-
+           MapAccess.get(metadata, :logical_size) || MapAccess.get(metadata, :length),
+         :ok <- @store.verify(bundle_root, digest, length) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp missing_digests(uuid, bundle_root, digests) do
+    Enum.reject(digests, &durable_blob?(uuid, bundle_root, &1))
+  end
+
+  defp open_blob_under_guard(uuid, digest, read_guard) do
+    with {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
+         true <- @store.exists?(bundle_root, digest),
+         {:ok, meta} <-
+           DatabaseCatalog.command(uuid, {:command, :resolve_blob_metadata, %{digest: digest}}),
+         length when is_integer(length) and length >= 0 <-
+           MapAccess.get(meta, :logical_size) || MapAccess.get(meta, :length),
+         {:ok, reader} <- @store.open_read(bundle_root, digest),
+         {:ok, stream} <- BlobStream.new(digest, length, blob_body_stream(uuid, reader, read_guard)) do
+      {:ok, stream}
+    else
+      false ->
+        _ = AttachmentCoordinator.release(uuid, read_guard)
+        {:error, ElixirDB.Error.attachment_blob_not_found("attachment blob is not durable")}
+
+      nil ->
+        _ = AttachmentCoordinator.release(uuid, read_guard)
+        {:error, ElixirDB.Error.attachment_blob_not_found("attachment blob metadata is invalid")}
+
+      {:error, _} = error ->
+        _ = AttachmentCoordinator.release(uuid, read_guard)
+        error
+    end
+  end
+
+  defp blob_body_stream(uuid, reader, read_guard) do
+    Stream.resource(
+      fn -> {:open, reader} end,
+      fn
+        {:open, current} ->
+          case @store.read_chunks(current) do
+            {:ok, chunk} -> {[chunk], {:open, current}}
+            {:done, current} -> {:halt, {:done, current}}
+            {:error, %ElixirDB.Error{} = error} -> {[error: error], {:failed, current}}
+          end
+
+        {:done, current} ->
+          {:halt, {:done, current}}
+
+        {:failed, current} ->
+          {:halt, {:failed, current}}
+      end,
+      fn
+        {:open, current} ->
+          _ = @store.close_read(current)
+          _ = AttachmentCoordinator.release(uuid, read_guard)
+
+        {:done, current} ->
+          _ = @store.close_read(current)
+          _ = AttachmentCoordinator.release(uuid, read_guard)
+
+        {:failed, current} ->
+          _ = @store.close_read(current)
+          _ = AttachmentCoordinator.release(uuid, read_guard)
+
+        _ ->
+          _ = AttachmentCoordinator.release(uuid, read_guard)
+      end
+    )
   end
 
   defp write_all_chunks(writer, %Plug.Conn{} = conn) do
@@ -321,47 +532,12 @@ defmodule ElixirDB.Attachments do
       :ok
     end
 
-    body =
-      Stream.resource(
-        fn -> {:open, reader} end,
-        fn
-          {:open, current} ->
-            case @store.read_chunks(current) do
-              {:ok, chunk} -> {[chunk], {:open, current}}
-              {:done, current} -> {:halt, {:done, current}}
-              {:error, %ElixirDB.Error{} = error} -> {[error: error], {:failed, current}}
-            end
-
-          {:done, current} ->
-            {:halt, {:done, current}}
-
-          {:failed, current} ->
-            {:halt, {:failed, current}}
-        end,
-        fn
-          {:open, current} ->
-            _ = @store.close_read(current)
-            _ = AttachmentCoordinator.release(uuid, read_guard)
-
-          {:done, current} ->
-            _ = @store.close_read(current)
-            _ = AttachmentCoordinator.release(uuid, read_guard)
-
-          {:failed, current} ->
-            _ = @store.close_read(current)
-            _ = AttachmentCoordinator.release(uuid, read_guard)
-
-          _ ->
-            _ = AttachmentCoordinator.release(uuid, read_guard)
-        end
-      )
-
     %{
       ticket: ticket,
       content_type: ticket.content_type,
       content_length: ticket.logical_size,
       etag: ~s("#{ticket.blob_digest}"),
-      body: body,
+      body: blob_body_stream(uuid, reader, read_guard),
       close: cleanup
     }
   end

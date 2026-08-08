@@ -910,23 +910,46 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   defp root_history_id(history_id) when is_binary(history_id) and history_id != "", do: history_id
   defp root_history_id(_), do: fresh_history_id()
 
+  # Domain.Revision construction for calculated ids (shared shape for ExDNA).
+  defp revision_struct(
+         document_id,
+         history_id,
+         revision_id,
+         generation,
+         parent,
+         deleted,
+         body,
+         attachments
+       ) do
+    Revision.assemble(
+      document_id: document_id,
+      history_id: history_id,
+      revision_id: revision_id,
+      generation: generation,
+      parent_revision: parent,
+      digest: digest(revision_id),
+      deleted: deleted,
+      body: body,
+      attachments: attachments
+    )
+  end
+
   defp build_revision(document_id, history_id, parent, deleted, body, attachments) do
     with {:ok, id} <- Id.calculate(document_id, history_id, parent, deleted, body, attachments),
          {:ok, generation} <- Id.generation(id),
-         {:ok, normalized_attachments} <- normalize_attachments(attachments, deleted),
-         do:
-           {:ok,
-            %Revision{
-              document_id: document_id,
-              history_id: history_id,
-              revision_id: id,
-              generation: generation,
-              parent_revision: parent,
-              digest: digest(id),
-              deleted: deleted,
-              body: body,
-              attachments: normalized_attachments
-            }}
+         {:ok, normalized_attachments} <- normalize_attachments(attachments, deleted) do
+      {:ok,
+       revision_struct(
+         document_id,
+         history_id,
+         id,
+         generation,
+         parent,
+         deleted,
+         body,
+         normalized_attachments
+       )}
+    end
   end
 
   defp normalize_attachments(_attachments, true), do: {:ok, %{}}

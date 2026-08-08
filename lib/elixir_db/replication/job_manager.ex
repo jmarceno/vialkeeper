@@ -19,6 +19,7 @@ defmodule ElixirDB.Replication.JobManager do
     :read_changes,
     :diff,
     :fetch_chains,
+    :sync_blobs,
     :import,
     :checkpoint_target,
     :checkpoint_source,

@@ -79,7 +79,15 @@ defmodule ElixirDB.Runtime.ReplicationTest do
                "enabled" => true
              })
 
-    assert state in [:idle, :handshake, :read_changes, :diff, :fetch_chains, :import]
+    assert state in [
+             :idle,
+             :handshake,
+             :read_changes,
+             :diff,
+             :fetch_chains,
+             :sync_blobs,
+             :import
+           ]
 
     assert :completed = wait_for_job(a.database_uuid, job_id, 50)
 
@@ -236,6 +244,9 @@ defmodule ElixirDB.Runtime.ReplicationTest do
              :after_diff,
              :fetch_chains,
              :after_fetch_chains,
+             :sync_blobs,
+             :after_diff_blobs,
+             :after_sync_blobs,
              :import,
              :after_import,
              :checkpoint_target,

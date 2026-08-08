@@ -20,6 +20,7 @@ defmodule ElixirDB.Replication do
       :read_changes,
       :diff,
       :fetch_chains,
+      :sync_blobs,
       :import,
       :checkpoint_target,
       :checkpoint_source,
@@ -211,6 +212,26 @@ defmodule ElixirDB.Replication do
       with :ok <- phase_hook(options, :after_fetch_chains, context) do
         {:ok, context}
       end
+    end
+  end
+
+  @doc """
+  Transfers missing attachment blobs required by the fetched chains.
+
+  Collects unique digests from chains that will be imported, asks the target
+  which digests are absent, then streams each missing blob from source to target
+  sequentially before revision import.
+  """
+  def sync_blobs(source, target, context, options) do
+    digests = collect_required_digests(context.chains || [])
+
+    with :ok <- phase_hook(options, :sync_blobs, context),
+         {:ok, missing} <- endpoint_call(target, :diff_blobs, [digests]),
+         :ok <- phase_hook(options, :after_diff_blobs, context),
+         missing <- normalize_missing_digests(missing),
+         :ok <- transfer_missing_blobs(source, target, missing, context, options),
+         :ok <- phase_hook(options, :after_sync_blobs, context) do
+      {:ok, Map.put(context, :synced_blob_digests, missing)}
     end
   end
 
@@ -447,6 +468,7 @@ defmodule ElixirDB.Replication do
   defp continue_batch_after_read(source, target, context, options) do
     with {:ok, context} <- diff(target, context, options),
          {:ok, context} <- fetch_chains(source, context, options),
+         {:ok, context} <- sync_blobs(source, target, context, options),
          {:ok, context} <- import_chains(target, context, options),
          {:ok, context} <- checkpoint_target(source, target, context, options),
          {:ok, context} <- checkpoint_source(source, context, options),
@@ -508,10 +530,13 @@ defmodule ElixirDB.Replication do
              %{bootstrap: true, cursor: cursor, limit: option(options, :batch, @default_batch)}
            ]),
          :ok <- verify_bootstrap_identity(context, page),
+         chains <- get(page, :chains) || [],
+         {:ok, _synced} <-
+           sync_blobs(source, target, %{context | chains: chains}, options),
          {:ok, imported} <-
            endpoint_call(target, :import_revision_chains, [
              %{
-               chains: get(page, :chains) || [],
+               chains: chains,
                purged_boundaries: get(page, :purged_boundaries) || [],
                source_database_uuid: get(context.source_identity, :database_uuid)
              }
@@ -972,6 +997,76 @@ defmodule ElixirDB.Replication do
        end)}
     end
   end
+
+  defp collect_required_digests(chains) when is_list(chains) do
+    chains
+    |> Enum.flat_map(&chain_digests/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp collect_required_digests(_), do: []
+
+  defp chain_digests(chain) when is_map(chain) do
+    (get(chain, :revisions) || [])
+    |> Enum.flat_map(&revision_digests/1)
+  end
+
+  defp chain_digests(_), do: []
+
+  defp revision_digests(revision) when is_map(revision) do
+    attachments = get(revision, :attachments) || %{}
+
+    if is_map(attachments) do
+      attachments
+      |> Map.values()
+      |> Enum.map(&attachment_digest/1)
+      |> Enum.filter(&is_binary/1)
+    else
+      []
+    end
+  end
+
+  defp revision_digests(_), do: []
+
+  defp attachment_digest(entry) when is_map(entry),
+    do: get(entry, :digest)
+
+  defp attachment_digest(_), do: nil
+
+  defp normalize_missing_digests(missing) when is_list(missing), do: missing
+
+  defp normalize_missing_digests(diff) when is_map(diff) do
+    get(diff, :missing) || get(diff, :missing_digests) || []
+  end
+
+  defp normalize_missing_digests(_), do: []
+
+  defp transfer_missing_blobs(_source, _target, [], _context, _options), do: :ok
+
+  defp transfer_missing_blobs(source, target, digests, context, options) do
+    Enum.reduce_while(digests, :ok, fn digest, :ok ->
+      case transfer_one_blob(source, target, digest, context, options) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp transfer_one_blob(source, target, digest, context, options) do
+    transfer_context = Map.put(context, :blob_digest, digest)
+
+    with :ok <- phase_hook(options, :before_blob_transfer, transfer_context),
+         {:ok, stream} <- endpoint_call(source, :open_blob, [digest]),
+         :ok <- phase_hook(options, :after_open_blob, transfer_context),
+         :ok <- put_blob_result(endpoint_call(target, :put_blob, [stream])) do
+      phase_hook(options, :after_put_blob, transfer_context)
+    end
+  end
+
+  defp put_blob_result(:ok), do: :ok
+  defp put_blob_result({:ok, _}), do: :ok
+  defp put_blob_result({:error, _} = error), do: error
 
   defp phase_hook(options, phase, context) do
     case option(options, :phase_hook, nil) do

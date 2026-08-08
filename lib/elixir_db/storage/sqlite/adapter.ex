@@ -263,12 +263,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def import_revision_chains(adapter, request) when is_map(request) do
-    with :ok <- Import.validate_chain_batch(MapAccess.get(request, :chains, [])),
+    chains = MapAccess.get(request, :chains, [])
+
+    with :ok <- Import.validate_chain_batch(chains),
          :ok <-
            Import.validate_purged_boundaries(
              MapAccess.get(request, :purged_boundaries, []),
              MapAccess.get(request, :source_database_uuid)
-           ) do
+           ),
+         :ok <- Import.ensure_physical_blobs(adapter, chains) do
       transaction(adapter, fn -> Import.import_tx(adapter, request) end)
     end
   end

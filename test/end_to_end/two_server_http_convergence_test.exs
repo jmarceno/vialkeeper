@@ -140,6 +140,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
                  :read_changes,
                  :diff,
                  :fetch_chains,
+                 :sync_blobs,
                  :import,
                  :checkpoint_target,
                  :checkpoint_source,

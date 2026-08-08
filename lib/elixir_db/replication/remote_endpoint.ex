@@ -2,8 +2,10 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
   @moduledoc "Replication endpoint backed by a remote HTTP server."
 
   @behaviour ElixirDB.Replication.Endpoint
+  alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.ReplicationEndpoint
   alias ElixirDB.MapAccess
+  alias ElixirDB.Replication.BlobStream
   alias ElixirDB.Replication.RemoteTransport
 
   defstruct [:base_url, :database_uuid, :auth_token]
@@ -196,6 +198,58 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
   @impl true
   def list_peer_positions(endpoint),
     do: call(endpoint, :get, "/v1/databases/#{endpoint.database_uuid}/replication/peers")
+
+  @impl true
+  def diff_blobs(endpoint, digests) when is_list(digests) do
+    case call(
+           endpoint,
+           :post,
+           "/v1/databases/#{endpoint.database_uuid}/replication/blobs/diff",
+           %{"digests" => digests}
+         ) do
+      {:ok, missing} when is_list(missing) ->
+        {:ok, missing}
+
+      {:ok, %{"missing_digests" => missing}} when is_list(missing) ->
+        {:ok, missing}
+
+      {:ok, %{missing_digests: missing}} when is_list(missing) ->
+        {:ok, missing}
+
+      {:ok, _} ->
+        {:error,
+         ElixirDB.Error.database_unavailable("remote endpoint returned an invalid blob diff")}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  def diff_blobs(_endpoint, _digests),
+    do: {:error, ElixirDB.Error.invalid_request("blob digests must be a list")}
+
+  @impl true
+  def open_blob(endpoint, digest) do
+    with {:ok, digest} <- Manifest.validate_digest(digest),
+         path = "/v1/databases/#{endpoint.database_uuid}/replication/blobs/#{digest}",
+         {:ok, length, body} <-
+           RemoteTransport.open_stream(endpoint.base_url, path, endpoint.auth_token) do
+      BlobStream.new(digest, length, body)
+    end
+  end
+
+  @impl true
+  def put_blob(endpoint, %BlobStream{} = stream) do
+    path = "/v1/databases/#{endpoint.database_uuid}/replication/blobs/#{stream.digest}"
+
+    RemoteTransport.put_stream(
+      endpoint.base_url,
+      path,
+      stream.body,
+      stream.length,
+      endpoint.auth_token
+    )
+  end
 
   defp call(endpoint, method, path, body \\ nil) do
     with {:ok, response} <-

@@ -133,27 +133,49 @@ defmodule ElixirDB.FaultEndpoint do
   def list_peer_positions(%__MODULE__{} = endpoint),
     do: invoke(endpoint, :list_peer_positions, &LocalEndpoint.list_peer_positions/1)
 
-  defp invoke(%__MODULE__{agent: agent}, point, fun) when is_function(fun, 1) do
-    Agent.get_and_update(agent, &invoke_with_fault(&1, point, fun))
+  @impl true
+  def diff_blobs(%__MODULE__{} = endpoint, digests),
+    do: invoke(endpoint, :diff_blobs, &LocalEndpoint.diff_blobs(&1, digests))
+
+  @impl true
+  def open_blob(%__MODULE__{} = endpoint, digest),
+    do: invoke(endpoint, :open_blob, &LocalEndpoint.open_blob(&1, digest))
+
+  @impl true
+  def put_blob(%__MODULE__{} = endpoint, stream),
+    do: invoke(endpoint, :put_blob, &LocalEndpoint.put_blob(&1, stream))
+
+  defp invoke(%__MODULE__{inner: inner, agent: agent}, point, fun) when is_function(fun, 1) do
+    case Agent.get_and_update(agent, &fault_before(&1, point)) do
+      {:error, error} ->
+        {:error, error}
+
+      :ok ->
+        case fun.(inner) do
+          :ok -> after_success(agent, point, :ok)
+          {:ok, _} = ok -> after_success(agent, point, ok)
+          other -> other
+        end
+    end
   end
 
-  defp invoke_with_fault(adapter, point, fun) do
+  defp fault_before(adapter, point) do
     case FaultAdapter.maybe_fail(adapter, point) do
       {:error, error, adapter} -> {{:error, error}, adapter}
-      {:ok, adapter} -> invoke_success(adapter, point, fun)
+      {:ok, adapter} -> {:ok, adapter}
     end
   end
 
-  defp invoke_success(adapter, point, fun) do
-    case fun.(adapter.inner) do
-      {:ok, _} = ok -> invoke_after_success(adapter, point, ok)
-      other -> {other, adapter}
+  defp after_success(agent, point, ok) do
+    case Agent.get_and_update(agent, &fault_after(&1, point)) do
+      :ok -> ok
+      {:error, error} -> {:error, error}
     end
   end
 
-  defp invoke_after_success(adapter, point, ok) do
+  defp fault_after(adapter, point) do
     case FaultAdapter.maybe_fail(adapter, after_point(point)) do
-      {:ok, adapter} -> {ok, adapter}
+      {:ok, adapter} -> {:ok, adapter}
       {:error, error, adapter} -> {{:error, error}, adapter}
     end
   end

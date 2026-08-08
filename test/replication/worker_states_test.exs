@@ -90,6 +90,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
           :read_changes,
           :diff,
           :fetch_chains,
+          :sync_blobs,
           :import,
           :checkpoint_target,
           :checkpoint_source,
@@ -97,6 +98,12 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
         ] do
       assert phase in states, "expected #{phase} in emitted state sequence: #{inspect(states)}"
     end
+
+    sync_idx = Enum.find_index(states, &(&1 == :sync_blobs))
+    fetch_idx = Enum.find_index(states, &(&1 == :fetch_chains))
+    import_idx = Enum.find_index(states, &(&1 == :import))
+    assert fetch_idx < sync_idx
+    assert sync_idx < import_idx
 
     # Ordering: handshake must precede checkpoint_source in the observed sequence.
     handshake_idx = Enum.find_index(states, &(&1 == :handshake))

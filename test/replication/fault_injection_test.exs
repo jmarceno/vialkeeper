@@ -24,6 +24,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     :read_changes,
     :diff,
     :fetch_chains,
+    :sync_blobs,
     :import,
     :checkpoint_target,
     :checkpoint_source
@@ -36,6 +37,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   # Subset injected via FaultEndpoint (Plan §12.4 wrapper model). Checkpoint
   # after-faults stay on phase_hook because a successful put_checkpoint advances
   # CAS version before the after_* hook — endpoint after-faults would then CAS-fail.
+  # Blob mid-transfer stages use dedicated endpoint points below.
   @endpoint_fault_points [
     :handshake,
     :after_handshake,
@@ -45,8 +47,20 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     :after_diff,
     :fetch_chains,
     :after_fetch_chains,
+    :sync_blobs,
     :import,
     :after_import
+  ]
+
+  # Plan §22.6 blob sync stages. Mapped to phase_hook names fired by sync_blobs/4
+  # plus Endpoint open_blob/put_blob wrappers.
+  @blob_sync_fault_points [
+    :sync_blobs,
+    :after_diff_blobs,
+    :before_blob_transfer,
+    :after_open_blob,
+    :after_put_blob,
+    :after_sync_blobs
   ]
 
   setup do
@@ -180,6 +194,95 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
         source_snapshot,
         source_sequence
       )
+    end
+  end
+
+  for point <- @blob_sync_fault_points do
+    test "blob sync fault at #{point} may repeat transfer but never skips revision", %{
+      a: a,
+      b: b,
+      a_path: a_path,
+      b_path: b_path,
+      root: root
+    } do
+      point = unquote(point)
+      payload = "blob-fault-#{System.unique_integer([:positive])}"
+
+      assert {:ok, %{blob: digest, length: length}} =
+               ElixirDB.Attachments.upload_stream(a.database_uuid, [payload])
+
+      assert {:ok, %{revision: revision}} =
+               ElixirDB.Documents.put(a.database_uuid, %{
+                 id: "blob-doc",
+                 body: %{"n" => 1},
+                 attachments: %{
+                   "note.bin" => %{blob: digest, content_type: "application/octet-stream"}
+                 }
+               })
+
+      _ = length
+
+      log_determinism(
+        :erlang.phash2({point, digest}),
+        [%{op: :attachment, digest: digest, revision: revision}],
+        point,
+        a_path,
+        b_path,
+        root
+      )
+
+      {:ok, seen} = Agent.start_link(fn -> [] end)
+
+      {:ok, faults} =
+        Agent.start_link(fn ->
+          FaultAdapter.wrap(:replication)
+          |> FaultAdapter.inject(point, {:once, retryable_fault(point)})
+        end)
+
+      assert {:ok, local_source} = LocalEndpoint.new(a.database_uuid)
+      assert {:ok, local_target} = LocalEndpoint.new(b.database_uuid)
+      source = FaultEndpoint.wrap(local_source)
+      target = FaultEndpoint.wrap(local_target)
+
+      assert {:ok, replication_id} =
+               Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
+
+      :ok =
+        ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+          a.database_uuid,
+          b.database_uuid,
+          replication_id
+        )
+
+      options = %{
+        source: source,
+        target: target,
+        replication_id: replication_id,
+        mode: "one_shot",
+        direction: "push",
+        retry: %{base_delay_ms: 5, max_delay_ms: 40, jitter_ms: 0, max_attempts: 8},
+        phase_hook: phase_fault_hook(seen, faults)
+      }
+
+      assert {:ok, pid} = Worker.start_link(options)
+      ref = Process.monitor(pid)
+      :gen_statem.cast(pid, :start)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
+
+      phases = Agent.get(seen, & &1)
+
+      assert point in phases,
+             "expected fault point #{point} observed; phases=#{inspect(phases)}"
+
+      assert :sync_blobs in phases
+      assert :import in phases
+
+      assert {:ok, got} = ElixirDB.Documents.get(b.database_uuid, %{id: "blob-doc"})
+      assert got.revision == revision
+      entry = Map.fetch!(got.attachments, "note.bin")
+      assert MapAccess.get(entry, :digest) == digest
+
+      assert {:ok, []} = ElixirDB.Attachments.diff_blobs(b.database_uuid, [digest])
     end
   end
 
@@ -522,6 +625,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   defp map_phase_to_endpoint(:after_diff), do: {:target, :after_diff_revisions}
   defp map_phase_to_endpoint(:fetch_chains), do: {:source, :get_revision_chains}
   defp map_phase_to_endpoint(:after_fetch_chains), do: {:source, :after_get_revision_chains}
+  defp map_phase_to_endpoint(:sync_blobs), do: {:target, :diff_blobs}
   defp map_phase_to_endpoint(:import), do: {:target, :import_revision_chains}
   defp map_phase_to_endpoint(:after_import), do: {:target, :after_import_revision_chains}
 

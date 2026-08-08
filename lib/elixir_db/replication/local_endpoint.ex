@@ -2,6 +2,7 @@ defmodule ElixirDB.Replication.LocalEndpoint do
   @moduledoc "Replication endpoint backed by a local database."
 
   @behaviour ElixirDB.Replication.Endpoint
+  alias ElixirDB.Attachments
   alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.DatabaseCatalog
 
@@ -100,4 +101,16 @@ defmodule ElixirDB.Replication.LocalEndpoint do
   @impl true
   def list_peer_positions(%__MODULE__{database_uuid: uuid}),
     do: DatabaseCatalog.command(uuid, {:command, :list_peer_positions, %{}})
+
+  @impl true
+  def diff_blobs(%__MODULE__{database_uuid: uuid}, digests),
+    do: Attachments.diff_blobs(uuid, digests)
+
+  @impl true
+  def open_blob(%__MODULE__{database_uuid: uuid}, digest),
+    do: Attachments.open_blob(uuid, digest)
+
+  @impl true
+  def put_blob(%__MODULE__{database_uuid: uuid}, stream),
+    do: Attachments.put_blob(uuid, stream)
 end

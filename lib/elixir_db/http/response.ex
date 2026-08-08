@@ -42,4 +42,18 @@ defmodule ElixirDB.HTTP.Response do
     |> put_resp_content_type("application/json")
     |> send_resp(status, JSON.encode_to_iodata!(body))
   end
+
+  @doc "Streams binary chunks onto an already-chunked response connection."
+  def stream_chunks(conn, enumerable) do
+    Enum.reduce_while(enumerable, conn, &stream_chunk/2)
+  end
+
+  defp stream_chunk({:error, %ElixirDB.Error{}}, conn), do: {:halt, conn}
+
+  defp stream_chunk(chunk, conn) when is_binary(chunk) do
+    case chunk(conn, chunk) do
+      {:ok, conn} -> {:cont, conn}
+      {:error, :closed} -> {:halt, conn}
+    end
+  end
 end

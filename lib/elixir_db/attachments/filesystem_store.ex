@@ -731,9 +731,16 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   end
 
   defp mkdir_blob_directory(directory) do
-    case File.mkdir_p(directory) do
+    case File.mkdir(directory) do
       :ok ->
         :ok
+
+      {:error, :eexist} ->
+        if File.dir?(directory) do
+          :ok
+        else
+          {:error, Error.integrity_violation("attachment blob prefix must be a directory")}
+        end
 
       {:error, reason} ->
         {:error, Error.internal_error("cannot create blob directory", %{reason: inspect(reason)})}

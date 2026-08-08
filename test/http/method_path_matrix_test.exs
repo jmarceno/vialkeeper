@@ -87,6 +87,10 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
     session_id = ElixirDB.UUID.v4()
 
+    blob_bytes = "matrix-replication-blob"
+    blob_digest = :crypto.hash(:sha256, blob_bytes) |> Base.encode16(case: :lower)
+    missing_blob_digest = :crypto.hash(:sha256, "matrix-missing") |> Base.encode16(case: :lower)
+
     matrix = [
       {:post, "/v1/databases", %{"path" => extra_path}, 201,
        &assert_data(&1, fn data -> is_binary(data["database_uuid"]) end)},
@@ -204,6 +208,22 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
        &assert_data(&1, fn data -> is_list(data["chains"]) end)},
       {:post, "/v1/databases/#{uuid}/replication/revisions/put", %{"chains" => []}, 200,
        &assert_data_map/1},
+      {:post, "/v1/databases/#{uuid}/replication/blobs/diff",
+       %{"digests" => [blob_digest, missing_blob_digest]}, 200,
+       &assert_data(&1, fn data ->
+         is_list(data) and missing_blob_digest in data and blob_digest in data
+       end)},
+      {:put, "/v1/databases/#{uuid}/replication/blobs/#{blob_digest}", blob_bytes, 200,
+       &assert_envelope_ok/1},
+      {:post, "/v1/databases/#{uuid}/replication/blobs/diff",
+       %{"digests" => [blob_digest, missing_blob_digest]}, 200,
+       &assert_data(&1, fn data ->
+         is_list(data) and data == [missing_blob_digest]
+       end)},
+      {:get, "/v1/databases/#{uuid}/replication/blobs/#{blob_digest}", nil, 200,
+       &assert_replication_blob_get(&1, blob_bytes)},
+      {:get, "/v1/databases/#{uuid}/replication/blobs/#{missing_blob_digest}", nil, :error,
+       &assert_error_code(&1, ["attachment_blob_not_found"])},
       {:get, "/v1/databases/#{uuid}/replication/checkpoints/#{replication_id}", nil, 200,
        &assert_checkpoint_get/1},
       {:put, "/v1/databases/#{uuid}/replication/checkpoints/#{replication_id}",
@@ -352,6 +372,14 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
     assert is_binary(data["blob"])
     assert is_integer(data["length"])
     assert is_binary(data["expires_at"])
+  end
+
+  defp assert_replication_blob_get(response, expected_bytes) do
+    assert response.status == 200
+    content_type = header(response.headers, "content-type") || ""
+    assert content_type =~ "octet-stream"
+    assert is_binary(response.body)
+    assert response.body == expected_bytes
   end
 
   defp assert_data(response, fun) when is_function(fun, 1) do

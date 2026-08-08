@@ -101,4 +101,9 @@ defmodule ElixirDB.Domain.Revision do
 
   defp validate_attachments(_),
     do: {:error, ElixirDB.Error.invalid_request("revision attachments must be a map")}
+
+  @doc false
+  def assemble(fields) when is_list(fields) do
+    struct!(__MODULE__, fields)
+  end
 end

@@ -6,6 +6,8 @@ defmodule ElixirDB.Storage.SQLite.Import do
   finalization inside an open IMMEDIATE transaction provided by the adapter.
   """
 
+  alias ElixirDB.Attachments.FilesystemStore
+  alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.{RetentionBoundary, Revision}
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.MapAccess
@@ -13,6 +15,7 @@ defmodule ElixirDB.Storage.SQLite.Import do
   alias ElixirDB.Revisions.{Id, Winner}
 
   alias ElixirDB.Storage.SQLite.{
+    Attachments,
     Changes,
     Connection,
     Documents,
@@ -92,6 +95,44 @@ defmodule ElixirDB.Storage.SQLite.Import do
     do: {:error, ElixirDB.Error.invalid_request("purged boundaries must be an array")}
 
   @doc """
+  Ensures every attachment digest referenced by import chains is physically present.
+
+  Runs before the import mutation transaction. Memory adapters skip the check.
+  """
+  @spec ensure_physical_blobs(map(), term()) :: :ok | {:error, ElixirDB.Error.t()}
+  def ensure_physical_blobs(%{storage_mode: :memory}, _chains), do: :ok
+
+  def ensure_physical_blobs(adapter, chains) when is_list(chains) do
+    case bundle_root(adapter) do
+      nil -> :ok
+      root -> verify_physical_digests(root, collect_import_digests(chains))
+    end
+  end
+
+  def ensure_physical_blobs(_adapter, _chains),
+    do: {:error, ElixirDB.Error.invalid_request("replication chains must be an array")}
+
+  defp verify_physical_digests(root, digests) do
+    Enum.reduce_while(digests, :ok, fn {digest, logical_size}, :ok ->
+      case FilesystemStore.verify(root, digest, logical_size) do
+        :ok ->
+          {:cont, :ok}
+
+        {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} ->
+          {:halt,
+           {:error,
+            ElixirDB.Error.attachment_blob_not_found(
+              "imported revision references a missing attachment blob",
+              %{digest: digest}
+            )}}
+
+        {:error, %ElixirDB.Error{} = error} ->
+          {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  @doc """
   Imports revision chains inside an open transaction.
   """
   @spec import_tx(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
@@ -106,7 +147,8 @@ defmodule ElixirDB.Storage.SQLite.Import do
          {:ok, revisions} <- validate_chains(chains),
          {:ok, %{affected: affected, inserted: inserted}} <-
            insert_imported_revisions(adapter, revisions),
-         {:ok, purged_affected} <- purge_imported_histories(adapter, purged_boundaries) do
+         {:ok, purged_affected} <- purge_imported_histories(adapter, purged_boundaries),
+         :ok <- remove_pending_for_revisions(adapter, revisions) do
       finalize_imports(adapter, MapSet.union(affected, purged_affected), inserted)
     end
   end
@@ -280,6 +322,7 @@ defmodule ElixirDB.Storage.SQLite.Import do
       body = MapAccess.get(raw, :body)
 
       with :ok <- validate_import_history_id(history_id),
+           {:ok, attachments} <- normalize_import_attachments(raw, deleted),
            {:ok, calculated} <-
              Id.calculate(
                document_id,
@@ -287,7 +330,7 @@ defmodule ElixirDB.Storage.SQLite.Import do
                parent,
                deleted,
                body,
-               attachments_for_import(raw)
+               attachments
              ),
            true <- calculated == revision_id,
            {:ok, generation} <- Id.generation(revision_id),
@@ -296,7 +339,7 @@ defmodule ElixirDB.Storage.SQLite.Import do
            true <- deleted or is_map(body),
            true <- deleted or body_size_within_limit?(body) do
         {:ok,
-         %Revision{
+         Revision.assemble(
            document_id: document_id,
            history_id: history_id,
            revision_id: revision_id,
@@ -305,8 +348,8 @@ defmodule ElixirDB.Storage.SQLite.Import do
            digest: digest(revision_id),
            deleted: deleted,
            body: body,
-           attachments: attachments_for_import(raw)
-         }}
+           attachments: attachments
+         )}
       else
         false -> {:error, ElixirDB.Error.integrity_violation("revision chain validation failed")}
         {:error, error} -> {:error, error}
@@ -331,6 +374,15 @@ defmodule ElixirDB.Storage.SQLite.Import do
       {:error, _} ->
         false
     end
+  end
+
+  defp remove_pending_for_revisions(adapter, revisions) do
+    Enum.reduce_while(revisions, :ok, fn {revision, _allow_dangling_parent}, :ok ->
+      case Attachments.remove_pending_for_manifest(adapter.conn, revision.attachments) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp insert_imported_revisions(adapter, revisions) do
@@ -493,7 +545,8 @@ defmodule ElixirDB.Storage.SQLite.Import do
        ) do
     with {:ok, doc_key} <- Documents.insert(adapter.conn, revision.document_id),
          :ok <- ensure_import_parent(adapter, doc_key, revision, allow_dangling_parent),
-         :ok <- Revisions.insert(adapter.conn, doc_key, revision) do
+         :ok <- Revisions.insert(adapter.conn, doc_key, revision),
+         :ok <- Attachments.remove_pending_for_manifest(adapter.conn, revision.attachments) do
       {:cont,
        {:ok, MapSet.put(affected, {doc_key, revision.document_id}), inserted + 1, stale, fenced}}
     else
@@ -517,7 +570,8 @@ defmodule ElixirDB.Storage.SQLite.Import do
 
       {:error, %ElixirDB.Error{code: :revision_not_found}} ->
         with :ok <- ensure_import_parent(adapter, doc.doc_key, revision, allow_dangling_parent),
-             :ok <- Revisions.insert(adapter.conn, doc.doc_key, revision) do
+             :ok <- Revisions.insert(adapter.conn, doc.doc_key, revision),
+             :ok <- Attachments.remove_pending_for_manifest(adapter.conn, revision.attachments) do
           {:cont,
            {:ok, MapSet.put(affected, {doc.doc_key, revision.document_id}), inserted + 1, stale,
             fenced}}
@@ -701,13 +755,49 @@ defmodule ElixirDB.Storage.SQLite.Import do
 
   defp digest(id), do: id |> String.split("-", parts: 2) |> List.last()
 
-  defp attachments_for_import(raw) do
-    case MapAccess.get(raw, :attachments) || MapAccess.get(raw, "attachments") do
-      nil -> %{}
-      attachments when is_map(attachments) -> attachments
-      _ -> %{}
+  defp normalize_import_attachments(_raw, true), do: {:ok, %{}}
+
+  defp normalize_import_attachments(raw, _deleted) do
+    case MapAccess.get(raw, :attachments) || MapAccess.get(raw, "attachments") || %{} do
+      attachments when is_map(attachments) -> Manifest.normalize(attachments)
+      _ -> {:error, ElixirDB.Error.invalid_request("attachments must be an object")}
     end
   end
+
+  defp collect_import_digests(chains) do
+    chains
+    |> Enum.flat_map(&chain_attachment_digests/1)
+    |> Enum.reduce(%{}, fn {digest, logical_size}, acc ->
+      Map.put_new(acc, digest, logical_size)
+    end)
+    |> Map.to_list()
+  end
+
+  defp chain_attachment_digests(chain) do
+    revisions = MapAccess.get(chain, :revisions) || []
+    Enum.flat_map(revisions, &revision_attachment_digests/1)
+  end
+
+  defp revision_attachment_digests(revision) do
+    case MapAccess.get(revision, :attachments) || %{} do
+      attachments when is_map(attachments) ->
+        attachments
+        |> Map.values()
+        |> Enum.map(fn entry ->
+          {MapAccess.get(entry, :digest) || MapAccess.get(entry, "digest"),
+           MapAccess.get(entry, :length) || MapAccess.get(entry, "length")}
+        end)
+        |> Enum.filter(fn {digest, logical_size} ->
+          is_binary(digest) and is_integer(logical_size) and logical_size >= 0
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp bundle_root(%{path: path}) when is_binary(path), do: Path.dirname(Path.expand(path))
+  defp bundle_root(_), do: nil
 
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})

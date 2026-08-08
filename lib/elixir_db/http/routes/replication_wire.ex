@@ -1,6 +1,7 @@
 defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   @moduledoc false
   use Plug.Router
+  alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.Checkpoint
   alias ElixirDB.HTTP.{Request, Response}
   alias ElixirDB.HTTP.Schemas
@@ -211,6 +212,55 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     )
   end
 
+  post "/blobs/diff" do
+    Request.call(
+      conn,
+      Schemas.opts(:wire_blob_diff, "blob diff contains an unknown field"),
+      fn body, conn ->
+        digests = body["digests"]
+
+        if is_list(digests) do
+          Response.result(conn, ElixirDB.Attachments.diff_blobs(Request.uuid(conn), digests))
+        else
+          Response.error(
+            conn,
+            ElixirDB.Error.invalid_request("blob digests must be a list")
+          )
+        end
+      end
+    )
+  end
+
+  get "/blobs/:digest" do
+    with_blob_digest(conn, fn conn, digest ->
+      case ElixirDB.Attachments.open_blob(Request.uuid(conn), digest) do
+        {:ok, stream} -> send_blob(conn, stream)
+        {:error, error} -> Response.error(conn, error)
+      end
+    end)
+  end
+
+  put "/blobs/:digest" do
+    with_blob_digest(conn, fn conn, digest ->
+      case require_octet_stream(conn) do
+        :ok ->
+          case content_length(conn) do
+            {:ok, length} ->
+              Response.result(
+                conn,
+                ElixirDB.Attachments.put_blob(Request.uuid(conn), digest, length, conn)
+              )
+
+            {:error, error} ->
+              Response.error(conn, error)
+          end
+
+        {:error, error} ->
+          Response.error(conn, error)
+      end
+    end)
+  end
+
   get "/checkpoints/:replication_id" do
     with_path_id(conn, fn conn, replication_id ->
       Response.result(
@@ -306,5 +356,63 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     else
       {:error, error} -> Response.error(conn, error)
     end
+  end
+
+  defp with_blob_digest(conn, fun) do
+    case Manifest.validate_digest(conn.path_params["digest"]) do
+      {:ok, digest} -> fun.(conn, digest)
+      {:error, error} -> Response.error(conn, error)
+    end
+  end
+
+  defp require_octet_stream(conn) do
+    content_type = conn |> Plug.Conn.get_req_header("content-type") |> List.first()
+
+    cond do
+      is_nil(content_type) ->
+        {:error,
+         ElixirDB.Error.invalid_request(
+           "replication blob content type must be application/octet-stream"
+         )}
+
+      String.starts_with?(content_type, "application/octet-stream") ->
+        :ok
+
+      true ->
+        {:error,
+         ElixirDB.Error.invalid_request(
+           "replication blob content type must be application/octet-stream"
+         )}
+    end
+  end
+
+  defp content_length(conn) do
+    case Plug.Conn.get_req_header(conn, "content-length") do
+      [value | _] ->
+        case Integer.parse(value) do
+          {length, ""} when length >= 0 ->
+            {:ok, length}
+
+          _ ->
+            {:error,
+             ElixirDB.Error.invalid_request("content-length must be a non-negative integer")}
+        end
+
+      _ ->
+        {:error, ElixirDB.Error.invalid_request("content-length is required")}
+    end
+  end
+
+  defp send_blob(conn, stream) do
+    request_id = Response.request_id(conn)
+
+    conn =
+      conn
+      |> Plug.Conn.put_resp_header("x-request-id", request_id)
+      |> Plug.Conn.put_resp_header("content-type", "application/octet-stream")
+      |> Plug.Conn.put_resp_header("content-length", Integer.to_string(stream.length))
+      |> Plug.Conn.send_chunked(200)
+
+    Response.stream_chunks(conn, stream.body)
   end
 end

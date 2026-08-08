@@ -81,6 +81,7 @@ defmodule ElixirDB.HTTP.Schemas do
     "install_id",
     "replace"
   ]
+  @wire_blob_diff ["digests"]
   @compact_retention []
 
   def allowed(:document_get), do: @document_get
@@ -103,6 +104,7 @@ defmodule ElixirDB.HTTP.Schemas do
   def allowed(:wire_checkpoint), do: @wire_checkpoint
   def allowed(:wire_boundaries), do: @wire_boundaries
   def allowed(:wire_boundary_install), do: @wire_boundary_install
+  def allowed(:wire_blob_diff), do: @wire_blob_diff
   def allowed(:compact_retention), do: @compact_retention
 
   def opts(schema, message) when is_atom(schema) and is_binary(message) do
