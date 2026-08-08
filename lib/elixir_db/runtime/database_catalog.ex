@@ -48,7 +48,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   def init(_) do
     root = ElixirDB.Config.database_root()
     :ok = File.mkdir_p(root)
-    state = %{root: root, entries: load_entries()}
+    state = %{root: root, entries: load_entries(), close_operations: %{}}
     Process.send_after(self(), :resume_registered_jobs, 0)
     {:ok, state}
   end
@@ -217,17 +217,27 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   @impl true
-  def handle_call({:close, uuid}, _from, state) do
-    result =
-      case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
-        [{_pid, _}] ->
-          close_runtime(uuid)
+  def handle_call({:close, uuid}, from, state) do
+    case Map.get(state.close_operations, uuid) do
+      waiters when is_list(waiters) ->
+        {:noreply,
+         %{state | close_operations: Map.put(state.close_operations, uuid, [from | waiters])}}
 
-        [] ->
-          :ok
-      end
+      nil ->
+        catalog = self()
 
-    {:reply, result, state}
+        case start_close_operation(uuid, catalog) do
+          {:ok, _pid} ->
+            {:noreply, %{state | close_operations: Map.put(state.close_operations, uuid, [from])}}
+
+          {:error, reason} ->
+            {:reply,
+             {:error,
+              ElixirDB.Error.internal_error("database close could not be scheduled", %{
+                cause: inspect(reason)
+              })}, state}
+        end
+    end
   end
 
   @impl true
@@ -309,6 +319,18 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
           cause: inspect(reason),
           kind: kind
         })}, state}
+  end
+
+  @impl true
+  def handle_info({:close_finished, uuid, result}, state) do
+    case Map.pop(state.close_operations, uuid) do
+      {nil, _operations} ->
+        {:noreply, state}
+
+      {waiters, operations} ->
+        Enum.each(waiters, &GenServer.reply(&1, result))
+        {:noreply, %{state | close_operations: operations}}
+    end
   end
 
   @impl true
@@ -589,6 +611,26 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       {:error, _} = error ->
         error
     end
+  end
+
+  defp start_close_operation(uuid, catalog) do
+    Task.Supervisor.start_child(ElixirDB.TaskSupervisor, fn ->
+      send(catalog, {:close_finished, uuid, run_close_operation(uuid)})
+    end)
+  end
+
+  defp run_close_operation(uuid) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
+      [{_pid, _}] -> close_runtime(uuid)
+      [] -> :ok
+    end
+  catch
+    kind, reason ->
+      {:error,
+       ElixirDB.Error.internal_error("database close failed", %{
+         kind: kind,
+         cause: inspect(reason)
+       })}
   end
 
   defp open_count do

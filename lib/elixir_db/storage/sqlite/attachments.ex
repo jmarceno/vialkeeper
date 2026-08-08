@@ -415,7 +415,7 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   end
 
   defp request_logical_size(request) do
-    size = MapAccess.get(request, :logical_size) || MapAccess.get(request, :length)
+    size = MapAccess.get_first(request, [:logical_size, :length])
 
     if is_integer(size) and size >= 0,
       do: {:ok, size},

@@ -153,8 +153,8 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   end
 
   @impl true
-  def handle_call({:release, guard_token}, _from, state) do
-    case release_guard(state, guard_token) do
+  def handle_call({:release, guard_token}, {caller_pid, _tag}, state) do
+    case release_guard_for_caller(state, guard_token, caller_pid) do
       {:ok, state} -> {:reply, :ok, maybe_complete_waiters(state)}
       {:error, _} = error -> {:reply, error, state}
     end
@@ -207,7 +207,11 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   end
 
   @impl true
-  def handle_call({:end_gc, gc_token}, _from, %{gc_token: gc_token} = state) do
+  def handle_call(
+        {:end_gc, gc_token},
+        {caller_pid, _tag},
+        %{gc_token: gc_token, gc_caller: caller_pid} = state
+      ) do
     state =
       state
       |> clear_gc_monitor()
@@ -321,35 +325,50 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
       _ = Process.exit(pid, :kill)
     end)
 
-    if state.gc_waiter do
-      GenServer.reply(
-        state.gc_waiter,
-        {:error, ElixirDB.Error.database_closed("attachment coordinator is closing")}
-      )
-    end
-
-    case state.gc_follow_up do
-      {from, _pid} ->
+    state =
+      if state.gc_waiter do
         GenServer.reply(
-          from,
+          state.gc_waiter,
           {:error, ElixirDB.Error.database_closed("attachment coordinator is closing")}
         )
 
-      nil ->
-        :ok
-    end
+        %{state | gc_waiter: nil}
+      else
+        state
+      end
 
-    state
-    |> clear_gc_monitor()
-    |> Map.merge(%{
-      gc_token: nil,
-      gc_barrier: false,
-      gc_caller: nil,
-      gc_waiter: nil,
-      gc_follow_up: nil,
-      gc_scheduled: 0,
-      gc_task_monitors: %{}
-    })
+    state =
+      case state.gc_follow_up do
+        {from, _pid} ->
+          GenServer.reply(
+            from,
+            {:error, ElixirDB.Error.database_closed("attachment coordinator is closing")}
+          )
+
+          %{state | gc_follow_up: nil}
+
+        nil ->
+          state
+      end
+
+    state = %{state | gc_scheduled: 0, gc_task_monitors: %{}}
+
+    if is_nil(state.gc_token) do
+      state
+      |> clear_gc_monitor()
+      |> Map.merge(%{
+        gc_token: nil,
+        gc_barrier: false,
+        gc_caller: nil,
+        gc_waiter: nil,
+        gc_follow_up: nil
+      })
+    else
+      # An active caller-owned GC cannot be cancelled safely from the
+      # coordinator. Keep its token and monitor until it calls end_gc/2 (or
+      # terminates), so close never races physical deletion.
+      state
+    end
   end
 
   defp handle_guard_down(ref, state) do
@@ -467,6 +486,19 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
           |> increment_kind(guard.kind, -1)
 
         {:ok, state}
+    end
+  end
+
+  defp release_guard_for_caller(state, token, caller_pid) do
+    case Map.get(state.guards, token) do
+      %{pid: ^caller_pid} ->
+        release_guard(state, token)
+
+      %{pid: _other} ->
+        {:error, ElixirDB.Error.invalid_request("attachment guard belongs to another process")}
+
+      nil ->
+        {:error, ElixirDB.Error.invalid_request("unknown attachment guard token")}
     end
   end
 

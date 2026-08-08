@@ -229,6 +229,35 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
     assert header(headers, "etag") == ~s("#{blob}")
   end
 
+  test "zero-length uploads can be referenced and downloaded", %{uuid: uuid} do
+    assert {:ok, %{blob: blob, length: 0}} = Attachments.upload_stream(uuid, [])
+
+    assert {:ok, %{revision: revision}} =
+             ElixirDB.Documents.put(uuid, %{
+               "id" => "empty-attachment",
+               "body" => %{},
+               "attachments" => %{
+                 "empty.bin" => %{
+                   "blob" => blob,
+                   "content_type" => "application/octet-stream"
+                 }
+               }
+             })
+
+    assert {:ok, %{attachments: %{"empty.bin" => %{length: 0}}}} =
+             ElixirDB.Documents.get(uuid, %{id: "empty-attachment"})
+
+    assert {:ok, stream} =
+             Attachments.open_stream(uuid, %{
+               "id" => "empty-attachment",
+               "revision" => revision,
+               "name" => "empty.bin"
+             })
+
+    assert Enum.into(stream.body, <<>>) == <<>>
+    stream.close.()
+  end
+
   test "slow download does not block unrelated owner document put", %{uuid: uuid} do
     payload = "download-block-#{System.unique_integer([:positive])}"
     assert {:ok, %{blob: blob}} = Attachments.upload_stream(uuid, [payload])

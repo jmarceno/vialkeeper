@@ -16,6 +16,9 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
   @probe_prefix_bytes 256 * 1024
   @read_chunk_size 64 * 1024
+  @integrity_footer_magic <<0x50, 0x2A, 0x4D, 0x18>>
+  @integrity_footer_payload_size 40
+  @integrity_footer_size 48
   @digest_pattern ~r/^[0-9a-f]{64}$/
   @writer_key {:elixirdb, :attachment_writer}
 
@@ -93,8 +96,10 @@ defmodule ElixirDB.Attachments.FilesystemStore do
            {:ok, state} <- finalize_physical(state),
            phase = state.phase,
            encoding = encoding_from_phase(phase),
-           :ok <- close_fd(state.fd),
            {:ok, digest, logical_size} <- finalize_digest(state),
+           :ok <- append_integrity_footer(state.fd, encoding, digest, logical_size),
+           :ok <- sync_file(state.fd),
+           :ok <- close_fd(state.fd),
            {:ok, install_kind} <-
              install(state.bundle_path, state.tmp_path, digest, logical_size, phase) do
         {:ok,
@@ -172,8 +177,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   def open_read(bundle_path, digest) do
     with {:ok, digest} <- validate_digest(digest),
          {:ok, path, encoding} <- resolve_representation(bundle_path, digest),
-         {:ok, fd} <- File.open(path, [:read, :binary, :raw]),
-         {:ok, decompress_ctx} <- maybe_open_decompressor(encoding) do
+         {:ok, fd, integrity, decompress_ctx} <- open_read_components(path, encoding, digest) do
       ref = make_ref()
 
       put_reader(
@@ -183,7 +187,11 @@ defmodule ElixirDB.Attachments.FilesystemStore do
           encoding: encoding,
           decompress_ctx: decompress_ctx,
           pending: <<>>,
-          done?: false
+          done?: false,
+          hash_ctx: :crypto.hash_init(:sha256),
+          logical_size: 0,
+          expected_size: integrity.logical_size,
+          expected_digest: integrity.digest
         }
       )
 
@@ -238,12 +246,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     case read_decompressed_chunk(reader) do
       {:ok, reader, output} ->
         put_reader(ref, reader)
-
-        if output == <<>> do
-          read_chunks({:reader, ref})
-        else
-          {:ok, output}
-        end
+        return_compressed_chunk(ref, reader, output)
 
       {:error, %Error{} = error} ->
         close_read({:reader, ref})
@@ -252,6 +255,23 @@ defmodule ElixirDB.Attachments.FilesystemStore do
       {:error, reason} ->
         close_read({:reader, ref})
         {:error, Error.internal_error("attachment decompress failed", %{reason: inspect(reason)})}
+    end
+  end
+
+  defp return_compressed_chunk(_ref, _reader, output) when output != <<>>, do: {:ok, output}
+
+  defp return_compressed_chunk(ref, %{done?: false}, <<>>),
+    do: read_chunks({:reader, ref})
+
+  defp return_compressed_chunk(ref, reader, <<>>) do
+    case finish_compressed_reader(reader) do
+      :ok ->
+        close_read({:reader, ref})
+        {:done, {:reader, ref}}
+
+      {:error, %Error{} = error} ->
+        close_read({:reader, ref})
+        {:error, error}
     end
   end
 
@@ -477,23 +497,109 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
   defp finalize_physical(%{phase: {:writing, :compressed}, fd: fd, compression_ctx: ctx} = state) do
     with {:ok, output, _ctx} <- Compression.finish_compression(ctx, <<>>),
-         :ok <- write_compressed_output(fd, output),
-         :ok <- sync_file(fd) do
+         :ok <- write_compressed_output(fd, output) do
       {:ok, state}
     end
   end
 
-  defp finalize_physical(%{fd: fd} = state) do
-    case sync_file(fd) do
-      :ok -> {:ok, state}
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp finalize_physical(state), do: {:ok, state}
 
   defp finalize_digest(%{hash_ctx: hash_ctx, logical_size: logical_size}) do
     digest = :crypto.hash_final(hash_ctx) |> Base.encode16(case: :lower)
     {:ok, digest, logical_size}
   end
+
+  defp append_integrity_footer(_fd, :raw, _digest, _logical_size), do: :ok
+
+  defp append_integrity_footer(fd, :compressed, digest, logical_size) do
+    case Base.decode16(digest, case: :lower) do
+      {:ok, digest_bytes} ->
+        footer =
+          @integrity_footer_magic <>
+            <<@integrity_footer_payload_size::little-unsigned-32>> <>
+            digest_bytes <>
+            <<logical_size::little-unsigned-64>>
+
+        :file.write(fd, footer)
+
+      :error ->
+        {:error, :invalid_digest}
+    end
+  end
+
+  defp read_integrity_footer(_fd, _path, :raw, _digest),
+    do: {:ok, %{logical_size: nil, digest: nil}}
+
+  defp read_integrity_footer(fd, path, :compressed, digest) do
+    with {:ok, %File.Stat{size: size}} <- File.stat(path),
+         true <- size >= @integrity_footer_size,
+         {:ok, footer} <- :file.pread(fd, size - @integrity_footer_size, @integrity_footer_size),
+         {:ok, logical_size} <- parse_integrity_footer(footer, digest) do
+      {:ok, %{logical_size: logical_size, digest: digest}}
+    else
+      false ->
+        {:error, Error.integrity_violation("compressed attachment integrity footer is missing")}
+
+      {:error, %Error{}} = error ->
+        error
+
+      {:error, reason} ->
+        {:error,
+         Error.integrity_violation(
+           "compressed attachment integrity footer is invalid",
+           %{reason: inspect(reason)}
+         )}
+
+      _ ->
+        {:error, Error.integrity_violation("compressed attachment integrity footer is invalid")}
+    end
+  end
+
+  defp open_read_components(path, encoding, digest) do
+    with {:ok, fd} <- File.open(path, [:read, :binary, :raw]) do
+      open_read_components(fd, path, encoding, digest)
+    end
+  end
+
+  defp open_read_components(fd, path, encoding, digest) do
+    case read_integrity_footer(fd, path, encoding, digest) do
+      {:ok, integrity} ->
+        open_read_decompressor(fd, integrity, encoding)
+
+      {:error, reason} ->
+        close_fd(fd)
+        {:error, reason}
+    end
+  end
+
+  defp open_read_decompressor(fd, integrity, encoding) do
+    case maybe_open_decompressor(encoding) do
+      {:ok, decompress_ctx} ->
+        {:ok, fd, integrity, decompress_ctx}
+
+      {:error, reason} ->
+        close_fd(fd)
+        {:error, reason}
+    end
+  end
+
+  defp parse_integrity_footer(
+         <<magic::binary-size(4), payload_size::little-unsigned-32, digest_bytes::binary-size(32),
+           logical_size::little-unsigned-64>>,
+         digest
+       ) do
+    with true <- magic == @integrity_footer_magic,
+         true <- payload_size == @integrity_footer_payload_size,
+         {:ok, expected_digest} <- Base.decode16(digest, case: :lower),
+         true <- digest_bytes == expected_digest do
+      {:ok, logical_size}
+    else
+      _ -> {:error, Error.integrity_violation("compressed attachment digest footer mismatch")}
+    end
+  end
+
+  defp parse_integrity_footer(_footer, _digest),
+    do: {:error, Error.integrity_violation("compressed attachment integrity footer is invalid")}
 
   defp install(bundle_path, tmp_path, digest, logical_size, phase) do
     encoding = encoding_from_phase(phase)
@@ -634,7 +740,12 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   defp read_decompressed_chunk(%{fd: fd, decompress_ctx: ctx, pending: pending} = reader) do
     case take_decompressed_output(ctx, pending) do
       {:ok, output, ctx, pending} when output != <<>> ->
-        {:ok, %{reader | decompress_ctx: ctx, pending: pending}, output}
+        reader = %{reader | decompress_ctx: ctx, pending: pending}
+
+        case track_decompressed_output(reader, output) do
+          {:ok, reader} -> {:ok, reader, output}
+          {:error, _} = error -> error
+        end
 
       {:ok, <<>>, ctx, pending} ->
         case :file.read(fd, @read_chunk_size) do
@@ -650,6 +761,39 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
       {:error, reason} ->
         {:error, Error.integrity_violation("compressed attachment is corrupt: #{inspect(reason)}")}
+    end
+  end
+
+  defp track_decompressed_output(
+         %{logical_size: size, expected_size: expected_size, hash_ctx: hash_ctx} = reader,
+         output
+       ) do
+    new_size = size + byte_size(output)
+
+    if new_size > expected_size do
+      {:error, Error.integrity_violation("compressed attachment size mismatch")}
+    else
+      {:ok, %{reader | logical_size: new_size, hash_ctx: :crypto.hash_update(hash_ctx, output)}}
+    end
+  end
+
+  defp finish_compressed_reader(%{
+         logical_size: logical_size,
+         expected_size: expected_size,
+         expected_digest: expected_digest,
+         hash_ctx: hash_ctx
+       }) do
+    digest = :crypto.hash_final(hash_ctx) |> Base.encode16(case: :lower)
+
+    cond do
+      logical_size != expected_size ->
+        {:error, Error.integrity_violation("compressed attachment size mismatch")}
+
+      digest != expected_digest ->
+        {:error, Error.integrity_violation("compressed attachment digest mismatch")}
+
+      true ->
+        :ok
     end
   end
 
@@ -756,10 +900,19 @@ defmodule ElixirDB.Attachments.FilesystemStore do
         :ok
 
       {:error, :eexist} ->
-        if File.dir?(directory) do
-          :ok
-        else
-          {:error, Error.integrity_violation("attachment blob prefix must be a directory")}
+        case File.lstat(directory) do
+          {:ok, %File.Stat{type: :directory}} ->
+            :ok
+
+          {:ok, _stat} ->
+            {:error, Error.integrity_violation("attachment blob prefix must be a directory")}
+
+          {:error, :enoent} ->
+            mkdir_blob_directory(directory)
+
+          {:error, reason} ->
+            {:error,
+             Error.internal_error("cannot inspect blob directory", %{reason: inspect(reason)})}
         end
 
       {:error, reason} ->

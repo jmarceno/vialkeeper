@@ -77,6 +77,16 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     assert :ok = AttachmentCoordinator.release(uuid, t2)
   end
 
+  test "guard tokens can only be released by their owning process", %{uuid: uuid} do
+    assert {:ok, token} = AttachmentCoordinator.acquire_read(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             Task.async(fn -> AttachmentCoordinator.release(uuid, token) end)
+             |> Task.await()
+
+    assert :ok = AttachmentCoordinator.release(uuid, token)
+  end
+
   test "reads and writes use independent counters", %{uuid: uuid} do
     set_limits(uuid, 1, 1)
 
@@ -217,6 +227,20 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     assert :released = Task.await(holder)
     assert :ok = Task.await(first)
     assert :ok = Task.await(second)
+  end
+
+  test "catalog close waits without blocking attachment finalization", %{uuid: uuid} do
+    parent = self()
+    gate = make_ref()
+    holder = hold_read(uuid, parent, gate)
+    assert_receive {:held, :read, ^gate, _token}, 1_000
+
+    closer = Task.async(fn -> DatabaseCatalog.close(uuid) end)
+    refute Task.yield(closer, 100)
+
+    send(holder.pid, {:release, gate})
+    assert :released = Task.await(holder)
+    assert :ok = Task.await(closer, 5_000)
   end
 
   test "dead gc caller releases a pending barrier", %{uuid: uuid} do

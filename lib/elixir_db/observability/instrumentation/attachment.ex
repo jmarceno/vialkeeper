@@ -202,7 +202,7 @@ defmodule ElixirDB.Observability.Instrumentation.Attachment do
     [
       db_uuid: uuid,
       outcome: outcome,
-      logical_bytes: Map.get(map, :length) || Map.get(map, :logical_size),
+      logical_bytes: ElixirDB.MapAccess.get_first(map, [:length, :logical_size]),
       stream_chunks: Map.get(map, :stream_chunks),
       compressed: Map.get(map, :encoding) == :compressed,
       deduplicated: Map.get(map, :deduplicated?) == true

@@ -191,6 +191,19 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     assert size == byte_size(payload)
   end
 
+  @tag :compressed
+  test "truncated compressed blobs fail integrity verification", %{bundle: bundle} do
+    payload = compressible_payload()
+    assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)
+
+    path = blob_path_for(bundle.root, digest)
+    compressed = File.read!(path)
+    File.write!(path, binary_part(compressed, 0, byte_size(compressed) - 1))
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.verify(bundle.root, digest, size)
+  end
+
   test "corruption is detected on verify", %{bundle: bundle} do
     payload = "integrity-check"
     assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)

@@ -817,7 +817,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
 
   defp coerce_attachment_entry(entry) when is_map(entry) do
     digest = MapAccess.get(entry, :digest) || MapAccess.get(entry, :blob)
-    length = MapAccess.get(entry, :length) || MapAccess.get(entry, :logical_size)
+    length = MapAccess.get_first(entry, [:length, :logical_size])
     content_type = MapAccess.get(entry, :content_type)
 
     {:ok,

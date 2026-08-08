@@ -785,7 +785,7 @@ defmodule ElixirDB.Storage.SQLite.Import do
         |> Map.values()
         |> Enum.map(fn entry ->
           {MapAccess.get(entry, :digest) || MapAccess.get(entry, "digest"),
-           MapAccess.get(entry, :length) || MapAccess.get(entry, "length")}
+           MapAccess.get_first(entry, [:length])}
         end)
         |> Enum.filter(fn {digest, logical_size} ->
           is_binary(digest) and is_integer(logical_size) and logical_size >= 0

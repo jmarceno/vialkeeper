@@ -440,7 +440,7 @@ defmodule ElixirDB.Attachments do
     with {:ok, metadata} <-
            DatabaseCatalog.command(uuid, {:command, :resolve_blob_metadata, %{digest: digest}}),
          length when is_integer(length) and length >= 0 <-
-           MapAccess.get(metadata, :logical_size) || MapAccess.get(metadata, :length),
+           MapAccess.get_first(metadata, [:logical_size, :length]),
          :ok <- @store.verify(bundle_root, digest, length) do
       true
     else
@@ -458,7 +458,7 @@ defmodule ElixirDB.Attachments do
          {:ok, meta} <-
            DatabaseCatalog.command(uuid, {:command, :resolve_blob_metadata, %{digest: digest}}),
          length when is_integer(length) and length >= 0 <-
-           MapAccess.get(meta, :logical_size) || MapAccess.get(meta, :length),
+           MapAccess.get_first(meta, [:logical_size, :length]),
          {:ok, reader} <- @store.open_read(bundle_root, digest),
          read_handle <-
            AttachmentInstr.finish_read_open(read_handle, logical_bytes: length) do
@@ -670,7 +670,7 @@ defmodule ElixirDB.Attachments do
             MapAccess.get(map, :database_uuid, uuid),
             MapAccess.get(map, :bundle_path, bundle_root),
             MapAccess.get(map, :blob_digest) || MapAccess.get(map, :digest),
-            MapAccess.get(map, :logical_size) || MapAccess.get(map, :length),
+            MapAccess.get_first(map, [:logical_size, :length]),
             MapAccess.get(map, :content_type),
             MapAccess.get(map, :document_id) || MapAccess.get(map, :id),
             MapAccess.get(map, :revision_id) || MapAccess.get(map, :revision),
@@ -706,7 +706,7 @@ defmodule ElixirDB.Attachments do
     with {:ok, meta} <-
            DatabaseCatalog.command(uuid, {:command, :resolve_blob_metadata, %{digest: digest}}),
          true <- @store.exists?(bundle_root, digest) do
-      length = MapAccess.get(meta, :logical_size) || MapAccess.get(meta, :length)
+      length = MapAccess.get_first(meta, [:logical_size, :length])
 
       if is_integer(length) and length >= 0 do
         {:ok, %{length: length, digest: digest}}
