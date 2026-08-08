@@ -10,7 +10,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   alias ElixirDB.JSON.Pointer
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.MapAccess
-  alias ElixirDB.Query.{Plan, Planner, Projection}
+  alias ElixirDB.Query.{Plan, Planner, Predicate, Projection}
   alias ElixirDB.Query.Selector
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, IndexCatalog, QueryCompiler}
@@ -21,12 +21,12 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   @spec execute(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def execute(adapter, request) do
     with {:ok, indexes} <- IndexCatalog.list(adapter.conn),
-         {:ok, selected} <- Planner.select_index(indexes, request),
-         {:ok, plan_metadata} <- transitional_plan_metadata(selected),
-         {:ok, documents, examined} <- candidate_documents(adapter, selected, request),
+         {:ok, plan} <- plan_request(indexes, request),
+         :ok <- validate_bookmark_plan(request, plan),
+         {:ok, documents, examined} <- candidate_documents(adapter, plan, indexes, request),
          {:ok, matched} <- filter_query(documents, request),
          identity <- adapter_identity(adapter),
-         :ok <- enforce_scan_limit(selected, examined, identity),
+         :ok <- enforce_scan_limit(plan, examined, identity),
          limit <-
            value_or_default(
              MapAccess.get(request, :limit),
@@ -34,7 +34,8 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
            ),
          ordered <- matched |> sort_documents(request) |> apply_after_cursor(request),
          values <- Enum.take(ordered, limit),
-         {:ok, projected} <- project_documents(values, request) do
+         {:ok, projected} <- project_documents(values, request),
+         selected_metadata <- selected_metadata(plan) do
       {:ok,
        %{
          results: projected,
@@ -43,16 +44,56 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          has_more: length(ordered) > limit,
          examined: examined,
          sequence: identity.current_sequence,
-         selected_index: selected && selected["index_id"],
-         index_digest: selected && selected["definition_digest"],
-         plan_kind: plan_metadata.kind,
-         plan_digest: plan_metadata.digest,
-         index_bindings: plan_metadata.index_bindings,
+         selected_index: selected_metadata.index_id,
+         index_digest: selected_metadata.definition_digest,
+         plan_kind: plan.kind,
+         plan_digest: plan.digest,
+         index_bindings: Plan.index_bindings(plan),
          last_ordering_key: ordering_key(List.last(values), request)
        }}
     else
       {:error, %ElixirDB.Error{} = error} -> {:error, error}
       {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  defp plan_request(indexes, request) do
+    case Planner.plan(indexes, request) do
+      {:ok, plan} ->
+        {:ok, plan}
+
+      {:error, error} ->
+        case MapAccess.get(request, :bookmark_payload) do
+          nil -> {:error, error}
+          _ -> {:error, ElixirDB.Error.invalid_bookmark("bookmark plan cannot be reproduced")}
+        end
+    end
+  end
+
+  defp validate_bookmark_plan(request, %Plan{} = plan) do
+    case MapAccess.get(request, :bookmark_payload) do
+      nil ->
+        :ok
+
+      bookmark ->
+        expected_bindings =
+          Enum.map(Plan.index_bindings(plan), fn binding ->
+            %{
+              "index_id" => binding.index_id,
+              "definition_digest" => binding.definition_digest
+            }
+          end)
+
+        actual_bindings = MapAccess.get(bookmark, :index_bindings)
+        actual_digest = MapAccess.get(bookmark, :plan_digest)
+
+        case {actual_digest, actual_bindings} do
+          {digest, bindings} when digest == plan.digest and bindings == expected_bindings ->
+            :ok
+
+          _ ->
+            {:error, ElixirDB.Error.invalid_bookmark("bookmark is bound to another plan")}
+        end
     end
   end
 
@@ -62,7 +103,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   @spec explain(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def explain(adapter, request) do
     with {:ok, indexes} <- IndexCatalog.list(adapter.conn),
-         {:ok, selected} <- Planner.select_index(indexes, request),
+         {:ok, plan} <- Planner.plan(indexes, request),
          {:ok, [[count]]} <-
            Connection.query(
              adapter.conn,
@@ -72,22 +113,29 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          scan_threshold <- get_in(identity, [:config, "queries", "scan_threshold"]) || 1_000 do
       {:ok,
        %{
-         selected_index: selected && selected["index_id"],
+         plan_kind: plan.kind,
+         plan_digest: plan.digest,
+         selected_indexes: Enum.map(Plan.index_bindings(plan), & &1.index_id),
+         selected_index: first_binding_id(plan),
+         union_branches: Enum.map(plan.scans, &Map.take(&1, ["branch", "index_id"])),
          candidate_indexes: Enum.map(indexes, & &1["index_id"]),
-         rejected_index_reasons: rejected_index_reasons(indexes, selected, request),
-         full_scan: is_nil(selected),
+         rejected_index_reasons: rejected_index_reasons(indexes, plan, request),
+         pushdown_predicates: plan_pushdowns(plan),
+         post_filter_predicates: post_filter_predicates(request),
+         full_scan: plan.kind == :bounded_scan,
          candidate_count: count,
-         scan_allowed: not is_nil(selected) or count < scan_threshold,
+         scan_allowed: plan.kind != :bounded_scan or count < scan_threshold,
          selector: MapAccess.get(request, :selector, %{}),
          sort: MapAccess.get(request, :sort, []),
-         pagination: if(selected, do: :indexed, else: :bounded_scan)
+         pagination: plan.pagination,
+         sort_compatible: plan.sort_compatible?
        }}
     else
       {:error, reason} -> {:error, normalize_error(reason)}
     end
   end
 
-  defp candidate_documents(adapter, nil, _request) do
+  defp candidate_documents(adapter, %Plan{kind: :bounded_scan}, _indexes, _request) do
     with {:ok, [[count]]} <-
            Connection.query(
              adapter.conn,
@@ -117,8 +165,10 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp candidate_documents(adapter, selected, request) do
-    if selected["type"] == "full_text" and MapAccess.get(request, :search) do
+  defp candidate_documents(adapter, %Plan{kind: :full_text} = plan, indexes, request) do
+    selected = selected_index(indexes, plan)
+
+    if selected && MapAccess.get(request, :search) do
       search = MapAccess.get(request, :search)
       metadata = Map.merge(selected, selected["_metadata"] || %{})
 
@@ -132,10 +182,42 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
         {:ok, full_text_documents(rows), length(rows)}
       end
     else
-      with {:ok, rows} <- structured_candidate_rows(adapter, selected, request),
-           {:ok, documents} <- decode_query_documents(rows) do
-        {:ok, documents, length(documents)}
+      {:error, ElixirDB.Error.invalid_index_hint("full-text plan cannot be executed", %{})}
+    end
+  end
+
+  defp candidate_documents(adapter, %Plan{kind: :single} = plan, indexes, _request) do
+    selected = selected_index(indexes, plan)
+    scan = List.first(plan.scans)
+
+    with {:ok, rows} <- structured_candidate_rows(adapter, selected, scan),
+         {:ok, documents} <- decode_query_documents(rows) do
+      {:ok, documents, length(documents)}
+    end
+  end
+
+  defp candidate_documents(adapter, %Plan{kind: :union} = plan, indexes, _request) do
+    Enum.reduce_while(plan.scans, {:ok, [], 0}, fn scan, {:ok, candidates, examined} ->
+      selected = selected_index(indexes, scan["index_id"])
+
+      case structured_candidate_rows(adapter, selected, scan) do
+        {:ok, rows} ->
+          {:cont, {:ok, [rows | candidates], examined + length(rows)}}
+
+        {:error, _} = error ->
+          {:halt, error}
       end
+    end)
+    |> case do
+      {:ok, rows, examined} ->
+        rows = rows |> Enum.reverse() |> Enum.concat() |> Enum.uniq_by(&List.first/1)
+
+        with {:ok, documents} <- decode_query_documents(rows) do
+          {:ok, documents, examined}
+        end
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -145,11 +227,19 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
         %{id: row.id, revision: row.revision, body: row.body, rank: row.rank}
       end)
 
-  defp structured_candidate_rows(adapter, selected, request) do
-    fields = selected["fields"] || []
-    selector = MapAccess.get(request, :selector, %{})
+  defp selected_index(indexes, %Plan{selected_indexes: [binding | _]}),
+    do: selected_index(indexes, binding.index_id)
 
-    with {:ok, conditions} <- QueryCompiler.structured_conditions(selector, fields) do
+  defp selected_index(indexes, index_id),
+    do: Enum.find(indexes, &(&1["index_id"] == index_id))
+
+  defp structured_candidate_rows(_adapter, nil, _scan),
+    do: {:error, ElixirDB.Error.invalid_index_hint("planned index no longer exists", %{})}
+
+  defp structured_candidate_rows(adapter, selected, scan) do
+    fields = selected["fields"] || []
+
+    with {:ok, conditions} <- QueryCompiler.compile_scan(scan, fields) do
       where = ["winning_deleted = 0" | Enum.map(conditions, &elem(&1, 0))] |> Enum.join(" AND ")
       params = Enum.flat_map(conditions, fn {_sql, value} -> List.wrap(value) end)
 
@@ -161,18 +251,21 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp rejected_index_reasons(indexes, selected, request) do
+  defp rejected_index_reasons(indexes, plan, request) do
+    selected = MapSet.new(Enum.map(Plan.index_bindings(plan), & &1.index_id))
+
     Enum.map(indexes, fn index ->
       {index["index_id"],
-       if(selected && selected["index_id"] == index["index_id"], do: :selected, else: :incompatible)}
+       if(MapSet.member?(selected, index["index_id"]), do: :selected, else: :incompatible)}
     end)
     |> Map.new()
     |> Map.put(:request, MapAccess.get(request, :index))
   end
 
-  defp enforce_scan_limit(selected, _examined, _identity) when not is_nil(selected), do: :ok
+  defp enforce_scan_limit(%Plan{kind: kind}, _examined, _identity) when kind != :bounded_scan,
+    do: :ok
 
-  defp enforce_scan_limit(nil, examined, identity) do
+  defp enforce_scan_limit(%Plan{kind: :bounded_scan}, examined, identity) do
     threshold = get_in(identity, [:config, "queries", "scan_threshold"]) || 1_000
 
     if examined < threshold,
@@ -365,32 +458,21 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
 
-  defp transitional_plan_metadata(nil) do
-    with {:ok, digest} <- Plan.transitional_digest(:bounded_scan, []) do
-      {:ok, %{kind: :bounded_scan, digest: digest, index_bindings: []}}
+  defp selected_metadata(%Plan{selected_indexes: [binding | _]}), do: binding
+  defp selected_metadata(%Plan{}), do: %{index_id: nil, definition_digest: nil}
+
+  defp first_binding_id(%Plan{selected_indexes: [binding | _]}), do: binding.index_id
+  defp first_binding_id(%Plan{}), do: nil
+
+  defp plan_pushdowns(%Plan{scans: scans}),
+    do: Enum.flat_map(scans, &Map.get(&1, "constraints", []))
+
+  defp post_filter_predicates(request) do
+    case MapAccess.get(request, :predicate) do
+      nil -> []
+      predicate -> [Predicate.render(predicate)]
     end
   end
-
-  defp transitional_plan_metadata(%{
-         "type" => type,
-         "index_id" => index_id,
-         "definition_digest" => digest
-       }) do
-    kind = if type == "full_text", do: :full_text, else: :single
-    binding = %{index_id: index_id, definition_digest: digest}
-
-    with {:ok, plan_digest} <- Plan.transitional_digest(kind, binding) do
-      {:ok,
-       %{
-         kind: kind,
-         digest: plan_digest,
-         index_bindings: [%{"index_id" => index_id, "definition_digest" => digest}]
-       }}
-    end
-  end
-
-  defp transitional_plan_metadata(_selected),
-    do: {:error, ElixirDB.Error.invalid_request("selected index metadata is invalid")}
 
   defp value_or_default(nil, default), do: default
   defp value_or_default(value, _default), do: value

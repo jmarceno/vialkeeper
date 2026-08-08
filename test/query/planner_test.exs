@@ -1,7 +1,7 @@
 defmodule ElixirDB.Query.PlannerTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Query.{Plan, Planner, Projection, Regex}
+  alias ElixirDB.Query.{Normalizer, Plan, Planner, Projection, Regex}
 
   defp structured(id, fields) do
     %{
@@ -248,5 +248,108 @@ defmodule ElixirDB.Query.PlannerTest do
                sort_compatible?: false,
                pagination: :indexed
              })
+  end
+
+  test "plan selects one deterministic structured candidate from a normalized predicate" do
+    first = structured("idx-status", [{"/status", "string"}])
+    second = structured("idx-priority", [{"/priority", "number"}])
+
+    {:ok, request} =
+      Normalizer.normalize(%{selector: %{"/status" => "open", "/priority" => %{"$gte" => 3}}})
+
+    assert {:ok, first_plan} = Planner.plan([second, first], request)
+    assert {:ok, second_plan} = Planner.plan([first, second], request)
+    assert first_plan.kind == :single
+    assert first_plan.digest == second_plan.digest
+    assert first_plan.selected_indexes == second_plan.selected_indexes
+    assert [_] = first_plan.scans
+  end
+
+  test "plan unions every indexed OR branch and deduplicates binding order canonically" do
+    status = structured("idx-status", [{"/status", "string"}])
+    priority = structured("idx-priority", [{"/priority", "number"}])
+
+    {:ok, request} =
+      Normalizer.normalize(%{
+        selector: %{
+          "$or" => [
+            %{"/status" => "open"},
+            %{"/priority" => %{"$gte" => 3}}
+          ]
+        }
+      })
+
+    assert {:ok, plan} = Planner.plan([priority, status], request)
+    assert plan.kind == :union
+    assert Enum.map(plan.scans, & &1["branch"]) == [0, 1]
+    assert Enum.map(plan.selected_indexes, & &1.index_id) == ["idx-status", "idx-priority"]
+  end
+
+  test "plan safely falls back when OR branches share one index" do
+    status = structured("idx-status", [{"/status", "string"}])
+
+    {:ok, request} =
+      Normalizer.normalize(%{
+        selector: %{
+          "$or" => [
+            %{"/status" => "open"},
+            %{"/status" => "closed"}
+          ]
+        }
+      })
+
+    assert {:ok, plan} = Planner.plan([status], request)
+    assert plan.kind == :bounded_scan
+    assert plan.selected_indexes == []
+  end
+
+  test "plan falls back to bounded scan for an uncovered OR branch" do
+    status = structured("idx-status", [{"/status", "string"}])
+
+    {:ok, request} =
+      Normalizer.normalize(%{
+        selector: %{"$or" => [%{"/status" => "open"}, %{"/unindexed" => 7}]}
+      })
+
+    assert {:ok, plan} = Planner.plan([status], request)
+    assert plan.kind == :bounded_scan
+    assert plan.selected_indexes == []
+  end
+
+  test "negative-only predicates never use an index and hints cannot fall back" do
+    status = structured("idx-status", [{"/status", "string"}])
+    {:ok, request} = Normalizer.normalize(%{selector: %{"/status" => %{"$ne" => "closed"}}})
+
+    assert {:ok, %{kind: :bounded_scan}} = Planner.plan([status], request)
+
+    hinted = Map.put(request, :index, "idx-status")
+    assert {:error, %ElixirDB.Error{code: :invalid_index_hint}} = Planner.plan([status], hinted)
+  end
+
+  test "full-text search produces one full-text binding" do
+    full_text = %{
+      "index_id" => "idx-text",
+      "name" => "notes",
+      "type" => "full_text",
+      "fields" => ["/title"]
+    }
+
+    {:ok, request} =
+      Normalizer.normalize(%{
+        search: %{index: "notes", text: "replic", mode: "prefix"},
+        selector: %{"/status" => "open"}
+      })
+
+    assert {:ok, plan} = Planner.plan([full_text], request)
+    assert plan.kind == :full_text
+
+    assert plan.selected_indexes == [
+             %{
+               index_id: "idx-text",
+               definition_digest: plan.selected_indexes |> hd() |> Map.fetch!(:definition_digest)
+             }
+           ]
+
+    assert plan.scans == [%{"branch" => 0, "index_id" => "idx-text", "type" => "full_text"}]
   end
 end

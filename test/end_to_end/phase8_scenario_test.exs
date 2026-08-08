@@ -217,6 +217,14 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
     assert is_binary(page1.bookmark)
     assert [_] = page1.documents
 
+    assert {:ok, %{documents: [%{id: "gamma"}]}} =
+             ElixirDB.Query.execute(a_uuid, %{
+               "selector" => %{"/side" => "a"},
+               "index" => "by-side",
+               "limit" => 1,
+               "bookmark" => page1.bookmark
+             })
+
     assert {:ok, _} =
              ElixirDB.Documents.put(a_uuid, %{
                id: "delta",

@@ -62,12 +62,6 @@ defmodule ElixirDB.Query.Regex do
       {:error, reason} when reason in [:match_limit, :match_limit_recursion] ->
         {:error, ElixirDB.Error.resource_limit("regex evaluation exceeded its resource limit")}
 
-      {:error, {:match_limit, _}} ->
-        {:error, ElixirDB.Error.resource_limit("regex evaluation exceeded its resource limit")}
-
-      {:error, {:match_limit_recursion, _}} ->
-        {:error, ElixirDB.Error.resource_limit("regex evaluation exceeded its resource limit")}
-
       {:error, reason} ->
         {:error,
          ElixirDB.Error.invalid_request("regex evaluation failed", %{reason: regex_reason(reason)})}

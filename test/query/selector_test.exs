@@ -10,6 +10,7 @@ defmodule ElixirDB.Query.SelectorTest do
     assert Selector.matches?(body, {:field, "/null", [{:eq, nil}]}) == {:ok, true}
     assert Selector.matches?(body, {:field, "/missing", [{:eq, nil}]}) == {:ok, false}
     assert Selector.matches?(body, {:field, "/null", [{:exists, true}]}) == {:ok, true}
+    assert Selector.matches?(body, {:field, "/null", [{:exists, false}]}) == {:ok, false}
     assert Selector.matches?(body, {:field, "/missing", [{:exists, false}]}) == {:ok, true}
     assert Selector.matches?(body, {:field, "/missing", [{:ne, 10}]}) == {:ok, false}
     assert Selector.matches?(body, {:not, {:field, "/missing", [{:eq, 10}]}}) == {:ok, true}

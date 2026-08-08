@@ -117,4 +117,104 @@ defmodule ElixirDB.Query.QueryTest do
                limit: 5
              })
   end
+
+  test "executes an indexed OR plan once per matching document", %{adapter: adapter} do
+    for {document_id, body} <- [
+          {"open", %{"status" => "open", "priority" => 1}},
+          {"high", %{"status" => "closed", "priority" => 5}},
+          {"both", %{"status" => "open", "priority" => 5}},
+          {"neither", %{"status" => "closed", "priority" => 1}}
+        ] do
+      assert {:ok, _} =
+               Adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: document_id,
+                 body: body
+               })
+    end
+
+    assert {:ok, _} =
+             Adapter.create_index(adapter, %{
+               "name" => "by-status",
+               "type" => "structured",
+               "fields" => [%{"path" => "/status", "type" => "string", "direction" => "asc"}]
+             })
+
+    assert {:ok, _} =
+             Adapter.create_index(adapter, %{
+               "name" => "by-priority",
+               "type" => "structured",
+               "fields" => [%{"path" => "/priority", "type" => "number", "direction" => "asc"}]
+             })
+
+    assert {:ok, %{plan_kind: :union, results: results, index_bindings: selected}} =
+             Adapter.execute_query(adapter, %{
+               selector: %{
+                 "$or" => [
+                   %{"/status" => "open"},
+                   %{"/priority" => %{"$gte" => 5}}
+                 ]
+               },
+               limit: 10
+             })
+
+    assert Enum.map(results, & &1.id) |> Enum.sort() == ["both", "high", "open"]
+    assert [_, _] = selected
+  end
+
+  test "executes OR branches sharing one structured index", %{adapter: adapter} do
+    for {document_id, status} <- [{"open", "open"}, {"closed", "closed"}, {"queued", "queued"}] do
+      assert {:ok, _} =
+               Adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: document_id,
+                 body: %{"status" => status}
+               })
+    end
+
+    assert {:ok, _} =
+             Adapter.create_index(adapter, %{
+               "name" => "by-status",
+               "type" => "structured",
+               "fields" => [%{"path" => "/status", "type" => "string", "direction" => "asc"}]
+             })
+
+    assert {:ok, %{plan_kind: :bounded_scan, results: results, index_bindings: []}} =
+             Adapter.execute_query(adapter, %{
+               selector: %{"$or" => [%{"/status" => "open"}, %{"/status" => "closed"}]},
+               limit: 10
+             })
+
+    assert Enum.map(results, & &1.id) |> Enum.sort() == ["closed", "open"]
+  end
+
+  test "pushes down null equality without losing null-valued documents", %{adapter: adapter} do
+    assert {:ok, _} =
+             Adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "null",
+               body: %{"value" => nil}
+             })
+
+    assert {:ok, _} =
+             Adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "missing",
+               body: %{}
+             })
+
+    assert {:ok, _} =
+             Adapter.create_index(adapter, %{
+               "name" => "by-null",
+               "type" => "structured",
+               "fields" => [%{"path" => "/value", "type" => "null", "direction" => "asc"}]
+             })
+
+    assert {:ok, %{results: [%{id: "null"}]}} =
+             Adapter.execute_query(adapter, %{
+               selector: %{"/value" => %{"$eq" => nil}},
+               index: "by-null",
+               limit: 10
+             })
+  end
 end

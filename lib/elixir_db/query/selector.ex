@@ -98,7 +98,7 @@ defmodule ElixirDB.Query.Selector do
       {:ok,
        Predicate.scalar?(value) and Enum.all?(expected, &(not Predicate.exact_equal?(value, &1)))}
 
-  defp evaluate_field_predicate({:ok, _value}, {:exists, _expected}), do: {:ok, true}
+  defp evaluate_field_predicate({:ok, _value}, {:exists, expected}), do: {:ok, expected}
 
   defp evaluate_field_predicate({:ok, value}, {:type, expected}),
     do: {:ok, Predicate.json_type(value) == expected}

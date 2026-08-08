@@ -4,6 +4,7 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
   alias ElixirDB.JSON.Pointer
   alias ElixirDB.MapAccess
   alias ElixirDB.Query.Normalizer
+  alias ElixirDB.Query.PrefixBounds
 
   @spec compile(map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def compile(request) when is_map(request), do: Normalizer.normalize(request)
@@ -77,6 +78,26 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
     reduce_ok(selector, [], fn clause, acc -> compile_clause(clause, acc, fields) end)
   end
 
+  @doc """
+  Compiles the already-selected positive constraints from one plan scan.
+
+  The planner, rather than this module, decides which predicates are safe and
+  complete candidate constraints. This seam only translates those constraints
+  to parameterized SQLite fragments.
+  """
+  @spec compile_scan(map(), [map()]) ::
+          {:ok, [{binary(), term()}]} | {:error, ElixirDB.Error.t()}
+  def compile_scan(scan, fields) when is_map(scan) and is_list(fields) do
+    constraints = Map.get(scan, "constraints", [])
+
+    if is_list(constraints),
+      do: reduce_ok(constraints, [], &compile_scan_constraint(&1, &2, fields)),
+      else: {:error, ElixirDB.Error.invalid_request("plan scan constraints must be an array")}
+  end
+
+  def compile_scan(_scan, _fields),
+    do: {:error, ElixirDB.Error.invalid_request("plan scan must be an object")}
+
   defp compile_clause({"$and", clauses}, acc, fields) when is_list(clauses) do
     # The Normalizer produces $and clauses as a list of selector maps; recurse into each
     # clause (a map of {path, condition} pairs) the same way structured_conditions/2 does.
@@ -102,6 +123,11 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
   @doc "Compile one scalar comparison against a typed JSON path."
   @spec scalar_condition(binary(), binary(), term(), binary()) ::
           {:ok, [{binary(), term()}]} | {:error, ElixirDB.Error.t()}
+  def scalar_condition(path, "$eq", nil, "null") do
+    with {:ok, type_sql} <- json_type_sql(path, "null"),
+         do: {:ok, [{"(#{type_sql})", nil}]}
+  end
+
   def scalar_condition(path, operator, value, type) do
     if type_matches?(value, type) do
       with {:ok, expression} <- json_expression(path),
@@ -159,6 +185,59 @@ defmodule ElixirDB.Storage.SQLite.QueryCompiler do
   end
 
   defp field_condition(path, value, type), do: scalar_condition(path, "$eq", value, type)
+
+  defp compile_scan_constraint(constraint, acc, fields) when is_map(constraint) do
+    path = Map.get(constraint, "path")
+    operator = Map.get(constraint, "operator")
+    value = Map.get(constraint, "value")
+
+    case Enum.find(fields, &(MapAccess.get(&1, :path) == path)) do
+      nil ->
+        {:error, ElixirDB.Error.invalid_request("plan scan references an unknown index field")}
+
+      field ->
+        with {:ok, compiled} <-
+               compile_plan_constraint(path, operator, value, MapAccess.get(field, :type)) do
+          {:ok, acc ++ compiled}
+        end
+    end
+  end
+
+  defp compile_scan_constraint(_constraint, _acc, _fields),
+    do: {:error, ElixirDB.Error.invalid_request("plan scan constraint must be an object")}
+
+  defp compile_plan_constraint(path, "$in", values, type) when is_list(values) do
+    with {:ok, compiled} <-
+           reduce_ok(values, [], fn value, inner_acc ->
+             compile_in_value(path, type, value, inner_acc)
+           end) do
+      compile_in_conditions(compiled, [])
+    end
+  end
+
+  defp compile_plan_constraint(path, "$beginsWith", prefix, "string") when is_binary(prefix) do
+    with {:ok, bounds} <- PrefixBounds.bounds(prefix),
+         {:ok, expression} <- json_expression(path),
+         {:ok, type_sql} <- json_type_sql(path, "string") do
+      lower = {"(#{type_sql} AND #{expression} >= ?)", bounds.lower}
+
+      conditions =
+        case bounds.upper do
+          nil -> [lower]
+          upper -> [lower, {"(#{type_sql} AND #{expression} < ?)", upper}]
+        end
+
+      {:ok, conditions}
+    end
+  end
+
+  defp compile_plan_constraint(path, operator, value, type)
+       when operator in ["$eq", "$gt", "$gte", "$lt", "$lte"] do
+    scalar_condition(path, operator, value, type)
+  end
+
+  defp compile_plan_constraint(_path, _operator, _value, _type),
+    do: {:error, ElixirDB.Error.invalid_request("plan scan constraint is not pushdown-capable")}
 
   defp compile_in_value(path, type, value, inner_acc) do
     with {:ok, pairs} <- scalar_condition(path, "$eq", value, type),
