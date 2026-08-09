@@ -22,6 +22,7 @@ defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
       {ElixirDB.Runtime.DatabaseAdmission, {uuid, limit}},
       {ElixirDB.Runtime.AttachmentCoordinator, uuid},
       {ElixirDB.Runtime.ChangeNotifier, uuid},
+      {ElixirDB.Query.SubscriptionSupervisor, uuid},
       {ElixirDB.Runtime.RetentionScheduler, uuid}
     ]
 
