@@ -15,6 +15,9 @@ defmodule ElixirDB.Config do
     "replication" => %{
       "batch_documents" => 100,
       "batch_bytes" => 4_194_304,
+      "max_concurrent_chain_fetches" => 4,
+      "max_concurrent_blob_transfers" => 4,
+      "max_transfer_bytes_in_flight" => 1_073_741_824,
       "retry" => %{
         "max_attempts" => 8,
         "base_delay_ms" => 100,
@@ -110,6 +113,25 @@ defmodule ElixirDB.Config do
          :ok <-
            ensure_integer_limit(
              merged,
+             ["replication", "max_concurrent_chain_fetches"],
+             limits[:max_replication_concurrent_chain_fetches]
+           ),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["replication", "max_concurrent_blob_transfers"],
+             limits[:max_replication_concurrent_blob_transfers]
+           ),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["replication", "max_transfer_bytes_in_flight"],
+             limits[:max_replication_transfer_bytes_in_flight]
+           ),
+         :ok <- validate_transfer_bytes(merged),
+         :ok <-
+           ensure_integer_limit(
+             merged,
              ["queries", "max_execution_ms"],
              limits[:max_query_execution_ms]
            ),
@@ -194,7 +216,14 @@ defmodule ElixirDB.Config do
       "documents" => ["max_document_bytes", "max_document_id_bytes"],
       "queries" => ["default_limit", "max_limit", "scan_threshold", "max_execution_ms"],
       "changes" => ["default_batch", "max_batch", "max_wait_ms"],
-      "replication" => ["batch_documents", "batch_bytes", "retry"],
+      "replication" => [
+        "batch_documents",
+        "batch_bytes",
+        "max_concurrent_chain_fetches",
+        "max_concurrent_blob_transfers",
+        "max_transfer_bytes_in_flight",
+        "retry"
+      ],
       "retention" => ["mode", "history_depth", "peer_expiry_ms", "schedule"],
       "attachments" => [
         "max_attachment_bytes",
@@ -255,6 +284,9 @@ defmodule ElixirDB.Config do
       ["changes", "max_wait_ms"],
       ["replication", "batch_documents"],
       ["replication", "batch_bytes"],
+      ["replication", "max_concurrent_chain_fetches"],
+      ["replication", "max_concurrent_blob_transfers"],
+      ["replication", "max_transfer_bytes_in_flight"],
       ["replication", "retry", "max_attempts"],
       ["replication", "retry", "base_delay_ms"],
       ["replication", "retry", "max_delay_ms"],
@@ -277,6 +309,20 @@ defmodule ElixirDB.Config do
             })}}
       end
     end)
+  end
+
+  defp validate_transfer_bytes(config) do
+    transfer_bytes = get_in(config, ["replication", "max_transfer_bytes_in_flight"])
+    attachment_bytes = get_in(config, ["attachments", "max_attachment_bytes"])
+
+    if transfer_bytes >= attachment_bytes do
+      :ok
+    else
+      {:error,
+       ElixirDB.Error.invalid_request(
+         "replication max_transfer_bytes_in_flight must be at least attachments max_attachment_bytes"
+       )}
+    end
   end
 
   defp validate_retention_values(config) do

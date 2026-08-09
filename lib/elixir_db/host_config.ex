@@ -32,6 +32,9 @@ defmodule ElixirDB.HostConfig do
     "max_wait_ms" => 30_000,
     "max_open_databases" => 64,
     "max_replication_workers" => 32,
+    "max_replication_concurrent_chain_fetches" => 32,
+    "max_replication_concurrent_blob_transfers" => 32,
+    "max_replication_transfer_bytes_in_flight" => 4_294_967_296,
     "admission_limit" => 128,
     "max_json_nesting_depth" => 100,
     "max_attachment_bytes" => 4_294_967_296,
@@ -55,6 +58,9 @@ defmodule ElixirDB.HostConfig do
     "max_wait_ms" => :max_wait_ms,
     "max_open_databases" => :max_open_databases,
     "max_replication_workers" => :max_replication_workers,
+    "max_replication_concurrent_chain_fetches" => :max_replication_concurrent_chain_fetches,
+    "max_replication_concurrent_blob_transfers" => :max_replication_concurrent_blob_transfers,
+    "max_replication_transfer_bytes_in_flight" => :max_replication_transfer_bytes_in_flight,
     "admission_limit" => :admission_limit,
     "max_json_nesting_depth" => :max_json_nesting_depth,
     "max_attachment_bytes" => :max_attachment_bytes,
@@ -256,8 +262,11 @@ defmodule ElixirDB.HostConfig do
         validate_limit_entry(key, value)
       end)
       |> case do
-        :ok -> {:ok, Map.merge(@default_limits, limits)}
-        error -> error
+        :ok ->
+          validate_transfer_limit(Map.merge(@default_limits, limits))
+
+        error ->
+          error
       end
     end
   end
@@ -271,6 +280,14 @@ defmodule ElixirDB.HostConfig do
     do: {:halt, {:error, "host.toml: limits.#{key} must be positive"}}
 
   defp validate_limit_entry(_key, _value), do: {:cont, :ok}
+
+  defp validate_transfer_limit(limits) do
+    if limits["max_replication_transfer_bytes_in_flight"] >= limits["max_attachment_bytes"],
+      do: {:ok, limits},
+      else:
+        {:error,
+         "host.toml: limits.max_replication_transfer_bytes_in_flight must be at least limits.max_attachment_bytes"}
+  end
 
   defp validate_auth(nil), do: {:ok, [enabled: false, token_digests: []]}
 

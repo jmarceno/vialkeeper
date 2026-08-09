@@ -74,6 +74,9 @@ defmodule ElixirDB.HostConfigTest do
     limits = Keyword.get(config, :host_limits) |> Map.new()
     assert limits[:max_document_bytes] == 1_048_576
     assert limits[:admission_limit] == 128
+    assert limits[:max_replication_concurrent_chain_fetches] == 32
+    assert limits[:max_replication_concurrent_blob_transfers] == 32
+    assert limits[:max_replication_transfer_bytes_in_flight] == 4_294_967_296
   end
 
   test "listener ip and port override", %{dir: dir} do

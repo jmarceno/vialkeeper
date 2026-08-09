@@ -327,19 +327,23 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
 
   test "write guard captures max_attachment_bytes at admission", %{uuid: uuid} do
     assert {:ok, first_token, first_max} = AttachmentCoordinator.acquire_write(uuid)
+    raised = first_max + 1_024
 
     assert {:ok, _} =
              DatabaseCatalog.command(
                uuid,
                {:command, :update_config,
-                %{"attachments" => %{"max_attachment_bytes" => first_max + 1_024}}}
+                %{
+                  "attachments" => %{"max_attachment_bytes" => raised},
+                  "replication" => %{"max_transfer_bytes_in_flight" => raised}
+                }}
              )
 
     assert {:ok, second_token, second_max} = AttachmentCoordinator.acquire_write(uuid)
-    assert second_max == first_max + 1_024
+    assert second_max == raised
 
     status = AttachmentCoordinator.status(uuid)
-    assert status.max_attachment_bytes == first_max + 1_024
+    assert status.max_attachment_bytes == raised
 
     assert :ok = AttachmentCoordinator.release(uuid, first_token)
     assert :ok = AttachmentCoordinator.release(uuid, second_token)
