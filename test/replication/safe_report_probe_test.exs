@@ -133,7 +133,7 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
   defp run_batch(source, target, context, options) do
     with {:ok, context} <- Replication.read_changes(source, context, options),
          {:ok, context} <- Replication.diff(target, context, options),
-         {:ok, context} <- Replication.fetch_chains(source, context, options),
+         {:ok, context} <- Replication.transfer(source, target, context, options),
          {:ok, context} <- Replication.import_chains(target, context, options),
          {:ok, context} <- Replication.checkpoint_target(source, target, context, options) do
       Replication.checkpoint_source(source, context, options)

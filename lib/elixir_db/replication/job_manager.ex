@@ -18,8 +18,7 @@ defmodule ElixirDB.Replication.JobManager do
     :bootstrap,
     :read_changes,
     :diff,
-    :fetch_chains,
-    :sync_blobs,
+    :transfer,
     :import,
     :checkpoint_target,
     :checkpoint_source,
@@ -389,10 +388,48 @@ defmodule ElixirDB.Replication.JobManager do
          replication_id: replication_id,
          mode: mode,
          direction: direction,
-         batch: option(option(definition, :batch, %{}), :documents, 100),
+         batch:
+           option(
+             option(definition, :batch, %{}),
+             :documents,
+             replication_default(:batch_documents, 100)
+           ),
          wait_ms: option(definition, :wait_ms, 1_000),
          retry: option(definition, :retry, %{}),
-         batch_bytes: option(option(definition, :batch, %{}), :bytes, 4_194_304),
+         batch_bytes:
+           option(
+             option(definition, :batch, %{}),
+             :bytes,
+             replication_default(:batch_bytes, 4_194_304)
+           ),
+         max_concurrent_chain_fetches:
+           option(
+             definition,
+             :max_concurrent_chain_fetches,
+             replication_default(:max_concurrent_chain_fetches, 4)
+           ),
+         max_concurrent_blob_transfers:
+           option(
+             definition,
+             :max_concurrent_blob_transfers,
+             replication_default(:max_concurrent_blob_transfers, 4)
+           ),
+         max_transfer_bytes_in_flight:
+           option(
+             definition,
+             :max_transfer_bytes_in_flight,
+             replication_default(:max_transfer_bytes_in_flight, 1_073_741_824)
+           ),
+         batch_documents:
+           option(
+             definition,
+             :batch_documents,
+             option(
+               option(definition, :batch, %{}),
+               :documents,
+               replication_default(:batch_documents, 100)
+             )
+           ),
          job_id: job.job_id
        }}
     end
@@ -433,6 +470,10 @@ defmodule ElixirDB.Replication.JobManager do
       "batch",
       "retry",
       "wait_ms",
+      "max_concurrent_chain_fetches",
+      "max_concurrent_blob_transfers",
+      "max_transfer_bytes_in_flight",
+      "batch_documents",
       :persist,
       :mode,
       :direction,
@@ -440,7 +481,11 @@ defmodule ElixirDB.Replication.JobManager do
       :enabled,
       :batch,
       :retry,
-      :wait_ms
+      :wait_ms,
+      :max_concurrent_chain_fetches,
+      :max_concurrent_blob_transfers,
+      :max_transfer_bytes_in_flight,
+      :batch_documents
     ]
 
     if Enum.all?(Map.keys(definition), &(&1 in allowed)) do
@@ -482,8 +527,22 @@ defmodule ElixirDB.Replication.JobManager do
 
     with true <- is_map(batch) and Enum.all?(Map.keys(batch), &(&1 in batch_keys)),
          true <- is_map(retry) and Enum.all?(Map.keys(retry), &(&1 in retry_keys)),
-         true <- positive_bounded?(Map.get(batch, "documents", 100), max_documents),
-         true <- positive_bounded?(Map.get(batch, "bytes", 4_194_304), max_bytes),
+         true <-
+           positive_bounded?(
+             Map.get(batch, "documents", replication_default(:batch_documents, 100)),
+             max_documents
+           ),
+         true <-
+           positive_bounded?(
+             Map.get(batch, "bytes", replication_default(:batch_bytes, 4_194_304)),
+             max_bytes
+           ),
+         true <-
+           positive_bounded?(
+             Map.get(definition, "batch_documents", replication_default(:batch_documents, 100)),
+             max_documents
+           ),
+         :ok <- validate_transfer_job_options(definition),
          true <- positive_bounded?(Map.get(retry, "max_attempts", 8), max_attempts),
          true <- positive_integer?(Map.get(retry, "base_delay_ms", 100)),
          true <- positive_bounded?(Map.get(retry, "max_delay_ms", 30_000), max_delay),
@@ -492,6 +551,50 @@ defmodule ElixirDB.Replication.JobManager do
            Map.get(retry, "max_delay_ms", 30_000) >=
              Map.get(retry, "base_delay_ms", 100),
          true <- positive_bounded?(Map.get(definition, "wait_ms", 1_000), max_wait) do
+      :ok
+    else
+      {:error, _} = error -> error
+      _ -> {:error, ElixirDB.Error.invalid_request("replication job options are invalid")}
+    end
+  end
+
+  defp validate_transfer_job_options(definition) do
+    max_chain_fetches =
+      ElixirDB.Config.host_limits()[:max_replication_concurrent_chain_fetches] || 32
+
+    max_blob_transfers =
+      ElixirDB.Config.host_limits()[:max_replication_concurrent_blob_transfers] || 32
+
+    max_transfer_bytes =
+      ElixirDB.Config.host_limits()[:max_replication_transfer_bytes_in_flight] || 4_294_967_296
+
+    with true <-
+           positive_bounded?(
+             Map.get(
+               definition,
+               "max_concurrent_chain_fetches",
+               replication_default(:max_concurrent_chain_fetches, 4)
+             ),
+             max_chain_fetches
+           ),
+         true <-
+           positive_bounded?(
+             Map.get(
+               definition,
+               "max_concurrent_blob_transfers",
+               replication_default(:max_concurrent_blob_transfers, 4)
+             ),
+             max_blob_transfers
+           ),
+         true <-
+           positive_bounded?(
+             Map.get(
+               definition,
+               "max_transfer_bytes_in_flight",
+               replication_default(:max_transfer_bytes_in_flight, 1_073_741_824)
+             ),
+             max_transfer_bytes
+           ) do
       :ok
     else
       _ -> {:error, ElixirDB.Error.invalid_request("replication job options are invalid")}
@@ -527,4 +630,10 @@ defmodule ElixirDB.Replication.JobManager do
     do: MapAccess.get(map, key, default)
 
   defp option(_map, _key, default), do: default
+
+  defp replication_default(key, default) do
+    ElixirDB.Config.defaults()
+    |> Map.get("replication", %{})
+    |> Map.get(Atom.to_string(key), default)
+  end
 end

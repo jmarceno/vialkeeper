@@ -2,7 +2,7 @@ defmodule ElixirDB.Replication.Worker do
   @moduledoc """
   Supervised replication state machine with cancellable bounded work.
 
-  States (Plan §7.7): idle, handshake, read_changes, diff, fetch_chains, sync_blobs,
+  States (Plan §7.7): idle, handshake, read_changes, diff, transfer,
   import, checkpoint_target, checkpoint_source, waiting, backoff, completed, failed.
 
   Cancellation (REPL-018) is checked between phases after a phase Task completes.
@@ -30,8 +30,7 @@ defmodule ElixirDB.Replication.Worker do
     :bootstrap,
     :read_changes,
     :diff,
-    :fetch_chains,
-    :sync_blobs,
+    :transfer,
     :import,
     :checkpoint_target,
     :checkpoint_source,
@@ -233,11 +232,8 @@ defmodule ElixirDB.Replication.Worker do
   defp run_phase(:diff, _source, target, context, options),
     do: Replication.diff(target, context, options)
 
-  defp run_phase(:fetch_chains, source, _target, context, options),
-    do: Replication.fetch_chains(source, context, options)
-
-  defp run_phase(:sync_blobs, source, target, context, options),
-    do: Replication.sync_blobs(source, target, context, options)
+  defp run_phase(:transfer, source, target, context, options),
+    do: Replication.transfer(source, target, context, options)
 
   defp run_phase(:import, _source, target, context, options),
     do: Replication.import_chains(target, context, options)
@@ -306,12 +302,9 @@ defmodule ElixirDB.Replication.Worker do
   end
 
   defp handle_phase_result(:diff, {:ok, context}, data),
-    do: enter_phase(:fetch_chains, %{data | context: context})
+    do: enter_phase(:transfer, %{data | context: context})
 
-  defp handle_phase_result(:fetch_chains, {:ok, context}, data),
-    do: enter_phase(:sync_blobs, %{data | context: context})
-
-  defp handle_phase_result(:sync_blobs, {:ok, context}, data),
+  defp handle_phase_result(:transfer, {:ok, context}, data),
     do: enter_phase(:import, %{data | context: context})
 
   defp handle_phase_result(:import, {:ok, context}, data),

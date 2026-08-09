@@ -1,14 +1,15 @@
 defmodule ElixirDB.Replication.TransferPipeline do
   @moduledoc """
-  Pure contracts and planning helpers for bounded replication transfers.
+  Bounded concurrent replication transfer pipeline.
 
-  The worker still owns the existing sequential transfer phases. This module
-  only defines the deterministic data that the concurrent pipeline will use.
+  Fetches revision chains and streams missing attachment blobs under private
+  per-run task supervision, then returns deterministic chains for import.
   """
 
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Error
   alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationModule
   alias ElixirDB.Replication.BlobStream
 
   defmodule ChainChunk do
@@ -48,6 +49,8 @@ defmodule ElixirDB.Replication.TransferPipeline do
               max_transfer_bytes_in_flight: 1_073_741_824,
               blob_diff_batch_size: 100,
               trace_context: nil,
+              phase_hook: nil,
+              replication_id: nil,
               blob_obligations: [],
               seen_blob_digests: %{}
 
@@ -75,6 +78,8 @@ defmodule ElixirDB.Replication.TransferPipeline do
             max_transfer_bytes_in_flight: pos_integer(),
             blob_diff_batch_size: pos_integer(),
             trace_context: term(),
+            phase_hook: (atom(), map() -> :ok | {:error, Error.t()}) | nil,
+            replication_id: binary() | nil,
             blob_obligations: [BlobObligation.t()],
             seen_blob_digests: %{optional(binary()) => non_neg_integer()}
           }
@@ -131,6 +136,8 @@ defmodule ElixirDB.Replication.TransferPipeline do
     end
   end
 
+  def blob_obligations(_chains), do: {:error, integrity_error("revision chain metadata is invalid")}
+
   @spec extract_blob_obligations([map()]) ::
           {:ok, [BlobObligation.t()]} | {:error, Error.t()}
   def extract_blob_obligations(chains), do: blob_obligations(chains)
@@ -151,40 +158,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
     documents = MapAccess.get(context, :documents, [])
 
     if is_list(documents) do
-      chunks = partition_chain_fetches(documents, config)
-
-      if chunks == [] do
-        {:ok, Map.put(context, :chains, [])}
-      else
-        {:ok, task_supervisor} = Task.Supervisor.start_link([])
-
-        state = %State{
-          phase: {:chain, 0},
-          source: source_endpoint,
-          target: target_endpoint,
-          task_supervisor: task_supervisor,
-          chain_chunks: chunks,
-          chain_queue: chunks,
-          max_chain_fetches: positive_config(config, :max_concurrent_chain_fetches, 4),
-          max_blob_transfers: positive_config(config, :max_concurrent_blob_transfers, 4),
-          max_transfer_bytes_in_flight:
-            positive_config(config, :max_transfer_bytes_in_flight, 1_073_741_824),
-          blob_diff_batch_size: positive_config(config, :batch_documents, 100),
-          trace_context: OpenTelemetry.Ctx.get_current()
-        }
-
-        try do
-          case run_transfer_loop(state) do
-            {:ok, completed} ->
-              {:ok, Map.put(context, :chains, aggregate_chains(completed))}
-
-            {:error, error} ->
-              {:error, error}
-          end
-        after
-          stop_task_supervisor(task_supervisor)
-        end
-      end
+      run_document_transfer(source_endpoint, target_endpoint, context, config, documents)
     else
       {:error, Error.invalid_request("replication documents must be a list")}
     end
@@ -192,6 +166,89 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
   def run(_source_endpoint, _target_endpoint, _context, _config),
     do: {:error, Error.invalid_request("replication transfer context is invalid")}
+
+  defp run_document_transfer(source_endpoint, target_endpoint, context, config, documents) do
+    chunks = partition_chain_fetches(documents, config)
+
+    preloaded_chains =
+      if MapAccess.get(context, :transfer_preloaded, false) do
+        MapAccess.get(context, :chains, [])
+      else
+        []
+      end
+
+    cond do
+      not is_list(preloaded_chains) ->
+        {:error, Error.invalid_request("preloaded revision chains must be a list")}
+
+      chunks == [] and preloaded_chains == [] ->
+        {:ok, Map.put(context, :chains, [])}
+
+      true ->
+        run_supervised_transfer(
+          source_endpoint,
+          target_endpoint,
+          context,
+          config,
+          chunks,
+          preloaded_chains
+        )
+    end
+  end
+
+  defp run_supervised_transfer(
+         source_endpoint,
+         target_endpoint,
+         context,
+         config,
+         chunks,
+         preloaded_chains
+       ) do
+    with {:ok, {completed_chains, blob_diff_queue, seen_blob_digests}} <-
+           preloaded_state(chunks, preloaded_chains),
+         {:ok, task_supervisor} <- Task.Supervisor.start_link() do
+      state = %State{
+        phase: {:chain, 0},
+        source: source_endpoint,
+        target: target_endpoint,
+        task_supervisor: task_supervisor,
+        chain_chunks: chunks,
+        chain_queue: chunks,
+        completed_chains: completed_chains,
+        blob_diff_queue: blob_diff_queue,
+        seen_blob_digests: seen_blob_digests,
+        max_chain_fetches: positive_config(config, :max_concurrent_chain_fetches, 4),
+        max_blob_transfers: positive_config(config, :max_concurrent_blob_transfers, 4),
+        max_transfer_bytes_in_flight:
+          positive_config(config, :max_transfer_bytes_in_flight, 1_073_741_824),
+        blob_diff_batch_size: positive_config(config, :batch_documents, 100),
+        trace_context: OpenTelemetry.Ctx.get_current(),
+        phase_hook: Map.get(config, :phase_hook),
+        replication_id: MapAccess.get(context, :replication_id) || Map.get(config, :replication_id)
+      }
+
+      try do
+        case run_transfer_loop(state) do
+          {:ok, completed} ->
+            {:ok, Map.put(context, :chains, aggregate_chains(completed))}
+
+          {:error, error} ->
+            {:error, error}
+        end
+      after
+        stop_task_supervisor(task_supervisor)
+      end
+    end
+  end
+
+  defp preloaded_state([], chains) do
+    with {:ok, obligations} <- blob_obligations(chains),
+         {:ok, new_obligations, seen} <- discover_new_obligations(obligations, %{}) do
+      {:ok, {%{0 => chains}, new_obligations, seen}}
+    end
+  end
+
+  defp preloaded_state(_chunks, _chains), do: {:ok, {%{}, [], %{}}}
 
   defp run_transfer_loop(state) do
     state = schedule_chain_tasks(state)
@@ -224,7 +281,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
             token = OpenTelemetry.Ctx.attach(state.trace_context)
 
             try do
-              fetch_chain_chunk(state.source, chunk)
+              fetch_chain_chunk(state.source, chunk, state.phase_hook)
             after
               OpenTelemetry.Ctx.detach(token)
             end
@@ -257,7 +314,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
         token = OpenTelemetry.Ctx.attach(state.trace_context)
 
         try do
-          diff_blob_batch(state.target, batch)
+          diff_blob_batch(state.target, batch, state.phase_hook)
         after
           OpenTelemetry.Ctx.detach(token)
         end
@@ -290,7 +347,13 @@ defmodule ElixirDB.Replication.TransferPipeline do
             token = OpenTelemetry.Ctx.attach(state.trace_context)
 
             try do
-              transfer_blob(state.source, state.target, obligation)
+              transfer_blob(
+                state.source,
+                state.target,
+                obligation,
+                state.phase_hook,
+                state.replication_id
+              )
             after
               OpenTelemetry.Ctx.detach(token)
             end
@@ -405,27 +468,34 @@ defmodule ElixirDB.Replication.TransferPipeline do
     }
   end
 
-  defp fetch_chain_chunk(source, %ChainChunk{documents: documents}) do
-    case endpoint_call(source, :get_revision_chains, [%{documents: documents}]) do
-      {:ok, response} when is_map(response) ->
-        chains = MapAccess.get(response, :chains)
+  defp fetch_chain_chunk(source, %ChainChunk{ordinal: ordinal, documents: documents}, phase_hook) do
+    context = %{ordinal: ordinal, documents: documents}
 
-        if is_list(chains) do
-          {:ok, chains}
-        else
-          {:error, Error.invalid_request("revision chain response is invalid")}
-        end
-
-      {:error, %Error{} = error} ->
-        {:error, error}
-
-      {:error, _reason} ->
-        {:error, Error.internal_error("revision chain fetch failed")}
-
-      _response ->
-        {:error, Error.invalid_request("revision chain response is invalid")}
+    with :ok <- invoke_phase_hook(phase_hook, :before_chain_fetch, context),
+         result <- endpoint_call(source, :get_revision_chains, [%{documents: documents}]),
+         {:ok, chains} <- normalize_chain_response(result),
+         :ok <- invoke_phase_hook(phase_hook, :after_chain_fetch, Map.put(context, :chains, chains)) do
+      {:ok, chains}
     end
   end
+
+  defp normalize_chain_response({:ok, response}) when is_map(response) do
+    chains = MapAccess.get(response, :chains)
+
+    if is_list(chains) do
+      {:ok, chains}
+    else
+      {:error, Error.invalid_request("revision chain response is invalid")}
+    end
+  end
+
+  defp normalize_chain_response({:error, %Error{} = error}), do: {:error, error}
+
+  defp normalize_chain_response({:error, _reason}),
+    do: {:error, Error.internal_error("revision chain fetch failed")}
+
+  defp normalize_chain_response(_response),
+    do: {:error, Error.invalid_request("revision chain response is invalid")}
 
   defp fail_tasks(state, error) do
     Enum.each(all_tasks(state), fn {_ref, {task, _metadata}} ->
@@ -495,14 +565,25 @@ defmodule ElixirDB.Replication.TransferPipeline do
         digest: digest
       })
 
-  defp diff_blob_batch(target, batch) do
-    case endpoint_call(target, :diff_blobs, [Enum.map(batch, & &1.digest)]) do
-      {:ok, missing} when is_list(missing) -> {:ok, missing}
-      {:error, %Error{} = error} -> {:error, error}
-      {:error, _reason} -> {:error, Error.internal_error("blob diff failed")}
-      _response -> {:error, Error.invalid_request("blob diff response is invalid")}
+  defp diff_blob_batch(target, batch, phase_hook) do
+    context = %{digests: Enum.map(batch, & &1.digest)}
+
+    with {:ok, missing} <-
+           normalize_blob_diff(endpoint_call(target, :diff_blobs, [context.digests])),
+         :ok <-
+           invoke_phase_hook(phase_hook, :after_diff_blobs, Map.put(context, :missing, missing)) do
+      {:ok, missing}
     end
   end
+
+  defp normalize_blob_diff({:ok, missing}) when is_list(missing), do: {:ok, missing}
+  defp normalize_blob_diff({:error, %Error{} = error}), do: {:error, error}
+
+  defp normalize_blob_diff({:error, _reason}),
+    do: {:error, Error.internal_error("blob diff failed")}
+
+  defp normalize_blob_diff(_response),
+    do: {:error, Error.invalid_request("blob diff response is invalid")}
 
   defp missing_blob_obligations(batch, missing) when is_list(missing) do
     obligations = Map.new(batch, &{&1.digest, &1})
@@ -525,10 +606,29 @@ defmodule ElixirDB.Replication.TransferPipeline do
   defp reverse_obligations({:ok, obligations}), do: {:ok, Enum.reverse(obligations)}
   defp reverse_obligations(error), do: error
 
-  defp transfer_blob(source, target, %BlobObligation{digest: digest, length: length}) do
-    with {:ok, %BlobStream{} = stream} <- endpoint_call(source, :open_blob, [digest]),
+  defp transfer_blob(
+         source,
+         target,
+         %BlobObligation{length: length} = obligation,
+         phase_hook,
+         replication_id
+       ) do
+    ReplicationModule.blob_transfer_span(
+      replication_id || "",
+      [logical_bytes: length],
+      fn -> do_transfer_blob(source, target, obligation, phase_hook) end
+    )
+  end
+
+  defp do_transfer_blob(source, target, %BlobObligation{digest: digest, length: length}, phase_hook) do
+    context = %{digest: digest, length: length}
+
+    with :ok <- invoke_phase_hook(phase_hook, :before_blob_transfer, context),
+         {:ok, %BlobStream{} = stream} <- endpoint_call(source, :open_blob, [digest]),
+         :ok <- invoke_phase_hook(phase_hook, :after_open_blob, Map.put(context, :stream, stream)),
          :ok <- validate_blob_stream(stream, digest, length),
-         :ok <- normalize_put_blob(endpoint_call(target, :put_blob, [stream])) do
+         :ok <- normalize_put_blob(endpoint_call(target, :put_blob, [stream])),
+         :ok <- invoke_phase_hook(phase_hook, :after_put_blob, context) do
       :ok
     else
       {:error, %Error{} = error} -> {:error, error}
@@ -536,6 +636,19 @@ defmodule ElixirDB.Replication.TransferPipeline do
       _response -> {:error, Error.invalid_request("blob stream response is invalid")}
     end
   end
+
+  defp invoke_phase_hook(nil, _phase, _context), do: :ok
+
+  defp invoke_phase_hook(phase_hook, phase, context) when is_function(phase_hook, 2) do
+    case phase_hook.(phase, context) do
+      :ok -> :ok
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, _reason} -> {:error, Error.internal_error("transfer phase hook failed")}
+      _other -> {:error, Error.internal_error("transfer phase hook returned invalid result")}
+    end
+  end
+
+  defp invoke_phase_hook(_phase_hook, _phase, _context), do: :ok
 
   defp validate_blob_stream(%BlobStream{digest: digest, length: length}, digest, length), do: :ok
 

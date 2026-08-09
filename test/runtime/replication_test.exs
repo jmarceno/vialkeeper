@@ -84,8 +84,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
              :handshake,
              :read_changes,
              :diff,
-             :fetch_chains,
-             :sync_blobs,
+             :transfer,
              :import
            ]
 
@@ -93,6 +92,25 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
     assert {:ok, %{body: %{"ok" => true}}} =
              ElixirDB.Documents.get(b.database_uuid, %{id: "job-doc"})
+  end
+
+  test "job transfer options cannot exceed host ceilings", %{a: a, b: b} do
+    base = %{
+      "persist" => false,
+      "mode" => "one_shot",
+      "direction" => "push",
+      "endpoint" => %{"kind" => "local", "database_uuid" => b.database_uuid}
+    }
+
+    for {key, value} <- [
+          {"max_concurrent_chain_fetches", 33},
+          {"max_concurrent_blob_transfers", 33},
+          {"max_transfer_bytes_in_flight", 4_294_967_297},
+          {"batch_documents", 501}
+        ] do
+      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+               JobManager.put(a.database_uuid, Map.put(base, key, value))
+    end
   end
 
   test "continuous job state survives the caller process exiting", %{a: a, b: b} do
@@ -242,11 +260,10 @@ defmodule ElixirDB.Runtime.ReplicationTest do
              :after_read_changes,
              :diff,
              :after_diff,
-             :fetch_chains,
-             :after_fetch_chains,
-             :sync_blobs,
-             :after_diff_blobs,
-             :after_sync_blobs,
+             :transfer,
+             :before_chain_fetch,
+             :after_chain_fetch,
+             :after_transfer,
              :import,
              :after_import,
              :checkpoint_target,

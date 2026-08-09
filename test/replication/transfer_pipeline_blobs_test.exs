@@ -1,5 +1,5 @@
 defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias ElixirDB.Error
   alias ElixirDB.Replication.BlobStream
@@ -84,14 +84,14 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
     target = endpoint(missing: digests, lengths: lengths(digests), blocked_blobs: digests)
 
     spawn_runner(source, target, documents(1), config(2, 100))
-    assert_receive {:chain_started, "doc-0", _}
-    assert_receive {:diff_started, ^digests, _}
+    assert_receive {:chain_started, "doc-0", _}, 1_000
+    assert_receive {:diff_started, ^digests, _}, 1_000
     opened = [receive_blob_opened(), receive_blob_opened()]
     refute_received {:blob_opened, _, _}
 
     Enum.each(opened, fn {digest, pid} -> send(pid, {:release_blob, digest}) end)
-    assert_receive {:blob_put, _, _}
-    assert_receive {:blob_put, _, _}
+    assert_receive {:blob_put, _, _}, 1_000
+    assert_receive {:blob_put, _, _}, 1_000
     release_remaining_blob(digests, opened)
     assert_receive {:result, {:ok, _}}, 1_000
   end
@@ -109,14 +109,14 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
     target = endpoint(missing: digests, lengths: lengths(digests, 6))
 
     spawn_runner(source, target, documents(1), config(2, 10))
-    assert_receive {:diff_started, ^digests, _}
+    assert_receive {:diff_started, ^digests, _}, 1_000
     {first, first_pid} = receive_blob_opened()
     refute_received {:blob_opened, _, _}
     send(first_pid, {:release_blob, first})
     assert_receive {:blob_put, ^first, _}, 1_000
     {second, second_pid} = receive_blob_opened()
     send(second_pid, {:release_blob, second})
-    assert_receive {:blob_put, ^second, _}
+    assert_receive {:blob_put, ^second, _}, 1_000
     assert_receive {:result, {:ok, _}}, 1_000
   end
 
@@ -136,19 +136,19 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
     target = endpoint(missing: digests, lengths: lengths)
 
     spawn_runner(source, target, documents(1), config(3, 100))
-    assert_receive {:diff_started, ^digests, _}
+    assert_receive {:diff_started, ^digests, _}, 1_000
     {^digest_a, pid_a} = receive_blob_opened()
     refute_received {:blob_opened, _, _}
     send(pid_a, {:release_blob, digest_a})
-    assert_receive {:blob_put, ^digest_a, _}
+    assert_receive {:blob_put, ^digest_a, _}, 1_000
 
     opened =
       Map.new([receive_blob_opened(), receive_blob_opened()], fn {digest, pid} -> {digest, pid} end)
 
     assert MapSet.new(Map.keys(opened)) == MapSet.new([digest_b, digest_c])
     Enum.each(opened, fn {digest, pid} -> send(pid, {:release_blob, digest}) end)
-    assert_receive {:blob_put, ^digest_b, _}
-    assert_receive {:blob_put, ^digest_c, _}
+    assert_receive {:blob_put, ^digest_b, _}, 1_000
+    assert_receive {:blob_put, ^digest_c, _}, 1_000
     assert_receive {:result, {:ok, _}}, 1_000
   end
 
@@ -158,8 +158,8 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
     target = endpoint(missing: [digest], lengths: lengths([digest]), put_result: {:ok, :installed})
 
     spawn_runner(source, target, documents(1), config(1, 100))
-    assert_receive {:blob_opened, ^digest, pid}
-    assert_receive {:blob_put, ^digest, ^pid}
+    assert_receive {:blob_opened, ^digest, pid}, 1_000
+    assert_receive {:blob_put, ^digest, ^pid}, 1_000
     assert_receive {:result, {:ok, _}}, 1_000
   end
 
@@ -171,8 +171,8 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
     target = endpoint(missing: digests, lengths: lengths(digests), failed_blob: hd(digests))
 
     spawn_runner(source, target, documents(1), config(2, 100))
-    assert_receive {:blob_opened, _, _}
-    assert_receive {:blob_opened, _, sibling_pid}
+    assert_receive {:blob_opened, _, _}, 1_000
+    assert_receive {:blob_opened, _, sibling_pid}, 1_000
     assert_receive {:blob_put, _, _}, 1_000
     assert_receive {:result, {:error, %Error{code: :internal_error}}}, 1_000
     refute Process.alive?(sibling_pid)
@@ -222,14 +222,14 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
 
     target = endpoint(missing: [digest], lengths: lengths([digest]))
     runner = spawn_runner(source, target, documents(2), config(2, 100))
-    assert_receive {:chain_started, "doc-0", _}
-    assert_receive {:chain_started, "doc-1", blocked_pid}
-    assert_receive {:blob_opened, ^digest, blob_pid}
+    assert_receive {:chain_started, "doc-0", _}, 1_000
+    assert_receive {:chain_started, "doc-1", blocked_pid}, 1_000
+    assert_receive {:blob_opened, ^digest, blob_pid}, 1_000
     send(blob_pid, {:release_blob, digest})
-    assert_receive {:blob_put, ^digest, _}
+    assert_receive {:blob_put, ^digest, _}, 1_000
     refute_received {:result, _}
     send(blocked_pid, {:release_chain, "doc-1"})
-    assert_receive {:result, {:ok, _}}
+    assert_receive {:result, {:ok, _}}, 1_000
     refute Process.alive?(runner)
   end
 
@@ -251,11 +251,11 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
         config(2, 100)
       )
 
-    assert_receive {:chain_started, "doc-0", first}
-    assert_receive {:chain_started, "doc-1", second}
+    assert_receive {:chain_started, "doc-0", first}, 1_000
+    assert_receive {:chain_started, "doc-1", second}, 1_000
     send(first, {:release_chain, "doc-0"})
     send(second, {:release_chain, "doc-1"})
-    assert_receive {:result, {:error, %Error{code: :integrity_violation}}}
+    assert_receive {:result, {:error, %Error{code: :integrity_violation}}}, 1_000
     refute Process.alive?(runner)
   end
 

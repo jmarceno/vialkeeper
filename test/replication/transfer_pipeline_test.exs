@@ -146,7 +146,7 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
 
     Enum.each(started, fn {ordinal, pid} -> send(pid, {:release, ordinal}) end)
 
-    assert_receive {:result, {:ok, %{chains: chains}}}
+    assert_receive {:result, {:ok, %{chains: chains}}}, 1_000
     assert chains == Enum.map(0..3, &%{document_id: "chain-#{&1}"})
     refute_received {:bound_violation, _}
     refute Process.alive?(runner)
@@ -169,7 +169,7 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
 
     started = Enum.map(1..2, fn _ -> receive_started() end)
     sibling = started |> Enum.find(fn {ordinal, _pid} -> ordinal == 0 end) |> elem(1)
-    assert_receive {:result, {:error, %Error{code: :internal_error}}, []}
+    assert_receive {:result, {:error, %Error{code: :internal_error}}, []}, 1_000
     refute Process.alive?(sibling)
     refute Process.alive?(runner)
   end
@@ -177,6 +177,17 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
   test "returns an empty chain list without starting endpoint work" do
     context = %{documents: [], chains: [:stale]}
     assert {:ok, %{chains: []}} = TransferPipeline.run(nil, nil, context, config(2))
+  end
+
+  test "returns an error for malformed preloaded chain metadata" do
+    context = %{
+      documents: [],
+      chains: [%{"revisions" => "not-a-list"}],
+      transfer_preloaded: true
+    }
+
+    assert {:error, %Error{code: :integrity_violation}} =
+             TransferPipeline.run(nil, nil, context, config(2))
   end
 
   test "normalizes malformed and non-Error endpoint responses" do
@@ -220,9 +231,9 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
       end)
 
     {_ordinal, child} = receive_started()
-    assert_receive {:trace_context, true}
+    assert_receive {:trace_context, true}, 1_000
     send(child, {:release, 0})
-    assert_receive {:result, {:ok, %{chains: [_]}}}
+    assert_receive {:result, {:ok, %{chains: [_]}}}, 1_000
     refute Process.alive?(runner)
   end
 
@@ -241,8 +252,8 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
     child_monitor = Process.monitor(child)
     Process.exit(runner, :kill)
 
-    assert_receive {:DOWN, ^monitor, :process, ^runner, :killed}
-    assert_receive {:DOWN, ^child_monitor, :process, ^child, _reason}
+    assert_receive {:DOWN, ^monitor, :process, ^runner, :killed}, 1_000
+    assert_receive {:DOWN, ^child_monitor, :process, ^child, _reason}, 1_000
   end
 
   test "deduplicates a digest repeated across chains" do

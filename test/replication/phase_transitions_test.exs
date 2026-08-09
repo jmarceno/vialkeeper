@@ -77,11 +77,10 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
              :after_read_changes,
              :diff,
              :after_diff,
-             :fetch_chains,
-             :after_fetch_chains,
-             :sync_blobs,
-             :after_diff_blobs,
-             :after_sync_blobs,
+             :transfer,
+             :before_chain_fetch,
+             :after_chain_fetch,
+             :after_transfer,
              :import,
              :after_import,
              :checkpoint_target,
@@ -122,5 +121,68 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
 
     assert {:ok, %{revision: ^revision, body: %{"n" => 1}}} =
              ElixirDB.Documents.get(b.database_uuid, %{id: "fault"})
+  end
+
+  test "worker transfers cleanly when diff has no missing documents", %{a: a, b: b} do
+    assert {:ok, %{revision: revision}} =
+             ElixirDB.Documents.put(a.database_uuid, %{id: "already-present", body: %{"n" => 1}})
+
+    {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    {:ok, target} = LocalEndpoint.new(b.database_uuid)
+
+    assert {:ok, %{chains: chains}} =
+             LocalEndpoint.get_revision_chains(source, %{
+               documents: [%{document_id: "already-present", leaf_revisions: [revision]}]
+             })
+
+    assert {:ok, imported} =
+             LocalEndpoint.import_revision_chains(target, %{chains: chains})
+
+    assert {:ok, _} =
+             LocalEndpoint.confirm_durable_commit(target, %{imported: imported})
+
+    assert {:ok, replication_id} =
+             Id.calculate(a.database_uuid, b.database_uuid, "push", "continuous")
+
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
+    {:ok, seen} = Agent.start_link(fn -> [] end)
+
+    options = %{
+      source: source,
+      target: target,
+      replication_id: replication_id,
+      mode: "continuous",
+      direction: "push",
+      wait_ms: 10,
+      phase_hook: fn phase, _context ->
+        Agent.update(seen, &Enum.uniq(&1 ++ [phase]))
+        :ok
+      end
+    }
+
+    assert {:ok, pid} = Worker.start_link(options)
+    ref = Process.monitor(pid)
+    :gen_statem.cast(pid, :start)
+
+    ElixirDB.Eventual.eventually(
+      fn ->
+        phases = Agent.get(seen, & &1)
+        :transfer in phases and :import in phases
+      end,
+      timeout: 5_000,
+      message: "worker did not pass through transfer and import for an empty diff"
+    )
+
+    :gen_statem.cast(pid, :cancel)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+
+    assert {:ok, %{revision: ^revision, body: %{"n" => 1}}} =
+             ElixirDB.Documents.get(b.database_uuid, %{id: "already-present"})
   end
 end

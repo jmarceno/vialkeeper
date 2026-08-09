@@ -23,8 +23,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     :handshake,
     :read_changes,
     :diff,
-    :fetch_chains,
-    :sync_blobs,
+    :transfer,
     :import,
     :checkpoint_target,
     :checkpoint_source
@@ -45,22 +44,21 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     :after_read_changes,
     :diff,
     :after_diff,
-    :fetch_chains,
-    :after_fetch_chains,
-    :sync_blobs,
+    :transfer,
     :import,
     :after_import
   ]
 
-  # Plan §22.6 blob sync stages. Mapped to phase_hook names fired by sync_blobs/4
-  # plus Endpoint open_blob/put_blob wrappers.
+  # Transfer sub-operation hooks cover chain fetch, blob discovery, and each
+  # blob stream boundary. The outer phase hooks remain in @injection_points.
   @blob_sync_fault_points [
-    :sync_blobs,
+    :before_chain_fetch,
+    :after_chain_fetch,
     :after_diff_blobs,
     :before_blob_transfer,
     :after_open_blob,
     :after_put_blob,
-    :after_sync_blobs
+    :after_transfer
   ]
 
   setup do
@@ -257,8 +255,11 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       assert point in phases,
              "expected fault point #{point} observed; phases=#{inspect(phases)}"
 
-      assert :sync_blobs in phases
+      assert :transfer in phases
       assert :import in phases
+
+      assert Enum.count(phases, &(&1 == :transfer)) >= 2,
+             "expected transfer phase retry after #{point}; phases=#{inspect(phases)}"
 
       assert {:ok, got} = ElixirDB.Documents.get(b.database_uuid, %{id: "blob-doc"})
       assert got.revision == revision
@@ -594,9 +595,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   defp map_phase_to_endpoint(:after_read_changes), do: {:source, :after_read_changes}
   defp map_phase_to_endpoint(:diff), do: {:target, :diff_revisions}
   defp map_phase_to_endpoint(:after_diff), do: {:target, :after_diff_revisions}
-  defp map_phase_to_endpoint(:fetch_chains), do: {:source, :get_revision_chains}
-  defp map_phase_to_endpoint(:after_fetch_chains), do: {:source, :after_get_revision_chains}
-  defp map_phase_to_endpoint(:sync_blobs), do: {:target, :diff_blobs}
+  defp map_phase_to_endpoint(:transfer), do: {:source, :get_revision_chains}
   defp map_phase_to_endpoint(:import), do: {:target, :import_revision_chains}
   defp map_phase_to_endpoint(:after_import), do: {:target, :after_import_revision_chains}
 
