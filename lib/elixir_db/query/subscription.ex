@@ -52,7 +52,8 @@ defmodule ElixirDB.Query.Subscription do
            heartbeat_ref: nil,
            heartbeat_timer: nil,
            status: :awaiting_snapshot,
-           terminal: nil
+           terminal: nil,
+           reset_pending: false
          }}
 
       {:error, %ElixirDB.Error{} = error} ->
@@ -78,6 +79,14 @@ defmodule ElixirDB.Query.Subscription do
 
   def handle_call(:next, from, %{status: :awaiting_snapshot} = state),
     do: next_or_wait(state, from)
+
+  def handle_call(
+        :next,
+        _from,
+        %{status: :draining_snapshot, reset_pending: true, snapshot_sequence: sequence} = state
+      ) do
+    {:reply, {:ok, Events.reset(sequence)}, %{state | reset_pending: false}}
+  end
 
   def handle_call(
         :next,
@@ -154,6 +163,7 @@ defmodule ElixirDB.Query.Subscription do
               state
               | snapshot_documents: documents,
                 snapshot_sequence: sequence,
+                snapshot_index: 0,
                 membership: MapSet.new(member_ids),
                 status: :draining_snapshot
             }
@@ -212,6 +222,28 @@ defmodule ElixirDB.Query.Subscription do
              heartbeat_timer: nil
          }}
     end
+  end
+
+  def handle_info(:subscription_reset, %{status: status} = state)
+      when status in [:closed, :failed] do
+    {:noreply, state}
+  end
+
+  def handle_info(:subscription_reset, state) do
+    state = %{
+      state
+      | status: :awaiting_snapshot,
+        membership: MapSet.new(),
+        snapshot_documents: [],
+        snapshot_index: 0,
+        snapshot_sequence: nil,
+        queue: :queue.new(),
+        reset_pending: true,
+        terminal: nil
+    }
+
+    send(self(), :execute_snapshot)
+    {:noreply, state}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{client_ref: ref} = state) do
@@ -287,6 +319,12 @@ defmodule ElixirDB.Query.Subscription do
         {:noreply, waiting} = next_or_wait(state, from)
         waiting
     end
+  end
+
+  defp drain_next_reply(
+         %{status: :draining_snapshot, reset_pending: true, snapshot_sequence: sequence} = state
+       ) do
+    {:reply, {:ok, Events.reset(sequence)}, %{state | reset_pending: false}}
   end
 
   defp drain_next_reply(

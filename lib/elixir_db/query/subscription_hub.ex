@@ -56,7 +56,9 @@ defmodule ElixirDB.Query.SubscriptionHub do
          subscriptions: %{},
          reading: false,
          read_pending: false,
-         read_task: nil
+         read_task: nil,
+         resetting: false,
+         reset_floor: nil
        }}
 
   @impl true
@@ -119,7 +121,12 @@ defmodule ElixirDB.Query.SubscriptionHub do
             boundary_sequence: sequence
         }
 
-        {:reply, :ok, put_subscription(state, pid, updated)}
+        state =
+          state
+          |> put_subscription(pid, updated)
+          |> advance_cursor_after_snapshot(sequence)
+
+        {:reply, :ok, state}
 
       nil ->
         {:reply, {:error, ElixirDB.Error.invalid_request("subscription is not registered")}, state}
@@ -180,6 +187,17 @@ defmodule ElixirDB.Query.SubscriptionHub do
 
   def handle_info({:database_changed, uuid, _sequence}, %{uuid: uuid} = state),
     do: {:noreply, schedule_read(state)}
+
+  def handle_info({:database_maintenance, uuid, %{new_floor: floor}}, %{uuid: uuid} = state)
+      when is_integer(floor) and floor > state.cursor_sequence do
+    error =
+      ElixirDB.Error.history_truncated(
+        "subscription hub cursor is below the retention floor",
+        %{retention_floor: floor}
+      )
+
+    {:noreply, begin_history_reset(state, error)}
+  end
 
   def handle_info({:database_maintenance, uuid, _event}, %{uuid: uuid} = state),
     do: {:noreply, schedule_read(state)}
@@ -256,6 +274,8 @@ defmodule ElixirDB.Query.SubscriptionHub do
     end
   end
 
+  defp schedule_read(%{resetting: true} = state), do: state
+
   defp schedule_read(%{reading: true} = state), do: %{state | read_pending: true}
 
   defp schedule_read(%{read_task: %Task{}} = state), do: %{state | read_pending: true}
@@ -331,7 +351,82 @@ defmodule ElixirDB.Query.SubscriptionHub do
     if has_more, do: schedule_read(state), else: finish_read(state)
   end
 
+  defp apply_read_result(state, {:error, %ElixirDB.Error{code: :history_truncated} = error}) do
+    finish_read(begin_history_reset(state, error))
+  end
+
   defp apply_read_result(state, {:error, error}), do: finish_read(fail_all(state, error))
+
+  defp begin_history_reset(%{resetting: true} = state, error) do
+    floor = retention_floor(error)
+
+    state =
+      if is_integer(floor),
+        do: %{state | reset_floor: max(state.reset_floor || 0, floor)},
+        else: state
+
+    Enum.reduce(state.subscriptions, state, fn {pid, subscription}, acc ->
+      updated = %{
+        subscription
+        | mode: :pending_snapshot,
+          pending_incremental_events: :queue.new(),
+          boundary_sequence: nil,
+          credits: subscription.max_buffered_events
+      }
+
+      send(pid, :subscription_reset)
+      put_subscription(acc, pid, updated)
+    end)
+  end
+
+  defp begin_history_reset(state, error) do
+    floor = retention_floor(error)
+
+    state =
+      cancel_read_task(%{
+        state
+        | resetting: true,
+          reset_floor: floor,
+          read_pending: false
+      })
+
+    Enum.reduce(state.subscriptions, state, fn {pid, subscription}, acc ->
+      updated = %{
+        subscription
+        | mode: :pending_snapshot,
+          pending_incremental_events: :queue.new(),
+          boundary_sequence: nil,
+          credits: subscription.max_buffered_events
+      }
+
+      send(pid, :subscription_reset)
+      put_subscription(acc, pid, updated)
+    end)
+  end
+
+  defp advance_cursor_after_snapshot(state, sequence) when is_integer(sequence) do
+    state = %{state | cursor_sequence: max(state.cursor_sequence, sequence)}
+
+    cond do
+      state.resetting and is_integer(state.reset_floor) and
+          state.cursor_sequence >= state.reset_floor ->
+        schedule_read(%{state | resetting: false, reset_floor: nil})
+
+      state.resetting and is_nil(state.reset_floor) ->
+        schedule_read(%{state | resetting: false})
+
+      true ->
+        state
+    end
+  end
+
+  defp advance_cursor_after_snapshot(state, _sequence), do: state
+
+  defp retention_floor(%ElixirDB.Error{details: details}) when is_map(details) do
+    MapAccess.get(details, :retention_floor)
+  end
+
+  defp retention_floor(_), do: nil
 
   defp validate_envelopes(results, envelopes) when length(results) != length(envelopes) do
     {:error,
