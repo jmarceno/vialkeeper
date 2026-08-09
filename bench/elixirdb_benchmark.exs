@@ -8,6 +8,7 @@ defmodule ElixirDB.Benchmarks.Runner do
   make the instrumentation visible in the result file.
   """
 
+  alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Observability.Instrumentation.{Changes, Database}
   alias ElixirDB.Storage.SQLite.Adapter
 
@@ -564,10 +565,7 @@ defmodule ElixirDB.Benchmarks.Runner do
   end
 
   defp compare_with_baseline!(report, baseline_path, threshold_pct) do
-    baseline =
-      baseline_path
-      |> File.read!()
-      |> JSON.decode!()
+    baseline = decode_baseline!(baseline_path)
 
     validate_baseline_configuration!(
       report["configuration"],
@@ -605,6 +603,13 @@ defmodule ElixirDB.Benchmarks.Runner do
     IO.puts(
       "Benchmark comparison passed against #{baseline_path} (median threshold #{threshold_pct}%)."
     )
+  end
+
+  defp decode_baseline!(baseline_path) do
+    case baseline_path |> File.read!() |> StrictDecoder.decode() do
+      {:ok, baseline} -> baseline
+      {:error, error} -> Mix.raise("invalid benchmark baseline #{baseline_path}: #{inspect(error)}")
+    end
   end
 
   defp validate_baseline_configuration!(current, baseline, baseline_path)

@@ -1,6 +1,8 @@
 defmodule ElixirDB.JSON.StrictDecoder.Legacy do
   @moduledoc false
 
+  alias ElixirDB.JSON.StrictDecoder
+
   @default_max_depth 100
 
   @spec decode(binary(), keyword()) :: {:ok, term()} | {:error, ElixirDB.Error.t()}
@@ -49,15 +51,34 @@ defmodule ElixirDB.JSON.StrictDecoder.Legacy do
 
   defp parse_value(<<?\", rest::binary>>, _depth, _max) do
     with {:ok, raw, tail} <- consume_string(rest, []),
-         {:ok, value} <- JSON.decode(IO.iodata_to_binary([?\", raw, ?\"])) do
+         {:ok, value} <- decode_string(raw) do
       validate_string_value(value, tail)
     else
       {:error, %ElixirDB.Error{} = error} -> {:error, error}
-      _ -> {:error, ElixirDB.Error.invalid_request("invalid JSON string")}
     end
   end
 
   defp parse_value(input, _depth, _max), do: parse_number(input)
+
+  defp decode_string(raw) do
+    input = IO.iodata_to_binary([?\", raw, ?\"])
+
+    case RustyJson.decode(input,
+           keys: :strings,
+           floats: :decimals,
+           duplicate_keys: :error,
+           validate_strings: true,
+           max_bytes: byte_size(input),
+           decoding_integer_digit_limit: 16
+         ) do
+      {:ok, value} when is_binary(value) -> {:ok, value}
+      {:ok, _value} -> {:error, ElixirDB.Error.invalid_request("invalid JSON string")}
+      {:error, _error} -> {:error, ElixirDB.Error.invalid_request("invalid JSON string")}
+    end
+  rescue
+    _error in [ArgumentError, ErlangError] ->
+      {:error, ElixirDB.Error.invalid_request("invalid JSON string")}
+  end
 
   defp validate_string_value(value, tail) when is_binary(value) do
     if String.valid?(value),
@@ -70,7 +91,7 @@ defmodule ElixirDB.JSON.StrictDecoder.Legacy do
   defp parse_object(input, object, depth, max) do
     with <<?\", rest::binary>> <- input,
          {:ok, raw_key, after_key} <- consume_string(rest, []),
-         {:ok, key} <- JSON.decode(IO.iodata_to_binary([?\", raw_key, ?\"])),
+         {:ok, key} <- decode_string(raw_key),
          <<?:, after_colon::binary>> <- skip_ws(after_key),
          {:ok, value, after_value} <- parse_value(skip_ws(after_colon), depth, max) do
       put_object_value(object, key, value, after_value, depth, max)
@@ -135,60 +156,15 @@ defmodule ElixirDB.JSON.StrictDecoder.Legacy do
   defp parse_number(input) do
     {token, rest} = take_number(input, [])
 
-    case Regex.match?(~r/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/, token) do
-      false ->
-        {:error, ElixirDB.Error.invalid_request("invalid JSON value")}
-
-      true ->
-        parse_number_token(token, rest)
-    end
-  end
-
-  defp parse_number_token(token, rest) do
-    if String.contains?(token, [".", "e", "E"]),
-      do: parse_float_token(token, rest),
-      else: parse_integer_token(token, rest)
-  end
-
-  defp parse_float_token(token, rest) do
-    case Float.parse(token) do
-      {value, ""} when is_float(value) ->
-        validate_float(value, token, rest)
-
-      :error ->
-        {:error, ElixirDB.Error.invalid_request("number overflows to infinity")}
-
-      _ ->
-        {:error, ElixirDB.Error.invalid_request("invalid JSON number")}
-    end
-  end
-
-  defp parse_integer_token(token, rest) do
-    {value, ""} = Integer.parse(token)
-    validate_integer(value, rest)
-  end
-
-  defp validate_integer(value, rest) when abs(value) <= 9_007_199_254_740_991,
-    do: {:ok, value, rest}
-
-  defp validate_integer(_value, _rest),
-    do: {:error, ElixirDB.Error.invalid_request("integer is outside the binary64 safe range")}
-
-  defp validate_float(value, token, rest) do
-    zero_literal? = Regex.match?(~r/^[-]?0(?:\.0+)?(?:[eE][+-]?[0-9]+)?$/, token)
-
-    cond do
-      not :erlang.is_float(value) ->
-        {:error, ElixirDB.Error.invalid_request("invalid JSON number")}
-
-      abs(value) > Float.max_finite() ->
-        {:error, ElixirDB.Error.invalid_request("number overflows to infinity")}
-
-      value == 0.0 and not zero_literal? ->
-        {:error, ElixirDB.Error.invalid_request("number underflows to zero")}
-
-      true ->
+    case StrictDecoder.decode(token, max_depth: 0) do
+      {:ok, value} when is_integer(value) or is_float(value) ->
         {:ok, value, rest}
+
+      {:ok, _value} ->
+        {:error, ElixirDB.Error.invalid_request("invalid JSON number")}
+
+      {:error, %ElixirDB.Error{} = error} ->
+        {:error, error}
     end
   end
 

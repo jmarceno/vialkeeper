@@ -159,6 +159,19 @@ defmodule ElixirDB.Contract.StrictDecoderTest do
 
       assert {:ok, _value} = StrictDecoder.decode(body, max_depth: 129)
 
+      assert {:ok, %{"text" => "quote: \"ok\""}} =
+               StrictDecoder.decode(~S({"text":"quote: \"ok\""}), max_depth: 129)
+
+      assert {:ok, %{"number" => value}} =
+               StrictDecoder.decode(~s({"number":1e308}), max_depth: 129)
+
+      assert is_float(value)
+
+      assert {:error, %ElixirDB.Error{code: :invalid_request, message: message}} =
+               StrictDecoder.decode(~s({"number":1e-400}), max_depth: 129)
+
+      assert message =~ "underflow"
+
       assert {:error, %ElixirDB.Error{code: :invalid_request, message: message}} =
                StrictDecoder.decode(~s({"a":1,"a":2}), max_depth: 129)
 
