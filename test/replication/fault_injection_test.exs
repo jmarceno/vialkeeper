@@ -84,22 +84,17 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       end
     end)
 
-    {:ok, a: a, b: b, a_path: a_path, b_path: b_path, root: root}
+    {:ok, a: a, b: b}
   end
 
   for point <- @injection_points do
     test "retryable fault at #{point} may repeat work but never skips source revision", %{
       a: a,
-      b: b,
-      a_path: a_path,
-      b_path: b_path,
-      root: root
+      b: b
     } do
       point = unquote(point)
       seed = :erlang.phash2({point, System.unique_integer([:positive])})
-      history = build_history(a.database_uuid, seed, point)
-
-      log_determinism(seed, history, point, a_path, b_path, root)
+      _ = build_history(a.database_uuid, seed, point)
 
       source_snapshot = source_revision_snapshot(a.database_uuid)
       assert map_size(source_snapshot) >= 2
@@ -200,10 +195,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   for point <- @blob_sync_fault_points do
     test "blob sync fault at #{point} may repeat transfer but never skips revision", %{
       a: a,
-      b: b,
-      a_path: a_path,
-      b_path: b_path,
-      root: root
+      b: b
     } do
       point = unquote(point)
       payload = "blob-fault-#{System.unique_integer([:positive])}"
@@ -221,15 +213,6 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
                })
 
       _ = length
-
-      log_determinism(
-        :erlang.phash2({point, digest}),
-        [%{op: :attachment, digest: digest, revision: revision}],
-        point,
-        a_path,
-        b_path,
-        root
-      )
 
       {:ok, seen} = Agent.start_link(fn -> [] end)
 
@@ -288,16 +271,9 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
   test "retryable fault at waiting/after_waiting never skips later source revision", %{
     a: a,
-    b: b,
-    a_path: a_path,
-    b_path: b_path,
-    root: root
+    b: b
   } do
     for point <- [:waiting, :after_waiting] do
-      seed = :erlang.phash2({point, System.unique_integer([:positive])})
-      history = [%{op: :continuous_wait, point: point}]
-      log_determinism(seed, history, point, a_path, b_path, root)
-
       {:ok, faults} =
         Agent.start_link(fn ->
           FaultAdapter.wrap(:replication)
@@ -401,16 +377,11 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
   test "FaultEndpoint injects after import_revision_chains without dropping revision", %{
     a: a,
-    b: b,
-    a_path: a_path,
-    b_path: b_path,
-    root: root
+    b: b
   } do
     seed = 42_001
     point = :after_import_revision_chains
-    history = build_history(a.database_uuid, seed, point)
-    log_determinism(seed, history, point, a_path, b_path, root)
-
+    _ = build_history(a.database_uuid, seed, point)
     source_snapshot = source_revision_snapshot(a.database_uuid)
     source_sequence = source_sequence!(a.database_uuid)
 
@@ -766,19 +737,6 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
     target_seq = source_sequence!(target_uuid)
     assert target_seq >= source_sequence
-  end
-
-  defp log_determinism(seed, history, point, a_path, b_path, root) do
-    IO.puts([
-      "\n[replication-fault] seed=",
-      inspect(seed),
-      " point=",
-      inspect(point),
-      " paths=",
-      inspect(%{source: Path.join(root, a_path), target: Path.join(root, b_path)}),
-      " history=",
-      inspect(history, limit: :infinity)
-    ])
   end
 
   defp retryable_fault(point) do

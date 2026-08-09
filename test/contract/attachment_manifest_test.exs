@@ -24,12 +24,43 @@ defmodule ElixirDB.Contract.AttachmentManifestTest do
   end
 
   test "rejects NUL and control characters in attachment names" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    for name <- ["bad\0name", "bad\nname", "bad" <> <<127>> <> "name"] do
+      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+               Manifest.normalize(%{
+                 name => %{
+                   "digest" => @digest,
+                   "length" => 1,
+                   "content_type" => "text/plain"
+                 }
+               })
+    end
+  end
+
+  test "bounds content types and rejects invalid UTF-8" do
+    assert {:ok, _} =
              Manifest.normalize(%{
-               "bad\0name" => %{
+               "file.txt" => %{
                  "digest" => @digest,
                  "length" => 1,
-                 "content_type" => "text/plain"
+                 "content_type" => String.duplicate("x", 256)
+               }
+             })
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             Manifest.normalize(%{
+               "file.txt" => %{
+                 "digest" => @digest,
+                 "length" => 1,
+                 "content_type" => String.duplicate("x", 257)
+               }
+             })
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             Manifest.normalize(%{
+               "file.txt" => %{
+                 "digest" => @digest,
+                 "length" => 1,
+                 "content_type" => <<0xFF>>
                }
              })
   end

@@ -229,6 +229,63 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
     assert header(headers, "etag") == ~s("#{blob}")
   end
 
+  test "attachment download can address a historical revision", %{base_url: base, uuid: uuid} do
+    old_payload = "historical-old"
+    new_payload = "historical-new"
+
+    assert {:ok, %{status: 201, body: old_upload}} =
+             Req.post(base <> "/v1/databases/#{uuid}/attachments/upload",
+               body: old_payload,
+               headers: [{"content-type", "application/octet-stream"}]
+             )
+
+    old_blob = old_upload["data"]["blob"]
+
+    assert {:ok, %{status: 201, body: old_put}} =
+             Req.post(base <> "/v1/databases/#{uuid}/documents/put",
+               json: %{
+                 "id" => "history-att",
+                 "body" => %{"version" => 1},
+                 "attachments" => %{
+                   "old.txt" => %{"blob" => old_blob, "content_type" => "text/plain"}
+                 }
+               }
+             )
+
+    old_revision = old_put["data"]["revision"]
+
+    assert {:ok, %{status: 201, body: new_upload}} =
+             Req.post(base <> "/v1/databases/#{uuid}/attachments/upload",
+               body: new_payload,
+               headers: [{"content-type", "application/octet-stream"}]
+             )
+
+    assert {:ok, %{status: 201, body: _new_put}} =
+             Req.post(base <> "/v1/databases/#{uuid}/documents/put",
+               json: %{
+                 "id" => "history-att",
+                 "if_revision" => old_revision,
+                 "body" => %{"version" => 2},
+                 "attachments" => %{
+                   "new.txt" => %{
+                     "blob" => new_upload["data"]["blob"],
+                     "content_type" => "text/plain"
+                   }
+                 }
+               }
+             )
+
+    assert {:ok, %{status: 200, headers: headers, body: downloaded}} =
+             Req.post(base <> "/v1/databases/#{uuid}/attachments/get",
+               json: %{"id" => "history-att", "revision" => old_revision, "name" => "old.txt"},
+               decode_body: false
+             )
+
+    assert downloaded == old_payload
+    assert header(headers, "content-length") == Integer.to_string(byte_size(old_payload))
+    assert header(headers, "etag") == ~s("#{old_blob}")
+  end
+
   test "zero-length uploads can be referenced and downloaded", %{uuid: uuid} do
     assert {:ok, %{blob: blob, length: 0}} = Attachments.upload_stream(uuid, [])
 

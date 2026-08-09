@@ -441,6 +441,20 @@ defmodule ElixirDB.EndToEnd.Wave5QueryScenarioTest do
     assert {:ok, target_attachment} = ElixirDB.Documents.get(target_uuid, %{id: "attached"})
     assert target_attachment.attachments["note.txt"].digest == blob
 
+    assert %{status: 200, body: %{"data" => []}} =
+             request!(server, :get, "/v1/databases/#{target_uuid}/indexes")
+
+    assert %{status: 200, body: target_attachment_bytes} =
+             request!(
+               server,
+               :post,
+               "/v1/databases/#{target_uuid}/attachments/get",
+               json: %{"id" => "attached", "revision" => nil, "name" => "note.txt"},
+               decode_body: false
+             )
+
+    assert target_attachment_bytes == attachment_bytes
+
     create_structured_indexes!(server, target_uuid)
     create_full_text_index!(server, target_uuid)
 
@@ -490,7 +504,8 @@ defmodule ElixirDB.EndToEnd.Wave5QueryScenarioTest do
     assert {:ok, retention} =
              DatabaseCatalog.command(source_uuid, {:command, :retention_status, %{}})
 
-    assert is_map(retention)
+    assert %{floor_sequence: floor_sequence} = retention
+    assert is_integer(floor_sequence)
     assert %{status: 200} = query!(server, source_uuid, rebuild_request) |> response_status()
 
     # §33.25 — final gates are run as shell commands after this scenario.

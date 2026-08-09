@@ -185,6 +185,11 @@ defmodule ElixirDB.Query.QueryTest do
             "name" => "property-priority",
             "type" => "structured",
             "fields" => [%{"path" => "/priority", "type" => "number", "direction" => "asc"}]
+          },
+          %{
+            "name" => "property-title",
+            "type" => "structured",
+            "fields" => [%{"path" => "/title", "type" => "string", "direction" => "asc"}]
           }
         ] do
       assert {:ok, _} = Adapter.create_index(adapter, definition)
@@ -197,11 +202,16 @@ defmodule ElixirDB.Query.QueryTest do
               StreamData.list_of(
                 StreamData.tuple({
                   StreamData.member_of(["open", "closed", "queued"]),
-                  StreamData.integer(0..9)
+                  StreamData.integer(0..9),
+                  StreamData.member_of(["replication checkpoint", "other note"])
                 }),
                 min_length: 1,
                 max_length: 8
               ),
+            query_status <- StreamData.member_of(["open", "closed", "queued"]),
+            query_threshold <- StreamData.integer(0..9),
+            query_prefix <- StreamData.member_of(["replication", "other"]),
+            query_kind <- StreamData.member_of([:status, :priority, :title, :union]),
             max_runs: 20
           ) do
       batch = "property-#{System.unique_integer([:positive, :monotonic])}"
@@ -209,10 +219,15 @@ defmodule ElixirDB.Query.QueryTest do
       documents =
         rows
         |> Enum.with_index()
-        |> Enum.map(fn {{status, priority}, index} ->
+        |> Enum.map(fn {{status, priority, title}, index} ->
           %{
             id: "#{batch}-#{index}",
-            body: %{"batch" => batch, "status" => status, "priority" => priority}
+            body: %{
+              "batch" => batch,
+              "status" => status,
+              "priority" => priority,
+              "title" => title
+            }
           }
         end)
 
@@ -225,17 +240,31 @@ defmodule ElixirDB.Query.QueryTest do
                  })
       end
 
-      request = %{
-        selector: %{
-          "$and" => [
-            %{"/batch" => batch},
-            %{"$or" => [%{"/status" => "open"}, %{"/priority" => %{"$gte" => 7}}]}
-          ]
-        }
-      }
+      candidate_selector =
+        case query_kind do
+          :status ->
+            %{"/status" => query_status}
+
+          :priority ->
+            %{"/priority" => %{"$gte" => query_threshold}}
+
+          :title ->
+            %{"/title" => %{"$beginsWith" => query_prefix}}
+
+          :union ->
+            %{
+              "$or" => [
+                %{"/status" => query_status},
+                %{"/priority" => %{"$gte" => query_threshold}}
+              ]
+            }
+        end
+
+      request = %{selector: %{"$and" => [%{"/batch" => batch}, candidate_selector]}}
 
       assert {:ok, normalized} = Normalizer.normalize(request)
       assert {:ok, plan} = Planner.plan(indexes, normalized)
+      assert plan.scans != []
 
       candidate_ids =
         plan.scans

@@ -219,7 +219,25 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
 
     first = Task.async(fn -> AttachmentCoordinator.begin_close(uuid) end)
     second = Task.async(fn -> AttachmentCoordinator.begin_close(uuid) end)
-    Process.sleep(50)
+
+    assert Eventual.eventually(
+             fn ->
+               case Registry.lookup(
+                      ElixirDB.Runtime.DatabaseRegistry,
+                      {:attachment_coordinator, uuid}
+                    ) do
+                 [{pid, _}] ->
+                   state = :sys.get_state(pid)
+                   state.closing and match?([_, _], state.close_waiters)
+
+                 [] ->
+                   false
+               end
+             end,
+             timeout: 1_000,
+             message: "both close callers did not reach the drain barrier"
+           )
+
     refute Task.yield(first, 0)
     refute Task.yield(second, 0)
 
@@ -236,7 +254,23 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     assert_receive {:held, :read, ^gate, _token}, 1_000
 
     closer = Task.async(fn -> DatabaseCatalog.close(uuid) end)
-    refute Task.yield(closer, 100)
+
+    assert Eventual.eventually(
+             fn ->
+               [{pid, _}] =
+                 Registry.lookup(
+                   ElixirDB.Runtime.DatabaseRegistry,
+                   {:attachment_coordinator, uuid}
+                 )
+
+               state = :sys.get_state(pid)
+               state.closing and state.close_waiters != []
+             end,
+             timeout: 1_000,
+             message: "catalog close did not wait at the attachment drain barrier"
+           )
+
+    refute Task.yield(closer, 0)
 
     send(holder.pid, {:release, gate})
     assert :released = Task.await(holder)

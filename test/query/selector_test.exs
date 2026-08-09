@@ -1,4 +1,5 @@
 defmodule ElixirDB.Query.SelectorTest do
+  use ExUnitProperties
   use ExUnit.Case, async: true
 
   alias ElixirDB.Query.Regex, as: QueryRegex
@@ -54,6 +55,27 @@ defmodule ElixirDB.Query.SelectorTest do
 
     assert Selector.matches?(body, {:field, "/priority", [{:mod, 2, 0}]}) == {:ok, true}
     assert Selector.matches?(body, {:field, "/priority", [{:size, 1}]}) == {:ok, false}
+  end
+
+  property "boolean composition matches the independent truth table" do
+    check all(left <- StreamData.boolean(), right <- StreamData.boolean()) do
+      body = %{"left" => left, "right" => right}
+      left_predicate = {:field, "/left", [{:eq, true}]}
+      right_predicate = {:field, "/right", [{:eq, true}]}
+      expected_and = left and right
+      expected_or = left or right
+
+      assert Selector.matches?(body, {:and, [left_predicate, right_predicate]}) ==
+               {:ok, expected_and}
+
+      assert Selector.matches?(body, {:or, [left_predicate, right_predicate]}) ==
+               {:ok, expected_or}
+
+      assert Selector.matches?(body, {:not, left_predicate}) == {:ok, not left}
+
+      assert Selector.matches?(body, {:not, {:or, [left_predicate, right_predicate]}}) ==
+               {:ok, not expected_or}
+    end
   end
 
   test "fails safely for a handcrafted zero modulo divisor" do

@@ -9,9 +9,11 @@ defmodule ElixirDB.Attachments.GCTest do
 
   alias ElixirDB.Attachments
   alias ElixirDB.Attachments.FilesystemStore
+  alias ElixirDB.Attachments.Manifest
   alias ElixirDB.DatabaseBundle
   alias ElixirDB.Documents
   alias ElixirDB.Eventual
+  alias ElixirDB.Revisions.{Id, Wire}
   alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
 
   setup do
@@ -66,6 +68,72 @@ defmodule ElixirDB.Attachments.GCTest do
     assert blob_exists?(uuid, digest)
     assert {:ok, %{deleted: 0}} = Attachments.gc(uuid)
     assert blob_exists?(uuid, digest)
+  end
+
+  test "both losing and winning conflict branches retain their attachment blobs", %{uuid: uuid} do
+    document_id = "conflict-attachments"
+    history_id = ElixirDB.RevisionFixtures.shared_history_id()
+    left_digest = upload!(uuid, "left-conflict-attachment")
+    right_digest = upload!(uuid, "right-conflict-attachment")
+
+    left_attachment =
+      Manifest.entry(left_digest, byte_size("left-conflict-attachment"), "text/plain")
+
+    right_attachment =
+      Manifest.entry(right_digest, byte_size("right-conflict-attachment"), "text/plain")
+
+    assert {:ok, root} = Id.calculate(document_id, history_id, nil, false, %{"n" => 0}, %{})
+
+    assert {:ok, left} =
+             Id.calculate(document_id, history_id, root, false, %{"n" => 1}, %{
+               "left.txt" => left_attachment
+             })
+
+    assert {:ok, right} =
+             Id.calculate(document_id, history_id, root, false, %{"n" => 2}, %{
+               "right.txt" => right_attachment
+             })
+
+    root_wire = Wire.new(document_id, history_id, root, 1, nil, false, %{"n" => 0}, %{})
+
+    assert {:ok, _} =
+             DatabaseCatalog.command(
+               uuid,
+               {:command, :import_revision_chains,
+                %{
+                  chains: [
+                    %{
+                      document_id: document_id,
+                      leaf_revision: left,
+                      revisions: [
+                        root_wire,
+                        Wire.new(document_id, history_id, left, 2, root, false, %{"n" => 1}, %{
+                          "left.txt" => left_attachment
+                        })
+                      ]
+                    },
+                    %{
+                      document_id: document_id,
+                      leaf_revision: right,
+                      revisions: [
+                        root_wire,
+                        Wire.new(document_id, history_id, right, 2, root, false, %{"n" => 2}, %{
+                          "right.txt" => right_attachment
+                        })
+                      ]
+                    }
+                  ]
+                }}
+             )
+
+    assert {:ok, %{conflicts: [conflict]}} =
+             Documents.get(uuid, %{id: document_id, include_conflicts: true})
+
+    assert conflict in [left, right]
+    assert {:ok, %{deleted: 0}} = Attachments.gc(uuid)
+
+    assert blob_exists?(uuid, left_digest)
+    assert blob_exists?(uuid, right_digest)
   end
 
   test "overlapping GC triggers serialize or coalesce without overload", %{uuid: uuid} do

@@ -126,13 +126,30 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
   test "concurrent same-digest install leaves one valid blob", %{bundle: bundle} do
     payload = compressible_payload()
+    parent = self()
+
+    workers =
+      for _ <- 1..8 do
+        Task.async(fn ->
+          assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, byte_size(payload) + 1, %{})
+          assert :ok = FilesystemStore.write_chunk(writer, payload)
+          send(parent, {:ready_to_install, self()})
+
+          receive do
+            :install -> FilesystemStore.finish_put(writer)
+          end
+        end)
+      end
+
+    for _ <- workers, do: assert_receive({:ready_to_install, _pid}, 1_000)
+    Enum.each(workers, &send(&1.pid, :install))
 
     results =
-      1..8
-      |> Task.async_stream(fn _ -> put_whole(bundle.root, payload) end, timeout: :infinity)
-      |> Enum.map(fn
-        {:ok, {:ok, result}} -> result
-        {:ok, {:error, reason}} -> flunk("concurrent install failed: #{inspect(reason)}")
+      Enum.map(workers, fn worker ->
+        case Task.await(worker, 5_000) do
+          {:ok, result} -> result
+          {:error, reason} -> flunk("concurrent install failed: #{inspect(reason)}")
+        end
       end)
 
     digests = Enum.map(results, & &1.digest)
@@ -141,26 +158,6 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
     assert {:ok, listed} = FilesystemStore.list_digests(bundle.root)
     assert listed == [hd(digests)]
-  end
-
-  test "repeated concurrent same-digest installs stay race-free", %{bundle: bundle} do
-    payload = compressible_payload()
-
-    Enum.each(1..20, fn _ ->
-      results =
-        1..8
-        |> Task.async_stream(fn _ -> put_whole(bundle.root, payload) end, timeout: :infinity)
-        |> Enum.map(fn
-          {:ok, {:ok, result}} -> result
-          {:ok, {:error, reason}} -> flunk("concurrent install failed: #{inspect(reason)}")
-        end)
-
-      digests = Enum.map(results, & &1.digest)
-      assert Enum.uniq(digests) == [hd(digests)]
-    end)
-
-    assert {:ok, [digest]} = FilesystemStore.list_digests(bundle.root)
-    assert FilesystemStore.verify(bundle.root, digest, byte_size(payload)) == :ok
   end
 
   test "user attachment names never affect blob paths", %{bundle: bundle} do
@@ -252,25 +249,37 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
   test "large stream memory remains bounded during read and write", %{bundle: bundle} do
     chunk = 4 * 1024
-    chunks = Stream.repeatedly(fn -> :crypto.strong_rand_bytes(chunk) end) |> Enum.take(512)
-    payload = IO.iodata_to_binary(chunks)
+    chunk_count = 2_048
     peak = :atomics.new(1, signed: false)
+    baseline = process_memory()
 
-    assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, byte_size(payload) + 1, %{})
+    assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, chunk * chunk_count + 1, %{})
 
-    Enum.each(chunks, fn part ->
-      track_peak(peak, part)
-      :ok = FilesystemStore.write_chunk(writer, part)
-    end)
+    {expected_hash, expected_size} =
+      Enum.reduce(1..chunk_count, {:crypto.hash_init(:sha256), 0}, fn index, {hash, size} ->
+        part = stream_chunk(index, chunk)
+        :ok = FilesystemStore.write_chunk(writer, part)
+        track_process_memory(peak)
+        {:crypto.hash_update(hash, part), size + byte_size(part)}
+      end)
 
-    assert {:ok, %{digest: digest}} = FilesystemStore.finish_put(writer)
-    assert :atomics.get(peak, 1) <= 2 * chunk
+    expected_digest = :crypto.hash_final(expected_hash) |> Base.encode16(case: :lower)
+
+    assert {:ok, %{digest: digest, logical_size: ^expected_size}} =
+             FilesystemStore.finish_put(writer)
+
+    assert digest == expected_digest
+    assert :atomics.get(peak, 1) <= baseline + 2 * 1024 * 1024
 
     assert {:ok, reader} = FilesystemStore.open_read(bundle.root, digest)
-    read = collect_reader(reader)
 
-    assert byte_size(read) == byte_size(payload)
-    assert :atomics.get(peak, 1) <= 2 * chunk
+    {actual_hash, actual_size} =
+      drain_reader(reader, :crypto.hash_init(:sha256), 0, peak)
+
+    actual_digest = :crypto.hash_final(actual_hash) |> Base.encode16(case: :lower)
+    assert actual_digest == expected_digest
+    assert actual_size == expected_size
+    assert :atomics.get(peak, 1) <= baseline + 2 * 1024 * 1024
   end
 
   test "cleanup_tmp removes only expired temp files", %{bundle: bundle} do
@@ -331,6 +340,39 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     end
   end
 
+  defp drain_reader(reader, hash, size, peak) do
+    case FilesystemStore.read_chunks(reader) do
+      {:ok, chunk} ->
+        track_process_memory(peak)
+        drain_reader(reader, :crypto.hash_update(hash, chunk), size + byte_size(chunk), peak)
+
+      {:done, _} ->
+        {hash, size}
+
+      {:error, reason} ->
+        flunk("read failed: #{inspect(reason)}")
+    end
+  end
+
+  defp stream_chunk(index, size) do
+    seed = :crypto.hash(:sha256, <<index::64>>)
+    repeats = div(size, byte_size(seed))
+    remainder = rem(size, byte_size(seed))
+    :binary.copy(seed, repeats) <> binary_part(seed, 0, remainder)
+  end
+
+  defp process_memory do
+    :erlang.garbage_collect()
+    {:memory, memory} = :erlang.process_info(self(), :memory)
+    memory
+  end
+
+  defp track_process_memory(peak) do
+    memory = process_memory()
+    current = :atomics.get(peak, 1)
+    if memory > current, do: :atomics.put(peak, 1, memory)
+  end
+
   defp chunk_binary(binary, size) do
     Stream.unfold(binary, fn
       <<>> ->
@@ -359,12 +401,6 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
   defp compressible_payload do
     :binary.copy(<<0>>, 300 * 1024)
-  end
-
-  defp track_peak(peak, data) do
-    size = if(is_binary(data), do: byte_size(data), else: IO.iodata_length(data))
-    current = :atomics.get(peak, 1)
-    if size > current, do: :atomics.put(peak, 1, size)
   end
 
   defp unique_tmp_path(prefix) do

@@ -66,7 +66,13 @@ defmodule ElixirDB.Runtime.RetentionSchedulerTest do
     assert {:ok, %{floor_sequence: 0}} =
              DatabaseCatalog.command(uuid, {:command, :retention_status, %{}})
 
-    Process.sleep(150)
+    assert [{pid, _}] =
+             Registry.lookup(
+               ElixirDB.Runtime.DatabaseRegistry,
+               {:retention_scheduler, uuid}
+             )
+
+    assert %{timer_ref: nil} = :sys.get_state(pid)
 
     assert {:ok, %{floor_sequence: 0}} =
              DatabaseCatalog.command(uuid, {:command, :retention_status, %{}})

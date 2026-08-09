@@ -178,6 +178,36 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
     assert message =~ "malformed"
   end
 
+  test "integrity detects a missing physical blob still referenced by a revision", %{
+    adapter: adapter,
+    path: path
+  } do
+    bundle = Path.dirname(path)
+    payload = "missing-referenced-blob"
+
+    assert {:ok, writer} = FilesystemStore.begin_put(bundle, 1024, %{})
+    assert :ok = FilesystemStore.write_chunk(writer, payload)
+    assert {:ok, %{digest: digest, logical_size: size}} = FilesystemStore.finish_put(writer)
+    assert {:ok, _} = @adapter.protect_pending_blob(adapter, %{digest: digest, logical_size: size})
+
+    assert {:ok, _} =
+             @adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "missing-blob-doc",
+               body: %{},
+               attachments: %{
+                 "missing.bin" => Manifest.entry(digest, size, "application/octet-stream")
+               }
+             })
+
+    assert :ok = FilesystemStore.delete(bundle, digest)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+             @adapter.integrity_check(adapter, %{})
+
+    assert message =~ "physical verification"
+  end
+
   test "integrity rejects inconsistent logical sizes for the same digest", %{
     adapter: adapter,
     path: path

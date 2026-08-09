@@ -39,43 +39,43 @@ defmodule ElixirDB.Attachments.EzstdGateTest do
   end
 
   test "bounded memory for substantially larger-than-chunk payload without whole-file concat" do
+    path = Path.join(System.tmp_dir!(), "elixirdb-ezstd-#{System.unique_integer([:positive])}.zst")
+    on_exit(fn -> File.rm(path) end)
     peak = :atomics.new(1, signed: false)
-
-    compress_input =
-      Stream.repeatedly(fn -> :crypto.strong_rand_bytes(@chunk) end)
-      |> Enum.take(@large_chunks)
+    baseline = process_memory()
 
     assert {:ok, ctx} = Compression.new_compression_context()
     assert :ok = Compression.set_level(ctx)
+    {:ok, fd} = File.open(path, [:write, :binary, :raw])
 
-    {ctx, outputs} =
-      Enum.reduce(compress_input, {ctx, []}, fn chunk, {ctx, acc} ->
-        track_peak(peak, chunk)
+    {ctx, expected_hash, expected_size} =
+      Enum.reduce(1..@large_chunks, {ctx, :crypto.hash_init(:sha256), 0}, fn index,
+                                                                             {ctx, hash, size} ->
+        chunk = generated_chunk(index)
         assert {:ok, output, ctx} = Compression.compress_chunk(ctx, chunk)
-        track_peak(peak, output)
-        {ctx, [output | acc]}
+        assert :ok = :file.write(fd, output)
+        track_process_memory(peak)
+        {ctx, :crypto.hash_update(hash, chunk), size + byte_size(chunk)}
       end)
 
     assert {:ok, tail, _ctx} = Compression.finish_compression(ctx, <<>>)
-    track_peak(peak, tail)
-    compressed_bin = outputs |> Enum.reverse([tail]) |> IO.iodata_to_binary()
+    assert :ok = :file.write(fd, tail)
+    assert :ok = :file.close(fd)
+
+    expected_digest = :crypto.hash_final(expected_hash) |> Base.encode16(case: :lower)
+    assert expected_size == @chunk * @large_chunks
+    assert File.stat!(path).size < expected_size
 
     assert {:ok, dctx} = Compression.new_decompression_context()
+    {:ok, read_fd} = File.open(path, [:read, :binary, :raw])
 
-    decoded =
-      chunk_binary(compressed_bin, @chunk)
-      |> Enum.reduce({dctx, []}, fn chunk, {ctx, acc} ->
-        track_peak(peak, chunk)
-        assert {:ok, output, ctx} = Compression.decompress_chunk(ctx, chunk)
-        track_peak(peak, output)
-        {ctx, [output | acc]}
-      end)
-      |> then(fn {_ctx, parts} -> IO.iodata_to_binary(Enum.reverse(parts)) end)
+    {actual_hash, actual_size} = decode_file(read_fd, dctx, :crypto.hash_init(:sha256), 0, peak)
+    assert :ok = :file.close(read_fd)
 
-    expected = IO.iodata_to_binary(compress_input)
-    assert byte_size(expected) > 4 * @chunk
-    assert decoded == expected
-    assert :atomics.get(peak, 1) <= 2 * @chunk
+    actual_digest = :crypto.hash_final(actual_hash) |> Base.encode16(case: :lower)
+    assert actual_digest == expected_digest
+    assert actual_size == expected_size
+    assert :atomics.get(peak, 1) <= baseline + 2 * 1024 * 1024
   end
 
   test "clean abort on truncated and corrupt compressed data" do
@@ -90,29 +90,37 @@ defmodule ElixirDB.Attachments.EzstdGateTest do
     assert match?({:error, _}, :ezstd.decompress(corrupt))
   end
 
-  defp chunk_binary(binary, size) do
-    do_chunk_binary(binary, size, [])
+  defp generated_chunk(index) do
+    :binary.copy(<<rem(index, 251)>>, @chunk)
   end
 
-  defp do_chunk_binary(<<>>, _size, acc), do: Enum.reverse(acc)
+  defp decode_file(fd, ctx, hash, size, peak) do
+    case :file.read(fd, @chunk) do
+      :eof ->
+        {hash, size}
 
-  defp do_chunk_binary(rest, size, acc) when byte_size(rest) <= size do
-    Enum.reverse([rest | acc])
+      {:ok, compressed} ->
+        assert {:ok, output, ctx} = Compression.decompress_chunk(ctx, compressed)
+        track_process_memory(peak)
+
+        decode_file(
+          fd,
+          ctx,
+          :crypto.hash_update(hash, output),
+          size + IO.iodata_length(output),
+          peak
+        )
+    end
   end
 
-  defp do_chunk_binary(rest, size, acc) do
-    part = binary_part(rest, 0, size)
-    tail = binary_part(rest, size, byte_size(rest) - size)
-    do_chunk_binary(tail, size, [part | acc])
+  defp process_memory do
+    :erlang.garbage_collect()
+    {:memory, memory} = :erlang.process_info(self(), :memory)
+    memory
   end
 
-  defp track_peak(peak, data) do
-    data_size =
-      case data do
-        bin when is_binary(bin) -> byte_size(bin)
-        iodata -> IO.iodata_length(iodata)
-      end
-
+  defp track_process_memory(peak) do
+    data_size = process_memory()
     current = :atomics.get(peak, 1)
     if data_size > current, do: :atomics.put(peak, 1, data_size)
   end

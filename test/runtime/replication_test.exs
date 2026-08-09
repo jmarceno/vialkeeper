@@ -89,7 +89,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
              :import
            ]
 
-    assert :completed = wait_for_job(a.database_uuid, job_id, 50)
+    assert :completed = wait_for_job(a.database_uuid, job_id)
 
     assert {:ok, %{body: %{"ok" => true}}} =
              ElixirDB.Documents.get(b.database_uuid, %{id: "job-doc"})
@@ -316,7 +316,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     release_handshake_task(gate)
 
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
-    refute_receive {:phase, :read_changes}, 100
+    refute_receive {:phase, :read_changes}, 0
 
     # Cancel before read_changes means the target stays empty.
     assert {:error, %{code: :document_not_found}} =
@@ -329,16 +329,16 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     |> Enum.each(fn pid -> send(pid, {:release, gate}) end)
   end
 
-  defp wait_for_job(uuid, job_id, attempts) when attempts > 0 do
-    case JobManager.get(uuid, job_id) do
-      {:ok, %{state: state}} when state in [:completed, :failed] ->
-        state
-
-      _ ->
-        Process.sleep(20)
-        wait_for_job(uuid, job_id, attempts - 1)
-    end
+  defp wait_for_job(uuid, job_id) do
+    ElixirDB.Eventual.eventually(
+      fn ->
+        case JobManager.get(uuid, job_id) do
+          {:ok, %{state: state}} when state in [:completed, :failed] -> {:ok, state}
+          _ -> false
+        end
+      end,
+      timeout: 5_000,
+      message: "persistent replication job did not reach a terminal state"
+    )
   end
-
-  defp wait_for_job(_uuid, _job_id, 0), do: :timeout
 end
