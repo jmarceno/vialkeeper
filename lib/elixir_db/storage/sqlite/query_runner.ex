@@ -13,11 +13,12 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   alias ElixirDB.Query.{Plan, Planner, Predicate, Projection}
   alias ElixirDB.Query.Selector
   alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, IndexCatalog, QueryCompiler}
+  alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, IndexCatalog, QueryCompiler, TermBlob}
 
   @plan_cache_key :elixir_db_sqlite_query_plan_cache
   @plan_cache_limit 16
-  @query_body_cache_limit 256
+  @candidate_query_cache_limit 16
+  @query_body_term_cache_limit 256
 
   @doc "Clears cached query plans owned by a SQLite connection process."
   @spec clear_cache(Connection.handle()) :: :ok
@@ -283,7 +284,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          {:ok, rows} <-
            Connection.query(
              adapter.conn,
-             "SELECT document_id, winning_revision, winning_body_json FROM documents WHERE winning_deleted = 0 ORDER BY document_id"
+             "SELECT document_id, winning_revision, winning_body_term FROM documents WHERE winning_deleted = 0 ORDER BY document_id"
            ),
          :ok <- check_deadline(deadline),
          {:ok, documents} <- decode_query_documents(rows) do
@@ -332,11 +333,20 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     selected = selected_index(indexes, plan)
     scan = List.first(plan.scans)
 
-    with {:ok, rows} <- structured_candidate_rows(adapter, selected, scan),
+    with {:ok, rows, examined} <-
+           structured_candidate_rows_for_query(
+             adapter,
+             selected,
+             scan,
+             plan,
+             request,
+             limit,
+             deadline
+           ),
          :ok <- check_deadline(deadline),
          {:ok, documents} <-
            decode_query_documents(candidate_rows_for_decode(rows, plan, request, limit)) do
-      {:ok, documents, length(rows)}
+      {:ok, documents, examined}
     end
   end
 
@@ -391,17 +401,97 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     do: {:error, ElixirDB.Error.invalid_index_hint("planned index no longer exists", %{})}
 
   defp structured_candidate_rows(adapter, selected, scan) do
+    with {:ok, {where, params}} <- structured_candidate_query(selected, scan) do
+      Connection.query(
+        adapter.conn,
+        "SELECT document_id, winning_revision, winning_body_term FROM documents WHERE #{where} ORDER BY document_id",
+        params
+      )
+    end
+  end
+
+  defp structured_candidate_rows_for_query(
+         adapter,
+         selected,
+         scan,
+         plan,
+         request,
+         limit,
+         deadline
+       )
+       when is_integer(limit) and limit >= 0 do
+    if fully_pushed_default_order_query?(plan, request) do
+      structured_candidate_page(adapter, selected, scan, limit, deadline)
+    else
+      with {:ok, rows} <- structured_candidate_rows(adapter, selected, scan) do
+        {:ok, rows, length(rows)}
+      end
+    end
+  end
+
+  defp structured_candidate_rows_for_query(
+         adapter,
+         selected,
+         scan,
+         _plan,
+         _request,
+         _limit,
+         _deadline
+       ) do
+    with {:ok, rows} <- structured_candidate_rows(adapter, selected, scan) do
+      {:ok, rows, length(rows)}
+    end
+  end
+
+  defp structured_candidate_page(adapter, selected, scan, limit, deadline) do
+    with {:ok, {where, params}} <- structured_candidate_query(selected, scan),
+         {:ok, rows} <-
+           Connection.query(
+             adapter.conn,
+             "SELECT document_id, winning_revision, winning_body_term, (SELECT count(*) FROM documents AS candidate_count WHERE #{where}) FROM documents WHERE #{where} ORDER BY document_id LIMIT ?",
+             params ++ params ++ [limit + 1]
+           ),
+         :ok <- check_deadline(deadline) do
+      page_rows(rows)
+    end
+  end
+
+  defp page_rows([]), do: {:ok, [], 0}
+
+  defp page_rows(rows) do
+    case List.last(rows) do
+      [_id, _revision, _body_term, examined] when is_integer(examined) ->
+        {:ok, Enum.map(rows, fn [id, revision, body_term, _] -> [id, revision, body_term] end),
+         examined}
+
+      _ ->
+        {:error, ElixirDB.Error.integrity_violation("indexed query count is invalid")}
+    end
+  end
+
+  defp structured_candidate_query(selected, scan) do
+    if is_nil(selected) do
+      {:error, ElixirDB.Error.invalid_index_hint("planned index no longer exists", %{})}
+    else
+      cache_key = {selected["index_id"], selected["definition_digest"], selected["fields"], scan}
+
+      StrictCache.memoize(
+        :query_candidate_sql,
+        cache_key,
+        @candidate_query_cache_limit,
+        fn -> structured_candidate_query_for_index(selected, scan) end
+      )
+    end
+  end
+
+  defp structured_candidate_query_for_index(selected, scan) do
     fields = selected["fields"] || []
 
     with {:ok, conditions} <- QueryCompiler.compile_scan(scan, fields) do
       where = ["winning_deleted = 0" | Enum.map(conditions, &elem(&1, 0))] |> Enum.join(" AND ")
       params = Enum.flat_map(conditions, fn {_sql, value} -> List.wrap(value) end)
 
-      Connection.query(
-        adapter.conn,
-        "SELECT document_id, winning_revision, winning_body_json FROM documents WHERE #{where} ORDER BY document_id",
-        params
-      )
+      {:ok, {where, params}}
     end
   end
 
@@ -447,12 +537,12 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
 
   defp decode_query_documents([], acc, _max_depth), do: {:ok, :lists.reverse(acc)}
 
-  defp decode_query_documents([[id, revision, body_json] | rows], acc, max_depth) do
-    case StrictCache.decode_with_cache(
-           body_json,
+  defp decode_query_documents([[id, revision, body_term] | rows], acc, max_depth) do
+    case TermBlob.decode_trusted_with_cache(
+           body_term,
+           :query_body_term,
            max_depth,
-           :query_body_json,
-           @query_body_cache_limit
+           @query_body_term_cache_limit
          ) do
       {:ok, body} ->
         decode_query_documents(rows, [%{id: id, revision: revision, body: body} | acc], max_depth)

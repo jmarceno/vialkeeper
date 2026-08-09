@@ -1,14 +1,18 @@
 defmodule ElixirDB.JSON.StrictDecoder do
-  @moduledoc "A bounded JSON decoder that rejects duplicate keys and unsafe numbers."
+  @moduledoc """
+  Bounded JSON decoding with RustyJson doing the parse and Decimal preserving
+  the binary64 number checks required by the storage and HTTP contracts.
 
-  # F1 / Plan §4.4 deferred: `JSON.decode/3` custom decoders can customize object/number
-  # construction, but they cannot return `{:error, ...}` (only throw/raise), have no
-  # first-class nesting-depth or size callbacks, and thread parent container state as the
-  # accumulator — making duplicate-key rejection, binary64 validation, underflow checks,
-  # and depth limits awkward to combine without losing the current typed-error contract.
-  # This hand-rolled recursive descent therefore remains the authoritative decoder.
+  RustyJson has a fixed native nesting ceiling of 128. Configurations above
+  that ceiling use the preserved legacy implementation so this optimization
+  never narrows an explicitly configured JSON limit.
+  """
 
   @default_max_depth 100
+  @rusty_max_depth 128
+  @safe_integer_max 9_007_199_254_740_991
+
+  alias ElixirDB.JSON.StrictDecoder.Legacy
 
   @spec decode(binary(), keyword()) :: {:ok, term()} | {:error, ElixirDB.Error.t()}
   def decode(input, opts \\ [])
@@ -18,20 +22,23 @@ defmodule ElixirDB.JSON.StrictDecoder do
     max_bytes = Keyword.get(opts, :max_bytes, byte_size(input))
 
     cond do
+      not is_integer(max_bytes) or max_bytes < 0 ->
+        {:error, ElixirDB.Error.invalid_request("JSON byte limit must be a non-negative integer")}
+
       byte_size(input) > max_bytes ->
         {:error, ElixirDB.Error.payload_too_large("JSON body exceeds the configured limit")}
 
       not String.valid?(input) ->
         {:error, ElixirDB.Error.invalid_request("JSON must be valid UTF-8")}
 
+      not is_integer(max_depth) ->
+        {:error, ElixirDB.Error.invalid_request("JSON depth limit must be an integer")}
+
+      max_depth > @rusty_max_depth ->
+        Legacy.decode(input, opts)
+
       true ->
-        with {:ok, value, rest} <- parse_value(skip_ws(input), 0, max_depth),
-             <<>> <- skip_ws(rest) do
-          {:ok, value}
-        else
-          {:error, %ElixirDB.Error{} = error} -> {:error, error}
-          _ -> {:error, ElixirDB.Error.invalid_request("malformed JSON")}
-        end
+        decode_with_rusty(input, max_depth, max_bytes)
     end
   end
 
@@ -50,171 +57,134 @@ defmodule ElixirDB.JSON.StrictDecoder do
     ElixirDB.Config.host_limits()[:max_json_nesting_depth] || @default_max_depth
   end
 
-  defp parse_value(_input, depth, max_depth) when depth > max_depth,
+  defp decode_with_rusty(input, max_depth, max_bytes) do
+    case RustyJson.decode(input,
+           keys: :strings,
+           floats: :decimals,
+           duplicate_keys: :error,
+           validate_strings: true,
+           max_bytes: max_bytes,
+           decoding_integer_digit_limit: 16
+         ) do
+      {:ok, value} -> normalize(value, 0, max_depth)
+      {:error, error} -> {:error, rusty_error(error)}
+    end
+  rescue
+    _error in [ArgumentError, ErlangError] ->
+      {:error, ElixirDB.Error.invalid_request("malformed JSON")}
+  end
+
+  defp normalize(value, depth, max_depth) do
+    with :ok <- validate_depth(depth, max_depth) do
+      normalize_value(value, depth, max_depth)
+    end
+  end
+
+  defp normalize_value(%Decimal{} = value, _depth, _max_depth),
+    do: decimal_to_float(value)
+
+  defp normalize_value(value, depth, max_depth) when is_map(value),
+    do: normalize_map(value, depth, max_depth)
+
+  defp normalize_value(value, depth, max_depth) when is_list(value),
+    do: normalize_list(value, depth, max_depth)
+
+  defp normalize_value(value, _depth, _max_depth) when is_nil(value) or is_boolean(value),
+    do: {:ok, value}
+
+  defp normalize_value(value, _depth, _max_depth) when is_binary(value) do
+    if String.valid?(value), do: {:ok, value}, else: invalid_json("invalid Unicode string")
+  end
+
+  defp normalize_value(value, _depth, _max_depth) when is_integer(value) do
+    if abs(value) <= @safe_integer_max,
+      do: {:ok, value},
+      else: invalid_json("integer is outside the binary64 safe range")
+  end
+
+  defp normalize_value(value, _depth, _max_depth) when is_float(value),
+    do: validate_float(value)
+
+  defp normalize_value(_value, _depth, _max_depth),
+    do: invalid_json("JSON contains an unsupported value")
+
+  defp normalize_map(map, depth, max_depth) do
+    Enum.reduce_while(map, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      case normalize_map_entry(key, value, depth, max_depth) do
+        {:ok, normalized} -> {:cont, {:ok, Map.put(acc, key, normalized)}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp normalize_map_entry(key, value, depth, max_depth) when is_binary(key),
+    do: normalize(value, depth + 1, max_depth)
+
+  defp normalize_map_entry(_key, _value, _depth, _max_depth),
+    do: invalid_json("JSON object key is not a string")
+
+  defp normalize_list(values, depth, max_depth),
+    do: normalize_list(values, depth, max_depth, [])
+
+  defp normalize_list([], _depth, _max_depth, acc), do: {:ok, :lists.reverse(acc)}
+
+  defp normalize_list([value | rest], depth, max_depth, acc) do
+    case normalize(value, depth + 1, max_depth) do
+      {:ok, normalized} -> normalize_list(rest, depth, max_depth, [normalized | acc])
+      {:error, _} = error -> error
+    end
+  end
+
+  defp decimal_to_float(value) do
+    {:ok, Decimal.to_float(value)}
+  rescue
+    error in Decimal.Error ->
+      if String.contains?(Exception.message(error), "DBL_MIN"),
+        do: invalid_json("number underflows to zero"),
+        else: invalid_json("number overflows to infinity")
+  end
+
+  defp validate_float(value) do
+    if finite_float?(value),
+      do: {:ok, value},
+      else: invalid_json("number is not finite")
+  end
+
+  defp finite_float?(value) do
+    not (value !== value) and finite_float_magnitude?(abs(value))
+  end
+
+  defp finite_float_magnitude?(value) do
+    maximum = Float.max_finite()
+    value < maximum or value == maximum
+  end
+
+  defp validate_depth(depth, max_depth) when depth <= max_depth, do: :ok
+
+  defp validate_depth(_depth, _max_depth),
     do: {:error, ElixirDB.Error.resource_limit("JSON nesting exceeds the configured limit")}
 
-  defp parse_value(<<"null", rest::binary>>, _depth, _max), do: {:ok, nil, rest}
-  defp parse_value(<<"true", rest::binary>>, _depth, _max), do: {:ok, true, rest}
-  defp parse_value(<<"false", rest::binary>>, _depth, _max), do: {:ok, false, rest}
-
-  defp parse_value(<<?{, rest::binary>>, depth, max),
-    do: parse_object(skip_ws(rest), %{}, depth + 1, max)
-
-  defp parse_value(<<?[, rest::binary>>, depth, max),
-    do: parse_array(skip_ws(rest), [], depth + 1, max)
-
-  defp parse_value(<<?", rest::binary>>, _depth, _max) do
-    with {:ok, raw, tail} <- consume_string(rest, []),
-         {:ok, value} <- JSON.decode(IO.iodata_to_binary([?\", raw, ?\"])) do
-      validate_string_value(value, tail)
-    else
-      {:error, %ElixirDB.Error{} = error} -> {:error, error}
-      _ -> {:error, ElixirDB.Error.invalid_request("invalid JSON string")}
-    end
-  end
-
-  defp parse_value(input, _depth, _max), do: parse_number(input)
-
-  defp validate_string_value(value, tail) when is_binary(value) do
-    if String.valid?(value),
-      do: {:ok, value, tail},
-      else: {:error, ElixirDB.Error.invalid_request("invalid Unicode string")}
-  end
-
-  defp parse_object(<<"}", rest::binary>>, object, _depth, _max), do: {:ok, object, rest}
-
-  defp parse_object(input, object, depth, max) do
-    with <<?", rest::binary>> <- input,
-         {:ok, raw_key, after_key} <- consume_string(rest, []),
-         {:ok, key} <- JSON.decode(IO.iodata_to_binary([?\", raw_key, ?\"])),
-         <<?:, after_colon::binary>> <- skip_ws(after_key),
-         {:ok, value, after_value} <- parse_value(skip_ws(after_colon), depth, max) do
-      put_object_value(object, key, value, after_value, depth, max)
-    else
-      {:error, %ElixirDB.Error{} = error} -> {:error, error}
-      _ -> {:error, ElixirDB.Error.invalid_request("malformed JSON object")}
-    end
-  end
-
-  defp put_object_value(object, key, _value, _after_value, _depth, _max)
-       when is_map_key(object, key),
-       do: {:error, ElixirDB.Error.invalid_request("duplicate JSON object key")}
-
-  defp put_object_value(object, key, value, after_value, depth, max) do
-    next = skip_ws(after_value)
-    next_object = Map.put(object, key, value)
-
-    case next do
-      <<?}, tail::binary>> -> {:ok, next_object, tail}
-      <<?,, tail::binary>> -> parse_object(skip_ws(tail), next_object, depth, max)
-      _ -> {:error, ElixirDB.Error.invalid_request("malformed JSON object")}
-    end
-  end
-
-  defp parse_array(<<"]", rest::binary>>, values, _depth, _max),
-    do: {:ok, Enum.reverse(values), rest}
-
-  defp parse_array(input, values, depth, max) do
-    case parse_value(input, depth, max) do
-      {:ok, value, rest} ->
-        case skip_ws(rest) do
-          <<?], tail::binary>> -> {:ok, Enum.reverse([value | values]), tail}
-          <<?,, tail::binary>> -> parse_array(skip_ws(tail), [value | values], depth, max)
-          _ -> {:error, ElixirDB.Error.invalid_request("malformed JSON array")}
-        end
-
-      {:error, %ElixirDB.Error{} = error} ->
-        {:error, error}
-    end
-  end
-
-  defp consume_string(<<>>, _acc),
-    do: {:error, ElixirDB.Error.invalid_request("unterminated JSON string")}
-
-  defp consume_string(<<?", rest::binary>>, acc), do: {:ok, Enum.reverse(acc), rest}
-
-  defp consume_string(<<?\\, next, rest::binary>>, acc) when next in ~c("\\\"/bfnrt") do
-    consume_string(rest, [<<?\\, next>> | acc])
-  end
-
-  defp consume_string(<<?\\, ?u, a, b, c, d, rest::binary>>, acc) do
-    if Enum.all?([a, b, c, d], &(&1 in ?0..?9 or &1 in ?a..?f or &1 in ?A..?F)),
-      do: consume_string(rest, [<<?\\, ?u, a, b, c, d>> | acc]),
-      else: {:error, ElixirDB.Error.invalid_request("invalid Unicode escape")}
-  end
-
-  defp consume_string(<<byte, _rest::binary>>, _acc) when byte < 0x20,
-    do: {:error, ElixirDB.Error.invalid_request("unescaped control character in JSON string")}
-
-  defp consume_string(<<byte, rest::binary>>, acc), do: consume_string(rest, [<<byte>> | acc])
-
-  defp parse_number(input) do
-    {token, rest} = take_number(input, [])
-
-    case Regex.match?(~r/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/, token) do
-      false ->
-        {:error, ElixirDB.Error.invalid_request("invalid JSON value")}
-
-      true ->
-        parse_number_token(token, rest)
-    end
-  end
-
-  defp parse_number_token(token, rest) do
-    if String.contains?(token, [".", "e", "E"]),
-      do: parse_float_token(token, rest),
-      else: parse_integer_token(token, rest)
-  end
-
-  defp parse_float_token(token, rest) do
-    case Float.parse(token) do
-      {value, ""} when is_float(value) ->
-        validate_float(value, token, rest)
-
-      :error ->
-        # Extremely large exponents fail Float.parse on some OTP builds; treat as overflow.
-        {:error, ElixirDB.Error.invalid_request("number overflows to infinity")}
-
-      _ ->
-        {:error, ElixirDB.Error.invalid_request("invalid JSON number")}
-    end
-  end
-
-  defp parse_integer_token(token, rest) do
-    {value, ""} = Integer.parse(token)
-    validate_integer(value, rest)
-  end
-
-  defp validate_integer(value, rest) when abs(value) <= 9_007_199_254_740_991,
-    do: {:ok, value, rest}
-
-  defp validate_integer(_value, _rest),
-    do: {:error, ElixirDB.Error.invalid_request("integer is outside the binary64 safe range")}
-
-  defp validate_float(value, token, rest) do
-    zero_literal? = Regex.match?(~r/^[-]?0(?:\.0+)?(?:[eE][+-]?[0-9]+)?$/, token)
-
+  defp rusty_error(%RustyJson.DecodeError{message: message}) do
     cond do
-      not :erlang.is_float(value) ->
-        {:error, ElixirDB.Error.invalid_request("invalid JSON number")}
+      String.contains?(message, "Nesting depth") ->
+        ElixirDB.Error.resource_limit("JSON nesting exceeds the configured limit")
 
-      abs(value) > Float.max_finite() ->
-        {:error, ElixirDB.Error.invalid_request("number overflows to infinity")}
+      String.contains?(message, "Duplicate key") ->
+        ElixirDB.Error.invalid_request("duplicate JSON object key")
 
-      value == 0.0 and not zero_literal? ->
-        {:error, ElixirDB.Error.invalid_request("number underflows to zero")}
+      String.contains?(message, "Invalid UTF-8") ->
+        ElixirDB.Error.invalid_request("invalid Unicode string")
+
+      String.contains?(message, "Invalid number") ->
+        ElixirDB.Error.invalid_request("invalid JSON number")
+
+      String.contains?(message, "Unexpected character") ->
+        ElixirDB.Error.invalid_request("invalid JSON value")
 
       true ->
-        {:ok, value, rest}
+        ElixirDB.Error.invalid_request("malformed JSON")
     end
   end
 
-  defp take_number(<<byte, rest::binary>>, acc) when byte in ?0..?9 or byte in ~c("-+.eE") do
-    take_number(rest, [<<byte>> | acc])
-  end
-
-  defp take_number(rest, acc), do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
-
-  defp skip_ws(<<byte, rest::binary>>) when byte in [32, 9, 10, 13], do: skip_ws(rest)
-  defp skip_ws(rest), do: rest
+  defp invalid_json(message), do: {:error, ElixirDB.Error.invalid_request(message)}
 end

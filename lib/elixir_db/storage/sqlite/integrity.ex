@@ -14,7 +14,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
   alias ElixirDB.MapAccess
   alias ElixirDB.Revisions.Id
   alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.{Connection, Indexes, Meta, RetentionRecords}
+  alias ElixirDB.Storage.SQLite.{Connection, Indexes, Meta, RetentionRecords, TermBlob}
   @doc false
   def check(adapter), do: Adapter.integrity_check(adapter, %{})
 
@@ -81,7 +81,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
     with {:ok, rows} <-
            Connection.query(
              conn,
-             "SELECT d.document_id, r.doc_key, r.revision_id, r.generation, r.parent_revision, r.history_id, r.digest, r.deleted, r.body_json, r.is_leaf FROM revisions AS r JOIN documents AS d ON d.doc_key = r.doc_key ORDER BY d.document_id, r.revision_id"
+             "SELECT d.document_id, r.doc_key, r.revision_id, r.generation, r.parent_revision, r.history_id, r.digest, r.deleted, r.body_json, r.body_term, r.is_leaf FROM revisions AS r JOIN documents AS d ON d.doc_key = r.doc_key ORDER BY d.document_id, r.revision_id"
            ) do
       Enum.reduce_while(rows, :ok, fn row, :ok ->
         validate_revision_row(conn, boundaries, revision_row(row))
@@ -99,6 +99,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
          digest,
          deleted,
          body_json,
+         body_term,
          leaf
        ]) do
     %{
@@ -111,6 +112,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
       digest: digest,
       deleted: deleted,
       body_json: body_json,
+      body_term: body_term,
       leaf: leaf
     }
   end
@@ -125,11 +127,13 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
     digest = row.digest
     deleted = row.deleted
     body_json = row.body_json
+    body_term = row.body_term
     leaf = row.leaf
 
     body = revision_body(deleted, body_json)
 
     with true <- is_binary(history_id) and history_id != "",
+         :ok <- validate_revision_term(body_json, body_term, deleted, body),
          {:ok, attachments} <- load_revision_attachments(conn, doc_key, revision_id, deleted),
          {:ok, calculated} <-
            Id.calculate(document_id, history_id, parent, deleted == 1, body, attachments),
@@ -547,6 +551,22 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
   defp revision_body(1, _body_json), do: nil
   defp revision_body(_deleted, body_json), do: StrictDecoder.decode_or_nil(body_json)
 
+  defp validate_revision_term(nil, nil, 1, _body), do: :ok
+
+  defp validate_revision_term(body_json, body_term, 1, _body)
+       when not is_nil(body_json) or not is_nil(body_term),
+       do: {:error, ElixirDB.Error.integrity_violation("deleted revision has a body term")}
+
+  defp validate_revision_term(body_json, body_term, _deleted, body) do
+    case {StrictDecoder.decode(body_json), TermBlob.decode(body_term, body_json)} do
+      {{:ok, ^body}, {:ok, ^body}} ->
+        :ok
+
+      _ ->
+        {:error, ElixirDB.Error.integrity_violation("revision JSON and body term differ")}
+    end
+  end
+
   defp revision_digest_part(revision_id) do
     case String.split(revision_id, "-", parts: 2) do
       [_generation, digest] when is_binary(digest) and digest != "" -> digest
@@ -631,34 +651,72 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
     with {:ok, rows} <-
            Connection.query(
              conn,
-             "SELECT doc_key, document_id, winning_revision, winning_body_json, winning_deleted, update_sequence FROM documents"
+             "SELECT doc_key, document_id, winning_revision, winning_body_json, winning_body_term, winning_deleted, update_sequence FROM documents"
            ) do
-      Enum.reduce_while(rows, :ok, fn [doc_key, document_id, winning, body_json, deleted, sequence],
-                                      :ok ->
-        validate_document_row(conn, doc_key, document_id, winning, body_json, deleted, sequence)
-      end)
+      Enum.reduce_while(
+        rows,
+        :ok,
+        fn [doc_key, document_id, winning, body_json, body_term, deleted, sequence], :ok ->
+          validate_document_row(
+            conn,
+            doc_key,
+            document_id,
+            winning,
+            body_json,
+            body_term,
+            deleted,
+            sequence
+          )
+        end
+      )
     end
   end
 
-  defp validate_document_row(_conn, _doc_key, _document_id, nil, nil, 1, 0), do: {:cont, :ok}
+  defp validate_document_row(_conn, _doc_key, _document_id, nil, nil, nil, 1, 0),
+    do: {:cont, :ok}
 
-  defp validate_document_row(_conn, _doc_key, document_id, nil, _body_json, _deleted, _sequence),
-    do:
-      {:halt,
-       {:error,
-        ElixirDB.Error.integrity_violation("document has no winning revision", %{
-          document_id: document_id
-        })}}
+  defp validate_document_row(
+         _conn,
+         _doc_key,
+         document_id,
+         nil,
+         _body_json,
+         _body_term,
+         _deleted,
+         _sequence
+       ),
+       do:
+         {:halt,
+          {:error,
+           ElixirDB.Error.integrity_violation("document has no winning revision", %{
+             document_id: document_id
+           })}}
 
-  defp validate_document_row(conn, doc_key, document_id, winning, body_json, deleted, _sequence) do
+  defp validate_document_row(
+         conn,
+         doc_key,
+         document_id,
+         winning,
+         body_json,
+         body_term,
+         deleted,
+         _sequence
+       ) do
     case Connection.query(
            conn,
-           "SELECT deleted, body_json FROM revisions WHERE doc_key = ? AND revision_id = ?",
+           "SELECT deleted, body_json, body_term FROM revisions WHERE doc_key = ? AND revision_id = ?",
            [doc_key, winning]
          ) do
-      {:ok, [[revision_deleted, revision_body]]} ->
+      {:ok, [[revision_deleted, revision_body, revision_term]]} ->
         validate_materialized_winner(
-          body_matches?(revision_deleted, revision_body, body_json, deleted),
+          body_matches?(
+            revision_deleted,
+            revision_body,
+            revision_term,
+            body_json,
+            body_term,
+            deleted
+          ),
           document_id
         )
 
@@ -674,10 +732,14 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
     end
   end
 
-  defp body_matches?(1, _revision_body, body_json, deleted), do: is_nil(body_json) and deleted == 1
+  defp body_matches?(1, _revision_body, _revision_term, body_json, body_term, deleted),
+    do: is_nil(body_json) and is_nil(body_term) and deleted == 1
 
-  defp body_matches?(_revision_deleted, revision_body, body_json, deleted) do
+  defp body_matches?(_revision_deleted, revision_body, revision_term, body_json, body_term, deleted) do
     is_binary(body_json) and deleted == 0 and
+      is_binary(body_term) and
+      match?({:ok, _}, TermBlob.decode(revision_term, revision_body)) and
+      match?({:ok, _}, TermBlob.decode(body_term, body_json)) and
       Canonical.encode!(StrictDecoder.decode_or_nil(revision_body)) == body_json
   end
 
@@ -695,10 +757,11 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
     with {:ok, rows} <-
            Connection.query(
              conn,
-             "SELECT sequence, document_id, winning_revision, leaf_set_json FROM changes ORDER BY sequence"
+             "SELECT sequence, document_id, winning_revision, leaf_set_json, leaf_set_term FROM changes ORDER BY sequence"
            ) do
-      Enum.reduce_while(rows, {:ok, nil}, fn [sequence, document_id, winning, leaf_json], acc ->
-        validate_change_row(conn, floor, sequence, document_id, winning, leaf_json, acc)
+      Enum.reduce_while(rows, {:ok, nil}, fn [sequence, document_id, winning, leaf_json, leaf_term],
+                                             acc ->
+        validate_change_row(conn, floor, sequence, document_id, winning, leaf_json, leaf_term, acc)
       end)
       |> case do
         {:ok, _} -> :ok
@@ -707,26 +770,51 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
     end
   end
 
-  defp validate_change_row(conn, floor, sequence, document_id, winning, leaf_json, {:ok, previous}) do
-    with true <- sequence > floor,
-         true <- previous == nil or sequence > previous,
+  defp validate_change_row(
+         conn,
+         floor,
+         sequence,
+         document_id,
+         winning,
+         leaf_json,
+         leaf_term,
+         {:ok, previous}
+       ) do
+    with :ok <- validate_change_sequence(sequence, previous, floor),
          {:ok, leaves} <- StrictDecoder.decode(leaf_json),
-         true <- is_list(leaves),
+         {:ok, term_leaves} <- TermBlob.decode(leaf_term, leaf_json),
+         :ok <- validate_change_terms(leaves, term_leaves),
          :ok <- validate_change_leaves(conn, document_id, winning, leaves) do
       {:cont, {:ok, sequence}}
     else
-      false ->
-        {:halt,
-         {:error,
-          ElixirDB.Error.integrity_violation("change row is at or below the retention floor", %{
-            sequence: sequence,
-            floor: floor
-          })}}
-
       {:error, error} ->
         {:halt, {:error, error}}
     end
   end
+
+  defp validate_change_sequence(sequence, _previous, floor) when sequence <= floor,
+    do:
+      {:error,
+       ElixirDB.Error.integrity_violation("change row is at or below the retention floor", %{
+         sequence: sequence,
+         floor: floor
+       })}
+
+  defp validate_change_sequence(sequence, previous, _floor)
+       when not is_nil(previous) and sequence <= previous,
+       do:
+         {:error,
+          ElixirDB.Error.integrity_violation("change sequences are not strictly increasing", %{
+            sequence: sequence,
+            previous: previous
+          })}
+
+  defp validate_change_sequence(_sequence, _previous, _floor), do: :ok
+
+  defp validate_change_terms(leaves, leaves) when is_list(leaves), do: :ok
+
+  defp validate_change_terms(_leaves, _term_leaves),
+    do: {:error, ElixirDB.Error.integrity_violation("change JSON and term differ")}
 
   defp validate_change_leaves(conn, document_id, winning, leaves) do
     Enum.reduce_while(leaves, :ok, fn leaf, :ok ->

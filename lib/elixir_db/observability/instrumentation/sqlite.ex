@@ -33,6 +33,7 @@ defmodule ElixirDB.Observability.Instrumentation.SQLite do
   """
 
   alias ElixirDB.Observability.Tracer
+  @phase_timing_key {__MODULE__, :phase_timings}
 
   @typedoc "A stable SQLite phase key mapped to a low-cardinality span name."
   @type sqlite_phase ::
@@ -91,6 +92,42 @@ defmodule ElixirDB.Observability.Instrumentation.SQLite do
   @spec trace_sqlite_phase(sqlite_phase(), keyword(), (-> term())) :: term()
   def trace_sqlite_phase(phase, attrs, fun)
       when is_atom(phase) and is_list(attrs) and is_function(fun, 0) do
+    case Process.get(@phase_timing_key) do
+      nil ->
+        if Tracer.tracing_enabled?(), do: run_phase(phase, attrs, fun), else: fun.()
+
+      timings ->
+        started = System.monotonic_time()
+
+        try do
+          run_phase(phase, attrs, fun)
+        after
+          elapsed = System.monotonic_time() - started
+          Process.put(@phase_timing_key, [{phase, elapsed} | timings])
+        end
+    end
+  end
+
+  @doc "Enables process-local phase timing until `take_phase_timings/0` is called."
+  @spec start_phase_timings() :: :ok
+  def start_phase_timings do
+    Process.put(@phase_timing_key, [])
+    :ok
+  end
+
+  @doc "Returns and clears process-local phase timings in execution order."
+  @spec take_phase_timings() :: [{sqlite_phase(), integer()}]
+  def take_phase_timings do
+    @phase_timing_key
+    |> Process.get([])
+    |> Enum.reverse()
+    |> then(fn timings ->
+      Process.delete(@phase_timing_key)
+      timings
+    end)
+  end
+
+  defp run_phase(phase, attrs, fun) do
     Tracer.with_span(Map.fetch!(@span_names, phase), attrs, fn ->
       result = fun.()
       record_phase_error(result)

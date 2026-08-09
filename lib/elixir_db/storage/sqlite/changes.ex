@@ -7,11 +7,11 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   orchestration remain centralized until further Track A extraction.
   """
 
-  alias ElixirDB.JSON.StrictCache
+  alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.Connection
+  alias ElixirDB.Storage.SQLite.{Connection, TermBlob}
 
-  @leaf_json_cache_limit 256
+  @leaf_term_cache_limit 256
   @doc false
   def read(adapter, request), do: Adapter.read_changes(adapter, request)
 
@@ -59,19 +59,23 @@ defmodule ElixirDB.Storage.SQLite.Changes do
           binary()
         ) :: :ok | {:error, term()}
   def insert(conn, sequence, doc_key, document_id, winner, leaf_json, origin) do
-    Connection.execute(
-      conn,
-      "INSERT INTO changes(sequence, doc_key, document_id, winning_revision, winning_deleted, leaf_set_json, origin) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [
-        sequence,
-        doc_key,
-        document_id,
-        winner.revision_id,
-        if(winner.deleted, do: 1, else: 0),
-        leaf_json,
-        origin
-      ]
-    )
+    with {:ok, leaves} <- StrictDecoder.decode(leaf_json),
+         {:ok, leaf_term} <- TermBlob.encode(leaves, leaf_json) do
+      Connection.execute(
+        conn,
+        "INSERT INTO changes(sequence, doc_key, document_id, winning_revision, winning_deleted, leaf_set_json, leaf_set_term, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          sequence,
+          doc_key,
+          document_id,
+          winner.revision_id,
+          if(winner.deleted, do: 1, else: 0),
+          leaf_json,
+          TermBlob.bind(leaf_term),
+          origin
+        ]
+      )
+    end
   end
 
   @doc """
@@ -82,7 +86,7 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   def fetch_after(conn, since, limit) do
     case Connection.query(
            conn,
-           "SELECT sequence, document_id, winning_revision, winning_deleted, leaf_set_json, origin FROM changes WHERE sequence > ? ORDER BY sequence LIMIT ?",
+           "SELECT sequence, document_id, winning_revision, winning_deleted, leaf_set_term, origin FROM changes WHERE sequence > ? ORDER BY sequence LIMIT ?",
            [since, limit]
          ) do
       {:ok, rows} -> {:ok, rows}
@@ -96,7 +100,7 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   def fetch_page(conn, since, limit) do
     case Connection.query(
            conn,
-           "SELECT sequence, document_id, winning_revision, winning_deleted, leaf_set_json, origin FROM changes WHERE sequence > ? ORDER BY sequence LIMIT ?",
+           "SELECT sequence, document_id, winning_revision, winning_deleted, leaf_set_term, origin FROM changes WHERE sequence > ? ORDER BY sequence LIMIT ?",
            [since, limit + 1]
          ) do
       {:ok, rows} ->
@@ -151,15 +155,15 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   defp decode_rows([], acc, _max_depth), do: {:ok, :lists.reverse(acc)}
 
   defp decode_rows(
-         [[sequence, document_id, winning, deleted, leaf_json, origin] | rows],
+         [[sequence, document_id, winning, deleted, leaf_term, origin] | rows],
          acc,
          max_depth
        ) do
-    case StrictCache.decode_with_cache(
-           leaf_json,
+    case TermBlob.decode_trusted_with_cache(
+           leaf_term,
+           :changes_leaf_term,
            max_depth,
-           :changes_leaf_json,
-           @leaf_json_cache_limit
+           @leaf_term_cache_limit
          ) do
       {:ok, leaves} ->
         decode_rows(

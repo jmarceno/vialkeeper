@@ -365,7 +365,7 @@ defmodule ElixirDB.Storage.SQLite.Retention do
   defp load_document_revisions(conn, doc_key) do
     case Connection.query(
            conn,
-           "SELECT revision_id, generation, parent_revision, history_id, digest, deleted, body_json, insertion_sequence FROM revisions WHERE doc_key = ?",
+           "SELECT revision_id, generation, parent_revision, history_id, digest, deleted, body_json, body_term, insertion_sequence FROM revisions WHERE doc_key = ?",
            [doc_key]
          ) do
       {:ok, rows} ->
@@ -420,7 +420,7 @@ defmodule ElixirDB.Storage.SQLite.Retention do
     Enum.reduce_while(document_ids, :ok, fn document_id, :ok ->
       case Connection.execute(
              conn,
-             "UPDATE documents SET winning_revision = NULL, winning_body_json = NULL, winning_deleted = 1, update_sequence = 0 WHERE document_id = ?",
+             "UPDATE documents SET winning_revision = NULL, winning_body_json = NULL, winning_body_term = NULL, winning_deleted = 1, update_sequence = 0 WHERE document_id = ?",
              [document_id]
            ) do
         :ok -> {:cont, :ok}

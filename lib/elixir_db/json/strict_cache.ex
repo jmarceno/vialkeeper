@@ -11,34 +11,44 @@ defmodule ElixirDB.JSON.StrictCache do
   def decode_with_cache(input, max_depth, cache_name, cache_limit)
       when is_binary(input) and is_integer(max_depth) and max_depth >= 0 and
              is_atom(cache_name) and is_integer(cache_limit) and cache_limit > 0 do
-    key = {input, max_depth}
+    memoize(cache_name, {input, max_depth}, cache_limit, fn ->
+      StrictDecoder.decode(input, max_depth: max_depth)
+    end)
+  end
+
+  @doc false
+  @spec memoize(term(), term(), pos_integer(), (-> {:ok, term()} | {:error, term()})) ::
+          {:ok, term()} | {:error, term()}
+  def memoize(cache_name, key, cache_limit, fun)
+      when is_integer(cache_limit) and cache_limit > 0 and is_function(fun, 0) do
     process_cache_key = {@cache_key, cache_name}
     cache = Process.get(process_cache_key, %{})
 
-    case cached_value(cache, key) do
+    case Map.fetch(cache, key) do
       {:ok, value} ->
         {:ok, value}
 
-      :miss ->
-        decode_and_cache(input, max_depth, process_cache_key, cache, key, cache_limit)
+      :error ->
+        case fun.() do
+          {:ok, value} = result ->
+            Process.put(process_cache_key, put_cache_value(cache, key, value, cache_limit))
+            result
+
+          {:error, _error} = error ->
+            error
+        end
     end
   end
 
-  defp cached_value(cache, key) do
-    case Map.fetch(cache, key) do
+  @doc "Returns a previously decoded value without parsing on a cache miss."
+  @spec fetch_cached(binary(), non_neg_integer(), atom()) :: {:ok, term()} | :miss
+  def fetch_cached(input, max_depth, cache_name)
+      when is_binary(input) and is_integer(max_depth) and max_depth >= 0 and is_atom(cache_name) do
+    cache = Process.get({@cache_key, cache_name}, %{})
+
+    case Map.fetch(cache, {input, max_depth}) do
       {:ok, value} -> {:ok, value}
       :error -> :miss
-    end
-  end
-
-  defp decode_and_cache(input, max_depth, process_cache_key, cache, key, cache_limit) do
-    case StrictDecoder.decode(input, max_depth: max_depth) do
-      {:ok, value} = result ->
-        Process.put(process_cache_key, put_cache_value(cache, key, value, cache_limit))
-        result
-
-      {:error, _error} = error ->
-        error
     end
   end
 

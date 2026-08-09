@@ -32,7 +32,9 @@ defmodule ElixirDB.Observability.Tracer do
     end
   end
 
-  defp tracing_enabled?,
+  @doc "Returns whether OpenTelemetry span export is configured."
+  @spec tracing_enabled?() :: boolean()
+  def tracing_enabled?,
     do: Application.get_env(:opentelemetry, :traces_exporter, :none) not in [:none, nil]
 
   @doc "Sets an allow-listed attribute on the current span."

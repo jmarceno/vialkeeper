@@ -8,6 +8,7 @@ defmodule ElixirDB.Query.QueryTest do
   alias ElixirDB.Storage.SQLite.Connection
   alias ElixirDB.Storage.SQLite.QueryCompiler
   alias ElixirDB.Storage.SQLite.QueryRunner
+  alias ElixirDB.Storage.SQLite.TermBlob
   use ExUnit.Case, async: false
 
   setup do
@@ -46,6 +47,25 @@ defmodule ElixirDB.Query.QueryTest do
              })
 
     assert fields == %{"/title" => "A"}
+  end
+
+  test "malformed trusted query terms surface as integrity errors", %{adapter: adapter} do
+    assert {:ok, _} =
+             Adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "doc",
+               body: %{"state" => "open"}
+             })
+
+    assert :ok =
+             Connection.execute(
+               adapter.conn,
+               "UPDATE documents SET winning_body_term = ? WHERE document_id = ?",
+               [TermBlob.bind(<<0, 1, 2>>), "doc"]
+             )
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             Adapter.execute_query(adapter, %{selector: %{"/state" => "open"}, limit: 10})
   end
 
   test "adapter rebuilds predicates from the public selector", %{adapter: adapter} do
@@ -338,9 +358,12 @@ defmodule ElixirDB.Query.QueryTest do
     end
 
     assert {:ok, request} = Normalizer.normalize(%{selector: %{}})
+    assert {:ok, identity} = Adapter.identity(adapter)
+
+    expired_identity = put_in(identity, [:config, "queries", "max_execution_ms"], 0)
 
     assert {:error, %ElixirDB.Error{code: :resource_limit}} =
-             QueryRunner.execute(adapter, request)
+             QueryRunner.execute(adapter, request, expired_identity)
   end
 
   test "executes OR branches sharing one structured index", %{adapter: adapter} do

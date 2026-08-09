@@ -13,7 +13,8 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.{Attachments, Connection}
+  alias ElixirDB.Storage.SQLite.{Attachments, Connection, TermBlob}
+  @revision_body_term_cache_limit 256
   @doc false
   def get(adapter, request), do: Adapter.get_revision(adapter, request)
 
@@ -36,7 +37,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
            conn,
            """
            SELECT r.revision_id, r.generation, r.parent_revision, r.history_id,
-                  r.digest, r.deleted, r.body_json, r.insertion_sequence,
+                  r.digest, r.deleted, r.body_json, r.body_term, r.insertion_sequence,
                   a.attachment_name, a.blob_digest, a.logical_size, a.content_type
            FROM revisions AS r
            LEFT JOIN revision_attachments AS a
@@ -47,7 +48,17 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
            [doc_key, revision_id]
          ) do
       {:ok, [first_row | _] = rows} ->
-        [id, generation, parent, history_id, digest_value, deleted, body_json, sequence | _] =
+        [
+          id,
+          generation,
+          parent,
+          history_id,
+          digest_value,
+          deleted,
+          body_json,
+          body_term,
+          sequence | _
+        ] =
           first_row
 
         with {:ok, attachments} <- manifest_from_rows(rows) do
@@ -61,6 +72,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
                digest_value,
                deleted,
                body_json,
+               body_term,
                sequence
              ],
              attachments
@@ -77,9 +89,9 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
 
   defp manifest_from_rows(rows) do
     rows
-    |> Enum.reject(fn [_, _, _, _, _, _, _, _, name | _] -> is_nil(name) end)
+    |> Enum.reject(fn [_, _, _, _, _, _, _, _, _, name | _] -> is_nil(name) end)
     |> Map.new(fn row ->
-      [_, _, _, _, _, _, _, _, name, digest, logical_size, content_type] = row
+      [_, _, _, _, _, _, _, _, _, name, digest, logical_size, content_type] = row
       {name, Manifest.entry(digest, logical_size, content_type)}
     end)
     |> Manifest.normalize()
@@ -93,7 +105,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   def load_leaves(conn, doc_key) do
     case Connection.query(
            conn,
-           "SELECT revision_id, generation, parent_revision, history_id, digest, deleted, body_json, insertion_sequence FROM revisions WHERE doc_key = ? AND is_leaf = 1 ORDER BY revision_id",
+           "SELECT revision_id, generation, parent_revision, history_id, digest, deleted, body_json, body_term, insertion_sequence FROM revisions WHERE doc_key = ? AND is_leaf = 1 ORDER BY revision_id",
            [doc_key]
          ) do
       {:ok, rows} ->
@@ -107,13 +119,24 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   end
 
   defp append_leaf_revision(conn, doc_key, row, {:ok, acc}) do
-    [id, generation, parent, history_id, digest_value, deleted, body_json, sequence] = row
+    [id, generation, parent, history_id, digest_value, deleted, body_json, body_term, sequence] =
+      row
 
     case Attachments.load_manifest(conn, doc_key, id) do
       {:ok, attachments} ->
         revision =
           from_row(
-            [id, generation, parent, history_id, digest_value, deleted, body_json, sequence],
+            [
+              id,
+              generation,
+              parent,
+              history_id,
+              digest_value,
+              deleted,
+              body_json,
+              body_term,
+              sequence
+            ],
             attachments
           )
 
@@ -151,11 +174,12 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   def insert(conn, doc_key, %Revision{} = revision, body_json) do
     body = if revision.deleted, do: nil, else: body_json || Canonical.encode!(revision.body)
 
-    with :ok <- clear_parent_leaf(conn, doc_key, revision.parent_revision),
+    with {:ok, body_term} <- stored_body_term(revision, body),
+         :ok <- clear_parent_leaf(conn, doc_key, revision.parent_revision),
          :ok <-
            Connection.execute(
              conn,
-             "INSERT INTO revisions(doc_key, revision_id, generation, parent_revision, history_id, digest, deleted, body_json, insertion_sequence, is_leaf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
+             "INSERT INTO revisions(doc_key, revision_id, generation, parent_revision, history_id, digest, deleted, body_json, body_term, insertion_sequence, is_leaf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
              [
                doc_key,
                revision.revision_id,
@@ -164,7 +188,8 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
                revision.history_id,
                revision.digest,
                if(revision.deleted, do: 1, else: 0),
-               body
+               body,
+               TermBlob.bind(body_term)
              ]
            ),
          :ok <-
@@ -268,6 +293,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
           digest_value,
           deleted,
           body_json,
+          body_term,
           sequence
         ],
         attachments
@@ -281,7 +307,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
       parent_revision: parent,
       digest: digest_value,
       deleted: deleted == 1,
-      body: if(body_json, do: decode_json!(body_json)),
+      body: if(body_json, do: decode_body!(body_term, body_json)),
       attachments: attachments,
       insertion_sequence: sequence
     }
@@ -293,6 +319,23 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
       _ -> nil
     end
   end
+
+  defp decode_body!(body_term, body_json) do
+    case TermBlob.decode_with_cache(
+           body_term,
+           body_json,
+           :revision_body_term,
+           @revision_body_term_cache_limit
+         ) do
+      {:ok, value} -> value
+      {:fallback, _reason} -> decode_json!(body_json)
+    end
+  end
+
+  defp stored_body_term(%Revision{deleted: true}, _body), do: {:ok, nil}
+
+  defp stored_body_term(%Revision{body: body}, body_json) when is_binary(body_json),
+    do: TermBlob.encode(body, body_json)
 
   defp normalize_error(%ElixirDB.Error{} = error), do: error
 

@@ -2,6 +2,7 @@ defmodule ElixirDB.StorageAdapter.ChangesTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
   alias ElixirDB.MapAccess
+  alias ElixirDB.Storage.SQLite.{Connection, TermBlob}
 
   test "changes are ordered by sequence and advance last_sequence", %{adapter: adapter} do
     assert {:ok, %{revision: _a}} =
@@ -146,6 +147,25 @@ defmodule ElixirDB.StorageAdapter.ChangesTest do
              MapAccess.get(leaf, :revision) == tombstone and
                MapAccess.get(leaf, :deleted) == true
            end)
+  end
+
+  test "malformed trusted leaf terms surface as integrity errors", %{adapter: adapter} do
+    assert {:ok, _} =
+             @adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "doc",
+               body: %{"n" => 1}
+             })
+
+    assert :ok =
+             Connection.execute(
+               adapter.conn,
+               "UPDATE changes SET leaf_set_term = ? WHERE sequence = 1",
+               [TermBlob.bind(<<0, 1, 2>>)]
+             )
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             @adapter.read_changes(adapter, %{since: 0, limit: 10})
   end
 
   test "read below retention floor returns history_truncated", %{adapter: adapter} do

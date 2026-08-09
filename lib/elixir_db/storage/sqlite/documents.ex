@@ -12,6 +12,7 @@ defmodule ElixirDB.Storage.SQLite.Documents do
   alias ElixirDB.Revisions.Winner
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.Connection
+  alias ElixirDB.Storage.SQLite.TermBlob
   alias Exqlite.Sqlite3
   @doc false
   def get(adapter, request), do: Adapter.get_document(adapter, request)
@@ -116,11 +117,20 @@ defmodule ElixirDB.Storage.SQLite.Documents do
   def update(conn, doc_key, %Revision{} = winner, sequence, body_json) do
     body = if winner.deleted, do: nil, else: body_json || Canonical.encode!(winner.body)
 
-    Connection.execute(
-      conn,
-      "UPDATE documents SET winning_revision = ?, winning_body_json = ?, winning_deleted = ?, update_sequence = ? WHERE doc_key = ?",
-      [winner.revision_id, body, if(winner.deleted, do: 1, else: 0), sequence, doc_key]
-    )
+    with {:ok, body_term} <- materialized_body_term(winner, body) do
+      Connection.execute(
+        conn,
+        "UPDATE documents SET winning_revision = ?, winning_body_json = ?, winning_body_term = ?, winning_deleted = ?, update_sequence = ? WHERE doc_key = ?",
+        [
+          winner.revision_id,
+          body,
+          TermBlob.bind(body_term),
+          if(winner.deleted, do: 1, else: 0),
+          sequence,
+          doc_key
+        ]
+      )
+    end
   end
 
   @doc "Marks a document whose complete history has been purged as an empty placeholder."
@@ -128,7 +138,7 @@ defmodule ElixirDB.Storage.SQLite.Documents do
   def empty(conn, doc_key) do
     Connection.execute(
       conn,
-      "UPDATE documents SET winning_revision = NULL, winning_body_json = NULL, winning_deleted = 1, update_sequence = 0 WHERE doc_key = ?",
+      "UPDATE documents SET winning_revision = NULL, winning_body_json = NULL, winning_body_term = NULL, winning_deleted = 1, update_sequence = 0 WHERE doc_key = ?",
       [doc_key]
     )
   end
@@ -188,6 +198,11 @@ defmodule ElixirDB.Storage.SQLite.Documents do
 
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
+
+  defp materialized_body_term(%Revision{deleted: true}, _body), do: {:ok, nil}
+
+  defp materialized_body_term(%Revision{body: body}, body_json) when is_binary(body_json),
+    do: TermBlob.encode(body, body_json)
 
   defp document_from_row([key, id, winning, body, deleted, sequence]) do
     %{

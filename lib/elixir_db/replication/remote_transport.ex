@@ -1,4 +1,5 @@
 defmodule ElixirDB.Replication.RemoteTransport do
+  alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Observability.Tracer
   @moduledoc false
 
@@ -115,7 +116,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
           body
 
         is_binary(body) ->
-          case JSON.decode(body) do
+          case StrictDecoder.decode(body) do
             {:ok, map} when is_map(map) -> map
             _ -> body
           end
@@ -139,7 +140,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
       |> Enum.to_list()
       |> IO.iodata_to_binary()
 
-    case JSON.decode(binary) do
+    case StrictDecoder.decode(binary) do
       {:ok, map} when is_map(map) -> map
       _ -> binary
     end

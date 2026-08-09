@@ -154,6 +154,17 @@ defmodule ElixirDB.Contract.StrictDecoderTest do
                StrictDecoder.decode("[[[0]]]")
     end
 
+    test "preserves configured limits above RustyJson's native ceiling" do
+      body = Enum.reduce(1..129, "0", fn _level, value -> "[" <> value <> "]" end)
+
+      assert {:ok, _value} = StrictDecoder.decode(body, max_depth: 129)
+
+      assert {:error, %ElixirDB.Error{code: :invalid_request, message: message}} =
+               StrictDecoder.decode(~s({"a":1,"a":2}), max_depth: 129)
+
+      assert message =~ "duplicate"
+    end
+
     test "rejects bodies exceeding max_bytes" do
       body = ~s({"a":1})
 

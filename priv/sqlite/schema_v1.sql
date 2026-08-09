@@ -28,12 +28,13 @@ CREATE TABLE IF NOT EXISTS documents (
   document_id TEXT UNIQUE NOT NULL,
   winning_revision TEXT,
   winning_body_json TEXT,
+  winning_body_term BLOB,
   winning_deleted INTEGER NOT NULL CHECK (winning_deleted IN (0, 1)),
   update_sequence INTEGER NOT NULL CHECK (update_sequence >= 0),
   CHECK (
-    (winning_revision IS NULL AND winning_body_json IS NULL AND winning_deleted = 1 AND update_sequence = 0)
+    (winning_revision IS NULL AND winning_body_json IS NULL AND winning_body_term IS NULL AND winning_deleted = 1 AND update_sequence = 0)
     OR
-    (winning_revision IS NOT NULL AND ((winning_deleted = 1 AND winning_body_json IS NULL) OR (winning_deleted = 0 AND winning_body_json IS NOT NULL)))
+    (winning_revision IS NOT NULL AND ((winning_deleted = 1 AND winning_body_json IS NULL AND winning_body_term IS NULL) OR (winning_deleted = 0 AND winning_body_json IS NOT NULL AND winning_body_term IS NOT NULL)))
   )
 ) STRICT;
 
@@ -46,10 +47,11 @@ CREATE TABLE IF NOT EXISTS revisions (
   digest TEXT NOT NULL,
   deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
   body_json TEXT,
+  body_term BLOB,
   insertion_sequence INTEGER NOT NULL CHECK (insertion_sequence >= 0),
   is_leaf INTEGER NOT NULL CHECK (is_leaf IN (0, 1)),
   PRIMARY KEY (doc_key, revision_id),
-  CHECK ((deleted = 1 AND body_json IS NULL) OR (deleted = 0 AND body_json IS NOT NULL)),
+  CHECK ((deleted = 1 AND body_json IS NULL AND body_term IS NULL) OR (deleted = 0 AND body_json IS NOT NULL AND body_term IS NOT NULL)),
   UNIQUE (doc_key, parent_revision, revision_id)
 ) STRICT;
 
@@ -64,6 +66,7 @@ CREATE TABLE IF NOT EXISTS changes (
   winning_revision TEXT NOT NULL,
   winning_deleted INTEGER NOT NULL CHECK (winning_deleted IN (0, 1)),
   leaf_set_json TEXT NOT NULL,
+  leaf_set_term BLOB NOT NULL,
   origin TEXT NOT NULL
 ) STRICT;
 

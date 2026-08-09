@@ -27,6 +27,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.Revisions.Id
   alias ElixirDB.Storage.SQLite.{Adapter, Connection}
+  alias ElixirDB.Storage.SQLite.TermBlob
   alias ElixirDB.Benchmarks.ExqliteOverhead.Raw
 
   @scenarios [:point_read, :bulk_write, :changes_read, :indexed_query]
@@ -49,7 +50,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
 
   @revision_select_sql """
   SELECT revision_id, generation, parent_revision, history_id, digest,
-         deleted, body_json, insertion_sequence
+         deleted, body_json, body_term, insertion_sequence
   FROM revisions
   WHERE doc_key = ? AND revision_id = ?
   """
@@ -63,7 +64,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
 
   @changes_select_sql """
   SELECT sequence, document_id, winning_revision, winning_deleted,
-         leaf_set_json, origin
+         leaf_set_term, origin
   FROM changes
   WHERE sequence > ?
   ORDER BY sequence
@@ -73,12 +74,18 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   @changes_exists_sql "SELECT EXISTS(SELECT 1 FROM changes WHERE sequence > ?)"
 
   @indexed_query_sql """
-  SELECT document_id, winning_revision, winning_body_json
+  SELECT document_id, winning_revision, winning_body_term,
+         (SELECT count(*)
+          FROM documents AS candidate_count
+          WHERE candidate_count.winning_deleted = 0
+            AND json_type(candidate_count.winning_body_json, '$."category"') = 'text'
+            AND json_extract(candidate_count.winning_body_json, '$."category"') = ?)
   FROM documents
   WHERE winning_deleted = 0
     AND json_type(winning_body_json, '$."category"') = 'text'
     AND json_extract(winning_body_json, '$."category"') = ?
   ORDER BY document_id
+  LIMIT ?
   """
 
   @begin_sql "BEGIN IMMEDIATE"
@@ -87,22 +94,23 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
 
   @document_insert_sql """
   INSERT INTO documents(
-    document_id, winning_revision, winning_body_json, winning_deleted, update_sequence
-  ) VALUES (?, ?, ?, ?, ?)
+    document_id, winning_revision, winning_body_json, winning_body_term,
+    winning_deleted, update_sequence
+  ) VALUES (?, ?, ?, ?, ?, ?)
   """
 
   @revision_insert_sql """
   INSERT INTO revisions(
     doc_key, revision_id, generation, parent_revision, history_id, digest,
-    deleted, body_json, insertion_sequence, is_leaf
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    deleted, body_json, body_term, insertion_sequence, is_leaf
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   """
 
   @change_insert_sql """
   INSERT INTO changes(
     sequence, doc_key, document_id, winning_revision, winning_deleted,
-    leaf_set_json, origin
-  ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    leaf_set_json, leaf_set_term, origin
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   """
 
   @sequence_update_sql "UPDATE db_meta SET current_sequence = ? WHERE id = 1"
@@ -381,6 +389,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
           document.id,
           document.revision_id,
           document.body_json,
+          TermBlob.bind(document.body_term),
           0,
           document.sequence
         ])
@@ -396,6 +405,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
           document.digest,
           0,
           document.body_json,
+          TermBlob.bind(document.body_term),
           0,
           1
         ])
@@ -407,6 +417,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
           document.revision_id,
           0,
           document.leaf_json,
+          TermBlob.bind(document.leaf_term),
           "local"
         ])
       end)
@@ -511,7 +522,13 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
       Mix.raise("benchmark structured index is missing for #{variant.kind}")
     end
 
-    plan = Raw.one_off_query!(variant.conn, "EXPLAIN QUERY PLAN " <> @indexed_query_sql, ["task"])
+    plan =
+      Raw.one_off_query!(variant.conn, "EXPLAIN QUERY PLAN " <> @indexed_query_sql, [
+        "task",
+        "task",
+        @query_limit + 1
+      ])
+
     details = Enum.map(plan, &List.last/1) |> Enum.map(&to_string/1)
 
     unless Enum.any?(details, &String.contains?(&1, "exdb_s_")) do
@@ -649,7 +666,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
     [[doc_key, ^id, revision_id, _body_json, 0, _sequence]] =
       Raw.run!(conn, statements.document_select, [id])
 
-    [[^revision_id, 1, nil, _history_id, _digest, 0, _revision_body, 0]] =
+    [[^revision_id, 1, nil, _history_id, _digest, 0, _revision_body, _revision_term, 0]] =
       Raw.run!(conn, statements.revision_select, [doc_key, revision_id])
 
     [] = Raw.run!(conn, statements.attachment_select, [doc_key, revision_id])
@@ -660,7 +677,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
     [[doc_key, ^id, revision_id, _body_json, 0, _sequence]] =
       connection_query!(conn, @document_select_sql, [id])
 
-    [[^revision_id, 1, nil, _history_id, _digest, 0, _revision_body, 0]] =
+    [[^revision_id, 1, nil, _history_id, _digest, 0, _revision_body, _revision_term, 0]] =
       connection_query!(conn, @revision_select_sql, [doc_key, revision_id])
 
     [] = connection_query!(conn, @attachment_select_sql, [doc_key, revision_id])
@@ -711,6 +728,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
           document.id,
           document.revision_id,
           document.body_json,
+          TermBlob.bind(document.body_term),
           0,
           document.sequence
         ])
@@ -726,6 +744,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
           document.digest,
           0,
           document.body_json,
+          TermBlob.bind(document.body_term),
           0,
           1
         ])
@@ -737,6 +756,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
           document.revision_id,
           0,
           document.leaf_json,
+          TermBlob.bind(document.leaf_term),
           "local"
         ])
       end)
@@ -768,6 +788,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
           document.id,
           document.revision_id,
           document.body_json,
+          TermBlob.bind(document.body_term),
           0,
           document.sequence
         ])
@@ -783,6 +804,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
           document.digest,
           0,
           document.body_json,
+          TermBlob.bind(document.body_term),
           0,
           1
         ])
@@ -794,6 +816,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
           document.revision_id,
           0,
           document.leaf_json,
+          TermBlob.bind(document.leaf_term),
           "local"
         ])
       end)
@@ -866,24 +889,24 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
 
   defp invoke_indexed_query!(
          %__MODULE__{kind: :pure_exqlite, conn: conn, statements: statements},
-         _limit,
+         limit,
          expected_count
        ) do
-    rows = Raw.run!(conn, statements.indexed_query, ["task"])
+    rows = Raw.run!(conn, statements.indexed_query, ["task", "task", limit + 1])
 
-    if length(rows) == expected_count,
+    if length(rows) == min(limit + 1, expected_count) and indexed_count(rows) == expected_count,
       do: :ok,
       else: Mix.raise("indexed-query baseline result was invalid")
   end
 
   defp invoke_indexed_query!(
          %__MODULE__{kind: :elixir_db_connection, conn: conn},
-         _limit,
+         limit,
          expected_count
        ) do
-    rows = connection_query!(conn, @indexed_query_sql, ["task"])
+    rows = connection_query!(conn, @indexed_query_sql, ["task", "task", limit + 1])
 
-    if length(rows) == expected_count,
+    if length(rows) == min(limit + 1, expected_count) and indexed_count(rows) == expected_count,
       do: :ok,
       else: Mix.raise("indexed-query connection result was invalid")
   end
@@ -907,6 +930,9 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
         Mix.raise("indexed-query adapter result was invalid: #{inspect(other)}")
     end
   end
+
+  defp indexed_count([]), do: 0
+  defp indexed_count(rows), do: rows |> List.last() |> List.last()
 
   defp connection_query!(conn, sql, params) do
     case Connection.query(conn, sql, params) do
@@ -1016,6 +1042,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
     body = benchmark_body(index)
     revision_id = revision_id!(id, history_id, body)
     body_json = Canonical.encode!(body)
+    leaf_json = leaf_json(revision_id, history_id)
 
     %{
       id: id,
@@ -1024,7 +1051,9 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
       digest: digest(revision_id),
       body: body,
       body_json: body_json,
-      leaf_json: leaf_json(revision_id, history_id),
+      body_term: term_blob!(body, body_json),
+      leaf_json: leaf_json,
+      leaf_term: term_blob!(leaf_value(revision_id, history_id), leaf_json),
       sequence: index + 1
     }
   end
@@ -1039,6 +1068,8 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
       history_id = deterministic_uuid("bench-history", id)
       body = benchmark_body(value)
       revision_id = revision_id!(id, history_id, body)
+      body_json = Canonical.encode!(body)
+      leaf_json = leaf_json(revision_id, history_id)
 
       %{
         id: id,
@@ -1046,8 +1077,10 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
         revision_id: revision_id,
         digest: digest(revision_id),
         body: body,
-        body_json: Canonical.encode!(body),
-        leaf_json: leaf_json(revision_id, history_id),
+        body_json: body_json,
+        body_term: term_blob!(body, body_json),
+        leaf_json: leaf_json,
+        leaf_term: term_blob!(leaf_value(revision_id, history_id), leaf_json),
         sequence: config["dataset_size"] + batch_index * config["batch_size"] + offset + 1
       }
     end)
@@ -1065,11 +1098,18 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   defp document_id(index),
     do: "seed-" <> String.pad_leading(Integer.to_string(index), 6, "0")
 
+  defp leaf_value(revision_id, history_id),
+    do: [%{"revision" => revision_id, "history_id" => history_id, "deleted" => false}]
+
   defp leaf_json(revision_id, history_id),
-    do:
-      Canonical.encode!([
-        %{"revision" => revision_id, "history_id" => history_id, "deleted" => false}
-      ])
+    do: Canonical.encode!(leaf_value(revision_id, history_id))
+
+  defp term_blob!(value, json) do
+    case TermBlob.encode(value, json) do
+      {:ok, blob} -> blob
+      {:error, error} -> Mix.raise("could not encode benchmark term BLOB: #{inspect(error)}")
+    end
+  end
 
   defp revision_id!(document_id, history_id, body) do
     case Id.calculate(document_id, history_id, nil, false, body, %{}) do

@@ -2,12 +2,13 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   @moduledoc "SQLite-derived structured and FTS5 index management."
 
   alias ElixirDB.Diagnostics
-  alias ElixirDB.JSON.{Pointer, StrictDecoder}
+  alias ElixirDB.JSON.{Pointer, StrictCache}
   alias ElixirDB.MapAccess
   alias ElixirDB.Query.FullText
-  alias ElixirDB.Storage.SQLite.{Connection, QueryCompiler}
+  alias ElixirDB.Storage.SQLite.{Connection, QueryCompiler, TermBlob}
 
   @physical_version 1
+  @fts_body_term_cache_limit 256
 
   @spec create(Connection.handle(), binary(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
@@ -68,7 +69,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
          {:ok, rows} <-
            Connection.query(
              conn,
-             "SELECT d.doc_key, d.document_id, d.winning_revision, d.winning_body_json, bm25(#{quote_identifier(name)}) FROM #{quote_identifier(name)} AS f JOIN documents AS d ON d.doc_key = f.rowid WHERE #{quote_identifier(name)} MATCH ? AND d.winning_deleted = 0",
+             "SELECT d.doc_key, d.document_id, d.winning_revision, d.winning_body_json, d.winning_body_term, bm25(#{quote_identifier(name)}) FROM #{quote_identifier(name)} AS f JOIN documents AS d ON d.doc_key = f.rowid WHERE #{quote_identifier(name)} MATCH ? AND d.winning_deleted = 0",
              [query]
            ),
          :ok <- check_deadline(deadline),
@@ -220,16 +221,16 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     with {:ok, rows} <-
            Connection.query(
              conn,
-             "SELECT doc_key, winning_body_json FROM documents WHERE winning_deleted = 0"
+             "SELECT doc_key, winning_body_json, winning_body_term FROM documents WHERE winning_deleted = 0"
            ) do
-      Enum.reduce_while(rows, :ok, fn [doc_key, body_json], :ok ->
-        rebuild_full_text_row(conn, name, definition, doc_key, body_json)
+      Enum.reduce_while(rows, :ok, fn [doc_key, body_json, body_term], :ok ->
+        rebuild_full_text_row(conn, name, definition, doc_key, body_json, body_term)
       end)
     end
   end
 
-  defp rebuild_full_text_row(conn, name, definition, doc_key, body_json) do
-    case StrictDecoder.decode(body_json) do
+  defp rebuild_full_text_row(conn, name, definition, doc_key, body_json, body_term) do
+    case decode_body(body_json, body_term) do
       {:ok, body} ->
         case insert_text_if_present(conn, name, definition, doc_key, body, false) do
           :ok -> {:cont, :ok}
@@ -335,8 +336,8 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     end
   end
 
-  defp decode_search_row([doc_key, id, revision, body_json, rank], acc) do
-    case StrictDecoder.decode(body_json) do
+  defp decode_search_row([doc_key, id, revision, body_json, body_term, rank], acc) do
+    case decode_body(body_json, body_term) do
       {:ok, body} ->
         {:cont,
          {:ok, [%{doc_key: doc_key, id: id, revision: revision, body: body, rank: rank} | acc]}}
@@ -380,11 +381,11 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     expected =
       case Connection.query(
              conn,
-             "SELECT doc_key, winning_body_json FROM documents WHERE winning_deleted = 0"
+             "SELECT doc_key, winning_body_json, winning_body_term FROM documents WHERE winning_deleted = 0"
            ) do
         {:ok, rows} ->
           rows
-          |> Enum.filter(fn [_key, json] -> expected_text?(json, metadata) end)
+          |> Enum.filter(fn [_key, json, term] -> expected_text?(json, term, metadata) end)
           |> Enum.map(&List.first/1)
           |> MapSet.new()
 
@@ -430,12 +431,30 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
     end
   end
 
-  defp expected_text?(json, definition) do
-    with {:ok, body} <- StrictDecoder.decode(json),
+  defp expected_text?(json, term, definition) do
+    with {:ok, body} <- decode_body(json, term),
          text when text != "" <- extract_text(body, definition) do
       true
     else
       _ -> false
+    end
+  end
+
+  defp decode_body(json, term) do
+    max_depth = ElixirDB.Config.host_limits()[:max_json_nesting_depth] || 100
+
+    case StrictCache.fetch_cached(json, max_depth, :fts_body_json) do
+      {:ok, body} ->
+        {:ok, body}
+
+      :miss ->
+        case TermBlob.decode_with_cache(term, json, :fts_body_term, @fts_body_term_cache_limit) do
+          {:ok, body} ->
+            {:ok, body}
+
+          {:fallback, _reason} ->
+            StrictCache.decode_with_cache(json, max_depth, :fts_body_json, 256)
+        end
     end
   end
 

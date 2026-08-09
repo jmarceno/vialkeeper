@@ -10,7 +10,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   """
   @behaviour ElixirDB.Storage.Adapter
 
-  alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.JSON.{Canonical, StrictCache, StrictDecoder}
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.{Query, SQLite}
   alias ElixirDB.Query.{Normalizer, Prepared}
@@ -34,6 +34,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   }
 
   @identity_cache_key :elixir_db_sqlite_identity_cache
+  @query_normalization_cache_limit 16
 
   defstruct [:path, :conn, :identity, storage_mode: :disk, retention_fault: nil]
   @type storage_mode :: :disk | :memory
@@ -502,10 +503,17 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   defp normalize_public_query(request) do
-    request
-    |> Map.take(@query_public_keys)
-    |> Normalizer.normalize()
-    |> preserve_query_cursor(request)
+    StrictCache.memoize(
+      :public_query_normalization,
+      request,
+      @query_normalization_cache_limit,
+      fn ->
+        request
+        |> Map.take(@query_public_keys)
+        |> Normalizer.normalize()
+        |> preserve_query_cursor(request)
+      end
+    )
   end
 
   defp preserve_query_cursor({:ok, normalized}, request) do

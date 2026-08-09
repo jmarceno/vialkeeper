@@ -49,6 +49,10 @@ defmodule ElixirDB.MixProject do
   defp deps do
     [
       {:exqlite, "0.39.0"},
+      # Rust-backed JSON parsing handles the hot decode path; Decimal preserves
+      # the strict binary64 overflow and underflow checks at the Elixir boundary.
+      {:rustyjson, "0.3.13"},
+      {:decimal, "3.1.1"},
       {:plug, "1.20.3"},
       {:bandit, "1.12.4"},
       {:req, "0.7.2"},
