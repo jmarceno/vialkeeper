@@ -59,6 +59,55 @@ not database creation, seeding, index setup, or cleanup. The report includes
 sample values, median/p95/p99, per-operation latency, throughput, VM memory
 before/after, SQLite pragmas, runtime metadata, and observability signals.
 
+## Measuring overhead over pure ExQLite
+
+`exqlite_overhead_benchmark.exs` answers a different question from the runner
+above: how much time does each ElixirDB layer add over direct ExQLite calls?
+Run it in the production environment so OpenTelemetry uses its no-op provider
+and the benchmark process has no test exporter in its timed path:
+
+```sh
+mix bench.overhead --mode memory --scenario all --iterations 30 --warmup 10 \
+  --dataset 500 --batch 50 --reads 100 \
+  --output output/benchmarks/exqlite-overhead-memory.json
+```
+
+Use `--mode disk` for durable SQLite I/O, or `--mode both` to produce both
+measurements. Memory mode is the lower-noise signal for CPU, BEAM, NIF, and
+SQLite execution; disk mode includes filesystem and journal behavior and
+should be compared only with other runs on the same machine.
+
+Each case creates three independent databases with the same schema and a
+deterministic fixture. It alternates the order of paired samples and warms
+prepared statements before recording samples. The JSON report contains raw
+samples, median/p95/p99, MAD, coefficient of variation, paired deltas, and
+percentage overhead relative to `pure_exqlite`:
+
+- `pure_exqlite` calls prepared statements through `Exqlite.Sqlite3`.
+- `elixir_db_connection` runs the same SQL through the ElixirDB connection
+  wrapper and statement cache.
+- `elixir_db_adapter` calls the public SQLite adapter operation.
+
+The scenarios are `point_read`, `bulk_write`, `changes_read`, and
+`indexed_query`. Point reads include the document, revision, and empty
+attachment-manifest lookups. Changes reads include the bounded SELECT and
+the `has_more` probe. Indexed queries use the same structured expression index
+and predicate in the direct and connection controls.
+
+The bulk-write ExQLite control is intentionally a physical baseline: it
+inserts the same final document, revision, change-feed, metadata, and
+replication-state rows in one prepared transaction. It does not reproduce
+ElixirDB validation, revision hashing/lookups, conflict handling, or retention
+orchestration. Therefore its adapter delta is the real cost of the current
+ElixirDB write path over direct SQLite storage, not merely the cost of a
+function call or NIF wrapper. The connection-vs-ExQLite delta isolates the
+connection wrapper for every scenario.
+
+Read the adapter's `median_overhead_pct` for the headline number. Use
+`paired_median_delta_us` and the MAD/CV fields to judge noise; do not infer a
+regression from one p95 sample. Keep Elixir/OTP, SQLite, dataset shape, batch,
+read count, warmup, and iteration count fixed when comparing reports.
+
 ## Observability coverage
 
 The runner uses the production instrumentation helpers around the measured

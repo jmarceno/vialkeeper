@@ -34,6 +34,7 @@ defmodule ElixirDB.MixProject do
     [
       preferred_envs: [
         bench: :test,
+        "bench.overhead": :prod,
         "check.fast": :test,
         "check.full": :test,
         "release.build": :prod
@@ -109,6 +110,7 @@ defmodule ElixirDB.MixProject do
         "dialyzer"
       ],
       bench: ["run bench/elixirdb_benchmark.exs"],
+      "bench.overhead": ["run bench/exqlite_overhead_benchmark.exs"],
       "release.build": ["deps.get", "compile", "release --overwrite"]
     ]
   end
