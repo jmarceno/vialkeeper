@@ -65,11 +65,18 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   @spec bulk_tx(map(), [map()]) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
   def bulk_tx(adapter, operations) when is_list(operations) do
     materialize_pending? = not independent_bulk_operations?(operations)
+    config = Map.get(adapter_identity(adapter), :config, ElixirDB.Config.defaults())
 
     with {:ok, ready_indexes} <- IndexCatalog.ready_definitions(adapter.conn),
          {:ok, effects, affected} <-
            SQLite.trace_sqlite_phase(:bulk_prepare, [entries: length(operations)], fn ->
-             prepare_bulk_operations(adapter, operations, ready_indexes, materialize_pending?)
+             prepare_bulk_operations(
+               adapter,
+               operations,
+               ready_indexes,
+               materialize_pending?,
+               config
+             )
            end),
          {:ok, finalized} <-
            SQLite.trace_sqlite_phase(:bulk_finalize, [entries: map_size(affected)], fn ->
@@ -177,6 +184,10 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
 
   defp validate_document_input(adapter, document_id, deleted, body) do
     config = Map.get(adapter_identity(adapter), :config, ElixirDB.Config.defaults())
+    validate_document_input(adapter, document_id, deleted, body, config)
+  end
+
+  defp validate_document_input(_adapter, document_id, deleted, body, config) do
     max_id = get_in(config, ["documents", "max_document_id_bytes"]) || 512
     max_body = get_in(config, ["documents", "max_document_bytes"]) || 1_048_576
 
@@ -440,7 +451,13 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   defp mark_pending_if_needed(adapter, true),
     do: RetentionRecords.mark_pending_local_causal(adapter.conn)
 
-  defp prepare_bulk_operations(adapter, operations, ready_indexes, materialize_pending?) do
+  defp prepare_bulk_operations(
+         adapter,
+         operations,
+         ready_indexes,
+         materialize_pending?,
+         config
+       ) do
     Enum.reduce_while(operations, {:ok, [], %{}}, fn operation, {:ok, effects, affected} ->
       prepare_bulk_effect(
         adapter,
@@ -448,7 +465,8 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
         effects,
         affected,
         ready_indexes,
-        materialize_pending?
+        materialize_pending?,
+        config
       )
     end)
     |> case do
@@ -463,9 +481,10 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          effects,
          affected,
          ready_indexes,
-         materialize_pending?
+         materialize_pending?,
+         config
        ) do
-    case prepare_bulk_operation(adapter, operation, ready_indexes, materialize_pending?) do
+    case prepare_bulk_operation(adapter, operation, ready_indexes, materialize_pending?, config) do
       {:ok, effect} ->
         {:cont, {:ok, [effect | effects], update_affected(affected, effect)}}
 
@@ -479,22 +498,40 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
 
   defp update_affected(affected, _effect), do: affected
 
-  defp prepare_bulk_operation(adapter, request, ready_indexes, materialize_pending?) do
+  defp prepare_bulk_operation(adapter, request, ready_indexes, materialize_pending?, config) do
     operation = MapAccess.get(request, :operation, :put)
 
     case operation do
       operation when operation in [:resolve, "resolve"] ->
-        prepare_bulk_resolution_operation(adapter, request, ready_indexes, materialize_pending?)
+        prepare_bulk_resolution_operation(
+          adapter,
+          request,
+          ready_indexes,
+          materialize_pending?,
+          config
+        )
 
       operation when operation in [:put, "put", :delete, "delete"] ->
-        prepare_bulk_mutation_operation(adapter, request, ready_indexes, materialize_pending?)
+        prepare_bulk_mutation_operation(
+          adapter,
+          request,
+          ready_indexes,
+          materialize_pending?,
+          config
+        )
 
       _ ->
         {:error, ElixirDB.Error.invalid_request("bulk operation type is invalid")}
     end
   end
 
-  defp prepare_bulk_mutation_operation(adapter, request, ready_indexes, materialize_pending?) do
+  defp prepare_bulk_mutation_operation(
+         adapter,
+         request,
+         ready_indexes,
+         materialize_pending?,
+         config
+       ) do
     operation = MapAccess.get(request, :operation, :put)
     document_id = MapAccess.get(request, :document_id)
     if_revision = MapAccess.get(request, :if_revision)
@@ -503,7 +540,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     body = if(deleted, do: nil, else: MapAccess.get(request, :body))
 
     with :ok <- validate_mutation_operation(operation),
-         :ok <- validate_document_input(adapter, document_id, deleted, body),
+         :ok <- validate_document_input(adapter, document_id, deleted, body, config),
          {:ok, doc} <- Documents.find(adapter.conn, document_id),
          {:ok, current} <- current_winner(adapter, doc),
          {:ok, candidate_state} <-
@@ -619,7 +656,13 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          revision: candidate.revision_id
        })}
 
-  defp prepare_bulk_resolution_operation(adapter, request, ready_indexes, materialize_pending?) do
+  defp prepare_bulk_resolution_operation(
+         adapter,
+         request,
+         ready_indexes,
+         materialize_pending?,
+         config
+       ) do
     document_id = MapAccess.get(request, :document_id)
     expected = MapAccess.get(request, :expected_live_revisions, [])
     body = MapAccess.get(request, :body)
@@ -631,7 +674,8 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
              adapter,
              document_id,
              delete_all,
-             if(delete_all, do: nil, else: body)
+             if(delete_all, do: nil, else: body),
+             config
            ),
          true <- is_list(expected) and Enum.all?(expected, &is_binary/1),
          {:ok, %{doc_key: _} = doc} <- Documents.find(adapter.conn, document_id),

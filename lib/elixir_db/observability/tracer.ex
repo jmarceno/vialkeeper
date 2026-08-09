@@ -20,13 +20,20 @@ defmodule ElixirDB.Observability.Tracer do
   """
   @spec with_span(binary(), keyword(), (-> term())) :: term()
   def with_span(name, attrs, fun) when is_binary(name) and is_list(attrs) and is_function(fun, 0) do
-    kind = Keyword.get(attrs, :kind, :internal)
-    start_attrs = Attributes.build(Keyword.delete(attrs, :kind))
+    if tracing_enabled?() do
+      kind = Keyword.get(attrs, :kind, :internal)
+      start_attrs = Attributes.build(Keyword.delete(attrs, :kind))
 
-    OpenTelemetry.Tracer.with_span name, %{kind: kind, attributes: start_attrs} do
+      OpenTelemetry.Tracer.with_span name, %{kind: kind, attributes: start_attrs} do
+        fun.()
+      end
+    else
       fun.()
     end
   end
+
+  defp tracing_enabled?,
+    do: Application.get_env(:opentelemetry, :traces_exporter, :none) not in [:none, nil]
 
   @doc "Sets an allow-listed attribute on the current span."
   @spec set_attributes(keyword()) :: boolean()

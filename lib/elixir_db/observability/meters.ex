@@ -69,13 +69,17 @@ defmodule ElixirDB.Observability.Meters do
   def add(name, attrs \\ [])
 
   def add(name, attrs) when is_atom(name) and is_list(attrs) do
-    case instrument(name, :counter) do
-      nil ->
-        :ok
+    if metrics_enabled?() do
+      case instrument(name, :counter) do
+        nil ->
+          :ok
 
-      instrument ->
-        ctx = OpenTelemetry.Ctx.get_current()
-        :otel_counter.add(ctx, instrument, 1, Attributes.build(attrs))
+        instrument ->
+          ctx = OpenTelemetry.Ctx.get_current()
+          :otel_counter.add(ctx, instrument, 1, Attributes.build(attrs))
+      end
+    else
+      :ok
     end
   end
 
@@ -85,15 +89,22 @@ defmodule ElixirDB.Observability.Meters do
 
   def record(name, value, attrs)
       when is_atom(name) and is_number(value) and is_list(attrs) do
-    case instrument(name, :histogram) do
-      nil ->
-        :ok
+    if metrics_enabled?() do
+      case instrument(name, :histogram) do
+        nil ->
+          :ok
 
-      instrument ->
-        ctx = OpenTelemetry.Ctx.get_current()
-        :otel_histogram.record(ctx, instrument, value, Attributes.build(attrs))
+        instrument ->
+          ctx = OpenTelemetry.Ctx.get_current()
+          :otel_histogram.record(ctx, instrument, value, Attributes.build(attrs))
+      end
+    else
+      :ok
     end
   end
+
+  defp metrics_enabled?,
+    do: Application.get_env(:opentelemetry_experimental, :readers, []) not in [[], nil]
 
   defp instrument(name, kind) do
     case :persistent_term.get({__MODULE__, name}, nil) do

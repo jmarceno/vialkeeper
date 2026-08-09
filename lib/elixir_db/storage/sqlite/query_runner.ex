@@ -63,7 +63,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          :ok <- enforce_scan_limit(plan, examined, identity),
          {:ok, ordered} <-
            SQLite.trace_sqlite_phase(:query_sort, [entries: length(matched)], fn ->
-             sort_documents(matched, request, deadline)
+             sort_documents(matched, request, plan, deadline)
            end),
          {:ok, ordered} <-
            SQLite.trace_sqlite_phase(:query_cursor, [entries: length(ordered)], fn ->
@@ -470,17 +470,17 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   defp filter_document_match({:ok, false}, _document, acc), do: {:cont, {:ok, acc}}
   defp filter_document_match({:error, error}, _document, _acc), do: {:halt, {:error, error}}
 
-  defp sort_documents(documents, request, deadline) do
+  defp sort_documents(documents, request, plan, deadline) do
     sort = MapAccess.get(request, :sort, [])
 
     with :ok <- check_deadline(deadline) do
-      sort_documents_after_check(documents, sort, request, deadline)
+      sort_documents_after_check(documents, sort, plan, request, deadline)
     end
   end
 
-  defp sort_documents_after_check(documents, sort, request, deadline) do
+  defp sort_documents_after_check(documents, sort, plan, request, deadline) do
     sorted =
-      if sort == [] and not is_nil(MapAccess.get(request, :search)) do
+      if sqlite_default_order?(sort, plan, request) do
         documents
       else
         Enum.sort(documents, fn left, right -> compare_documents(left, right, sort) end)
@@ -491,6 +491,13 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
       {:error, _} = error -> error
     end
   end
+
+  defp sqlite_default_order?(sort, %Plan{kind: kind}, _request)
+       when sort == [] and kind in [:bounded_scan, :single],
+       do: true
+
+  defp sqlite_default_order?(sort, _plan, request),
+    do: sort == [] and not is_nil(MapAccess.get(request, :search))
 
   defp apply_after_cursor(documents, request, deadline) do
     with :ok <- check_deadline(deadline) do
