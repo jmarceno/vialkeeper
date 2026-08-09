@@ -133,7 +133,9 @@ defmodule ElixirDB.Query.SubscriptionResetTest do
     assert members == MapSet.new(["fresh", "newer"])
   end
 
-  test "maintenance below hub cursor triggers reset without reading truncated history", %{uuid: uuid} do
+  test "maintenance below hub cursor triggers reset without reading truncated history", %{
+    uuid: uuid
+  } do
     assert {:ok, _} = put(uuid, "a", %{"title" => "a"})
     assert {:ok, subscription} = open_subscription(uuid)
     _ = collect_until_caught_up(subscription, [])

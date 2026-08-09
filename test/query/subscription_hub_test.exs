@@ -182,9 +182,13 @@ defmodule ElixirDB.Query.SubscriptionHubTest do
               TestExporter.span_attr(span, :"command.type") == :get_revisions_batch
           end)
 
-        if length(spans) == 1, do: :ok, else: false
+        # One change must not multiply owner reads by subscriber count.
+        case Enum.count_until(spans, 4) do
+          1 -> :ok
+          _ -> false
+        end
       end,
-      message: "expected exactly one shared get_revisions_batch for one change"
+      message: "expected exactly one shared get_revisions_batch span"
     )
   end
 

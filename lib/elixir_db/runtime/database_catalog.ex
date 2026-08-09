@@ -4,6 +4,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   require Logger
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Database
+  alias ElixirDB.Query.SubscriptionHub
   alias ElixirDB.Replication.JobManager
 
   alias ElixirDB.Runtime.{
@@ -596,7 +597,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
                 error
             end),
          :ok <- AttachmentCoordinator.begin_close(uuid),
-         :ok <- ElixirDB.Query.SubscriptionHub.close(uuid),
+         :ok <- SubscriptionHub.close(uuid),
          :ok <- ChangeNotifier.close(uuid),
          runtime when not is_nil(runtime) <- runtime_pid(uuid) do
       if Process.alive?(runtime),

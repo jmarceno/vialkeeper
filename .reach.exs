@@ -9,7 +9,13 @@
       "ElixirDB.Attachments",
       "ElixirDB.Observability.Dashboard"
     ],
-    runtime: ["ElixirDB.Runtime.*"],
+    runtime: [
+      "ElixirDB.Runtime.*",
+      "ElixirDB.Query.Subscriptions",
+      "ElixirDB.Query.Subscription",
+      "ElixirDB.Query.SubscriptionHub",
+      "ElixirDB.Query.SubscriptionSupervisor"
+    ],
     storage: [
       "ElixirDB.Storage.*",
       "ElixirDB.Attachments.FilesystemStore",

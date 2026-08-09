@@ -37,13 +37,7 @@ defmodule ElixirDB.Query.Subscription.Membership do
   defp matching(%{body: body}, predicate), do: Selector.matches?(body, predicate)
 
   defp upsert_event(envelope, request, sequence) do
-    Events.upsert(
-      sequence,
-      Projection.project(
-        %{id: envelope.id, revision: envelope.revision, body: envelope.body},
-        request
-      )
-    )
+    Events.upsert(sequence, Projection.project(envelope, request))
   end
 
   defp ensure_membership_bound(membership, max_members) do

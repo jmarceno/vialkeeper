@@ -2,7 +2,6 @@ defmodule ElixirDB.Query.SubscriptionHub do
   @moduledoc false
   use GenServer
 
-  alias ElixirDB.Changes
   alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
 
@@ -93,7 +92,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
   def handle_call(:close, _from, state) do
     state = cancel_read_task(state)
 
-    Enum.each(Map.keys(state.subscriptions), fn pid ->
+    Enum.each(state.subscriptions, fn {pid, _} ->
       send(pid, :subscription_closed)
     end)
 
@@ -298,32 +297,58 @@ defmodule ElixirDB.Query.SubscriptionHub do
   defp finish_read(state), do: state
 
   defp fetch_batch(uuid, since) do
-    case Changes.read(uuid, %{since: since, limit: @batch_limit}) do
+    case DatabaseCatalog.command(
+           uuid,
+           {:command, :read_changes, %{since: since, limit: @batch_limit}}
+         ) do
       {:ok, %{results: []} = result} ->
-        {:ok, result}
+        {:ok, normalize_changes_result(result)}
 
       {:ok, %{results: results} = result} ->
-        requests =
-          Enum.map(results, fn result_item ->
-            %{document_id: result_item.document_id, revision_id: result_item.winning_revision}
-          end)
+        fetch_revision_envelopes(uuid, normalize_changes_result(result), results)
 
-        case DatabaseCatalog.command(
-               uuid,
-               {:command, :get_revisions_batch, %{requests: requests}}
-             ) do
-          {:ok, envelopes} ->
-            case validate_envelopes(results, envelopes) do
-              :ok -> {:ok, Map.put(result, :envelopes, envelopes)}
-              {:error, error} -> {:error, error}
-            end
+      {:ok, result} when is_map(result) ->
+        results = MapAccess.get(result, :results, [])
+        normalized = normalize_changes_result(result)
 
-          {:error, error} ->
-            {:error, error}
+        if results == [] do
+          {:ok, normalized}
+        else
+          fetch_revision_envelopes(uuid, normalized, results)
         end
 
       {:error, error} ->
         {:error, error}
+    end
+  end
+
+  defp normalize_changes_result(result) when is_map(result) do
+    %{
+      results: MapAccess.get(result, :results, []),
+      last_sequence: MapAccess.get(result, :last_sequence, 0),
+      has_more: MapAccess.get(result, :has_more, false)
+    }
+  end
+
+  defp fetch_revision_envelopes(uuid, result, results) do
+    requests =
+      Enum.map(results, fn result_item ->
+        %{document_id: result_item.document_id, revision_id: result_item.winning_revision}
+      end)
+
+    case DatabaseCatalog.command(
+           uuid,
+           {:command, :get_revisions_batch, %{requests: requests}}
+         ) do
+      {:ok, envelopes} -> attach_envelopes(result, results, envelopes)
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp attach_envelopes(result, results, envelopes) do
+    case validate_envelopes(results, envelopes) do
+      :ok -> {:ok, Map.put(result, :envelopes, envelopes)}
+      {:error, error} -> {:error, error}
     end
   end
 
@@ -365,18 +390,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
         do: %{state | reset_floor: max(state.reset_floor || 0, floor)},
         else: state
 
-    Enum.reduce(state.subscriptions, state, fn {pid, subscription}, acc ->
-      updated = %{
-        subscription
-        | mode: :pending_snapshot,
-          pending_incremental_events: :queue.new(),
-          boundary_sequence: nil,
-          credits: subscription.max_buffered_events
-      }
-
-      send(pid, :subscription_reset)
-      put_subscription(acc, pid, updated)
-    end)
+    reset_all_subscriptions(state)
   end
 
   defp begin_history_reset(state, error) do
@@ -390,6 +404,10 @@ defmodule ElixirDB.Query.SubscriptionHub do
           read_pending: false
       })
 
+    reset_all_subscriptions(state)
+  end
+
+  defp reset_all_subscriptions(state) do
     Enum.reduce(state.subscriptions, state, fn {pid, subscription}, acc ->
       updated = %{
         subscription

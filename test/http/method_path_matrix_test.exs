@@ -314,20 +314,18 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   end
 
   defp http!(server, method, path, body) when is_map(body) or is_list(body) do
-    cond do
-      String.contains?(path, "/query/stream") ->
-        http_query_stream!(server, path, body)
+    if String.contains?(path, "/query/stream") do
+      http_query_stream!(server, path, body)
+    else
+      opts = [method: method, url: server.base_url <> path, json: body, decode_body: false]
 
-      true ->
-        opts = [method: method, url: server.base_url <> path, json: body, decode_body: false]
+      opts =
+        if String.contains?(path, "/changes/stream"),
+          do: Keyword.put(opts, :receive_timeout, 5_000),
+          else: opts
 
-        opts =
-          if String.contains?(path, "/changes/stream"),
-            do: Keyword.put(opts, :receive_timeout, 5_000),
-            else: opts
-
-        assert {:ok, response} = Req.request(opts)
-        %{status: response.status, headers: response.headers, body: decode_body(response)}
+      assert {:ok, response} = Req.request(opts)
+      %{status: response.status, headers: response.headers, body: decode_body(response)}
     end
   end
 
@@ -337,26 +335,23 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
     task =
       Task.async(fn ->
-        case Req.post(url,
-               json: body,
-               receive_timeout: 15_000,
-               into: fn
-                 {:data, data}, {req, resp} ->
-                   send(parent, {:query_stream_headers, resp.headers})
+        Req.post(url,
+          json: body,
+          receive_timeout: 15_000,
+          into: fn
+            {:data, data}, {req, resp} ->
+              send(parent, {:query_stream_headers, resp.headers})
 
-                   for line <- String.split(IO.iodata_to_binary(data), "\n", trim: true) do
-                     send(parent, {:query_stream_line, line})
-                   end
+              for line <- String.split(IO.iodata_to_binary(data), "\n", trim: true) do
+                send(parent, {:query_stream_line, line})
+              end
 
-                   {:cont, {req, resp}}
+              {:cont, {req, resp}}
 
-                 {:trailer, _}, acc ->
-                   {:cont, acc}
-               end
-             ) do
-          {:ok, resp} -> {:ok, resp}
-          {:error, reason} -> {:error, reason}
-        end
+            {:trailer, _}, acc ->
+              {:cont, acc}
+          end
+        )
       end)
 
     assert_receive {:query_stream_headers, headers}, 5_000

@@ -2,6 +2,7 @@ defmodule ElixirDB.Query.Subscriptions do
   @moduledoc "Public service boundary for transient live query subscriptions."
 
   alias ElixirDB.Query.{Subscription, SubscriptionHub, SubscriptionRequest, SubscriptionSupervisor}
+  alias ElixirDB.Query.Subscription.Events
   alias ElixirDB.Runtime.DatabaseCatalog
 
   def open(uuid, request, client_pid \\ self()) do
@@ -29,12 +30,10 @@ defmodule ElixirDB.Query.Subscriptions do
   end
 
   def next(pid, timeout \\ 30_000) do
-    try do
-      Subscription.next(pid, timeout)
-    catch
-      :exit, {:noproc, _} -> {:closed, ElixirDB.Query.Subscription.Events.closed()}
-      :exit, {{:noproc, _}, _} -> {:closed, ElixirDB.Query.Subscription.Events.closed()}
-    end
+    Subscription.next(pid, timeout)
+  catch
+    :exit, {:noproc, _} -> {:closed, Events.closed()}
+    :exit, {{:noproc, _}, _} -> {:closed, Events.closed()}
   end
 
   def close(pid) when is_pid(pid) do
