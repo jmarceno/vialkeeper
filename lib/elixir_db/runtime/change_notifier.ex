@@ -100,10 +100,12 @@ defmodule ElixirDB.Runtime.ChangeNotifier do
   end
 
   @impl true
-  def handle_cast({:unsubscribe, ref}, state) do
+  def handle_cast({:unsubscribe, ref}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
     {:noreply, %{state | subscribers: Map.delete(state.subscribers, ref)}}
   end
+
+  def handle_cast({:unsubscribe, _ref}, state), do: {:noreply, state}
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state),

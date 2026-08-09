@@ -596,6 +596,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
                 error
             end),
          :ok <- AttachmentCoordinator.begin_close(uuid),
+         :ok <- ElixirDB.Query.SubscriptionHub.close(uuid),
          :ok <- ChangeNotifier.close(uuid),
          runtime when not is_nil(runtime) <- runtime_pid(uuid) do
       if Process.alive?(runtime),

@@ -28,7 +28,14 @@ defmodule ElixirDB.Query.Subscriptions do
     end
   end
 
-  def next(pid, timeout \\ 30_000), do: Subscription.next(pid, timeout)
+  def next(pid, timeout \\ 30_000) do
+    try do
+      Subscription.next(pid, timeout)
+    catch
+      :exit, {:noproc, _} -> {:closed, ElixirDB.Query.Subscription.Events.closed()}
+      :exit, {{:noproc, _}, _} -> {:closed, ElixirDB.Query.Subscription.Events.closed()}
+    end
+  end
 
   def close(pid) when is_pid(pid) do
     if Process.alive?(pid), do: Subscription.close(pid)

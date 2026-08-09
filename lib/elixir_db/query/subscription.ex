@@ -70,7 +70,7 @@ defmodule ElixirDB.Query.Subscription do
   end
 
   def handle_call(:next, _from, %{terminal: terminal} = state) when not is_nil(terminal) do
-    {:reply, reply_for_event(terminal), %{state | terminal: nil, status: :closed}}
+    {:stop, :normal, reply_for_event(terminal), %{state | terminal: nil, status: :closed}}
   end
 
   def handle_call(:next, _from, %{status: :closed} = state),
@@ -131,7 +131,7 @@ defmodule ElixirDB.Query.Subscription do
         deliver_or_queue(event_value, %{state | membership: membership})
 
       {:error, error} ->
-        {:noreply, fail_and_wake(state, error)}
+        fail_and_wake(state, error)
     end
   end
 
@@ -161,11 +161,11 @@ defmodule ElixirDB.Query.Subscription do
             {:noreply, wake_waiter_if_present(state)}
 
           {:error, error} ->
-            {:noreply, fail_and_wake(state, error)}
+            fail_and_wake(state, error)
         end
 
       {:error, error} ->
-        {:noreply, fail_and_wake(state, error)}
+        fail_and_wake(state, error)
     end
   end
 
@@ -175,10 +175,10 @@ defmodule ElixirDB.Query.Subscription do
     do: handle_cast({:incremental, event}, state)
 
   def handle_info({:subscription_overloaded, error}, state),
-    do: {:noreply, fail_and_wake(state, error)}
+    do: fail_and_wake(state, error)
 
   def handle_info({:subscription_error, error}, state),
-    do: {:noreply, fail_and_wake(state, error)}
+    do: fail_and_wake(state, error)
 
   def handle_info({:subscription_heartbeat, ref}, %{waiter: from, heartbeat_ref: ref} = state)
       when not is_nil(from) do
@@ -196,13 +196,13 @@ defmodule ElixirDB.Query.Subscription do
 
     case state.waiter do
       nil ->
-        {:noreply,
+        {:stop, :normal,
          %{state | status: :closed, terminal: event, heartbeat_ref: nil, heartbeat_timer: nil}}
 
       from ->
         GenServer.reply(from, reply_for_event(event))
 
-        {:noreply,
+        {:stop, :normal,
          %{
            state
            | status: :closed,
@@ -254,25 +254,22 @@ defmodule ElixirDB.Query.Subscription do
 
     case state.waiter do
       nil ->
-        %{state | status: :failed, terminal: event, heartbeat_ref: nil, heartbeat_timer: nil}
+        {:noreply,
+         %{state | status: :failed, terminal: event, heartbeat_ref: nil, heartbeat_timer: nil}}
 
       from ->
         GenServer.reply(from, reply_for_event(event))
 
-        %{
-          state
-          | status: :closed,
-            terminal: nil,
-            waiter: nil,
-            heartbeat_ref: nil,
-            heartbeat_timer: nil
-        }
+        {:stop, :normal,
+         %{
+           state
+           | status: :closed,
+             terminal: nil,
+             waiter: nil,
+             heartbeat_ref: nil,
+             heartbeat_timer: nil
+         }}
     end
-  end
-
-  defp fail_subscription(state, error) do
-    SubscriptionHub.unregister(state.uuid, self())
-    %{state | status: :failed, terminal: Events.error(error)}
   end
 
   defp wake_waiter_if_present(%{waiter: nil} = state), do: state
@@ -318,8 +315,18 @@ defmodule ElixirDB.Query.Subscription do
          %{state | status: :active, snapshot_index: index + 1}}
 
       {:error, %ElixirDB.Error{} = error} ->
-        state = fail_subscription(state, error)
-        {:reply, reply_for_event(state.terminal), %{state | terminal: nil, status: :closed}}
+        cancel_timer(state)
+        SubscriptionHub.unregister(state.uuid, self())
+
+        {:stop, :normal, reply_for_event(Events.error(error)),
+         %{
+           state
+           | status: :closed,
+             terminal: nil,
+             waiter: nil,
+             heartbeat_ref: nil,
+             heartbeat_timer: nil
+         }}
     end
   end
 

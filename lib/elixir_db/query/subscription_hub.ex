@@ -3,6 +3,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
   use GenServer
 
   alias ElixirDB.Changes
+  alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
 
   @batch_limit 100
@@ -53,7 +54,9 @@ defmodule ElixirDB.Query.SubscriptionHub do
          cursor_sequence: 0,
          notifier_ref: nil,
          subscriptions: %{},
-         reading: false
+         reading: false,
+         read_pending: false,
+         read_task: nil
        }}
 
   @impl true
@@ -86,15 +89,28 @@ defmodule ElixirDB.Query.SubscriptionHub do
   def handle_call(:count, _from, state), do: {:reply, map_size(state.subscriptions), state}
 
   def handle_call(:close, _from, state) do
-    Enum.each(state.subscriptions, fn {pid, _} -> send(pid, :subscription_closed) end)
-    ChangeNotifier.unsubscribe(state.uuid, state.notifier_ref)
-    {:stop, :normal, :ok, %{state | subscriptions: %{}, notifier_ref: nil}}
+    state = cancel_read_task(state)
+
+    Enum.each(Map.keys(state.subscriptions), fn pid ->
+      send(pid, :subscription_closed)
+    end)
+
+    if is_reference(state.notifier_ref) do
+      ChangeNotifier.unsubscribe(state.uuid, state.notifier_ref)
+    end
+
+    {:stop, :normal, :ok,
+     %{state | subscriptions: %{}, notifier_ref: nil, reading: false, read_task: nil}}
   end
 
   def handle_call({:snapshot_ready, pid, sequence}, _from, state) do
     case Map.get(state.subscriptions, pid) do
       %{mode: :pending_snapshot, pending_incremental_events: events} = subscription ->
-        retained = Enum.filter(events, &(&1.sequence > sequence))
+        retained =
+          events
+          |> :queue.to_list()
+          |> Enum.filter(&(&1.sequence > sequence))
+          |> :queue.from_list()
 
         updated = %{
           subscription
@@ -130,22 +146,35 @@ defmodule ElixirDB.Query.SubscriptionHub do
   def handle_cast({:unregister, pid}, state), do: {:noreply, drop_subscription(state, pid)}
 
   @impl true
-  def handle_info(:read_changes, %{reading: true} = state), do: {:noreply, state}
+  def handle_info({ref, result}, %{read_task: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    state = %{state | reading: false, read_task: nil}
+    {:noreply, apply_read_result(state, result)}
+  end
 
-  def handle_info(:read_changes, state) do
-    case Changes.read(state.uuid, %{since: state.cursor_sequence, limit: @batch_limit}) do
-      {:ok, %{results: []}} ->
-        {:noreply, %{state | reading: false}}
+  def handle_info({ref, _result}, state) when is_reference(ref), do: {:noreply, state}
 
-      {:ok, %{results: results, last_sequence: last_sequence, has_more: has_more}} ->
-        state = fanout(state, results)
-        state = %{state | cursor_sequence: last_sequence, reading: false}
-        state = if has_more, do: schedule_read(state), else: state
-        {:noreply, state}
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{read_task: %Task{ref: ref}} = state) do
+    state = %{state | reading: false, read_task: nil}
 
-      {:error, error} ->
-        Enum.each(state.subscriptions, fn {pid, _} -> send(pid, {:subscription_error, error}) end)
-        {:noreply, %{state | reading: false}}
+    case reason do
+      :normal ->
+        {:noreply, finish_read(state)}
+
+      _ ->
+        error =
+          ElixirDB.Error.internal_error("subscription changes read failed", %{
+            cause: inspect(reason)
+          })
+
+        {:noreply, finish_read(fail_all(state, error))}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
+    case Map.get(state.subscriptions, pid) do
+      %{monitor_ref: ^ref} -> {:noreply, drop_subscription(state, pid)}
+      _ -> {:noreply, state}
     end
   end
 
@@ -156,22 +185,30 @@ defmodule ElixirDB.Query.SubscriptionHub do
     do: {:noreply, schedule_read(state)}
 
   def handle_info({:database_closed, uuid}, %{uuid: uuid} = state) do
+    state = cancel_read_task(state)
     Enum.each(state.subscriptions, fn {pid, _} -> send(pid, :subscription_closed) end)
-    {:stop, :normal, %{state | subscriptions: %{}, notifier_ref: nil, reading: false}}
-  end
 
-  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
-    case Map.get(state.subscriptions, pid) do
-      %{monitor_ref: ^ref} -> {:noreply, drop_subscription(state, pid)}
-      _ -> {:noreply, state}
-    end
+    {:stop, :normal,
+     %{state | subscriptions: %{}, notifier_ref: nil, reading: false, read_task: nil}}
   end
 
   defp ensure_notifier(%{notifier_ref: nil} = state) do
-    case ChangeNotifier.subscribe(state.uuid, state.cursor_sequence) do
-      {:ok, ref, current} ->
-        {:ok, %{state | notifier_ref: ref, cursor_sequence: max(state.cursor_sequence, current)}}
+    with {:ok, identity} <- DatabaseCatalog.command(state.uuid, {:command, :identity, %{}}),
+         sequence when is_integer(sequence) <-
+           MapAccess.get(identity, :current_sequence, 0),
+         {:ok, ref, _notifier_sequence} <- ChangeNotifier.subscribe(state.uuid, sequence),
+         {:ok, identity_after} <- DatabaseCatalog.command(state.uuid, {:command, :identity, %{}}) do
+      current = MapAccess.get(identity_after, :current_sequence, sequence)
 
+      state = %{
+        state
+        | notifier_ref: ref,
+          cursor_sequence: max(state.cursor_sequence, sequence)
+      }
+
+      state = if current > sequence, do: schedule_read(state), else: state
+      {:ok, state}
+    else
       {:error, %ElixirDB.Error{} = error} ->
         {:error, error}
 
@@ -179,6 +216,12 @@ defmodule ElixirDB.Query.SubscriptionHub do
         {:error,
          ElixirDB.Error.database_unavailable("subscription notifier subscribe failed", %{
            cause: inspect(reason)
+         })}
+
+      other ->
+        {:error,
+         ElixirDB.Error.database_unavailable("subscription notifier subscribe failed", %{
+           cause: inspect(other)
          })}
     end
   end
@@ -195,7 +238,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
       credits: max_buffered_events,
       max_buffered_events: max_buffered_events,
       boundary_sequence: nil,
-      pending_incremental_events: []
+      pending_incremental_events: :queue.new()
     }
 
     case ensure_notifier(state) do
@@ -213,30 +256,117 @@ defmodule ElixirDB.Query.SubscriptionHub do
     end
   end
 
-  defp schedule_read(%{reading: true} = state), do: state
-  defp schedule_read(state), do: send(self(), :read_changes) && %{state | reading: true}
+  defp schedule_read(%{reading: true} = state), do: %{state | read_pending: true}
 
-  defp fanout(state, results) do
-    requests =
-      Enum.map(results, fn result ->
-        %{document_id: result.document_id, revision_id: result.winning_revision}
+  defp schedule_read(%{read_task: %Task{}} = state), do: %{state | read_pending: true}
+
+  defp schedule_read(state) do
+    uuid = state.uuid
+    since = state.cursor_sequence
+
+    task =
+      Task.Supervisor.async_nolink(ElixirDB.TaskSupervisor, fn ->
+        fetch_batch(uuid, since)
       end)
 
-    case DatabaseCatalog.command(
-           state.uuid,
-           {:command, :get_revisions_batch, %{requests: requests}}
-         ) do
-      {:ok, envelopes} ->
-        Enum.zip(results, envelopes)
-        |> Enum.reduce(state, fn {result, envelope}, acc ->
-          event = %{sequence: result.sequence, envelope: envelope}
-          deliver_or_buffer(acc, event)
-        end)
+    %{state | reading: true, read_pending: false, read_task: task}
+  end
+
+  defp finish_read(%{read_pending: true} = state),
+    do: schedule_read(%{state | read_pending: false})
+
+  defp finish_read(state), do: state
+
+  defp fetch_batch(uuid, since) do
+    case Changes.read(uuid, %{since: since, limit: @batch_limit}) do
+      {:ok, %{results: []} = result} ->
+        {:ok, result}
+
+      {:ok, %{results: results} = result} ->
+        requests =
+          Enum.map(results, fn result_item ->
+            %{document_id: result_item.document_id, revision_id: result_item.winning_revision}
+          end)
+
+        case DatabaseCatalog.command(
+               uuid,
+               {:command, :get_revisions_batch, %{requests: requests}}
+             ) do
+          {:ok, envelopes} ->
+            case validate_envelopes(results, envelopes) do
+              :ok -> {:ok, Map.put(result, :envelopes, envelopes)}
+              {:error, error} -> {:error, error}
+            end
+
+          {:error, error} ->
+            {:error, error}
+        end
 
       {:error, error} ->
-        Enum.each(state.subscriptions, fn {pid, _} -> send(pid, {:subscription_error, error}) end)
-        state
+        {:error, error}
     end
+  end
+
+  defp apply_read_result(state, {:ok, %{results: []} = result}) do
+    has_more = Map.get(result, :has_more, false)
+    last_sequence = Map.get(result, :last_sequence, state.cursor_sequence)
+
+    state =
+      if is_integer(last_sequence),
+        do: %{state | cursor_sequence: max(state.cursor_sequence, last_sequence)},
+        else: state
+
+    if has_more, do: schedule_read(state), else: finish_read(state)
+  end
+
+  defp apply_read_result(state, {:ok, %{results: results, envelopes: envelopes} = result}) do
+    last_sequence = Map.fetch!(result, :last_sequence)
+    has_more = Map.get(result, :has_more, false)
+
+    state =
+      state
+      |> fanout(results, envelopes)
+      |> Map.put(:cursor_sequence, last_sequence)
+
+    if has_more, do: schedule_read(state), else: finish_read(state)
+  end
+
+  defp apply_read_result(state, {:error, error}), do: finish_read(fail_all(state, error))
+
+  defp validate_envelopes(results, envelopes) when length(results) != length(envelopes) do
+    {:error,
+     ElixirDB.Error.integrity_violation("revision batch size does not match changes batch size")}
+  end
+
+  defp validate_envelopes(results, envelopes) do
+    Enum.zip(results, envelopes)
+    |> Enum.reduce_while(:ok, fn {result, envelope}, :ok ->
+      if envelope_matches?(result, envelope) do
+        {:cont, :ok}
+      else
+        {:halt,
+         {:error,
+          ElixirDB.Error.integrity_violation("revision batch entry does not match changes entry")}}
+      end
+    end)
+  end
+
+  defp envelope_matches?(result, envelope) do
+    MapAccess.get(envelope, :id) == result.document_id and
+      MapAccess.get(envelope, :revision) == result.winning_revision
+  end
+
+  defp fanout(state, results, envelopes) do
+    Enum.zip(results, envelopes)
+    |> Enum.reduce(state, fn {result, envelope}, acc ->
+      event = %{sequence: result.sequence, envelope: envelope}
+      deliver_or_buffer(acc, event)
+    end)
+  end
+
+  defp fail_all(state, error) do
+    Enum.each(state.subscriptions, fn {pid, _} -> send(pid, {:subscription_error, error}) end)
+    state
   end
 
   defp deliver_or_buffer(state, event) do
@@ -279,7 +409,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
   defp append_pending(state, pid, event) do
     case Map.fetch!(state.subscriptions, pid) do
       %{pending_incremental_events: events, max_buffered_events: maximum} = subscription ->
-        if length(events) >= maximum do
+        if :queue.len(events) >= maximum do
           send(
             pid,
             {:subscription_overloaded,
@@ -290,7 +420,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
         else
           put_subscription(state, pid, %{
             subscription
-            | pending_incremental_events: events ++ [event]
+            | pending_incremental_events: :queue.in(event, events)
           })
         end
     end
@@ -300,6 +430,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
     case Map.get(state.subscriptions, pid) do
       %{pending_incremental_events: events} ->
         events
+        |> :queue.to_list()
         |> Enum.filter(&(&1.sequence > sequence))
         |> Enum.reduce_while(state, fn event, acc ->
           deliver_pending_event(acc, pid, event)
@@ -342,7 +473,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
         state
 
       subscription ->
-        put_subscription(state, pid, %{subscription | pending_incremental_events: []})
+        put_subscription(state, pid, %{subscription | pending_incremental_events: :queue.new()})
     end
   end
 
@@ -360,10 +491,18 @@ defmodule ElixirDB.Query.SubscriptionHub do
   end
 
   defp maybe_release_notifier(%{subscriptions: subscriptions, notifier_ref: ref} = state)
-       when map_size(subscriptions) == 0 and not is_nil(ref) do
+       when map_size(subscriptions) == 0 and is_reference(ref) do
     ChangeNotifier.unsubscribe(state.uuid, ref)
     %{state | notifier_ref: nil}
   end
 
   defp maybe_release_notifier(state), do: state
+
+  defp cancel_read_task(%{read_task: %Task{pid: pid} = task} = state) do
+    _ = Task.Supervisor.terminate_child(ElixirDB.TaskSupervisor, pid)
+    Process.demonitor(task.ref, [:flush])
+    %{state | reading: false, read_task: nil, read_pending: false}
+  end
+
+  defp cancel_read_task(state), do: state
 end
