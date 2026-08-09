@@ -73,6 +73,8 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
        %{"since" => 0, "limit" => 10, "wait_ms" => 0, "extra" => true}},
       {:post, "/v1/databases/#{uuid}/changes/stream",
        %{"since" => 0, "limit" => 10, "heartbeat_ms" => 0, "noise" => true}},
+      {:post, "/v1/databases/#{uuid}/query/stream",
+       %{"query" => %{"selector" => %{}}, "heartbeat_ms" => 1000, "noise" => true}},
       {:post, "/v1/databases/#{uuid}/replications",
        %{
          "persist" => true,

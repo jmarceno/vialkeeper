@@ -10,6 +10,7 @@ defmodule ElixirDB.HTTP.Router do
     Databases,
     Documents,
     Indexes,
+    QueryStream,
     Replications,
     ReplicationWire
   }
@@ -43,6 +44,11 @@ defmodule ElixirDB.HTTP.Router do
   forward("/v1/databases/:uuid/replication", to: ReplicationWire)
 
   # Query shares the indexes route module (match+delegate).
+  # Stream must be registered before the ordinary query POST.
+  post "/v1/databases/:uuid/query/stream" do
+    QueryStream.stream(conn)
+  end
+
   post "/v1/databases/:uuid/query" do
     Indexes.query(conn)
   end

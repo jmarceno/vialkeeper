@@ -33,6 +33,9 @@ defmodule ElixirDB.Observability.Meters do
   | `elixir_db.attachment.gc.duration` | histogram |
   | `elixir_db.replication.blob.transfer.count` | counter |
   | `elixir_db.replication.blob.transfer.duration` | histogram |
+  | `elixir_db.query.subscription.open` | counter |
+  | `elixir_db.query.subscription.update` | counter |
+  | `elixir_db.query.subscription.overload` | counter |
   """
 
   alias ElixirDB.Observability.Attributes
@@ -61,7 +64,10 @@ defmodule ElixirDB.Observability.Meters do
     {:"elixir_db.attachment.gc.count", :counter},
     {:"elixir_db.attachment.gc.duration", :histogram},
     {:"elixir_db.replication.blob.transfer.count", :counter},
-    {:"elixir_db.replication.blob.transfer.duration", :histogram}
+    {:"elixir_db.replication.blob.transfer.duration", :histogram},
+    {:"elixir_db.query.subscription.open", :counter},
+    {:"elixir_db.query.subscription.update", :counter},
+    {:"elixir_db.query.subscription.overload", :counter}
   ]
 
   @doc "Returns the instrument catalog declared by this module."

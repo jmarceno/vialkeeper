@@ -77,7 +77,8 @@ defmodule ElixirDB.Observability.Attributes do
     blob_count: :blob_count,
     max_blob_concurrency_observed: :max_blob_concurrency_observed,
     peak_reserved_transfer_bytes: :peak_reserved_transfer_bytes,
-    finch_duration: :"finch.duration"
+    finch_duration: :"finch.duration",
+    event_type: :event_type
   ]
 
   @allowed_keys Keyword.keys(@allowed)

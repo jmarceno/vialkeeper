@@ -176,6 +176,9 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
        &assert_data(&1, fn data -> data["rebuilt"] == true or is_map(data) end)},
       {:post, "/v1/databases/#{uuid}/query", %{"selector" => %{"/kind" => "task"}}, 200,
        &assert_data(&1, fn data -> is_list(data["documents"] || data["results"]) end)},
+      {:post, "/v1/databases/#{uuid}/query/stream",
+       %{"query" => %{"selector" => %{"/kind" => "task"}}, "heartbeat_ms" => 30_000}, 200,
+       &assert_query_ndjson_stream/1},
       {:post, "/v1/databases/#{uuid}/query/explain", %{"selector" => %{"/kind" => "task"}}, 200,
        &assert_data_map/1},
       {:get, "/v1/databases/#{uuid}/replications", nil, 200,
@@ -311,15 +314,78 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   end
 
   defp http!(server, method, path, body) when is_map(body) or is_list(body) do
-    opts = [method: method, url: server.base_url <> path, json: body, decode_body: false]
+    cond do
+      String.contains?(path, "/query/stream") ->
+        http_query_stream!(server, path, body)
 
-    opts =
-      if String.contains?(path, "/changes/stream"),
-        do: Keyword.put(opts, :receive_timeout, 5_000),
-        else: opts
+      true ->
+        opts = [method: method, url: server.base_url <> path, json: body, decode_body: false]
 
-    assert {:ok, response} = Req.request(opts)
-    %{status: response.status, headers: response.headers, body: decode_body(response)}
+        opts =
+          if String.contains?(path, "/changes/stream"),
+            do: Keyword.put(opts, :receive_timeout, 5_000),
+            else: opts
+
+        assert {:ok, response} = Req.request(opts)
+        %{status: response.status, headers: response.headers, body: decode_body(response)}
+    end
+  end
+
+  defp http_query_stream!(server, path, body) do
+    parent = self()
+    url = server.base_url <> path
+
+    task =
+      Task.async(fn ->
+        case Req.post(url,
+               json: body,
+               receive_timeout: 15_000,
+               into: fn
+                 {:data, data}, {req, resp} ->
+                   send(parent, {:query_stream_headers, resp.headers})
+
+                   for line <- String.split(IO.iodata_to_binary(data), "\n", trim: true) do
+                     send(parent, {:query_stream_line, line})
+                   end
+
+                   {:cont, {req, resp}}
+
+                 {:trailer, _}, acc ->
+                   {:cont, acc}
+               end
+             ) do
+          {:ok, resp} -> {:ok, resp}
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+
+    assert_receive {:query_stream_headers, headers}, 5_000
+
+    {lines, status} =
+      Enum.reduce_while(1..20, {[], 200}, fn _, {acc, status} ->
+        receive do
+          {:query_stream_line, line} ->
+            acc = [line | acc]
+
+            if String.contains?(line, "\"caught_up\"") or String.contains?(line, "\"closed\"") or
+                 String.contains?(line, "\"error\"") do
+              {:halt, {Enum.reverse(acc), status}}
+            else
+              {:cont, {acc, status}}
+            end
+        after
+          5_000 ->
+            {:halt, {Enum.reverse(acc), status}}
+        end
+      end)
+
+    _ = Task.shutdown(task, :brutal_kill)
+
+    %{
+      status: status,
+      headers: headers,
+      body: Enum.join(lines, "\n")
+    }
   end
 
   defp decode_body(%{headers: headers, body: body}) do
@@ -428,6 +494,16 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
     body = if is_binary(response.body), do: response.body, else: inspect(response.body)
     assert body =~ "\"type\""
     assert body =~ "change" or body =~ "caught_up"
+  end
+
+  defp assert_query_ndjson_stream(response) do
+    assert response.status == 200
+    content_type = header(response.headers, "content-type") || ""
+    assert content_type =~ "ndjson" or content_type =~ "json"
+
+    body = if is_binary(response.body), do: response.body, else: inspect(response.body)
+    assert body =~ "\"type\""
+    assert body =~ "snapshot" or body =~ "caught_up"
   end
 
   defp stringify_keys(list) when is_list(list) do
