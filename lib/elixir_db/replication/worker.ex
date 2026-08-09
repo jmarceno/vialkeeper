@@ -21,6 +21,7 @@ defmodule ElixirDB.Replication.Worker do
   alias ElixirDB.Observability.Meters
   alias ElixirDB.Replication
   alias ElixirDB.Replication.JobManager
+  alias ElixirDB.Replication.TransferPipeline
   alias ElixirDB.Runtime.ChildSpec
 
   @active_states [
@@ -102,6 +103,12 @@ defmodule ElixirDB.Replication.Worker do
     error = cancelled_error()
 
     if data[:task] do
+      if state == :transfer do
+        # The transfer coordinator owns its private supervisor and performs the
+        # bounded child cleanup before returning its phase result.
+        _ = TransferPipeline.cancel(data.task.pid)
+      end
+
       # Let the in-flight bounded phase finish; stop before the next transition.
       {:keep_state, %{data | cancel_requested: true, error: error}}
     else
@@ -153,7 +160,7 @@ defmodule ElixirDB.Replication.Worker do
         if reason in [:normal, :shutdown] do
           ElixirDB.Error.database_closed("replication task stopped")
         else
-          ElixirDB.Error.internal_error("replication task crashed", %{cause: inspect(reason)})
+          ElixirDB.Error.internal_error("replication task crashed")
         end
 
       handle_failure(data, error)
@@ -166,7 +173,9 @@ defmodule ElixirDB.Replication.Worker do
   @impl true
   def terminate(_reason, state, _data) when state in @terminal_states, do: :ok
 
-  def terminate(_reason, _state, data) do
+  def terminate(_reason, state, data) do
+    cleanup_phase_task(state, data)
+
     # End any in-flight batch span so it doesn't leak.
     if data.batch_span_ctx do
       replication_id = MapAccess.get(data.options, :replication_id)
@@ -176,6 +185,28 @@ defmodule ElixirDB.Replication.Worker do
     state = if data.error, do: :failed, else: if(data.result, do: :completed, else: :failed)
     report(data, state, %{result: data.result, error: data.error})
     :ok
+  end
+
+  defp cleanup_phase_task(:transfer, %{task: %{pid: phase_pid}}) when is_pid(phase_pid) do
+    # Transfer owns a linked private supervisor. Ask it to perform its normal
+    # bounded cleanup first, then stop the phase task so worker shutdown cannot
+    # strand children. Committing phases intentionally remain cooperative.
+    _ = TransferPipeline.cancel(phase_pid)
+    ref = Process.monitor(phase_pid)
+    _ = Process.exit(phase_pid, :shutdown)
+    await_phase_down(ref)
+
+    :ok
+  end
+
+  defp cleanup_phase_task(_state, _data), do: :ok
+
+  defp await_phase_down(ref) do
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    after
+      5_000 -> Process.demonitor(ref, [:flush])
+    end
   end
 
   defp enter_phase(phase, data) do

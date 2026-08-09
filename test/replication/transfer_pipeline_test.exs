@@ -27,8 +27,8 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
 
       send(owner, {:chain_started, ordinal, self()})
 
-      if not is_nil(trace_expected) do
-        send(owner, {:trace_context, OpenTelemetry.Ctx.get_current() == trace_expected})
+      if trace_expected == :present do
+        send(owner, {:trace_context, OpenTelemetry.Ctx.get_current() != :undefined})
       end
 
       if ordinal == crash_ordinal do
@@ -206,12 +206,12 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
              TransferPipeline.run(failing, nil, %{documents: documents(1)}, config(1))
   end
 
-  test "propagates the caller trace context into chain tasks" do
+  test "propagates the transfer trace context into chain tasks" do
     expected = OpenTelemetry.Ctx.get_current()
 
     endpoint = %ElixirDB.Replication.TransferPipelineTestEndpoint{
       owner: self(),
-      trace_expected: expected
+      trace_expected: :present
     }
 
     parent = self()
@@ -254,6 +254,58 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
 
     assert_receive {:DOWN, ^monitor, :process, ^runner, :killed}, 1_000
     assert_receive {:DOWN, ^child_monitor, :process, ^child, _reason}, 1_000
+  end
+
+  test "explicit cancellation stops admission and cleans active chain tasks" do
+    endpoint = %ElixirDB.Replication.TransferPipelineTestEndpoint{
+      owner: self(),
+      counter: :ets.new(:transfer_pipeline_cancel_counter, [:set, :public]),
+      max_concurrent: 2
+    }
+
+    :ets.insert(endpoint.counter, {:active, 0})
+    parent = self()
+
+    runner =
+      spawn(fn ->
+        send(
+          parent,
+          {:result, TransferPipeline.run(endpoint, nil, %{documents: documents(4)}, config(2))}
+        )
+      end)
+
+    {_ordinal, child} = receive_started()
+    child_monitor = Process.monitor(child)
+    assert :ok = TransferPipeline.cancel(runner)
+    assert_receive {:result, {:error, %Error{code: :database_closed}}}, 1_000
+    assert_receive {:DOWN, ^child_monitor, :process, ^child, _reason}, 1_000
+    refute Process.alive?(runner)
+  end
+
+  test "cancellation never admits queued chain chunks" do
+    endpoint = %ElixirDB.Replication.TransferPipelineTestEndpoint{owner: self()}
+    parent = self()
+
+    runner =
+      spawn(fn ->
+        send(
+          parent,
+          {:result, TransferPipeline.run(endpoint, nil, %{documents: documents(4)}, config(2))}
+        )
+      end)
+
+    active = Enum.map(1..2, fn _ -> receive_started() end)
+    active_monitors = Enum.map(active, fn {_ordinal, child} -> Process.monitor(child) end)
+    assert :ok = TransferPipeline.cancel(runner)
+    assert_receive {:result, {:error, %Error{code: :database_closed}}}, 1_000
+
+    for monitor <- active_monitors do
+      assert_receive {:DOWN, ^monitor, :process, _child, _reason}, 1_000
+    end
+
+    refute_received {:chain_started, 2, _}
+    refute_received {:chain_started, 3, _}
+    refute Process.alive?(runner)
   end
 
   test "deduplicates a digest repeated across chains" do

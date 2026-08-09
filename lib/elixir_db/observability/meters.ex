@@ -21,6 +21,8 @@ defmodule ElixirDB.Observability.Meters do
   | `elixir_db.query.execute.duration` | histogram |
   | `elixir_db.index.build.duration` | histogram |
   | `elixir_db.replication.batch.duration` | histogram |
+  | `elixir_db.replication.transfer.count` | counter |
+  | `elixir_db.replication.transfer.duration` | histogram |
   | `elixir_db.replication.checkpoint.count` | counter |
   | `elixir_db.http.request.duration` | histogram |
   | `elixir_db.attachment.read.count` | counter |
@@ -46,6 +48,8 @@ defmodule ElixirDB.Observability.Meters do
     {:"elixir_db.query.execute.duration", :histogram},
     {:"elixir_db.index.build.duration", :histogram},
     {:"elixir_db.replication.batch.duration", :histogram},
+    {:"elixir_db.replication.transfer.count", :counter},
+    {:"elixir_db.replication.transfer.duration", :histogram},
     {:"elixir_db.replication.checkpoint.count", :counter},
     {:"elixir_db.replication.bootstrap.count", :counter},
     {:"elixir_db.import.stale_fence.count", :counter},

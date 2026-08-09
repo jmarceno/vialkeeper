@@ -11,6 +11,7 @@ defmodule ElixirDB.FaultEndpoint do
   @behaviour ElixirDB.Replication.Endpoint
 
   alias ElixirDB.FaultAdapter
+  alias ElixirDB.Replication.BlobStream
   alias ElixirDB.Replication.LocalEndpoint
 
   defstruct [:inner, :agent]
@@ -139,11 +140,17 @@ defmodule ElixirDB.FaultEndpoint do
 
   @impl true
   def open_blob(%__MODULE__{} = endpoint, digest),
-    do: invoke(endpoint, :open_blob, &LocalEndpoint.open_blob(&1, digest))
+    do:
+      endpoint
+      |> invoke(:open_blob, &LocalEndpoint.open_blob(&1, digest))
+      |> maybe_inject_stream_fault(endpoint, :mid_source_stream)
 
   @impl true
   def put_blob(%__MODULE__{} = endpoint, stream),
-    do: invoke(endpoint, :put_blob, &LocalEndpoint.put_blob(&1, stream))
+    do:
+      invoke(endpoint, :put_blob, fn inner ->
+        LocalEndpoint.put_blob(inner, maybe_inject_target_stream(endpoint, stream))
+      end)
 
   defp invoke(%__MODULE__{inner: inner, agent: agent}, point, fun) when is_function(fun, 1) do
     case Agent.get_and_update(agent, &fault_before(&1, point)) do
@@ -181,4 +188,40 @@ defmodule ElixirDB.FaultEndpoint do
   end
 
   defp after_point(point), do: :"after_#{point}"
+
+  defp maybe_inject_stream_fault({:ok, %BlobStream{} = stream}, endpoint, point) do
+    case Agent.get_and_update(endpoint.agent, &stream_fault(&1, point)) do
+      {:none, _adapter} -> {:ok, stream}
+      {{:fault, %ElixirDB.Error{} = error}, _adapter} -> {:ok, faulty_stream(stream, error)}
+    end
+  end
+
+  defp maybe_inject_stream_fault(result, _endpoint, _point), do: result
+
+  defp maybe_inject_target_stream(endpoint, stream) do
+    case Agent.get_and_update(endpoint.agent, &stream_fault(&1, :mid_target_stream)) do
+      {:none, _adapter} -> stream
+      {{:fault, %ElixirDB.Error{} = error}, _adapter} -> faulty_stream(stream, error)
+    end
+  end
+
+  defp stream_fault(adapter, point) do
+    case FaultAdapter.maybe_fail(adapter, point) do
+      {:ok, adapter} -> {{:none, adapter}, adapter}
+      {:error, error, adapter} -> {{{:fault, error}, adapter}, adapter}
+    end
+  end
+
+  defp faulty_stream(stream, error) do
+    body =
+      stream.body
+      |> Stream.concat([:elixir_db_stream_fault])
+      |> Stream.transform(:pending, fn
+        chunk, :pending -> {[chunk], :fault}
+        :elixir_db_stream_fault, :fault -> exit({:elixir_db_transfer_stream_error, error})
+        _chunk, :fault -> exit({:elixir_db_transfer_stream_error, error})
+      end)
+
+    %{stream | body: body}
+  end
 end

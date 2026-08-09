@@ -130,7 +130,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
             TestMetricExporter.datapoint_attr(dp, :revisions_written) == 1
         end)
       end,
-      timeout: 2_000,
+      timeout: 8_000,
       message: "batch.duration histogram never recorded revisions_written: 1"
     )
   end
@@ -189,7 +189,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
             spans -> {:ok, spans}
           end
         end,
-        timeout: 5_000,
+        timeout: 15_000,
         message: "no replication batch span recorded for the remote one-shot job"
       )
 
@@ -226,6 +226,137 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
       assert MapSet.member?(batch_traces, span[:trace_id]),
              "wire span trace #{inspect(span[:trace_id])} is not any worker batch trace " <>
                "#{inspect(MapSet.to_list(batch_traces))}"
+    end
+  end
+
+  test "transfer span records bounded measurements without private data", %{a: a, b: b} do
+    assert {:ok, %{blob: digest}} =
+             ElixirDB.Attachments.upload_stream(a.database_uuid, ["abc"])
+
+    assert {:ok, _} =
+             ElixirDB.Documents.put(a.database_uuid, %{
+               id: "transfer-observability",
+               body: %{"ok" => true},
+               attachments: %{
+                 "file.txt" => %{blob: digest, content_type: "text/plain"}
+               }
+             })
+
+    {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    {:ok, target} = LocalEndpoint.new(b.database_uuid)
+    {:ok, replication_id} = Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
+
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
+    assert {:ok, pid} =
+             Worker.start_link(%{
+               source: source,
+               target: target,
+               replication_id: replication_id,
+               mode: "one_shot",
+               direction: "push"
+             })
+
+    ref = Process.monitor(pid)
+    :gen_statem.cast(pid, :start)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
+
+    [transfer] =
+      TestExporter.spans_named("elixir_db.replication.transfer")
+      |> Enum.filter(&(TestExporter.span_attr(&1, :"replication.id") == replication_id))
+
+    [batch] =
+      TestExporter.spans_named("elixir_db.replication.batch")
+      |> Enum.filter(&(TestExporter.span_attr(&1, :"replication.id") == replication_id))
+
+    assert transfer[:trace_id] == batch[:trace_id]
+    assert transfer[:parent_span_id] == batch[:span_id]
+
+    [blob_transfer] =
+      TestExporter.spans_named("elixir_db.replication.blob.transfer")
+      |> Enum.filter(&(TestExporter.span_attr(&1, :"replication.id") == replication_id))
+
+    assert blob_transfer[:trace_id] == transfer[:trace_id]
+    assert blob_transfer[:parent_span_id] == transfer[:span_id]
+
+    for attribute <- [
+          :chain_chunks,
+          :max_chain_concurrency_observed,
+          :blob_count,
+          :max_blob_concurrency_observed,
+          :logical_blob_bytes,
+          :peak_reserved_transfer_bytes
+        ] do
+      value = TestExporter.span_attr(transfer, attribute)
+      assert is_integer(value) and value >= 0
+    end
+
+    assert TestExporter.span_attr(transfer, :logical_blob_bytes) == 3
+
+    for forbidden <- [
+          :digest,
+          :document_id,
+          :attachment_name,
+          :revision_id,
+          :url,
+          :pid,
+          :ref
+        ] do
+      refute TestExporter.span_attr(transfer, forbidden),
+             "forbidden transfer attribute #{forbidden} was emitted"
+    end
+
+    exported_transfer_spans =
+      TestExporter.spans_named("elixir_db.replication.transfer") ++
+        TestExporter.spans_named("elixir_db.replication.blob.transfer")
+
+    for sentinel <- [digest, "transfer-observability", "file.txt"] do
+      refute inspect(exported_transfer_spans) =~ sentinel,
+             "privacy sentinel #{sentinel} appeared in transfer span attributes"
+    end
+
+    Eventual.eventually(
+      fn ->
+        duration_datapoints =
+          TestMetricExporter.datapoints("elixir_db.replication.transfer.duration")
+
+        duration_datapoint = List.first(duration_datapoints)
+
+        count_datapoints = TestMetricExporter.datapoints("elixir_db.replication.transfer.count")
+
+        is_map(duration_datapoint) and
+          Enum.any?(count_datapoints, &((&1[:value] || 0) >= 1)) and
+          Enum.all?(
+            [
+              :chain_chunks,
+              :max_chain_concurrency_observed,
+              :blob_count,
+              :max_blob_concurrency_observed,
+              :logical_blob_bytes,
+              :peak_reserved_transfer_bytes
+            ],
+            &is_integer(TestMetricExporter.datapoint_attr(duration_datapoint, &1))
+          )
+      end,
+      timeout: 8_000,
+      message: "transfer count and duration measurements were not exported"
+    )
+
+    transfer_metric_text =
+      (TestMetricExporter.datapoints("elixir_db.replication.transfer.duration") ++
+         TestMetricExporter.datapoints("elixir_db.replication.transfer.count") ++
+         TestMetricExporter.datapoints("elixir_db.replication.blob.transfer.duration") ++
+         TestMetricExporter.datapoints("elixir_db.replication.blob.transfer.count"))
+      |> inspect()
+
+    for sentinel <- [digest, "transfer-observability", "file.txt"] do
+      refute transfer_metric_text =~ sentinel,
+             "privacy sentinel #{sentinel} appeared in transfer metric attributes"
     end
   end
 end

@@ -14,6 +14,11 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
       :blocked_chains,
       :blocked_blobs,
       :failed_blob,
+      :diff_result,
+      :open_result,
+      :stream_failure,
+      :durable_digests,
+      :lost_response,
       :put_result
     ]
 
@@ -25,15 +30,37 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
 
     def diff_blobs(endpoint, digests) do
       send(endpoint.owner, {:diff_started, digests, self()})
-      {:ok, endpoint.missing || digests}
+
+      missing =
+        case endpoint.durable_digests do
+          nil ->
+            endpoint.missing || digests
+
+          agent ->
+            installed = Agent.get(agent, fn value -> value end)
+            Enum.reject(endpoint.missing || digests, &MapSet.member?(installed, &1))
+        end
+
+      endpoint.diff_result || {:ok, missing}
     end
 
     def open_blob(endpoint, digest) do
       send(endpoint.owner, {:blob_opened, digest, self()})
       wait_for(endpoint.blocked_blobs, {:release_blob, digest})
 
-      {:ok, stream} = BlobStream.new(digest, endpoint.lengths[digest], [])
-      {:ok, stream}
+      case endpoint.open_result do
+        nil ->
+          body =
+            case endpoint.stream_failure do
+              :source -> Stream.concat([<<"partial">>, Stream.map([:fail], &raise_stream/1)])
+              _ -> [<<"chunk">>]
+            end
+
+          BlobStream.new(digest, endpoint.lengths[digest], body)
+
+        result ->
+          result
+      end
     end
 
     def put_blob(endpoint, stream) do
@@ -43,7 +70,12 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
         endpoint.failed_blob == stream.digest ->
           {:error, Error.internal_error("fake blob failure")}
 
+        endpoint.lost_response == true and not is_nil(endpoint.durable_digests) ->
+          durable_install(endpoint.durable_digests, stream.digest)
+
         endpoint.put_result == :ok ->
+          consume_stream(stream.body, endpoint.stream_failure)
+
           :ok
 
         true ->
@@ -58,6 +90,28 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
         end
       end
     end
+
+    defp raise_stream(_value), do: raise("source stream failure")
+
+    defp durable_install(agent, digest) do
+      first_install =
+        Agent.get_and_update(agent, fn installed ->
+          if MapSet.member?(installed, digest) do
+            {false, installed}
+          else
+            {true, MapSet.put(installed, digest)}
+          end
+        end)
+
+      if first_install,
+        do: {:error, Error.internal_error("durable install response lost")},
+        else: :ok
+    end
+
+    defp consume_stream(body, :target),
+      do: Enum.each(body, fn _chunk -> raise "target stream failure" end)
+
+    defp consume_stream(body, _failure), do: Enum.each(body, & &1)
   end
 
   defmodule SourceEndpoint do
@@ -165,17 +219,121 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
 
   test "blob failure cancels active sibling blob work" do
     digests = digests(2)
+    failed_digest = hd(digests)
 
     source = endpoint(chains: chains_for(digests), lengths: lengths(digests))
 
     target = endpoint(missing: digests, lengths: lengths(digests), failed_blob: hd(digests))
 
     spawn_runner(source, target, documents(1), config(2, 100))
-    assert_receive {:blob_opened, _, _}, 1_000
-    assert_receive {:blob_opened, _, sibling_pid}, 1_000
-    assert_receive {:blob_put, _, _}, 1_000
+    opened = Map.new([receive_blob_opened(), receive_blob_opened()])
+    assert MapSet.new(Map.keys(opened)) == MapSet.new(digests)
+    failed_pid = Map.fetch!(opened, failed_digest)
+    sibling_pid = Map.fetch!(opened, List.last(digests))
+    assert_receive {:blob_put, ^failed_digest, ^failed_pid}, 1_000
     assert_receive {:result, {:error, %Error{code: :internal_error}}}, 1_000
+    refute Process.alive?(failed_pid)
     refute Process.alive?(sibling_pid)
+  end
+
+  test "explicit cancellation cleans active blob tasks" do
+    [digest] = digests(1)
+
+    source =
+      endpoint(
+        chains: chains_for([digest]),
+        lengths: lengths([digest]),
+        blocked_blobs: [digest]
+      )
+
+    target = endpoint(missing: [digest], lengths: lengths([digest]))
+    runner = spawn_runner(source, target, documents(1), config(1, 100))
+    assert_receive {:blob_opened, ^digest, blob_pid}, 1_000
+    blob_monitor = Process.monitor(blob_pid)
+
+    assert :ok = TransferPipeline.cancel(runner)
+    assert_receive {:result, {:error, %Error{code: :database_closed}}}, 1_000
+    assert_receive {:DOWN, ^blob_monitor, :process, ^blob_pid, _reason}, 1_000
+    refute Process.alive?(runner)
+  end
+
+  test "normalizes blob diff and source-open failures" do
+    [digest] = digests(1)
+    source = endpoint(chains: chains_for([digest]), lengths: lengths([digest]))
+
+    assert {:error, %Error{code: :internal_error}} =
+             TransferPipeline.run(
+               source,
+               endpoint(diff_result: {:error, Error.internal_error("diff failed")}),
+               %{documents: documents(1)},
+               config(1, 100)
+             )
+
+    assert {:error, %Error{code: :internal_error}} =
+             TransferPipeline.run(
+               endpoint(
+                 chains: chains_for([digest]),
+                 lengths: lengths([digest]),
+                 open_result: {:error, Error.internal_error("open failed")}
+               ),
+               endpoint(missing: [digest], lengths: lengths([digest])),
+               %{documents: documents(1)},
+               config(1, 100)
+             )
+  end
+
+  test "normalizes mid-source and mid-target stream failures" do
+    [digest] = digests(1)
+    chains = chains_for([digest])
+
+    assert {:error, %Error{code: :internal_error}} =
+             TransferPipeline.run(
+               endpoint(chains: chains, lengths: lengths([digest]), stream_failure: :source),
+               endpoint(missing: [digest], lengths: lengths([digest])),
+               %{documents: documents(1)},
+               config(1, 100)
+             )
+
+    assert {:error, %Error{code: :internal_error}} =
+             TransferPipeline.run(
+               endpoint(chains: chains, lengths: lengths([digest])),
+               endpoint(
+                 missing: [digest],
+                 lengths: lengths([digest]),
+                 stream_failure: :target
+               ),
+               %{documents: documents(1)},
+               config(1, 100)
+             )
+  end
+
+  test "reuses a durable blob after the install response is lost" do
+    [digest] = digests(1)
+    {:ok, installed} = Agent.start_link(fn -> MapSet.new() end)
+    source = endpoint(chains: chains_for([digest]), lengths: lengths([digest]))
+
+    target =
+      endpoint(
+        missing: [digest],
+        lengths: lengths([digest]),
+        durable_digests: installed,
+        lost_response: true
+      )
+
+    assert {:error, %Error{code: :internal_error}} =
+             TransferPipeline.run(source, target, %{documents: documents(1)}, config(1, 100))
+
+    assert_receive {:diff_started, [^digest], _}, 1_000
+    assert_receive {:blob_opened, ^digest, _}, 1_000
+    assert_receive {:blob_put, ^digest, _}, 1_000
+
+    assert {:ok, _} =
+             TransferPipeline.run(source, target, %{documents: documents(1)}, config(1, 100))
+
+    assert_receive {:diff_started, [^digest], _}, 1_000
+    refute_received {:blob_opened, ^digest, _}
+    refute_received {:blob_put, ^digest, _}
+    assert MapSet.member?(Agent.get(installed, & &1), digest)
   end
 
   test "already installed and repeated durable blobs are safe no-ops" do

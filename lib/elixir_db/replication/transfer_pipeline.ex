@@ -44,6 +44,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
               blob_queue: [],
               blob_tasks: %{},
               reserved_bytes: 0,
+              cancel_requested: false,
               max_chain_fetches: 4,
               max_blob_transfers: 4,
               max_transfer_bytes_in_flight: 1_073_741_824,
@@ -52,7 +53,13 @@ defmodule ElixirDB.Replication.TransferPipeline do
               phase_hook: nil,
               replication_id: nil,
               blob_obligations: [],
-              seen_blob_digests: %{}
+              seen_blob_digests: %{},
+              chain_chunks_total: 0,
+              max_chain_concurrency_observed: 0,
+              blob_count: 0,
+              max_blob_concurrency_observed: 0,
+              logical_blob_bytes: 0,
+              peak_reserved_transfer_bytes: 0
 
     @type phase ::
             :idle
@@ -73,6 +80,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
             blob_queue: [BlobObligation.t()],
             blob_tasks: map(),
             reserved_bytes: non_neg_integer(),
+            cancel_requested: boolean(),
             max_chain_fetches: pos_integer(),
             max_blob_transfers: pos_integer(),
             max_transfer_bytes_in_flight: pos_integer(),
@@ -81,7 +89,13 @@ defmodule ElixirDB.Replication.TransferPipeline do
             phase_hook: (atom(), map() -> :ok | {:error, Error.t()}) | nil,
             replication_id: binary() | nil,
             blob_obligations: [BlobObligation.t()],
-            seen_blob_digests: %{optional(binary()) => non_neg_integer()}
+            seen_blob_digests: %{optional(binary()) => non_neg_integer()},
+            chain_chunks_total: non_neg_integer(),
+            max_chain_concurrency_observed: non_neg_integer(),
+            blob_count: non_neg_integer(),
+            max_blob_concurrency_observed: non_neg_integer(),
+            logical_blob_bytes: non_neg_integer(),
+            peak_reserved_transfer_bytes: non_neg_integer()
           }
   end
 
@@ -159,6 +173,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
     if is_list(documents) do
       run_document_transfer(source_endpoint, target_endpoint, context, config, documents)
+      |> public_result()
     else
       {:error, Error.invalid_request("replication documents must be a list")}
     end
@@ -166,6 +181,13 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
   def run(_source_endpoint, _target_endpoint, _context, _config),
     do: {:error, Error.invalid_request("replication transfer context is invalid")}
+
+  @doc "Requests cooperative cancellation of a running transfer phase."
+  @spec cancel(pid()) :: :ok
+  def cancel(phase_pid) when is_pid(phase_pid) do
+    send(phase_pid, :elixir_db_replication_transfer_cancel)
+    :ok
+  end
 
   defp run_document_transfer(source_endpoint, target_endpoint, context, config, documents) do
     chunks = partition_chain_fetches(documents, config)
@@ -182,18 +204,46 @@ defmodule ElixirDB.Replication.TransferPipeline do
         {:error, Error.invalid_request("preloaded revision chains must be a list")}
 
       chunks == [] and preloaded_chains == [] ->
-        {:ok, Map.put(context, :chains, [])}
+        transfer_result(config, context, fn ->
+          {:ok, Map.put(context, :chains, []), empty_measurements()}
+        end)
 
       true ->
-        run_supervised_transfer(
-          source_endpoint,
-          target_endpoint,
-          context,
+        transfer_result(
           config,
-          chunks,
-          preloaded_chains
+          context,
+          fn ->
+            run_supervised_transfer(
+              source_endpoint,
+              target_endpoint,
+              context,
+              config,
+              chunks,
+              preloaded_chains
+            )
+          end
         )
     end
+  end
+
+  defp public_result({:ok, context, _measurements}), do: {:ok, context}
+  defp public_result({:error, %Error{} = error, _measurements}), do: {:error, error}
+  defp public_result({:error, %Error{} = error}), do: {:error, error}
+
+  defp transfer_result(config, context, fun) do
+    replication_id = MapAccess.get(context, :replication_id) || Map.get(config, :replication_id, "")
+    ReplicationModule.transfer_span(replication_id || "", fun)
+  end
+
+  defp empty_measurements do
+    [
+      chain_chunks: 0,
+      max_chain_concurrency_observed: 0,
+      blob_count: 0,
+      max_blob_concurrency_observed: 0,
+      logical_blob_bytes: 0,
+      peak_reserved_transfer_bytes: 0
+    ]
   end
 
   defp run_supervised_transfer(
@@ -224,16 +274,22 @@ defmodule ElixirDB.Replication.TransferPipeline do
         blob_diff_batch_size: positive_config(config, :batch_documents, 100),
         trace_context: OpenTelemetry.Ctx.get_current(),
         phase_hook: Map.get(config, :phase_hook),
-        replication_id: MapAccess.get(context, :replication_id) || Map.get(config, :replication_id)
+        replication_id: MapAccess.get(context, :replication_id) || Map.get(config, :replication_id),
+        chain_chunks_total: length(chunks),
+        max_chain_concurrency_observed: 0,
+        blob_count: 0,
+        max_blob_concurrency_observed: 0,
+        logical_blob_bytes: 0,
+        peak_reserved_transfer_bytes: 0
       }
 
       try do
         case run_transfer_loop(state) do
-          {:ok, completed} ->
-            {:ok, Map.put(context, :chains, aggregate_chains(completed))}
+          {:ok, completed, transfer_measurements} ->
+            {:ok, Map.put(context, :chains, aggregate_chains(completed)), transfer_measurements}
 
-          {:error, error} ->
-            {:error, error}
+          {:error, error, transfer_measurements} ->
+            {:error, error, transfer_measurements}
         end
       after
         stop_task_supervisor(task_supervisor)
@@ -251,24 +307,65 @@ defmodule ElixirDB.Replication.TransferPipeline do
   defp preloaded_state(_chunks, _chains), do: {:ok, {%{}, [], %{}}}
 
   defp run_transfer_loop(state) do
-    state = schedule_chain_tasks(state)
+    state = receive_cancel(state)
 
-    state = schedule_blob_diff_tasks(state)
+    if state.cancel_requested do
+      fail_tasks(state, Error.database_closed("replication transfer was cancelled"))
+    else
+      run_scheduled_transfer(state)
+    end
+  end
 
-    case schedule_blob_tasks(state) do
-      {:error, error} ->
-        fail_tasks(state, error)
+  defp run_scheduled_transfer(state) do
+    state
+    |> schedule_chain_tasks()
+    |> continue_after_chain_schedule()
+  end
+
+  defp continue_after_chain_schedule(state) do
+    case receive_cancel(state) do
+      %{cancel_requested: true} = state ->
+        fail_tasks(state, Error.database_closed("replication transfer was cancelled"))
 
       state ->
-        if transfer_complete?(state) do
-          {:ok, state.completed_chains}
-        else
-          receive_one_task_result(state)
-        end
+        state
+        |> schedule_blob_diff_tasks()
+        |> continue_after_diff_schedule()
+    end
+  end
+
+  defp continue_after_diff_schedule(state) do
+    case receive_cancel(state) do
+      %{cancel_requested: true} = state ->
+        fail_tasks(state, Error.database_closed("replication transfer was cancelled"))
+
+      state ->
+        state
+        |> schedule_blob_tasks()
+        |> finish_scheduled_transfer(state)
+    end
+  end
+
+  defp finish_scheduled_transfer({:error, error}, state), do: fail_tasks(state, error)
+
+  defp finish_scheduled_transfer(state, _original_state) do
+    if transfer_complete?(state) do
+      {:ok, state.completed_chains, measurements(state)}
+    else
+      receive_one_task_result(state)
+    end
+  end
+
+  defp receive_cancel(state) do
+    receive do
+      :elixir_db_replication_transfer_cancel -> %{state | cancel_requested: true}
+    after
+      0 -> state
     end
   end
 
   defp schedule_chain_tasks(%State{chain_queue: []} = state), do: state
+  defp schedule_chain_tasks(%State{cancel_requested: true} = state), do: state
 
   defp schedule_chain_tasks(%State{} = state) do
     available = max(state.max_chain_fetches - map_size(state.chain_tasks), 0)
@@ -290,13 +387,16 @@ defmodule ElixirDB.Replication.TransferPipeline do
         Map.put(tasks, task.ref, {task, {:chain, chunk.ordinal}})
       end)
 
-    %{state | chain_queue: queue, chain_tasks: tasks}
+    %{
+      state
+      | chain_queue: queue,
+        chain_tasks: tasks,
+        max_chain_concurrency_observed: max(state.max_chain_concurrency_observed, map_size(tasks))
+    }
   end
 
-  defp schedule_blob_diff_tasks(%State{blob_diff_queue: []} = state), do: state
-
   defp schedule_blob_diff_tasks(%State{} = state) do
-    if map_size(state.blob_diff_tasks) > 0 do
+    if state.cancel_requested or state.blob_diff_queue == [] or map_size(state.blob_diff_tasks) > 0 do
       state
     else
       {batch, queue} =
@@ -328,6 +428,14 @@ defmodule ElixirDB.Replication.TransferPipeline do
   end
 
   defp schedule_blob_tasks(%State{} = state) do
+    if state.cancel_requested do
+      state
+    else
+      schedule_blob_tasks_admitted(state)
+    end
+  end
+
+  defp schedule_blob_tasks_admitted(%State{} = state) do
     available = max(state.max_blob_transfers - map_size(state.blob_tasks), 0)
 
     {to_start, queue} =
@@ -363,13 +471,24 @@ defmodule ElixirDB.Replication.TransferPipeline do
          reserved + obligation.length}
       end)
 
+    state = %{
+      state
+      | blob_queue: queue,
+        blob_tasks: tasks,
+        reserved_bytes: reserved,
+        blob_count: state.blob_count + length(to_start),
+        logical_blob_bytes: state.logical_blob_bytes + Enum.reduce(to_start, 0, &(&1.length + &2)),
+        max_blob_concurrency_observed: max(state.max_blob_concurrency_observed, map_size(tasks)),
+        peak_reserved_transfer_bytes: max(state.peak_reserved_transfer_bytes, reserved)
+    }
+
     case {to_start, state.blob_queue, map_size(state.blob_tasks)} do
       {[], [%BlobObligation{length: length} | _], 0}
       when length > state.max_transfer_bytes_in_flight ->
         {:error, Error.resource_limit("blob exceeds transfer byte budget")}
 
       _ ->
-        %{state | blob_queue: queue, blob_tasks: tasks, reserved_bytes: reserved}
+        state
     end
   end
 
@@ -392,6 +511,9 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
   defp receive_one_task_result(state) do
     receive do
+      :elixir_db_replication_transfer_cancel ->
+        fail_tasks(state, Error.database_closed("replication transfer was cancelled"))
+
       {ref, {:ok, chains}} when is_map_key(state.chain_tasks, ref) ->
         {{_task, {:chain, ordinal}}, tasks} = Map.pop!(state.chain_tasks, ref)
         _ = Process.demonitor(ref, [:flush])
@@ -454,9 +576,9 @@ defmodule ElixirDB.Replication.TransferPipeline do
       when is_map_key(state.blob_diff_tasks, ref) or is_map_key(state.blob_tasks, ref) ->
         receive_one_task_result(state)
 
-      {:DOWN, ref, :process, _pid, _reason}
+      {:DOWN, ref, :process, _pid, reason}
       when is_map_key(state.blob_diff_tasks, ref) or is_map_key(state.blob_tasks, ref) ->
-        fail_tasks(state, Error.internal_error("replication blob transfer failed"))
+        fail_tasks(state, normalize_blob_error(reason))
     end
   end
 
@@ -508,7 +630,18 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
     _state = release_blob_reservations(state)
 
-    {:error, error}
+    {:error, error, measurements(state)}
+  end
+
+  defp measurements(state) do
+    [
+      chain_chunks: state.chain_chunks_total,
+      max_chain_concurrency_observed: state.max_chain_concurrency_observed,
+      blob_count: state.blob_count,
+      max_blob_concurrency_observed: state.max_blob_concurrency_observed,
+      logical_blob_bytes: state.logical_blob_bytes,
+      peak_reserved_transfer_bytes: state.peak_reserved_transfer_bytes
+    ]
   end
 
   defp release_blob_reservations(state) do
@@ -568,7 +701,8 @@ defmodule ElixirDB.Replication.TransferPipeline do
   defp diff_blob_batch(target, batch, phase_hook) do
     context = %{digests: Enum.map(batch, & &1.digest)}
 
-    with {:ok, missing} <-
+    with :ok <- invoke_phase_hook(phase_hook, :before_diff_blobs, context),
+         {:ok, missing} <-
            normalize_blob_diff(endpoint_call(target, :diff_blobs, [context.digests])),
          :ok <-
            invoke_phase_hook(phase_hook, :after_diff_blobs, Map.put(context, :missing, missing)) do
@@ -624,9 +758,11 @@ defmodule ElixirDB.Replication.TransferPipeline do
     context = %{digest: digest, length: length}
 
     with :ok <- invoke_phase_hook(phase_hook, :before_blob_transfer, context),
+         :ok <- invoke_phase_hook(phase_hook, :before_open_blob, context),
          {:ok, %BlobStream{} = stream} <- endpoint_call(source, :open_blob, [digest]),
          :ok <- invoke_phase_hook(phase_hook, :after_open_blob, Map.put(context, :stream, stream)),
          :ok <- validate_blob_stream(stream, digest, length),
+         :ok <- invoke_phase_hook(phase_hook, :before_put_blob, context),
          :ok <- normalize_put_blob(endpoint_call(target, :put_blob, [stream])),
          :ok <- invoke_phase_hook(phase_hook, :after_put_blob, context) do
       :ok
@@ -675,6 +811,10 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
   defp normalize_chain_error(%Error{} = error), do: error
   defp normalize_chain_error(_reason), do: Error.internal_error("replication chain fetch failed")
+
+  defp normalize_blob_error({:elixir_db_transfer_stream_error, %Error{} = error}), do: error
+  defp normalize_blob_error(%Error{} = error), do: error
+  defp normalize_blob_error(_reason), do: Error.internal_error("replication blob transfer failed")
 
   defp collect_chain_attachments(chains) do
     Enum.reduce_while(chains, {:ok, []}, fn chain, {:ok, acc} ->

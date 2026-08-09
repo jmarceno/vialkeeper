@@ -54,9 +54,15 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   @blob_sync_fault_points [
     :before_chain_fetch,
     :after_chain_fetch,
+    :before_diff_blobs,
     :after_diff_blobs,
     :before_blob_transfer,
+    :before_open_blob,
+    :open_blob,
+    :mid_source_stream,
     :after_open_blob,
+    :before_put_blob,
+    :mid_target_stream,
     :after_put_blob,
     :after_transfer
   ]
@@ -224,6 +230,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       assert {:ok, local_target} = LocalEndpoint.new(b.database_uuid)
       source = FaultEndpoint.wrap(local_source)
       target = FaultEndpoint.wrap(local_target)
+      {source, target, phase_hook} = configure_blob_fault(point, source, target, faults, seen)
 
       assert {:ok, replication_id} =
                Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
@@ -242,7 +249,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
         mode: "one_shot",
         direction: "push",
         retry: %{base_delay_ms: 5, max_delay_ms: 40, jitter_ms: 0, max_attempts: 8},
-        phase_hook: phase_fault_hook(seen, faults)
+        phase_hook: phase_hook
       }
 
       assert {:ok, pid} = Worker.start_link(options)
@@ -252,14 +259,15 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
       phases = Agent.get(seen, & &1)
 
-      assert point in phases,
-             "expected fault point #{point} observed; phases=#{inspect(phases)}"
+      assert_fault_observed(point, phases, source, target)
 
       assert :transfer in phases
       assert :import in phases
 
       assert Enum.count(phases, &(&1 == :transfer)) >= 2,
              "expected transfer phase retry after #{point}; phases=#{inspect(phases)}"
+
+      assert_no_reupload_after_lost_response(point, target)
 
       assert {:ok, got} = ElixirDB.Documents.get(b.database_uuid, %{id: "blob-doc"})
       assert got.revision == revision
@@ -628,6 +636,41 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       Agent.get_and_update(faults, &phase_fault_update(&1, observed))
     end
   end
+
+  defp configure_blob_fault(point, source, target, _faults, seen)
+       when point in [:open_blob, :mid_source_stream, :mid_target_stream] do
+    fault = {:once, retryable_fault(point)}
+
+    case point do
+      point when point in [:open_blob, :mid_source_stream] ->
+        {FaultEndpoint.inject(source, point, fault), target, phase_observer_hook(seen)}
+
+      :mid_target_stream ->
+        {source, FaultEndpoint.inject(target, point, fault), phase_observer_hook(seen)}
+    end
+  end
+
+  defp configure_blob_fault(_point, source, target, faults, seen) do
+    {source, target, phase_fault_hook(seen, faults)}
+  end
+
+  defp assert_fault_observed(point, _phases, source, target)
+       when point in [:open_blob, :mid_source_stream, :mid_target_stream] do
+    endpoint = if point in [:open_blob, :mid_source_stream], do: source, else: target
+    assert FaultEndpoint.hits(endpoint)[point] >= 1
+  end
+
+  defp assert_fault_observed(point, phases, _source, _target) do
+    assert point in phases,
+           "expected fault point #{point} observed; phases=#{inspect(phases)}"
+  end
+
+  defp assert_no_reupload_after_lost_response(:after_put_blob, target) do
+    assert FaultEndpoint.hits(target)[:put_blob] == 1
+    assert FaultEndpoint.hits(target)[:diff_blobs] >= 2
+  end
+
+  defp assert_no_reupload_after_lost_response(_point, _target), do: :ok
 
   defp phase_fault_update(adapter, observed) do
     case FaultAdapter.maybe_fail(adapter, observed) do

@@ -16,7 +16,11 @@ defmodule ElixirDB.Observability.Attributes do
   (`:source` | `:target`), the bounded counts `entries`, `examined`,
   `revisions_written`, attachment stream measurements `logical_bytes`,
   `stream_chunks`, `compressed`, `deduplicated`, `blobs_deleted`,
-  `bytes_deleted`, and `finch.duration` (the telemetry bridge only: a
+  `bytes_deleted`, transfer measurements `chain_chunks`,
+  `max_chain_concurrency_observed`, `blob_count`,
+  `max_blob_concurrency_observed`, `peak_reserved_transfer_bytes`, and
+  `logical_blob_bytes`, and
+  `finch.duration` (the telemetry bridge only: a
   bounded numeric duration from the Finch stop event, never customer data).
 
   ## Forbidden (enforced by absence)
@@ -62,11 +66,17 @@ defmodule ElixirDB.Observability.Attributes do
     compaction_epoch: :compaction_epoch,
     retention_mode: :retention_mode,
     logical_bytes: :logical_bytes,
+    logical_blob_bytes: :logical_blob_bytes,
     stream_chunks: :stream_chunks,
     compressed: :compressed,
     deduplicated: :deduplicated,
     blobs_deleted: :blobs_deleted,
     bytes_deleted: :bytes_deleted,
+    chain_chunks: :chain_chunks,
+    max_chain_concurrency_observed: :max_chain_concurrency_observed,
+    blob_count: :blob_count,
+    max_blob_concurrency_observed: :max_blob_concurrency_observed,
+    peak_reserved_transfer_bytes: :peak_reserved_transfer_bytes,
     finch_duration: :"finch.duration"
   ]
 

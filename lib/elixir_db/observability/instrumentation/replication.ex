@@ -7,6 +7,7 @@ defmodule ElixirDB.Observability.Instrumentation.Replication do
       tasks inherit its trace context)
     * `elixir_db.replication.checkpoint` — span + counter (wraps each
       `put_checkpoint` CAS write)
+    * `elixir_db.replication.transfer` — span + histogram for one transfer barrier
     * `elixir_db.replication.blob.transfer` — span + counter + histogram for
       each missing-blob transfer (privacy: no digests/paths/bodies)
 
@@ -17,6 +18,9 @@ defmodule ElixirDB.Observability.Instrumentation.Replication do
   alias ElixirDB.Observability.{Meters, Tracer}
 
   @checkpoint_span "elixir_db.replication.checkpoint"
+  @transfer_span "elixir_db.replication.transfer"
+  @transfer_count :"elixir_db.replication.transfer.count"
+  @transfer_duration :"elixir_db.replication.transfer.duration"
   @blob_transfer_span "elixir_db.replication.blob.transfer"
   @blob_transfer_count :"elixir_db.replication.blob.transfer.count"
   @blob_transfer_duration :"elixir_db.replication.blob.transfer.duration"
@@ -61,6 +65,53 @@ defmodule ElixirDB.Observability.Instrumentation.Replication do
       end
     )
   end
+
+  @doc """
+  Wraps one bounded transfer barrier and records its aggregate measurements.
+
+  Only allow-listed bounded values are emitted. The triple return form is an
+  internal pipeline seam and is reduced to the normal phase result.
+  """
+  @spec transfer_span(binary(), (-> result)) :: result when result: term()
+  def transfer_span(replication_id, fun)
+      when is_binary(replication_id) and is_function(fun, 0) do
+    started = System.monotonic_time()
+
+    Tracer.with_span(@transfer_span, [replication_id: replication_id], fn ->
+      result = fun.()
+      duration = System.monotonic_time() - started
+      emit_transfer(result, duration, replication_id)
+      result
+    end)
+  end
+
+  defp emit_transfer({:ok, _context, measurements}, duration, replication_id)
+       when is_list(measurements) do
+    attrs = Keyword.put(measurements, :replication_id, replication_id)
+    Meters.add(@transfer_count, attrs)
+    Meters.record(@transfer_duration, duration, attrs)
+    _ = Tracer.set_attributes(attrs)
+    :ok
+  end
+
+  defp emit_transfer({:error, %ElixirDB.Error{} = error, measurements}, duration, replication_id)
+       when is_list(measurements) do
+    attrs =
+      Keyword.merge(measurements,
+        replication_id: replication_id,
+        outcome: :rejected,
+        error_code: error.code
+      )
+
+    Meters.add(@transfer_count, attrs)
+    Meters.record(@transfer_duration, duration, attrs)
+    _ = Tracer.set_attributes(attrs)
+    _ = Tracer.record_error(error)
+    _ = Tracer.apply_error_status(error)
+    :ok
+  end
+
+  defp emit_transfer(_result, _duration, _replication_id), do: :ok
 
   @doc """
   Wraps one replication blob transfer with bounded size/duration metrics.

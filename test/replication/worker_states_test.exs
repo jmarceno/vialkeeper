@@ -113,6 +113,171 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
              ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})
   end
 
+  test "phase task crash with active transfer children cleans the child task", %{a: a, b: b} do
+    assert {:ok, _} =
+             ElixirDB.Documents.put(a.database_uuid, %{id: "crash-transfer", body: %{"n" => 1}})
+
+    {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    {:ok, target} = LocalEndpoint.new(b.database_uuid)
+
+    assert {:ok, replication_id} =
+             Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
+
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
+    parent = self()
+
+    options = %{
+      source: source,
+      target: target,
+      replication_id: replication_id,
+      mode: "one_shot",
+      direction: "push",
+      phase_hook: fn
+        :before_chain_fetch, _context ->
+          send(parent, {:transfer_child, self()})
+
+          receive do
+            :release_transfer_child -> :ok
+          end
+
+        _phase, _context ->
+          :ok
+      end
+    }
+
+    assert {:ok, pid} = Worker.start_link(options)
+    monitor = Process.monitor(pid)
+    :gen_statem.cast(pid, :start)
+    assert_receive {:transfer_child, child}, 5_000
+    child_monitor = Process.monitor(child)
+
+    {:transfer, %{task: %{pid: phase_pid}}} = :sys.get_state(pid)
+    Process.exit(phase_pid, :kill)
+
+    assert_receive {:DOWN, ^child_monitor, :process, ^child, _reason}, 5_000
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+  end
+
+  test "transfer barrier completes before import begins", %{a: a, b: b} do
+    assert {:ok, %{blob: digest}} =
+             ElixirDB.Attachments.upload_stream(a.database_uuid, ["barrier"])
+
+    assert {:ok, _} =
+             ElixirDB.Documents.put(a.database_uuid, %{
+               id: "barrier-doc",
+               body: %{"n" => 1},
+               attachments: %{
+                 "barrier.txt" => %{blob: digest, content_type: "text/plain"}
+               }
+             })
+
+    {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    {:ok, target} = LocalEndpoint.new(b.database_uuid)
+
+    assert {:ok, replication_id} =
+             Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
+
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
+    parent = self()
+
+    options = %{
+      source: source,
+      target: target,
+      replication_id: replication_id,
+      mode: "one_shot",
+      direction: "push",
+      phase_hook: fn
+        :before_blob_transfer, _context ->
+          send(parent, {:blob_transfer_barrier, self()})
+
+          receive do
+            :release_blob_transfer -> :ok
+          end
+
+        :import, _context ->
+          send(parent, :import_entered)
+          :ok
+
+        _phase, _context ->
+          :ok
+      end
+    }
+
+    assert {:ok, pid} = Worker.start_link(options)
+    monitor = Process.monitor(pid)
+    :gen_statem.cast(pid, :start)
+    assert_receive {:blob_transfer_barrier, blob_task}, 5_000
+    refute_receive :import_entered, 100
+
+    send(blob_task, :release_blob_transfer)
+    assert_receive :import_entered, 5_000
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+  end
+
+  test "worker terminate cleans an active transfer phase and its children", %{a: a, b: b} do
+    assert {:ok, _} =
+             ElixirDB.Documents.put(a.database_uuid, %{id: "terminate-transfer", body: %{"n" => 1}})
+
+    {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    {:ok, target} = LocalEndpoint.new(b.database_uuid)
+
+    assert {:ok, replication_id} =
+             Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
+
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
+    parent = self()
+
+    options = %{
+      source: source,
+      target: target,
+      replication_id: replication_id,
+      mode: "one_shot",
+      direction: "push",
+      phase_hook: fn
+        :before_chain_fetch, _context ->
+          send(parent, {:terminating_transfer_child, self()})
+
+          receive do
+            :release_terminating_transfer -> :ok
+          end
+
+        _phase, _context ->
+          :ok
+      end
+    }
+
+    assert {:ok, pid} = Worker.start_link(options)
+    Process.unlink(pid)
+    worker_monitor = Process.monitor(pid)
+    :gen_statem.cast(pid, :start)
+    assert_receive {:terminating_transfer_child, child}, 5_000
+    child_monitor = Process.monitor(child)
+
+    assert :ok = :gen_statem.stop(pid, :shutdown, 5_000)
+    assert_receive {:DOWN, ^worker_monitor, :process, ^pid, _reason}, 5_000
+    assert_receive {:DOWN, ^child_monitor, :process, ^child, _reason}, 5_000
+    refute Process.alive?(pid)
+    refute Process.alive?(child)
+  end
+
   test "worker emits a :backoff state on an injected retryable fault before retrying",
        %{a: a, b: b} do
     assert {:ok, %{revision: revision}} =
