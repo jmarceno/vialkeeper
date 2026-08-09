@@ -11,7 +11,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
     do: %{
       id: {__MODULE__, uuid},
       start: {__MODULE__, :start_link, [uuid]},
-      restart: :temporary,
+      restart: :permanent,
       type: :worker
     }
 
@@ -20,10 +20,10 @@ defmodule ElixirDB.Query.SubscriptionHub do
   def via(uuid),
     do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid}}}
 
-  def begin_subscription(uuid, pid, max_buffered_events),
-    do: call(uuid, {:begin_subscription, pid, max_buffered_events})
+  def begin_subscription(uuid, pid, max_buffered_events, max_active \\ nil),
+    do: call(uuid, {:begin_subscription, pid, max_buffered_events, max_active})
 
-  def snapshot_ready(uuid, pid, sequence), do: cast(uuid, {:snapshot_ready, pid, sequence})
+  def snapshot_ready(uuid, pid, sequence), do: call(uuid, {:snapshot_ready, pid, sequence})
   def activate(uuid, pid, sequence), do: call(uuid, {:activate, pid, sequence})
   def return_credit(uuid, pid), do: cast(uuid, {:return_credit, pid})
   def unregister(uuid, pid), do: cast(uuid, {:unregister, pid})
@@ -57,24 +57,14 @@ defmodule ElixirDB.Query.SubscriptionHub do
        }}
 
   @impl true
-  def handle_call({:begin_subscription, pid, max_buffered_events}, _from, state) do
-    ref = Process.monitor(pid)
-
-    subscription = %{
-      pid: pid,
-      monitor_ref: ref,
-      mode: :pending_snapshot,
-      credits: max_buffered_events,
-      pending_incremental_events: []
-    }
-
-    state =
-      state
-      |> put_subscription(pid, subscription)
-      |> ensure_notifier()
-      |> schedule_read()
-
-    {:reply, {:ok, state.cursor_sequence}, state}
+  def handle_call({:begin_subscription, pid, max_buffered_events, max_active}, _from, state) do
+    if is_integer(max_active) and map_size(state.subscriptions) >= max_active do
+      {:reply,
+       {:error, ElixirDB.Error.subscription_overloaded("maximum active subscriptions reached")},
+       state}
+    else
+      admit_subscription(state, pid, max_buffered_events)
+    end
   end
 
   def handle_call({:activate, pid, sequence}, _from, state) do
@@ -83,8 +73,13 @@ defmodule ElixirDB.Query.SubscriptionHub do
         state = put_subscription(state, pid, %{subscription | mode: :active})
         {:reply, :ok, deliver_pending(state, pid, sequence)}
 
-      _ ->
-        {:reply, :ok, state}
+      nil ->
+        {:reply, {:error, ElixirDB.Error.invalid_request("subscription is not registered")}, state}
+
+      %{mode: mode} ->
+        {:reply,
+         {:error, ElixirDB.Error.invalid_request("subscription cannot activate from #{mode}")},
+         state}
     end
   end
 
@@ -93,22 +88,34 @@ defmodule ElixirDB.Query.SubscriptionHub do
   def handle_call(:close, _from, state) do
     Enum.each(state.subscriptions, fn {pid, _} -> send(pid, :subscription_closed) end)
     ChangeNotifier.unsubscribe(state.uuid, state.notifier_ref)
-    {:stop, :normal, :ok, %{state | subscriptions: %{}}}
+    {:stop, :normal, :ok, %{state | subscriptions: %{}, notifier_ref: nil}}
   end
 
-  @impl true
-  def handle_cast({:snapshot_ready, pid, sequence}, state) do
+  def handle_call({:snapshot_ready, pid, sequence}, _from, state) do
     case Map.get(state.subscriptions, pid) do
       %{mode: :pending_snapshot, pending_incremental_events: events} = subscription ->
         retained = Enum.filter(events, &(&1.sequence > sequence))
-        updated = %{subscription | mode: :snapshot_draining, pending_incremental_events: retained}
-        {:noreply, put_subscription(state, pid, updated)}
 
-      _ ->
-        {:noreply, state}
+        updated = %{
+          subscription
+          | mode: :snapshot_draining,
+            pending_incremental_events: retained,
+            boundary_sequence: sequence
+        }
+
+        {:reply, :ok, put_subscription(state, pid, updated)}
+
+      nil ->
+        {:reply, {:error, ElixirDB.Error.invalid_request("subscription is not registered")}, state}
+
+      %{mode: mode} ->
+        {:reply,
+         {:error,
+          ElixirDB.Error.invalid_request("subscription cannot snapshot_ready from #{mode}")}, state}
     end
   end
 
+  @impl true
   def handle_cast({:return_credit, pid}, state) do
     case Map.get(state.subscriptions, pid) do
       nil ->
@@ -148,6 +155,11 @@ defmodule ElixirDB.Query.SubscriptionHub do
   def handle_info({:database_maintenance, uuid, _event}, %{uuid: uuid} = state),
     do: {:noreply, schedule_read(state)}
 
+  def handle_info({:database_closed, uuid}, %{uuid: uuid} = state) do
+    Enum.each(state.subscriptions, fn {pid, _} -> send(pid, :subscription_closed) end)
+    {:stop, :normal, %{state | subscriptions: %{}, notifier_ref: nil, reading: false}}
+  end
+
   def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
     case Map.get(state.subscriptions, pid) do
       %{monitor_ref: ^ref} -> {:noreply, drop_subscription(state, pid)}
@@ -158,14 +170,48 @@ defmodule ElixirDB.Query.SubscriptionHub do
   defp ensure_notifier(%{notifier_ref: nil} = state) do
     case ChangeNotifier.subscribe(state.uuid, state.cursor_sequence) do
       {:ok, ref, current} ->
-        %{state | notifier_ref: ref, cursor_sequence: max(state.cursor_sequence, current)}
+        {:ok, %{state | notifier_ref: ref, cursor_sequence: max(state.cursor_sequence, current)}}
 
-      _ ->
-        state
+      {:error, %ElixirDB.Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error,
+         ElixirDB.Error.database_unavailable("subscription notifier subscribe failed", %{
+           cause: inspect(reason)
+         })}
     end
   end
 
-  defp ensure_notifier(state), do: state
+  defp ensure_notifier(state), do: {:ok, state}
+
+  defp admit_subscription(state, pid, max_buffered_events) do
+    ref = Process.monitor(pid)
+
+    subscription = %{
+      pid: pid,
+      monitor_ref: ref,
+      mode: :pending_snapshot,
+      credits: max_buffered_events,
+      max_buffered_events: max_buffered_events,
+      boundary_sequence: nil,
+      pending_incremental_events: []
+    }
+
+    case ensure_notifier(state) do
+      {:ok, state} ->
+        state =
+          state
+          |> put_subscription(pid, subscription)
+          |> schedule_read()
+
+        {:reply, {:ok, state.cursor_sequence}, state}
+
+      {:error, error} ->
+        Process.demonitor(ref, [:flush])
+        {:reply, {:error, error}, state}
+    end
+  end
 
   defp schedule_read(%{reading: true} = state), do: state
   defp schedule_read(state), do: send(self(), :read_changes) && %{state | reading: true}
@@ -203,6 +249,15 @@ defmodule ElixirDB.Query.SubscriptionHub do
        when mode in [:pending_snapshot, :snapshot_draining],
        do: append_pending(state, pid, event)
 
+  defp fanout_subscription(
+         state,
+         _pid,
+         %{mode: :active, boundary_sequence: boundary},
+         event
+       )
+       when is_integer(boundary) and event.sequence <= boundary,
+       do: state
+
   defp fanout_subscription(state, pid, %{mode: :active, credits: credits} = subscription, event)
        when credits > 0 do
     send(pid, {:subscription_incremental, event})
@@ -222,36 +277,74 @@ defmodule ElixirDB.Query.SubscriptionHub do
   defp fanout_subscription(state, _pid, _subscription, _event), do: state
 
   defp append_pending(state, pid, event) do
-    update_in(state.subscriptions[pid].pending_incremental_events, fn events ->
-      Enum.take(events ++ [event], max_buffered(state, pid))
-    end)
-  end
+    case Map.fetch!(state.subscriptions, pid) do
+      %{pending_incremental_events: events, max_buffered_events: maximum} = subscription ->
+        if length(events) >= maximum do
+          send(
+            pid,
+            {:subscription_overloaded,
+             ElixirDB.Error.subscription_overloaded("subscription delivery buffer is full")}
+          )
 
-  defp max_buffered(state, pid), do: Map.get(state.subscriptions[pid], :credits, 1)
+          drop_subscription(state, pid)
+        else
+          put_subscription(state, pid, %{
+            subscription
+            | pending_incremental_events: events ++ [event]
+          })
+        end
+    end
+  end
 
   defp deliver_pending(state, pid, sequence) do
     case Map.get(state.subscriptions, pid) do
-      %{pending_incremental_events: events} = subscription ->
-        Enum.reduce_while(Enum.filter(events, &(&1.sequence > sequence)), state, fn event, acc ->
-          deliver_pending_event(acc, pid, subscription, event)
+      %{pending_incremental_events: events} ->
+        events
+        |> Enum.filter(&(&1.sequence > sequence))
+        |> Enum.reduce_while(state, fn event, acc ->
+          deliver_pending_event(acc, pid, event)
         end)
+        |> clear_pending(pid)
 
       _ ->
         state
     end
   end
 
-  defp deliver_pending_event(state, pid, subscription, event) do
-    if credits_for(state, pid) > 0 do
-      send(pid, {:subscription_incremental, event})
-      updated = %{subscription | credits: credits_for(state, pid) - 1}
-      {:cont, put_subscription(state, pid, updated)}
-    else
-      {:halt, state}
+  defp deliver_pending_event(state, pid, event) do
+    case Map.get(state.subscriptions, pid) do
+      %{credits: credits} = subscription when credits > 0 ->
+        send(pid, {:subscription_incremental, event})
+
+        {:cont,
+         put_subscription(state, pid, %{
+           subscription
+           | credits: credits - 1
+         })}
+
+      %{credits: 0} ->
+        send(
+          pid,
+          {:subscription_overloaded,
+           ElixirDB.Error.subscription_overloaded("subscription delivery buffer is full")}
+        )
+
+        {:halt, drop_subscription(state, pid)}
+
+      _ ->
+        {:halt, state}
     end
   end
 
-  defp credits_for(state, pid), do: state.subscriptions[pid].credits
+  defp clear_pending(state, pid) do
+    case Map.get(state.subscriptions, pid) do
+      nil ->
+        state
+
+      subscription ->
+        put_subscription(state, pid, %{subscription | pending_incremental_events: []})
+    end
+  end
 
   defp put_subscription(state, pid, subscription),
     do: %{state | subscriptions: Map.put(state.subscriptions, pid, subscription)}
@@ -262,6 +355,15 @@ defmodule ElixirDB.Query.SubscriptionHub do
       _ -> :ok
     end
 
-    %{state | subscriptions: Map.delete(state.subscriptions, pid)}
+    state = %{state | subscriptions: Map.delete(state.subscriptions, pid)}
+    maybe_release_notifier(state)
   end
+
+  defp maybe_release_notifier(%{subscriptions: subscriptions, notifier_ref: ref} = state)
+       when map_size(subscriptions) == 0 and not is_nil(ref) do
+    ChangeNotifier.unsubscribe(state.uuid, ref)
+    %{state | notifier_ref: nil}
+  end
+
+  defp maybe_release_notifier(state), do: state
 end

@@ -8,35 +8,33 @@ defmodule ElixirDB.Query.Subscription.Membership do
           {:ok, map() | nil, MapSet.t()} | {:error, ElixirDB.Error.t()}
   def transition(envelope, request, membership, sequence, max_members) do
     predicate = Map.get(request, :predicate)
-    matching = matching?(envelope, predicate)
-    member? = MapSet.member?(membership, envelope.id)
 
-    case {member?, matching} do
-      {false, false} ->
-        {:ok, nil, membership}
-
-      {false, true} ->
-        with :ok <- ensure_membership_bound(membership, max_members) do
-          {:ok, upsert_event(envelope, request, sequence), MapSet.put(membership, envelope.id)}
-        end
-
-      {true, true} ->
-        {:ok, upsert_event(envelope, request, sequence), membership}
-
-      {true, false} ->
-        {:ok, Events.remove(sequence, envelope.id, envelope.revision),
-         MapSet.delete(membership, envelope.id)}
+    with {:ok, matching} <- matching(envelope, predicate) do
+      member? = MapSet.member?(membership, envelope.id)
+      apply_transition(member?, matching, envelope, request, membership, sequence, max_members)
     end
   end
 
-  defp matching?(%{deleted: true}, _predicate), do: false
+  defp apply_transition(false, false, _envelope, _request, membership, _sequence, _max_members),
+    do: {:ok, nil, membership}
 
-  defp matching?(%{body: body}, predicate) do
-    case Selector.matches?(body, predicate) do
-      {:ok, value} -> value
-      {:error, _} -> false
+  defp apply_transition(false, true, envelope, request, membership, sequence, max_members) do
+    with :ok <- ensure_membership_bound(membership, max_members) do
+      {:ok, upsert_event(envelope, request, sequence), MapSet.put(membership, envelope.id)}
     end
   end
+
+  defp apply_transition(true, true, envelope, request, membership, sequence, _max_members),
+    do: {:ok, upsert_event(envelope, request, sequence), membership}
+
+  defp apply_transition(true, false, envelope, _request, membership, sequence, _max_members),
+    do:
+      {:ok, Events.remove(sequence, envelope.id, envelope.revision),
+       MapSet.delete(membership, envelope.id)}
+
+  defp matching(%{deleted: true}, _predicate), do: {:ok, false}
+
+  defp matching(%{body: body}, predicate), do: Selector.matches?(body, predicate)
 
   defp upsert_event(envelope, request, sequence) do
     Events.upsert(
