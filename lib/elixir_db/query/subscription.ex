@@ -147,6 +147,12 @@ defmodule ElixirDB.Query.Subscription do
   def handle_info({:subscription_incremental, event}, state),
     do: handle_cast({:incremental, event}, state)
 
+  def handle_info({:subscription_overloaded, error}, state),
+    do: {:noreply, fail_subscription(state, error)}
+
+  def handle_info({:subscription_error, error}, state),
+    do: {:noreply, fail_subscription(state, error)}
+
   def handle_info(:heartbeat, %{waiter: nil} = state), do: {:noreply, state}
 
   def handle_info(:heartbeat, %{waiter: from} = state) do

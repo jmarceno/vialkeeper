@@ -2,7 +2,10 @@ defmodule ElixirDB.Query.SubscriptionHub do
   @moduledoc false
   use GenServer
 
-  @type mode :: :pending_snapshot | :snapshot_draining | :active | :resetting
+  alias ElixirDB.Changes
+  alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
+
+  @batch_limit 100
 
   def child_spec(uuid),
     do: %{
@@ -17,28 +20,14 @@ defmodule ElixirDB.Query.SubscriptionHub do
   def via(uuid),
     do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid}}}
 
-  def begin_subscription(uuid, subscription_pid, max_buffered_events) do
-    call(uuid, {:begin_subscription, subscription_pid, max_buffered_events})
-  end
+  def begin_subscription(uuid, pid, max_buffered_events),
+    do: call(uuid, {:begin_subscription, pid, max_buffered_events})
 
-  def snapshot_ready(uuid, subscription_pid, sequence) do
-    cast(uuid, {:snapshot_ready, subscription_pid, sequence})
-  end
-
-  def activate(uuid, subscription_pid, sequence) do
-    call(uuid, {:activate, subscription_pid, sequence})
-  end
-
-  def return_credit(uuid, subscription_pid) do
-    cast(uuid, {:return_credit, subscription_pid})
-  end
-
-  def unregister(uuid, subscription_pid) do
-    cast(uuid, {:unregister, subscription_pid})
-  end
-
+  def snapshot_ready(uuid, pid, sequence), do: cast(uuid, {:snapshot_ready, pid, sequence})
+  def activate(uuid, pid, sequence), do: call(uuid, {:activate, pid, sequence})
+  def return_credit(uuid, pid), do: cast(uuid, {:return_credit, pid})
+  def unregister(uuid, pid), do: cast(uuid, {:unregister, pid})
   def count(uuid), do: call(uuid, :count)
-
   def close(uuid), do: call(uuid, :close)
 
   defp call(uuid, message) do
@@ -56,108 +45,109 @@ defmodule ElixirDB.Query.SubscriptionHub do
   end
 
   @impl true
-  def init(uuid) do
-    {:ok,
-     %{
-       uuid: uuid,
-       cursor_sequence: 0,
-       subscriptions: %{},
-       pending_events: %{}
-     }}
-  end
+  def init(uuid),
+    do:
+      {:ok,
+       %{
+         uuid: uuid,
+         cursor_sequence: 0,
+         notifier_ref: nil,
+         subscriptions: %{},
+         reading: false
+       }}
 
   @impl true
-  def handle_call({:begin_subscription, subscription_pid, max_buffered_events}, _from, state) do
-    monitor_ref = Process.monitor(subscription_pid)
+  def handle_call({:begin_subscription, pid, max_buffered_events}, _from, state) do
+    ref = Process.monitor(pid)
 
     subscription = %{
-      pid: subscription_pid,
-      monitor_ref: monitor_ref,
+      pid: pid,
+      monitor_ref: ref,
       mode: :pending_snapshot,
       credits: max_buffered_events,
       pending_incremental_events: []
     }
 
-    {:reply, {:ok, state.cursor_sequence},
-     %{
-       state
-       | subscriptions: Map.put(state.subscriptions, subscription_pid, subscription)
-     }}
+    state =
+      state
+      |> put_subscription(pid, subscription)
+      |> ensure_notifier()
+      |> schedule_read()
+
+    {:reply, {:ok, state.cursor_sequence}, state}
   end
 
-  @impl true
-  def handle_call({:activate, subscription_pid, sequence}, _from, state) do
-    case Map.get(state.subscriptions, subscription_pid) do
+  def handle_call({:activate, pid, sequence}, _from, state) do
+    case Map.get(state.subscriptions, pid) do
       %{mode: :snapshot_draining} = subscription ->
-        subscription = %{subscription | mode: :active}
-        state = put_subscription(state, subscription_pid, subscription)
-        deliver_pending_after(state, subscription_pid, sequence)
+        state = put_subscription(state, pid, %{subscription | mode: :active})
+        {:reply, :ok, deliver_pending(state, pid, sequence)}
 
       _ ->
         {:reply, :ok, state}
     end
   end
 
-  @impl true
   def handle_call(:count, _from, state), do: {:reply, map_size(state.subscriptions), state}
 
-  @impl true
   def handle_call(:close, _from, state) do
-    Enum.each(state.subscriptions, fn {_pid, %{pid: pid}} ->
-      send(pid, :subscription_closed)
-    end)
-
-    {:stop, :normal, :ok, %{state | subscriptions: %{}, pending_events: %{}}}
+    Enum.each(state.subscriptions, fn {pid, _} -> send(pid, :subscription_closed) end)
+    ChangeNotifier.unsubscribe(state.uuid, state.notifier_ref)
+    {:stop, :normal, :ok, %{state | subscriptions: %{}}}
   end
 
   @impl true
-  def handle_cast({:snapshot_ready, subscription_pid, sequence}, state) do
-    case Map.get(state.subscriptions, subscription_pid) do
-      %{mode: :pending_snapshot} = subscription ->
-        pending =
-          state.pending_events
-          |> Map.get(subscription_pid, [])
-          |> Enum.filter(fn %{sequence: event_sequence} -> event_sequence > sequence end)
-
-        subscription = %{
-          subscription
-          | mode: :snapshot_draining,
-            pending_incremental_events: pending
-        }
-
-        {:noreply,
-         %{
-           state
-           | subscriptions: Map.put(state.subscriptions, subscription_pid, subscription),
-             pending_events: Map.delete(state.pending_events, subscription_pid)
-         }}
+  def handle_cast({:snapshot_ready, pid, sequence}, state) do
+    case Map.get(state.subscriptions, pid) do
+      %{mode: :pending_snapshot, pending_incremental_events: events} = subscription ->
+        retained = Enum.filter(events, &(&1.sequence > sequence))
+        updated = %{subscription | mode: :snapshot_draining, pending_incremental_events: retained}
+        {:noreply, put_subscription(state, pid, updated)}
 
       _ ->
         {:noreply, state}
     end
   end
 
-  @impl true
-  def handle_cast({:return_credit, subscription_pid}, state) do
-    case Map.get(state.subscriptions, subscription_pid) do
+  def handle_cast({:return_credit, pid}, state) do
+    case Map.get(state.subscriptions, pid) do
       nil ->
         {:noreply, state}
 
       subscription ->
         {:noreply,
-         put_subscription(state, subscription_pid, %{
-           subscription
-           | credits: subscription.credits + 1
-         })}
+         put_subscription(state, pid, %{subscription | credits: subscription.credits + 1})}
     end
   end
 
-  @impl true
-  def handle_cast({:unregister, subscription_pid}, state) do
-    {:noreply, drop_subscription(state, subscription_pid)}
-  end
+  def handle_cast({:unregister, pid}, state), do: {:noreply, drop_subscription(state, pid)}
 
   @impl true
+  def handle_info(:read_changes, %{reading: true} = state), do: {:noreply, state}
+
+  def handle_info(:read_changes, state) do
+    case Changes.read(state.uuid, %{since: state.cursor_sequence, limit: @batch_limit}) do
+      {:ok, %{results: []}} ->
+        {:noreply, %{state | reading: false}}
+
+      {:ok, %{results: results, last_sequence: last_sequence, has_more: has_more}} ->
+        state = fanout(state, results)
+        state = %{state | cursor_sequence: last_sequence, reading: false}
+        state = if has_more, do: schedule_read(state), else: state
+        {:noreply, state}
+
+      {:error, error} ->
+        Enum.each(state.subscriptions, fn {pid, _} -> send(pid, {:subscription_error, error}) end)
+        {:noreply, %{state | reading: false}}
+    end
+  end
+
+  def handle_info({:database_changed, uuid, _sequence}, %{uuid: uuid} = state),
+    do: {:noreply, schedule_read(state)}
+
+  def handle_info({:database_maintenance, uuid, _event}, %{uuid: uuid} = state),
+    do: {:noreply, schedule_read(state)}
+
   def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
     case Map.get(state.subscriptions, pid) do
       %{monitor_ref: ^ref} -> {:noreply, drop_subscription(state, pid)}
@@ -165,38 +155,106 @@ defmodule ElixirDB.Query.SubscriptionHub do
     end
   end
 
-  defp deliver_pending_after(state, subscription_pid, sequence) do
-    subscription = Map.fetch!(state.subscriptions, subscription_pid)
-
-    subscription.pending_incremental_events
-    |> Enum.filter(fn event -> event.sequence > sequence end)
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.reduce(state, fn event, state ->
-      deliver_event(state, subscription_pid, event)
-    end)
-    |> then(fn state ->
-      {:reply, :ok, put_subscription(state, subscription_pid, %{subscription | mode: :active})}
-    end)
-  end
-
-  defp deliver_event(state, subscription_pid, event) do
-    case Map.get(state.subscriptions, subscription_pid) do
-      %{credits: credits} when credits > 0 ->
-        send(subscription_pid, {:subscription_incremental, event})
-
-        put_subscription(state, subscription_pid, %{
-          Map.get(state.subscriptions, subscription_pid)
-          | credits: credits - 1
-        })
+  defp ensure_notifier(%{notifier_ref: nil} = state) do
+    case ChangeNotifier.subscribe(state.uuid, state.cursor_sequence) do
+      {:ok, ref, current} ->
+        %{state | notifier_ref: ref, cursor_sequence: max(state.cursor_sequence, current)}
 
       _ ->
         state
     end
   end
 
-  defp put_subscription(state, pid, subscription) do
-    %{state | subscriptions: Map.put(state.subscriptions, pid, subscription)}
+  defp ensure_notifier(state), do: state
+
+  defp schedule_read(%{reading: true} = state), do: state
+  defp schedule_read(state), do: send(self(), :read_changes) && %{state | reading: true}
+
+  defp fanout(state, results) do
+    requests =
+      Enum.map(results, fn result ->
+        %{document_id: result.document_id, revision_id: result.winning_revision}
+      end)
+
+    case DatabaseCatalog.command(
+           state.uuid,
+           {:command, :get_revisions_batch, %{requests: requests}}
+         ) do
+      {:ok, envelopes} ->
+        Enum.zip(results, envelopes)
+        |> Enum.reduce(state, fn {result, envelope}, acc ->
+          event = %{sequence: result.sequence, envelope: envelope}
+          deliver_or_buffer(acc, event)
+        end)
+
+      {:error, error} ->
+        Enum.each(state.subscriptions, fn {pid, _} -> send(pid, {:subscription_error, error}) end)
+        state
+    end
   end
+
+  defp deliver_or_buffer(state, event) do
+    Enum.reduce(state.subscriptions, state, fn {pid, subscription}, acc ->
+      fanout_subscription(acc, pid, subscription, event)
+    end)
+  end
+
+  defp fanout_subscription(state, pid, %{mode: mode}, event)
+       when mode in [:pending_snapshot, :snapshot_draining],
+       do: append_pending(state, pid, event)
+
+  defp fanout_subscription(state, pid, %{mode: :active, credits: credits} = subscription, event)
+       when credits > 0 do
+    send(pid, {:subscription_incremental, event})
+    put_subscription(state, pid, %{subscription | credits: credits - 1})
+  end
+
+  defp fanout_subscription(state, pid, %{mode: :active}, _event) do
+    send(
+      pid,
+      {:subscription_overloaded,
+       ElixirDB.Error.subscription_overloaded("subscription delivery buffer is full")}
+    )
+
+    drop_subscription(state, pid)
+  end
+
+  defp fanout_subscription(state, _pid, _subscription, _event), do: state
+
+  defp append_pending(state, pid, event) do
+    update_in(state.subscriptions[pid].pending_incremental_events, fn events ->
+      Enum.take(events ++ [event], max_buffered(state, pid))
+    end)
+  end
+
+  defp max_buffered(state, pid), do: Map.get(state.subscriptions[pid], :credits, 1)
+
+  defp deliver_pending(state, pid, sequence) do
+    case Map.get(state.subscriptions, pid) do
+      %{pending_incremental_events: events} = subscription ->
+        Enum.reduce_while(Enum.filter(events, &(&1.sequence > sequence)), state, fn event, acc ->
+          deliver_pending_event(acc, pid, subscription, event)
+        end)
+
+      _ ->
+        state
+    end
+  end
+
+  defp deliver_pending_event(state, pid, subscription, event) do
+    if credits_for(state, pid) > 0 do
+      send(pid, {:subscription_incremental, event})
+      updated = %{subscription | credits: credits_for(state, pid) - 1}
+      {:cont, put_subscription(state, pid, updated)}
+    else
+      {:halt, state}
+    end
+  end
+
+  defp credits_for(state, pid), do: state.subscriptions[pid].credits
+
+  defp put_subscription(state, pid, subscription),
+    do: %{state | subscriptions: Map.put(state.subscriptions, pid, subscription)}
 
   defp drop_subscription(state, pid) do
     case Map.get(state.subscriptions, pid) do
@@ -204,10 +262,6 @@ defmodule ElixirDB.Query.SubscriptionHub do
       _ -> :ok
     end
 
-    %{
-      state
-      | subscriptions: Map.delete(state.subscriptions, pid),
-        pending_events: Map.delete(state.pending_events, pid)
-    }
+    %{state | subscriptions: Map.delete(state.subscriptions, pid)}
   end
 end
