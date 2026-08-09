@@ -9,6 +9,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Error
   alias ElixirDB.MapAccess
+  alias ElixirDB.Replication.BlobStream
 
   defmodule ChainChunk do
     @moduledoc false
@@ -37,10 +38,18 @@ defmodule ElixirDB.Replication.TransferPipeline do
               chain_queue: [],
               chain_tasks: %{},
               completed_chains: %{},
+              blob_diff_queue: [],
+              blob_diff_tasks: %{},
+              blob_queue: [],
+              blob_tasks: %{},
+              reserved_bytes: 0,
               max_chain_fetches: 4,
+              max_blob_transfers: 4,
+              max_transfer_bytes_in_flight: 1_073_741_824,
+              blob_diff_batch_size: 100,
               trace_context: nil,
               blob_obligations: [],
-              seen_blob_digests: MapSet.new()
+              seen_blob_digests: %{}
 
     @type phase ::
             :idle
@@ -56,10 +65,18 @@ defmodule ElixirDB.Replication.TransferPipeline do
             chain_queue: [ChainChunk.t()],
             chain_tasks: map(),
             completed_chains: map(),
+            blob_diff_queue: [BlobObligation.t()],
+            blob_diff_tasks: map(),
+            blob_queue: [BlobObligation.t()],
+            blob_tasks: map(),
+            reserved_bytes: non_neg_integer(),
             max_chain_fetches: pos_integer(),
+            max_blob_transfers: pos_integer(),
+            max_transfer_bytes_in_flight: pos_integer(),
+            blob_diff_batch_size: pos_integer(),
             trace_context: term(),
             blob_obligations: [BlobObligation.t()],
-            seen_blob_digests: MapSet.t()
+            seen_blob_digests: %{optional(binary()) => non_neg_integer()}
           }
   end
 
@@ -149,11 +166,15 @@ defmodule ElixirDB.Replication.TransferPipeline do
           chain_chunks: chunks,
           chain_queue: chunks,
           max_chain_fetches: positive_config(config, :max_concurrent_chain_fetches, 4),
+          max_blob_transfers: positive_config(config, :max_concurrent_blob_transfers, 4),
+          max_transfer_bytes_in_flight:
+            positive_config(config, :max_transfer_bytes_in_flight, 1_073_741_824),
+          blob_diff_batch_size: positive_config(config, :batch_documents, 100),
           trace_context: OpenTelemetry.Ctx.get_current()
         }
 
         try do
-          case run_chain_loop(state) do
+          case run_transfer_loop(state) do
             {:ok, completed} ->
               {:ok, Map.put(context, :chains, aggregate_chains(completed))}
 
@@ -172,13 +193,21 @@ defmodule ElixirDB.Replication.TransferPipeline do
   def run(_source_endpoint, _target_endpoint, _context, _config),
     do: {:error, Error.invalid_request("replication transfer context is invalid")}
 
-  defp run_chain_loop(state) do
+  defp run_transfer_loop(state) do
     state = schedule_chain_tasks(state)
 
-    if state.chain_queue == [] and map_size(state.chain_tasks) == 0 do
-      {:ok, state.completed_chains}
-    else
-      receive_one_task_result(state)
+    state = schedule_blob_diff_tasks(state)
+
+    case schedule_blob_tasks(state) do
+      {:error, error} ->
+        fail_tasks(state, error)
+
+      state ->
+        if transfer_complete?(state) do
+          {:ok, state.completed_chains}
+        else
+          receive_one_task_result(state)
+        end
     end
   end
 
@@ -201,32 +230,170 @@ defmodule ElixirDB.Replication.TransferPipeline do
             end
           end)
 
-        Map.put(tasks, task.ref, {task, chunk.ordinal})
+        Map.put(tasks, task.ref, {task, {:chain, chunk.ordinal}})
       end)
 
     %{state | chain_queue: queue, chain_tasks: tasks}
   end
 
+  defp schedule_blob_diff_tasks(%State{blob_diff_queue: []} = state), do: state
+
+  defp schedule_blob_diff_tasks(%State{} = state) do
+    if map_size(state.blob_diff_tasks) > 0 do
+      state
+    else
+      {batch, queue} =
+        state.blob_diff_queue
+        |> Enum.sort_by(& &1.digest)
+        |> Enum.split(state.blob_diff_batch_size)
+
+      if batch == [], do: state, else: start_blob_diff_task(state, queue, batch)
+    end
+  end
+
+  defp start_blob_diff_task(state, queue, batch) do
+    task =
+      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+        token = OpenTelemetry.Ctx.attach(state.trace_context)
+
+        try do
+          diff_blob_batch(state.target, batch)
+        after
+          OpenTelemetry.Ctx.detach(token)
+        end
+      end)
+
+    %{
+      state
+      | blob_diff_queue: queue,
+        blob_diff_tasks: Map.put(state.blob_diff_tasks, task.ref, {task, {:blob_diff, 0, batch}})
+    }
+  end
+
+  defp schedule_blob_tasks(%State{} = state) do
+    available = max(state.max_blob_transfers - map_size(state.blob_tasks), 0)
+
+    {to_start, queue} =
+      take_blob_starts(
+        state.blob_queue,
+        available,
+        state.reserved_bytes,
+        state.max_transfer_bytes_in_flight,
+        []
+      )
+
+    {tasks, reserved} =
+      Enum.reduce(to_start, {state.blob_tasks, state.reserved_bytes}, fn obligation,
+                                                                         {tasks, reserved} ->
+        task =
+          Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+            token = OpenTelemetry.Ctx.attach(state.trace_context)
+
+            try do
+              transfer_blob(state.source, state.target, obligation)
+            after
+              OpenTelemetry.Ctx.detach(token)
+            end
+          end)
+
+        {Map.put(tasks, task.ref, {task, {:blob, obligation.digest, obligation.length}}),
+         reserved + obligation.length}
+      end)
+
+    case {to_start, state.blob_queue, map_size(state.blob_tasks)} do
+      {[], [%BlobObligation{length: length} | _], 0}
+      when length > state.max_transfer_bytes_in_flight ->
+        {:error, Error.resource_limit("blob exceeds transfer byte budget")}
+
+      _ ->
+        %{state | blob_queue: queue, blob_tasks: tasks, reserved_bytes: reserved}
+    end
+  end
+
+  defp take_blob_starts(queue, 0, _reserved, _max_bytes, started),
+    do: {Enum.reverse(started), queue}
+
+  defp take_blob_starts([], _available, _reserved, _max_bytes, started),
+    do: {Enum.reverse(started), []}
+
+  defp take_blob_starts([obligation | rest], available, reserved, max_bytes, started) do
+    started_bytes = Enum.reduce(started, 0, &(&1.length + &2))
+
+    if reserved + started_bytes + obligation.length <= max_bytes do
+      take_blob_starts(rest, available - 1, reserved, max_bytes, [obligation | started])
+    else
+      # FIFO head-of-line: keep this blob and every later blob queued until budget frees.
+      {Enum.reverse(started), [obligation | rest]}
+    end
+  end
+
   defp receive_one_task_result(state) do
     receive do
       {ref, {:ok, chains}} when is_map_key(state.chain_tasks, ref) ->
-        {{_task, ordinal}, tasks} = Map.pop!(state.chain_tasks, ref)
+        {{_task, {:chain, ordinal}}, tasks} = Map.pop!(state.chain_tasks, ref)
         _ = Process.demonitor(ref, [:flush])
         state = %{state | chain_tasks: tasks}
-        state = update_chain_state(state, ordinal, chains)
-        run_chain_loop(state)
+
+        case discover_blob_obligations(state, chains) do
+          {:ok, state} ->
+            run_transfer_loop(update_chain_state(state, ordinal, chains))
+
+          {:error, error} ->
+            fail_tasks(state, error)
+        end
 
       {ref, {:error, %Error{} = error}} when is_map_key(state.chain_tasks, ref) ->
-        fail_chain_tasks(state, ref, error)
+        fail_tasks(state, error)
 
       {ref, {:error, reason}} when is_map_key(state.chain_tasks, ref) ->
-        fail_chain_tasks(state, ref, normalize_chain_error(reason))
+        fail_tasks(state, normalize_chain_error(reason))
+
+      {ref, {:ok, missing}} when is_map_key(state.blob_diff_tasks, ref) ->
+        {{_task, {:blob_diff, _ordinal, batch}}, tasks} = Map.pop!(state.blob_diff_tasks, ref)
+        _ = Process.demonitor(ref, [:flush])
+
+        case missing_blob_obligations(batch, missing) do
+          {:ok, obligations} ->
+            state = %{state | blob_diff_tasks: tasks, blob_queue: state.blob_queue ++ obligations}
+            run_transfer_loop(state)
+
+          {:error, error} ->
+            fail_tasks(%{state | blob_diff_tasks: tasks}, error)
+        end
+
+      {ref, :ok} when is_map_key(state.blob_tasks, ref) ->
+        {{_task, {:blob, _digest, length}}, tasks} = Map.pop!(state.blob_tasks, ref)
+        _ = Process.demonitor(ref, [:flush])
+
+        state = %{
+          state
+          | blob_tasks: tasks,
+            reserved_bytes: state.reserved_bytes - length
+        }
+
+        run_transfer_loop(state)
+
+      {ref, {:error, %Error{} = error}}
+      when is_map_key(state.blob_diff_tasks, ref) or is_map_key(state.blob_tasks, ref) ->
+        fail_tasks(state, error)
+
+      {ref, {:error, _reason}}
+      when is_map_key(state.blob_diff_tasks, ref) or is_map_key(state.blob_tasks, ref) ->
+        fail_tasks(state, Error.internal_error("replication blob transfer failed"))
 
       {:DOWN, ref, :process, _pid, :normal} when is_map_key(state.chain_tasks, ref) ->
         receive_one_task_result(state)
 
       {:DOWN, ref, :process, _pid, reason} when is_map_key(state.chain_tasks, ref) ->
-        fail_chain_tasks(state, ref, normalize_chain_error(reason))
+        fail_tasks(state, normalize_chain_error(reason))
+
+      {:DOWN, ref, :process, _pid, :normal}
+      when is_map_key(state.blob_diff_tasks, ref) or is_map_key(state.blob_tasks, ref) ->
+        receive_one_task_result(state)
+
+      {:DOWN, ref, :process, _pid, _reason}
+      when is_map_key(state.blob_diff_tasks, ref) or is_map_key(state.blob_tasks, ref) ->
+        fail_tasks(state, Error.internal_error("replication blob transfer failed"))
     end
   end
 
@@ -260,17 +427,130 @@ defmodule ElixirDB.Replication.TransferPipeline do
     end
   end
 
-  defp fail_chain_tasks(state, failed_ref, error) do
-    Enum.each(state.chain_tasks, fn {ref, {task, _ordinal}} ->
-      if ref != failed_ref do
-        _ = Task.Supervisor.terminate_child(state.task_supervisor, task.pid)
-      end
+  defp fail_tasks(state, error) do
+    Enum.each(all_tasks(state), fn {_ref, {task, _metadata}} ->
+      _ = Task.Supervisor.terminate_child(state.task_supervisor, task.pid)
+    end)
 
+    Enum.each(all_tasks(state), fn {ref, _task} ->
       _ = Process.demonitor(ref, [:flush])
     end)
 
+    _state = release_blob_reservations(state)
+
     {:error, error}
   end
+
+  defp release_blob_reservations(state) do
+    %{state | reserved_bytes: 0, blob_tasks: %{}}
+  end
+
+  defp all_tasks(state),
+    do: Map.merge(state.chain_tasks, Map.merge(state.blob_diff_tasks, state.blob_tasks))
+
+  defp transfer_complete?(state) do
+    state.chain_queue == [] and map_size(state.chain_tasks) == 0 and
+      state.blob_diff_queue == [] and map_size(state.blob_diff_tasks) == 0 and
+      state.blob_queue == [] and map_size(state.blob_tasks) == 0
+  end
+
+  defp discover_blob_obligations(state, chains) do
+    with {:ok, obligations} <- blob_obligations(chains) do
+      with {:ok, new_obligations, seen} <-
+             discover_new_obligations(obligations, state.seen_blob_digests) do
+        {:ok,
+         %{
+           state
+           | seen_blob_digests: seen,
+             blob_diff_queue: state.blob_diff_queue ++ new_obligations
+         }}
+      end
+    end
+  end
+
+  defp discover_new_obligations(obligations, seen) do
+    Enum.reduce_while(obligations, {:ok, [], seen}, fn obligation, {:ok, acc, seen} ->
+      length = obligation.length
+
+      case Map.fetch(seen, obligation.digest) do
+        :error ->
+          {:cont, {:ok, [obligation | acc], Map.put(seen, obligation.digest, obligation.length)}}
+
+        {:ok, ^length} ->
+          {:cont, {:ok, acc, seen}}
+
+        {:ok, _other_length} ->
+          {:halt, {:error, conflicting_blob_length_error(obligation.digest)}}
+      end
+    end)
+    |> case do
+      {:ok, obligations, seen} -> {:ok, Enum.reverse(obligations), seen}
+      error -> error
+    end
+  end
+
+  defp conflicting_blob_length_error(digest),
+    do:
+      Error.integrity_violation("attachment digest has conflicting logical lengths", %{
+        digest: digest
+      })
+
+  defp diff_blob_batch(target, batch) do
+    case endpoint_call(target, :diff_blobs, [Enum.map(batch, & &1.digest)]) do
+      {:ok, missing} when is_list(missing) -> {:ok, missing}
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, _reason} -> {:error, Error.internal_error("blob diff failed")}
+      _response -> {:error, Error.invalid_request("blob diff response is invalid")}
+    end
+  end
+
+  defp missing_blob_obligations(batch, missing) when is_list(missing) do
+    obligations = Map.new(batch, &{&1.digest, &1})
+
+    missing
+    |> Enum.reduce_while({:ok, []}, &append_missing_obligation(&1, obligations, &2))
+    |> reverse_obligations()
+  end
+
+  defp missing_blob_obligations(_batch, _missing),
+    do: {:error, Error.invalid_request("blob diff response is invalid")}
+
+  defp append_missing_obligation(digest, obligations, {:ok, acc}) do
+    case Map.fetch(obligations, digest) do
+      {:ok, obligation} -> {:cont, {:ok, [obligation | acc]}}
+      :error -> {:halt, {:error, Error.integrity_violation("blob diff returned an unknown digest")}}
+    end
+  end
+
+  defp reverse_obligations({:ok, obligations}), do: {:ok, Enum.reverse(obligations)}
+  defp reverse_obligations(error), do: error
+
+  defp transfer_blob(source, target, %BlobObligation{digest: digest, length: length}) do
+    with {:ok, %BlobStream{} = stream} <- endpoint_call(source, :open_blob, [digest]),
+         :ok <- validate_blob_stream(stream, digest, length),
+         :ok <- normalize_put_blob(endpoint_call(target, :put_blob, [stream])) do
+      :ok
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, _reason} -> {:error, Error.internal_error("blob transfer failed")}
+      _response -> {:error, Error.invalid_request("blob stream response is invalid")}
+    end
+  end
+
+  defp validate_blob_stream(%BlobStream{digest: digest, length: length}, digest, length), do: :ok
+
+  defp validate_blob_stream(%BlobStream{}, _digest, _length),
+    do: {:error, Error.integrity_violation("blob stream metadata does not match manifest")}
+
+  defp normalize_put_blob(:ok), do: :ok
+  defp normalize_put_blob({:ok, _result}), do: :ok
+  defp normalize_put_blob({:error, %Error{} = error}), do: {:error, error}
+
+  defp normalize_put_blob({:error, _reason}),
+    do: {:error, Error.internal_error("blob install failed")}
+
+  defp normalize_put_blob(_response),
+    do: {:error, Error.invalid_request("blob install response is invalid")}
 
   defp stop_task_supervisor(task_supervisor) do
     _ = Supervisor.stop(task_supervisor)
@@ -293,12 +573,19 @@ defmodule ElixirDB.Replication.TransferPipeline do
   end
 
   defp chain_attachments(chain) when is_map(chain) do
-    revisions = MapAccess.get(chain, :revisions)
+    case Map.fetch(chain, :revisions) do
+      :error ->
+        case Map.fetch(chain, "revisions") do
+          :error -> {:ok, []}
+          {:ok, revisions} when is_list(revisions) -> collect_revision_attachments(revisions)
+          {:ok, _revisions} -> {:error, integrity_error("revision chain metadata is invalid")}
+        end
 
-    if is_list(revisions) do
-      collect_revision_attachments(revisions)
-    else
-      {:error, integrity_error("revision chain metadata is invalid")}
+      {:ok, revisions} when is_list(revisions) ->
+        collect_revision_attachments(revisions)
+
+      {:ok, _revisions} ->
+        {:error, integrity_error("revision chain metadata is invalid")}
     end
   end
 
