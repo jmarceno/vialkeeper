@@ -373,16 +373,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
     tasks =
       Enum.reduce(chunks, state.chain_tasks, fn chunk, tasks ->
-        task =
-          Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-            token = OpenTelemetry.Ctx.attach(state.trace_context)
-
-            try do
-              fetch_chain_chunk(state.source, chunk, state.phase_hook)
-            after
-              OpenTelemetry.Ctx.detach(token)
-            end
-          end)
+        task = start_chain_task(state, chunk)
 
         Map.put(tasks, task.ref, {task, {:chain, chunk.ordinal}})
       end)
@@ -411,13 +402,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
   defp start_blob_diff_task(state, queue, batch) do
     task =
       Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-        token = OpenTelemetry.Ctx.attach(state.trace_context)
-
-        try do
-          diff_blob_batch(state.target, batch, state.phase_hook)
-        after
-          OpenTelemetry.Ctx.detach(token)
-        end
+        run_blob_diff_task(state, batch)
       end)
 
     %{
@@ -452,19 +437,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
                                                                          {tasks, reserved} ->
         task =
           Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-            token = OpenTelemetry.Ctx.attach(state.trace_context)
-
-            try do
-              transfer_blob(
-                state.source,
-                state.target,
-                obligation,
-                state.phase_hook,
-                state.replication_id
-              )
-            after
-              OpenTelemetry.Ctx.detach(token)
-            end
+            run_blob_task(state, obligation)
           end)
 
         {Map.put(tasks, task.ref, {task, {:blob, obligation.digest, obligation.length}}),
@@ -723,6 +696,8 @@ defmodule ElixirDB.Replication.TransferPipeline do
     obligations = Map.new(batch, &{&1.digest, &1})
 
     missing
+    |> Enum.uniq()
+    |> Enum.sort()
     |> Enum.reduce_while({:ok, []}, &append_missing_obligation(&1, obligations, &2))
     |> reverse_obligations()
   end
@@ -739,6 +714,62 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
   defp reverse_obligations({:ok, obligations}), do: {:ok, Enum.reverse(obligations)}
   defp reverse_obligations(error), do: error
+
+  defp run_transfer_task(message, fun) when is_binary(message) and is_function(fun, 0) do
+    run_caught_transfer_task(message, fun)
+  end
+
+  defp run_caught_transfer_task(message, fun) do
+    fun.()
+  catch
+    :error, _reason -> {:error, Error.internal_error(message)}
+    :exit, {:elixir_db_transfer_stream_error, %Error{} = error} -> {:error, error}
+    _kind, _reason -> {:error, Error.internal_error(message)}
+  end
+
+  defp start_chain_task(state, chunk) do
+    Task.Supervisor.async_nolink(state.task_supervisor, fn -> run_chain_task(state, chunk) end)
+  end
+
+  defp run_chain_task(state, chunk) do
+    run_transfer_task("replication chain fetch failed", fn ->
+      with_trace_context(state.trace_context, fn ->
+        fetch_chain_chunk(state.source, chunk, state.phase_hook)
+      end)
+    end)
+  end
+
+  defp run_blob_diff_task(state, batch) do
+    run_transfer_task("replication blob diff failed", fn ->
+      with_trace_context(state.trace_context, fn ->
+        diff_blob_batch(state.target, batch, state.phase_hook)
+      end)
+    end)
+  end
+
+  defp run_blob_task(state, obligation) do
+    run_transfer_task("replication blob transfer failed", fn ->
+      with_trace_context(state.trace_context, fn ->
+        transfer_blob(
+          state.source,
+          state.target,
+          obligation,
+          state.phase_hook,
+          state.replication_id
+        )
+      end)
+    end)
+  end
+
+  defp with_trace_context(trace_context, fun) when is_function(fun, 0) do
+    token = OpenTelemetry.Ctx.attach(trace_context)
+
+    try do
+      fun.()
+    after
+      OpenTelemetry.Ctx.detach(token)
+    end
+  end
 
   defp transfer_blob(
          source,

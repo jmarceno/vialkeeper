@@ -282,6 +282,25 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
              )
   end
 
+  test "deduplicates repeated missing blob digests" do
+    [digest] = digests(1)
+    source = endpoint(chains: chains_for([digest]), lengths: lengths([digest]))
+
+    target =
+      endpoint(
+        diff_result: {:ok, [digest, digest]},
+        lengths: lengths([digest])
+      )
+
+    assert {:ok, _} =
+             TransferPipeline.run(source, target, %{documents: documents(1)}, config(1, 100))
+
+    assert_receive {:blob_opened, ^digest, pid}, 1_000
+    assert_receive {:blob_put, ^digest, ^pid}, 1_000
+    refute_received {:blob_opened, ^digest, _}
+    refute_received {:blob_put, ^digest, _}
+  end
+
   test "normalizes mid-source and mid-target stream failures" do
     [digest] = digests(1)
     chains = chains_for([digest])

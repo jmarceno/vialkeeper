@@ -9,6 +9,7 @@ defmodule ElixirDB.Observability.CommandSpanTest do
   use ElixirDB.Observability.OtelCase, async: false
 
   alias ElixirDB.Documents
+  alias ElixirDB.Eventual
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Database
   alias ElixirDB.Observability.TestExporter
@@ -34,46 +35,25 @@ defmodule ElixirDB.Observability.CommandSpanTest do
   test "a put emits a command span with command.type: :put", %{uuid: uuid} do
     assert {:ok, _} = Documents.put(uuid, %{id: "doc-1", body: %{"value" => 42}})
 
-    spans = TestExporter.spans_named("elixir_db.database.command")
+    span = command_span(uuid, &(TestExporter.span_attr(&1, :"command.type") == :put))
 
-    span =
-      Enum.find(spans, fn s ->
-        TestExporter.span_attr(s, :"db.uuid") == uuid and
-          TestExporter.span_attr(s, :"command.type") == :put
-      end)
-
-    assert span != nil,
-           "no :put command span for #{uuid}; " <>
-             "got: #{inspect(Enum.map(spans, &{TestExporter.span_attr(&1, :"db.uuid"), TestExporter.span_attr(&1, :"command.type")}))}"
+    assert TestExporter.span_attr(span, :"command.type") == :put
   end
 
   test "a get emits a command span with command.type: :get", %{uuid: uuid} do
     assert {:error, %ElixirDB.Error{code: :document_not_found}} =
              Documents.get(uuid, %{id: "nope"})
 
-    spans = TestExporter.spans_named("elixir_db.database.command")
+    span = command_span(uuid, &(TestExporter.span_attr(&1, :"command.type") == :get))
 
-    span =
-      Enum.find(spans, fn s ->
-        TestExporter.span_attr(s, :"db.uuid") == uuid and
-          TestExporter.span_attr(s, :"command.type") == :get
-      end)
-
-    assert span != nil, "no :get command span for #{uuid}"
+    assert TestExporter.span_attr(span, :"command.type") == :get
   end
 
   test "command spans from direct (non-HTTP) calls are roots", %{uuid: uuid} do
     assert {:ok, _} = Documents.put(uuid, %{id: "doc-root", body: %{"value" => 1}})
 
-    spans = TestExporter.spans_named("elixir_db.database.command")
+    span = command_span(uuid, &(TestExporter.span_attr(&1, :"command.type") == :put))
 
-    span =
-      Enum.find(spans, fn s ->
-        TestExporter.span_attr(s, :"db.uuid") == uuid and
-          TestExporter.span_attr(s, :"command.type") == :put
-      end)
-
-    assert span != nil
     assert span[:parent_span_id] == :undefined
   end
 
@@ -87,17 +67,11 @@ defmodule ElixirDB.Observability.CommandSpanTest do
     assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
              Documents.put(uuid, %{id: "doc-c", if_revision: rev1, body: %{"v" => 2}})
 
-    spans = TestExporter.spans_named("elixir_db.database.command")
-
     span =
-      Enum.find(spans, fn s ->
-        TestExporter.span_attr(s, :"db.uuid") == uuid and
-          TestExporter.span_attr(s, :"error.code") == :revision_conflict
-      end)
-
-    assert span != nil,
-           "no command span with error.code :revision_conflict; got error codes: " <>
-             "#{inspect(Enum.map(spans, &TestExporter.span_attr(&1, :"error.code")))}"
+      command_span(
+        uuid,
+        &(TestExporter.span_attr(&1, :"error.code") == :revision_conflict)
+      )
 
     # §6.5: expected domain errors keep status UNSET.
     assert TestExporter.status_code(span) == :unset,
@@ -114,19 +88,27 @@ defmodule ElixirDB.Observability.CommandSpanTest do
                fn -> {:error, error} end
              )
 
-    spans = TestExporter.spans_named("elixir_db.database.command")
-
     span =
-      Enum.find(spans, fn s ->
-        TestExporter.span_attr(s, :"db.uuid") == uuid and
-          TestExporter.span_attr(s, :"error.code") == :internal_error
-      end)
-
-    assert span != nil, "no command span with error.code :internal_error"
+      command_span(
+        uuid,
+        &(TestExporter.span_attr(&1, :"error.code") == :internal_error)
+      )
 
     # §6.5: only :internal_error marks the span ERROR.
     assert TestExporter.status_code(span) == :error,
            "internal_error must set status ERROR, got #{inspect(span[:status])}"
+  end
+
+  defp command_span(uuid, predicate) when is_function(predicate, 1) do
+    Eventual.eventually(
+      fn ->
+        TestExporter.spans_named("elixir_db.database.command")
+        |> Enum.find(fn span ->
+          TestExporter.span_attr(span, :"db.uuid") == uuid and predicate.(span)
+        end)
+      end,
+      message: "command span was not exported for #{uuid}"
+    )
   end
 
   # Puts a document revision and returns its revision string.

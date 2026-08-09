@@ -191,10 +191,19 @@ defmodule ElixirDB.Replication.Worker do
     # Transfer owns a linked private supervisor. Ask it to perform its normal
     # bounded cleanup first, then stop the phase task so worker shutdown cannot
     # strand children. Committing phases intentionally remain cooperative.
-    _ = TransferPipeline.cancel(phase_pid)
     ref = Process.monitor(phase_pid)
-    _ = Process.exit(phase_pid, :shutdown)
-    await_phase_down(ref)
+
+    _ = TransferPipeline.cancel(phase_pid)
+
+    case await_phase_down(ref) do
+      :down ->
+        :ok
+
+      :timeout ->
+        _ = Process.exit(phase_pid, :shutdown)
+        _ = await_phase_down(ref)
+        :ok
+    end
 
     :ok
   end
@@ -203,9 +212,9 @@ defmodule ElixirDB.Replication.Worker do
 
   defp await_phase_down(ref) do
     receive do
-      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+      {:DOWN, ^ref, :process, _pid, _reason} -> :down
     after
-      5_000 -> Process.demonitor(ref, [:flush])
+      5_000 -> :timeout
     end
   end
 

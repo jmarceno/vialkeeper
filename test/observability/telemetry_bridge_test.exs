@@ -10,6 +10,7 @@ defmodule ElixirDB.Observability.TelemetryBridgeTest do
 
   require OpenTelemetry.Tracer
 
+  alias ElixirDB.Eventual
   alias ElixirDB.Observability.TestExporter
   alias ElixirDB.TestServer
 
@@ -20,14 +21,17 @@ defmodule ElixirDB.Observability.TelemetryBridgeTest do
       assert {:ok, %{status: 200}} = Req.get(server.base_url <> "/v1/databases")
     end
 
-    parents = TestExporter.spans_named("bridge-parent")
-    assert [_] = parents
-    parent = hd(parents)
-
-    finch_spans = TestExporter.spans_named("finch.request")
-
-    assert finch_spans != [],
-           "no finch.request span recorded; got: #{inspect(Enum.map(TestExporter.spans(), & &1[:name]))}"
+    {parent, finch_spans} =
+      Eventual.eventually(
+        fn ->
+          case {TestExporter.spans_named("bridge-parent"),
+                TestExporter.spans_named("finch.request")} do
+            {[parent], [_ | _] = finch_spans} -> {:ok, {parent, finch_spans}}
+            _ -> false
+          end
+        end,
+        message: "bridge parent and child spans were not exported"
+      )
 
     for span <- finch_spans do
       assert span[:trace_id] == parent[:trace_id],
@@ -53,6 +57,9 @@ defmodule ElixirDB.Observability.TelemetryBridgeTest do
     :telemetry.execute([:finch, :request, :exception], %{}, %{})
 
     # The one well-formed start/stop pair above still produced a span.
-    assert TestExporter.spans_named("finch.request") != []
+    Eventual.eventually(
+      fn -> TestExporter.spans_named("finch.request") != [] end,
+      message: "well-formed finch span was not exported"
+    )
   end
 end
