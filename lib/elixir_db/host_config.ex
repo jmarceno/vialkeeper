@@ -34,7 +34,7 @@ defmodule ElixirDB.HostConfig do
     "max_replication_workers" => 32,
     "admission_limit" => 128,
     "max_json_nesting_depth" => 100,
-    "max_attachment_bytes" => 1_099_511_627_776,
+    "max_attachment_bytes" => 4_294_967_296,
     "max_concurrent_attachment_reads" => 1024,
     "max_concurrent_attachment_writes" => 256
   }

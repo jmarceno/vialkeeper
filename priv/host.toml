@@ -33,7 +33,7 @@ max_open_databases            = 64
 max_replication_workers       = 32
 admission_limit               = 128
 max_json_nesting_depth        = 100
-max_attachment_bytes          = 1099511627776
+max_attachment_bytes          = 4294967296
 max_concurrent_attachment_reads = 1024
 max_concurrent_attachment_writes = 256
 

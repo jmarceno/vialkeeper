@@ -29,7 +29,7 @@ defmodule ElixirDB.Config do
       "schedule" => "disabled"
     },
     "attachments" => %{
-      "max_attachment_bytes" => 68_719_476_736,
+      "max_attachment_bytes" => 1_073_741_824,
       "max_concurrent_attachment_reads" => 16,
       "max_concurrent_attachment_writes" => 4
     }
