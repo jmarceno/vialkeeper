@@ -111,6 +111,90 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
+  @doc """
+  Executes a bounded subscription snapshot query against an open adapter.
+  """
+  @spec subscription_snapshot(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def subscription_snapshot(adapter, request), do: subscription_snapshot(adapter, request, nil)
+
+  @spec subscription_snapshot(map(), map(), map() | nil) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def subscription_snapshot(adapter, request, supplied_identity) do
+    started_native = System.monotonic_time()
+
+    identity =
+      supplied_identity ||
+        SQLite.trace_sqlite_phase(:query_identity, fn -> adapter_identity(adapter) end)
+
+    deadline = query_deadline(identity, started_native)
+
+    max_members =
+      MapAccess.get(request, :max_members) ||
+        get_in(identity, [:config, "subscriptions", "max_members"]) ||
+        500
+
+    with {:ok, indexes} <-
+           SQLite.trace_sqlite_phase(:query_index_catalog, fn ->
+             IndexCatalog.list(adapter.conn)
+           end),
+         :ok <- check_deadline(deadline),
+         {:ok, plan} <-
+           SQLite.trace_sqlite_phase(:query_plan, fn ->
+             plan_request(adapter.conn, indexes, request)
+           end),
+         :ok <- check_deadline(deadline),
+         candidate_limit <-
+           if(no_post_filter?(plan, request), do: max_members + 1, else: nil),
+         {:ok, documents, examined} <-
+           SQLite.trace_sqlite_phase(
+             :query_candidates,
+             [
+               plan_kind: plan.kind,
+               selected_index_count: length(Plan.index_bindings(plan))
+             ],
+             fn ->
+               candidate_documents(adapter, plan, indexes, request, deadline, candidate_limit)
+             end
+           ),
+         {:ok, matched} <-
+           SQLite.trace_sqlite_phase(:query_filter, [entries: length(documents)], fn ->
+             filter_query(documents, request, plan, deadline)
+           end),
+         :ok <- check_deadline(deadline),
+         :ok <- enforce_scan_limit(plan, examined, identity),
+         {:ok, ordered} <-
+           SQLite.trace_sqlite_phase(:query_sort, [entries: length(matched)], fn ->
+             sort_documents(matched, request, plan, deadline)
+           end),
+         :ok <- enforce_subscription_membership_bound(ordered, max_members),
+         :ok <- check_deadline(deadline),
+         {:ok, projected} <-
+           SQLite.trace_sqlite_phase(:query_project, [entries: length(ordered)], fn ->
+             project_documents(ordered, request, deadline)
+           end) do
+      {:ok,
+       %{
+         documents: projected,
+         member_ids: Enum.map(projected, & &1.id),
+         sequence: identity.current_sequence
+       }}
+    else
+      {:error, %ElixirDB.Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  defp enforce_subscription_membership_bound(ordered, max_members) do
+    if length(ordered) > max_members do
+      {:error,
+       ElixirDB.Error.resource_limit("subscription membership exceeds max_members", %{
+         maximum: max_members
+       })}
+    else
+      :ok
+    end
+  end
+
   defp plan_request(conn, indexes, request) do
     cache = Process.get({@plan_cache_key, conn}, [])
 

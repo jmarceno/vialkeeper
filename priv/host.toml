@@ -39,6 +39,10 @@ max_json_nesting_depth        = 100
 max_attachment_bytes          = 4294967296
 max_concurrent_attachment_reads = 1024
 max_concurrent_attachment_writes = 256
+max_query_subscriptions = 4096
+max_query_subscription_members = 10000
+max_query_subscription_buffered_events = 4096
+max_query_subscription_heartbeat_ms = 300000
 
 # Bearer-token authentication (AUTH-001). When enabled, every request must
 # present `Authorization: Bearer <token>`. Tokens are stored as SHA-256 hex

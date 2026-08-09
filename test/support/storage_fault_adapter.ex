@@ -173,6 +173,14 @@ defmodule ElixirDB.Storage.FaultAdapter do
     do: inner_module(inner).execute_query(inner, request)
 
   @impl true
+  def execute_subscription_snapshot(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).execute_subscription_snapshot(inner, request)
+
+  @impl true
+  def get_revisions_batch(%__MODULE__{inner: inner}, requests),
+    do: inner_module(inner).get_revisions_batch(inner, requests)
+
+  @impl true
   def explain_query(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).explain_query(inner, request)
 

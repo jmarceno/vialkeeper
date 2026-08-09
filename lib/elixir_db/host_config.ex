@@ -39,7 +39,11 @@ defmodule ElixirDB.HostConfig do
     "max_json_nesting_depth" => 100,
     "max_attachment_bytes" => 4_294_967_296,
     "max_concurrent_attachment_reads" => 1024,
-    "max_concurrent_attachment_writes" => 256
+    "max_concurrent_attachment_writes" => 256,
+    "max_query_subscriptions" => 4_096,
+    "max_query_subscription_members" => 10_000,
+    "max_query_subscription_buffered_events" => 4_096,
+    "max_query_subscription_heartbeat_ms" => 300_000
   }
 
   @limit_key_atoms %{
@@ -65,7 +69,11 @@ defmodule ElixirDB.HostConfig do
     "max_json_nesting_depth" => :max_json_nesting_depth,
     "max_attachment_bytes" => :max_attachment_bytes,
     "max_concurrent_attachment_reads" => :max_concurrent_attachment_reads,
-    "max_concurrent_attachment_writes" => :max_concurrent_attachment_writes
+    "max_concurrent_attachment_writes" => :max_concurrent_attachment_writes,
+    "max_query_subscriptions" => :max_query_subscriptions,
+    "max_query_subscription_members" => :max_query_subscription_members,
+    "max_query_subscription_buffered_events" => :max_query_subscription_buffered_events,
+    "max_query_subscription_heartbeat_ms" => :max_query_subscription_heartbeat_ms
   }
 
   @default_auth %{"enabled" => false, "tokens" => []}

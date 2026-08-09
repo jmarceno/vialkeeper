@@ -149,6 +149,11 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
   defp command_type_for_struct(%Commands.DeleteIndex{}), do: :delete_index
   defp command_type_for_struct(%Commands.RebuildIndex{}), do: :rebuild_index
   defp command_type_for_struct(%Commands.ExecuteQuery{}), do: :query
+
+  defp command_type_for_struct(%Commands.ExecuteSubscriptionSnapshot{}),
+    do: :execute_subscription_snapshot
+
+  defp command_type_for_struct(%Commands.GetRevisionsBatch{}), do: :get_revisions_batch
   defp command_type_for_struct(%Commands.ExplainQuery{}), do: :explain_query
   defp command_type_for_struct(%Commands.ListJobs{}), do: :list_jobs
   defp command_type_for_struct(%Commands.PutJob{}), do: :put_job

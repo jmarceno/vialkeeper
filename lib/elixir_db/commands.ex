@@ -141,6 +141,18 @@ defmodule ElixirDB.Commands do
     defstruct [:request]
   end
 
+  defmodule ExecuteSubscriptionSnapshot do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule GetRevisionsBatch do
+    @moduledoc false
+    @enforce_keys [:requests]
+    defstruct [:requests]
+  end
+
   defmodule ExplainQuery do
     @moduledoc false
     @enforce_keys [:request]
@@ -288,6 +300,16 @@ defmodule ElixirDB.Commands do
   def normalize({:command, :delete_index, index_id}), do: %DeleteIndex{index_id: index_id}
   def normalize({:command, :rebuild_index, index_id}), do: %RebuildIndex{index_id: index_id}
   def normalize({:command, :query, request}), do: %ExecuteQuery{request: request}
+
+  def normalize({:command, :execute_subscription_snapshot, request}),
+    do: %ExecuteSubscriptionSnapshot{request: request}
+
+  def normalize({:command, :get_revisions_batch, %{requests: requests}}),
+    do: %GetRevisionsBatch{requests: requests}
+
+  def normalize({:command, :get_revisions_batch, %{"requests" => requests}}),
+    do: %GetRevisionsBatch{requests: requests}
+
   def normalize({:command, :explain_query, request}), do: %ExplainQuery{request: request}
   def normalize({:command, :list_jobs, request}), do: %ListJobs{request: request || %{}}
   def normalize({:command, :put_job, request}), do: %PutJob{request: request}

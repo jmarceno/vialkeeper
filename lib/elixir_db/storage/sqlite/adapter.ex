@@ -13,7 +13,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   alias ElixirDB.JSON.{Canonical, StrictCache, StrictDecoder}
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.{Query, SQLite}
-  alias ElixirDB.Query.{Normalizer, Prepared}
+  alias ElixirDB.Query.{Normalizer, Prepared, SubscriptionRequest}
 
   alias ElixirDB.Storage.SQLite.{
     Attachments,
@@ -482,6 +482,117 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: {:error, ElixirDB.Error.invalid_request("query must be an object")}
 
   @impl true
+  def execute_subscription_snapshot(%__MODULE__{} = adapter, request) when is_map(request) do
+    started_native = System.monotonic_time()
+    started_ms = System.monotonic_time(:millisecond)
+
+    identity =
+      SQLite.trace_sqlite_phase(:query_identity, fn -> adapter_identity(adapter) end)
+
+    uuid = Map.get(identity, :database_uuid)
+    maximum = get_in(identity, [:config, "queries", "max_execution_ms"]) || 5_000
+
+    prepared_request =
+      SQLite.trace_sqlite_phase(:query_prepare_request, fn ->
+        prepare_subscription_snapshot_request(adapter, request)
+      end)
+
+    result =
+      Query.execute(uuid, 0, started_native, fn ->
+        res =
+          case prepared_request do
+            {:ok, normalized} ->
+              QueryRunner.subscription_snapshot(adapter, normalized, identity)
+
+            {:error, _} = error ->
+              error
+          end
+
+        {res, examined_count(res)}
+      end)
+
+    elapsed = System.monotonic_time(:millisecond) - started_ms
+
+    if elapsed <= maximum,
+      do: result,
+      else:
+        {:error,
+         ElixirDB.Error.resource_limit("query execution exceeded the configured limit", %{
+           elapsed_ms: elapsed,
+           maximum_ms: maximum
+         })}
+  end
+
+  def execute_subscription_snapshot(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("subscription snapshot request must be an object")}
+
+  @impl true
+  def get_revisions_batch(%__MODULE__{} = adapter, requests) when is_list(requests) do
+    with {:ok, identity} <- identity(adapter),
+         :ok <-
+           SubscriptionRequest.validate_revisions_batch(requests, Map.get(identity, :config, %{})) do
+      fetch_revision_batch(adapter, requests)
+    end
+  end
+
+  def get_revisions_batch(_adapter, _requests),
+    do: {:error, ElixirDB.Error.invalid_request("revision batch requests must be a list")}
+
+  defp fetch_revision_batch(adapter, requests) do
+    Enum.reduce_while(requests, {:ok, []}, fn request, {:ok, acc} ->
+      case fetch_revision_batch_item(adapter, request) do
+        {:ok, envelope} -> {:cont, {:ok, [envelope | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, results} -> {:ok, Enum.reverse(results)}
+      error -> error
+    end
+  end
+
+  defp fetch_revision_batch_item(adapter, request) do
+    document_id = MapAccess.get(request, :document_id)
+    revision_id = MapAccess.get(request, :revision_id)
+
+    with {:ok, doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, revision} <- fetch_batch_revision(adapter, doc, revision_id) do
+      envelope = Documents.to_result(doc, revision, [])
+
+      {:ok,
+       %{
+         id: envelope.id,
+         revision: envelope.revision,
+         deleted: envelope.deleted,
+         body: envelope.body
+       }}
+    else
+      {:error, %ElixirDB.Error{code: :revision_not_found}} ->
+        {:error,
+         ElixirDB.Error.integrity_violation("changes entry references a missing revision", %{
+           document_id: document_id,
+           revision_id: revision_id
+         })}
+
+      {:error, %ElixirDB.Error{code: :document_not_found}} ->
+        {:error,
+         ElixirDB.Error.integrity_violation("changes entry references a missing document", %{
+           document_id: document_id,
+           revision_id: revision_id
+         })}
+
+      {:error, %ElixirDB.Error{} = error} ->
+        {:error, error}
+    end
+  end
+
+  defp fetch_batch_revision(_adapter, nil, _revision_id),
+    do: {:error, ElixirDB.Error.document_not_found("document not found")}
+
+  defp fetch_batch_revision(adapter, doc, revision_id),
+    do: Revisions.find(adapter.conn, doc.doc_key, revision_id)
+
+  @impl true
   def explain_query(%__MODULE__{} = adapter, request) when is_map(request) do
     case prepare_query_request(request) do
       {:ok, normalized} -> QueryRunner.explain(adapter, normalized)
@@ -500,6 +611,12 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     # Plain maps are always treated as untrusted public input. A client-supplied
     # `:normalized` marker or `:predicate` must never bypass Normalizer.
     normalize_public_query(request)
+  end
+
+  defp prepare_subscription_snapshot_request(adapter, request) when is_map(request) do
+    with {:ok, identity} <- identity(adapter) do
+      SubscriptionRequest.prepare_snapshot(request, Map.get(identity, :config, %{}))
+    end
   end
 
   defp normalize_public_query(request) do

@@ -11,6 +11,34 @@ defmodule ElixirDB.ConfigTest do
     assert replication["max_transfer_bytes_in_flight"] == 1_073_741_824
   end
 
+  test "subscription defaults are present" do
+    subscriptions = Config.defaults()["subscriptions"]
+
+    assert subscriptions["max_active"] == 128
+    assert subscriptions["max_members"] == 500
+    assert subscriptions["max_buffered_events"] == 256
+    assert subscriptions["default_heartbeat_ms"] == 15_000
+    assert subscriptions["max_heartbeat_ms"] == 60_000
+  end
+
+  test "subscription max_active cannot exceed the host ceiling" do
+    assert_resource_limit(%{"subscriptions" => %{"max_active" => 5_000}})
+  end
+
+  test "subscription max_members cannot exceed the host ceiling" do
+    assert_resource_limit(%{"subscriptions" => %{"max_members" => 20_000}})
+  end
+
+  test "subscription heartbeat order is validated" do
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             Config.merge_and_bound(%{
+               "subscriptions" => %{
+                 "default_heartbeat_ms" => 90_000,
+                 "max_heartbeat_ms" => 60_000
+               }
+             })
+  end
+
   test "database chain fetch concurrency cannot exceed the host ceiling" do
     assert_resource_limit(%{
       "replication" => %{"max_concurrent_chain_fetches" => 33}

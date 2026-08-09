@@ -145,6 +145,12 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp handle_command(%Commands.ExecuteQuery{request: request}, _from, state),
     do: reply(Adapter.execute_query(state.adapter, request), state)
 
+  defp handle_command(%Commands.ExecuteSubscriptionSnapshot{request: request}, _from, state),
+    do: reply(Adapter.execute_subscription_snapshot(state.adapter, request), state)
+
+  defp handle_command(%Commands.GetRevisionsBatch{requests: requests}, _from, state),
+    do: reply(Adapter.get_revisions_batch(state.adapter, requests), state)
+
   defp handle_command(%Commands.ExplainQuery{request: request}, _from, state),
     do: reply(Adapter.explain_query(state.adapter, request), state)
 

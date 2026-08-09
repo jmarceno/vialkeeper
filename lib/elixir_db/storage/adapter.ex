@@ -40,6 +40,10 @@ defmodule ElixirDB.Storage.Adapter do
   @callback rebuild_index(term(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback list_indexes(term()) :: {:ok, list()} | {:error, ElixirDB.Error.t()}
   @callback execute_query(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback execute_subscription_snapshot(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback get_revisions_batch(term(), [map()]) ::
+              {:ok, [map()]} | {:error, ElixirDB.Error.t()}
   @callback explain_query(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback resolve_attachment_ticket(term(), map()) ::
               {:ok, map()} | {:error, ElixirDB.Error.t()}

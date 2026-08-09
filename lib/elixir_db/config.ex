@@ -35,6 +35,13 @@ defmodule ElixirDB.Config do
       "max_attachment_bytes" => 1_073_741_824,
       "max_concurrent_attachment_reads" => 16,
       "max_concurrent_attachment_writes" => 4
+    },
+    "subscriptions" => %{
+      "max_active" => 128,
+      "max_members" => 500,
+      "max_buffered_events" => 256,
+      "default_heartbeat_ms" => 15_000,
+      "max_heartbeat_ms" => 60_000
     }
   }
 
@@ -169,9 +176,47 @@ defmodule ElixirDB.Config do
              merged,
              ["attachments", "max_concurrent_attachment_writes"],
              limits[:max_concurrent_attachment_writes]
-           ) do
+           ),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["subscriptions", "max_active"],
+             limits[:max_query_subscriptions]
+           ),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["subscriptions", "max_members"],
+             limits[:max_query_subscription_members]
+           ),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["subscriptions", "max_buffered_events"],
+             limits[:max_query_subscription_buffered_events]
+           ),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["subscriptions", "max_heartbeat_ms"],
+             limits[:max_query_subscription_heartbeat_ms]
+           ),
+         :ok <- validate_subscription_heartbeat_order(merged) do
       {:ok, merged}
     end
+  end
+
+  defp validate_subscription_heartbeat_order(config) do
+    default = get_in(config, ["subscriptions", "default_heartbeat_ms"])
+    maximum = get_in(config, ["subscriptions", "max_heartbeat_ms"])
+
+    if maximum >= default,
+      do: :ok,
+      else:
+        {:error,
+         ElixirDB.Error.invalid_request(
+           "subscriptions default_heartbeat_ms must be at most max_heartbeat_ms"
+         )}
   end
 
   defp validate_retry_order(config) do
@@ -201,7 +246,8 @@ defmodule ElixirDB.Config do
       "changes",
       "replication",
       "retention",
-      "attachments"
+      "attachments",
+      "subscriptions"
     ]
 
     if Enum.all?(Map.keys(config), &(&1 in known)) do
@@ -229,6 +275,13 @@ defmodule ElixirDB.Config do
         "max_attachment_bytes",
         "max_concurrent_attachment_reads",
         "max_concurrent_attachment_writes"
+      ],
+      "subscriptions" => [
+        "max_active",
+        "max_members",
+        "max_buffered_events",
+        "default_heartbeat_ms",
+        "max_heartbeat_ms"
       ],
       "retry" => ["max_attempts", "base_delay_ms", "max_delay_ms", "jitter_ms"]
     }
@@ -293,7 +346,12 @@ defmodule ElixirDB.Config do
       ["replication", "retry", "jitter_ms"],
       ["attachments", "max_attachment_bytes"],
       ["attachments", "max_concurrent_attachment_reads"],
-      ["attachments", "max_concurrent_attachment_writes"]
+      ["attachments", "max_concurrent_attachment_writes"],
+      ["subscriptions", "max_active"],
+      ["subscriptions", "max_members"],
+      ["subscriptions", "max_buffered_events"],
+      ["subscriptions", "default_heartbeat_ms"],
+      ["subscriptions", "max_heartbeat_ms"]
     ]
 
     Enum.reduce_while(values, :ok, fn path, :ok ->

@@ -44,6 +44,7 @@ defmodule ElixirDB.Error do
     attachment_blob_not_found: {404, false},
     attachment_not_found: {404, false},
     attachment_overloaded: {429, true},
+    subscription_overloaded: {429, true},
     resource_limit: {422, false},
     database_overloaded: {429, true},
     database_closed: {503, true},
