@@ -123,12 +123,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   def insert(conn, doc_key, %Revision{} = revision) do
     body = if revision.deleted, do: nil, else: Canonical.encode!(revision.body)
 
-    with :ok <-
-           Connection.execute(
-             conn,
-             "UPDATE revisions SET is_leaf = 0 WHERE doc_key = ? AND revision_id = ?",
-             [doc_key, revision.parent_revision]
-           ),
+    with :ok <- clear_parent_leaf(conn, doc_key, revision.parent_revision),
          :ok <-
            Connection.execute(
              conn,
@@ -155,6 +150,16 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
     else
       {:error, reason} -> {:error, normalize_error(reason)}
     end
+  end
+
+  defp clear_parent_leaf(_conn, _doc_key, nil), do: :ok
+
+  defp clear_parent_leaf(conn, doc_key, parent_revision) do
+    Connection.execute(
+      conn,
+      "UPDATE revisions SET is_leaf = 0 WHERE doc_key = ? AND revision_id = ?",
+      [doc_key, parent_revision]
+    )
   end
 
   @doc """

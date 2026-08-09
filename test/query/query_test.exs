@@ -172,6 +172,30 @@ defmodule ElixirDB.Query.QueryTest do
     assert examined == 3
   end
 
+  test "indexed pagination preserves the next-page signal", %{adapter: adapter} do
+    for document_id <- ["a", "b", "c", "d"] do
+      assert {:ok, _} =
+               Adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: document_id,
+                 body: %{"status" => "open"}
+               })
+    end
+
+    assert {:ok, _} =
+             Adapter.create_index(adapter, %{
+               "name" => "by-status",
+               "type" => "structured",
+               "fields" => [%{"path" => "/status", "type" => "string", "direction" => "asc"}]
+             })
+
+    assert {:ok, %{plan_kind: :single, results: [%{id: "a"}], has_more: true, examined: 4}} =
+             Adapter.execute_query(adapter, %{
+               selector: %{"/status" => "open"},
+               limit: 1
+             })
+  end
+
   property "generated indexed candidates are supersets of authoritative matches", %{
     adapter: adapter
   } do

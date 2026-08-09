@@ -64,14 +64,18 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   """
   @spec bulk_tx(map(), [map()]) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
   def bulk_tx(adapter, operations) when is_list(operations) do
-    with {:ok, effects, affected} <-
+    materialize_pending? = not independent_bulk_operations?(operations)
+
+    with {:ok, ready_indexes} <- IndexCatalog.ready_definitions(adapter.conn),
+         {:ok, effects, affected} <-
            SQLite.trace_sqlite_phase(:bulk_prepare, [entries: length(operations)], fn ->
-             prepare_bulk_operations(adapter, operations)
+             prepare_bulk_operations(adapter, operations, ready_indexes, materialize_pending?)
            end),
          {:ok, finalized} <-
            SQLite.trace_sqlite_phase(:bulk_finalize, [entries: map_size(affected)], fn ->
-             finalize_bulk_documents(adapter, affected)
-           end) do
+             finalize_bulk_documents(adapter, affected, ready_indexes)
+           end),
+         :ok <- mark_bulk_pending(adapter, affected) do
       {:ok,
        Enum.map(effects, fn effect ->
          result = Map.get(finalized, effect.doc_key, effect.result)
@@ -79,6 +83,16 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
        end)}
     end
   end
+
+  defp independent_bulk_operations?(operations) do
+    document_ids = Enum.map(operations, &MapAccess.get(&1, :document_id))
+    length(document_ids) == length(Enum.uniq(document_ids))
+  end
+
+  defp mark_bulk_pending(_adapter, affected) when map_size(affected) == 0, do: :ok
+
+  defp mark_bulk_pending(adapter, _affected),
+    do: RetentionRecords.mark_pending_local_causal(adapter.conn)
 
   @doc """
   Resolves a document conflict inside an open transaction.
@@ -162,11 +176,9 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     do: {:error, ElixirDB.Error.invalid_request("bulk operations must be an array")}
 
   defp validate_document_input(adapter, document_id, deleted, body) do
-    max_id =
-      get_in(adapter_identity(adapter), [:config, "documents", "max_document_id_bytes"]) || 512
-
-    max_body =
-      get_in(adapter_identity(adapter), [:config, "documents", "max_document_bytes"]) || 1_048_576
+    config = Map.get(adapter_identity(adapter), :config, ElixirDB.Config.defaults())
+    max_id = get_in(config, ["documents", "max_document_id_bytes"]) || 512
+    max_body = get_in(config, ["documents", "max_document_bytes"]) || 1_048_576
 
     validators = [
       fn -> validate_document_id(document_id) end,
@@ -377,16 +389,28 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
        })}
 
   defp finalize_document(adapter, doc_key, document_id, _candidate) do
+    finalize_document(adapter, doc_key, document_id, nil, :load, nil, true)
+  end
+
+  defp finalize_document(
+         adapter,
+         doc_key,
+         document_id,
+         _candidate,
+         ready_indexes,
+         allocated_sequence,
+         mark_pending?
+       ) do
     with {:ok, all_leaves} <- Revisions.load_leaves(adapter.conn, doc_key),
          {:ok, winner} <- Winner.select(all_leaves),
          {:ok, leaf_json} <- Revisions.encode_leaf_set(all_leaves),
          :ok <- Documents.update(adapter.conn, doc_key, winner, 0),
-         :ok <- IndexCatalog.refresh_ready(adapter.conn, doc_key, winner),
-         {:ok, sequence} <- Changes.allocate_sequence(adapter.conn),
+         :ok <- refresh_ready_indexes(adapter, doc_key, winner, ready_indexes),
+         {:ok, sequence} <- allocated_or_new_sequence(adapter, allocated_sequence),
          :ok <- Documents.update(adapter.conn, doc_key, winner, sequence),
          :ok <-
            Changes.insert(adapter.conn, sequence, doc_key, document_id, winner, leaf_json, "local"),
-         :ok <- RetentionRecords.mark_pending_local_causal(adapter.conn) do
+         :ok <- mark_pending_if_needed(adapter, mark_pending?) do
       publishless = %{
         revision: winner.revision_id,
         sequence: sequence,
@@ -399,9 +423,33 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
-  defp prepare_bulk_operations(adapter, operations) do
+  defp refresh_ready_indexes(adapter, doc_key, winner, :load),
+    do: IndexCatalog.refresh_ready(adapter.conn, doc_key, winner)
+
+  defp refresh_ready_indexes(adapter, doc_key, winner, ready_indexes),
+    do: IndexCatalog.refresh_ready(adapter.conn, doc_key, winner, ready_indexes)
+
+  defp allocated_or_new_sequence(_adapter, sequence) when is_integer(sequence),
+    do: {:ok, sequence}
+
+  defp allocated_or_new_sequence(adapter, nil),
+    do: Changes.allocate_sequence(adapter.conn)
+
+  defp mark_pending_if_needed(_adapter, false), do: :ok
+
+  defp mark_pending_if_needed(adapter, true),
+    do: RetentionRecords.mark_pending_local_causal(adapter.conn)
+
+  defp prepare_bulk_operations(adapter, operations, ready_indexes, materialize_pending?) do
     Enum.reduce_while(operations, {:ok, [], %{}}, fn operation, {:ok, effects, affected} ->
-      prepare_bulk_effect(adapter, operation, effects, affected)
+      prepare_bulk_effect(
+        adapter,
+        operation,
+        effects,
+        affected,
+        ready_indexes,
+        materialize_pending?
+      )
     end)
     |> case do
       {:ok, effects, affected} -> {:ok, Enum.reverse(effects), affected}
@@ -409,8 +457,15 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
-  defp prepare_bulk_effect(adapter, operation, effects, affected) do
-    case prepare_bulk_operation(adapter, operation) do
+  defp prepare_bulk_effect(
+         adapter,
+         operation,
+         effects,
+         affected,
+         ready_indexes,
+         materialize_pending?
+       ) do
+    case prepare_bulk_operation(adapter, operation, ready_indexes, materialize_pending?) do
       {:ok, effect} ->
         {:cont, {:ok, [effect | effects], update_affected(affected, effect)}}
 
@@ -424,22 +479,22 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
 
   defp update_affected(affected, _effect), do: affected
 
-  defp prepare_bulk_operation(adapter, request) do
+  defp prepare_bulk_operation(adapter, request, ready_indexes, materialize_pending?) do
     operation = MapAccess.get(request, :operation, :put)
 
     case operation do
       operation when operation in [:resolve, "resolve"] ->
-        prepare_bulk_resolution_operation(adapter, request)
+        prepare_bulk_resolution_operation(adapter, request, ready_indexes, materialize_pending?)
 
       operation when operation in [:put, "put", :delete, "delete"] ->
-        prepare_bulk_mutation_operation(adapter, request)
+        prepare_bulk_mutation_operation(adapter, request, ready_indexes, materialize_pending?)
 
       _ ->
         {:error, ElixirDB.Error.invalid_request("bulk operation type is invalid")}
     end
   end
 
-  defp prepare_bulk_mutation_operation(adapter, request) do
+  defp prepare_bulk_mutation_operation(adapter, request, ready_indexes, materialize_pending?) do
     operation = MapAccess.get(request, :operation, :put)
     document_id = MapAccess.get(request, :document_id)
     if_revision = MapAccess.get(request, :if_revision)
@@ -461,15 +516,36 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
              history_id: history_id,
              request: request
            }) do
-      prepare_bulk_document(adapter, doc, candidate_state, document_id)
+      prepare_bulk_document(
+        adapter,
+        doc,
+        candidate_state,
+        document_id,
+        ready_indexes,
+        materialize_pending?
+      )
     end
   end
 
-  defp prepare_bulk_document(adapter, nil, candidate, document_id) do
+  defp prepare_bulk_document(
+         adapter,
+         nil,
+         candidate,
+         document_id,
+         ready_indexes,
+         materialize_pending?
+       ) do
     with {:ok, doc_key} <- Documents.insert(adapter.conn, document_id),
          :ok <- Revisions.insert(adapter.conn, doc_key, candidate),
          :ok <- Attachments.remove_pending_for_manifest(adapter.conn, candidate.attachments),
-         :ok <- update_pending_document(adapter, doc_key, candidate) do
+         :ok <-
+           maybe_update_pending_document(
+             adapter,
+             doc_key,
+             candidate,
+             ready_indexes,
+             materialize_pending?
+           ) do
       {:ok,
        bulk_effect(doc_key, document_id, true, false, %{
          revision: candidate.revision_id,
@@ -478,7 +554,14 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
-  defp prepare_bulk_document(adapter, doc, candidate, document_id) do
+  defp prepare_bulk_document(
+         adapter,
+         doc,
+         candidate,
+         document_id,
+         ready_indexes,
+         materialize_pending?
+       ) do
     case Revisions.find(adapter.conn, doc.doc_key, candidate.revision_id) do
       {:ok, existing} ->
         existing_bulk_revision(existing, doc, candidate, document_id)
@@ -487,7 +570,14 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
         with :ok <- Revisions.ensure_parent(adapter.conn, doc.doc_key, candidate.parent_revision),
              :ok <- Revisions.insert(adapter.conn, doc.doc_key, candidate),
              :ok <- Attachments.remove_pending_for_manifest(adapter.conn, candidate.attachments),
-             :ok <- update_pending_document(adapter, doc.doc_key, candidate) do
+             :ok <-
+               maybe_update_pending_document(
+                 adapter,
+                 doc.doc_key,
+                 candidate,
+                 ready_indexes,
+                 materialize_pending?
+               ) do
           {:ok,
            bulk_effect(
              doc.doc_key,
@@ -529,7 +619,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          revision: candidate.revision_id
        })}
 
-  defp prepare_bulk_resolution_operation(adapter, request) do
+  defp prepare_bulk_resolution_operation(adapter, request, ready_indexes, materialize_pending?) do
     document_id = MapAccess.get(request, :document_id)
     expected = MapAccess.get(request, :expected_live_revisions, [])
     body = MapAccess.get(request, :body)
@@ -550,7 +640,15 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          {:ok, revisions} <-
            build_resolution_revisions(adapter, document_id, leaves, request, body, delete_all),
          {:ok, status} <- resolution_status(adapter, doc.doc_key, revisions) do
-      prepare_resolution_status(adapter, doc, document_id, revisions, status)
+      prepare_resolution_status(
+        adapter,
+        doc,
+        document_id,
+        revisions,
+        status,
+        ready_indexes,
+        materialize_pending?
+      )
     else
       {:ok, nil} ->
         {:error, ElixirDB.Error.document_not_found("document does not exist")}
@@ -564,7 +662,15 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
     end
   end
 
-  defp prepare_resolution_status(adapter, doc, document_id, _revisions, :replayed) do
+  defp prepare_resolution_status(
+         adapter,
+         doc,
+         document_id,
+         _revisions,
+         :replayed,
+         _ready_indexes,
+         _materialize_pending?
+       ) do
     {:ok, winner} = current_winner(adapter, doc)
 
     {:ok,
@@ -577,10 +683,25 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
      )}
   end
 
-  defp prepare_resolution_status(adapter, doc, document_id, revisions, :new) do
+  defp prepare_resolution_status(
+         adapter,
+         doc,
+         document_id,
+         revisions,
+         :new,
+         ready_indexes,
+         materialize_pending?
+       ) do
     with :ok <- insert_resolution_revisions(adapter, doc.doc_key, revisions),
          :ok <- remove_pending_for_revisions(adapter, revisions),
-         :ok <- update_pending_document(adapter, doc.doc_key, List.first(revisions)) do
+         :ok <-
+           maybe_update_pending_document(
+             adapter,
+             doc.doc_key,
+             List.first(revisions),
+             ready_indexes,
+             materialize_pending?
+           ) do
       {:ok,
        bulk_effect(
          doc.doc_key,
@@ -601,23 +722,53 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
       result: result
     }
 
-  defp update_pending_document(adapter, doc_key, _candidate) do
+  defp maybe_update_pending_document(
+         _adapter,
+         _doc_key,
+         _candidate,
+         _ready_indexes,
+         false
+       ),
+       do: :ok
+
+  defp maybe_update_pending_document(adapter, doc_key, _candidate, ready_indexes, true),
+    do: update_pending_document(adapter, doc_key, ready_indexes)
+
+  defp update_pending_document(adapter, doc_key, ready_indexes) do
     with {:ok, leaves_now} <- Revisions.load_leaves(adapter.conn, doc_key),
          {:ok, winner} <- Winner.select(leaves_now),
          :ok <- Documents.update(adapter.conn, doc_key, winner, 0) do
-      IndexCatalog.refresh_ready(adapter.conn, doc_key, winner)
+      refresh_ready_indexes(adapter, doc_key, winner, ready_indexes)
     end
   end
 
-  defp finalize_bulk_documents(adapter, affected) do
-    affected
-    |> Enum.sort_by(fn {_doc_key, document_id} -> document_id end)
-    |> Enum.reduce_while({:ok, %{}}, fn {doc_key, document_id}, {:ok, results} ->
-      case finalize_document(adapter, doc_key, document_id, nil) do
-        {:ok, result} -> {:cont, {:ok, Map.put(results, doc_key, result)}}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
+  defp finalize_bulk_documents(adapter, affected, ready_indexes) do
+    entries = Enum.sort_by(affected, fn {_doc_key, document_id} -> document_id end)
+
+    with {:ok, sequences} <- Changes.allocate_sequences(adapter.conn, length(entries)) do
+      Enum.zip(entries, sequences)
+      |> Enum.reduce_while({:ok, %{}}, &finalize_bulk_document(&1, &2, adapter, ready_indexes))
+    end
+  end
+
+  defp finalize_bulk_document(
+         {{doc_key, document_id}, sequence},
+         {:ok, results},
+         adapter,
+         ready_indexes
+       ) do
+    case finalize_document(
+           adapter,
+           doc_key,
+           document_id,
+           nil,
+           ready_indexes,
+           sequence,
+           false
+         ) do
+      {:ok, result} -> {:cont, {:ok, Map.put(results, doc_key, result)}}
+      {:error, error} -> {:halt, {:error, error}}
+    end
   end
 
   defp resolution_status(adapter, doc_key, revisions) do

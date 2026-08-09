@@ -20,9 +20,16 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   Executes a normalized query request against an open adapter.
   """
   @spec execute(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def execute(adapter, request) do
+  def execute(adapter, request), do: execute(adapter, request, nil)
+
+  @spec execute(map(), map(), map() | nil) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def execute(adapter, request, supplied_identity) do
     started_native = System.monotonic_time()
-    identity = SQLite.trace_sqlite_phase(:query_identity, fn -> adapter_identity(adapter) end)
+
+    identity =
+      supplied_identity ||
+        SQLite.trace_sqlite_phase(:query_identity, fn -> adapter_identity(adapter) end)
+
     deadline = query_deadline(identity, started_native)
 
     with {:ok, indexes} <-
@@ -34,6 +41,11 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
            SQLite.trace_sqlite_phase(:query_plan, fn -> plan_request(indexes, request) end),
          :ok <- check_deadline(deadline),
          :ok <- validate_bookmark_plan(request, plan),
+         limit <-
+           value_or_default(
+             MapAccess.get(request, :limit),
+             get_in(identity, [:config, "queries", "default_limit"]) || 50
+           ),
          {:ok, documents, examined} <-
            SQLite.trace_sqlite_phase(
              :query_candidates,
@@ -41,19 +53,14 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
                plan_kind: plan.kind,
                selected_index_count: length(Plan.index_bindings(plan))
              ],
-             fn -> candidate_documents(adapter, plan, indexes, request, deadline) end
+             fn -> candidate_documents(adapter, plan, indexes, request, deadline, limit) end
            ),
          {:ok, matched} <-
            SQLite.trace_sqlite_phase(:query_filter, [entries: length(documents)], fn ->
-             filter_query(documents, request, deadline)
+             filter_query(documents, request, plan, deadline)
            end),
          :ok <- check_deadline(deadline),
          :ok <- enforce_scan_limit(plan, examined, identity),
-         limit <-
-           value_or_default(
-             MapAccess.get(request, :limit),
-             get_in(identity, [:config, "queries", "default_limit"]) || 50
-           ),
          {:ok, ordered} <-
            SQLite.trace_sqlite_phase(:query_sort, [entries: length(matched)], fn ->
              sort_documents(matched, request, deadline)
@@ -199,7 +206,17 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp candidate_documents(adapter, %Plan{kind: :bounded_scan}, _indexes, _request, deadline) do
+  defp candidate_documents(adapter, plan, indexes, request, deadline),
+    do: candidate_documents(adapter, plan, indexes, request, deadline, nil)
+
+  defp candidate_documents(
+         adapter,
+         %Plan{kind: :bounded_scan},
+         _indexes,
+         _request,
+         deadline,
+         _limit
+       ) do
     with {:ok, [[count]]} <-
            Connection.query(
              adapter.conn,
@@ -232,7 +249,14 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp candidate_documents(adapter, %Plan{kind: :full_text} = plan, indexes, request, deadline) do
+  defp candidate_documents(
+         adapter,
+         %Plan{kind: :full_text} = plan,
+         indexes,
+         request,
+         deadline,
+         _limit
+       ) do
     selected = selected_index(indexes, plan)
 
     if selected && MapAccess.get(request, :search) do
@@ -255,18 +279,33 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp candidate_documents(adapter, %Plan{kind: :single} = plan, indexes, _request, deadline) do
+  defp candidate_documents(
+         adapter,
+         %Plan{kind: :single} = plan,
+         indexes,
+         request,
+         deadline,
+         limit
+       ) do
     selected = selected_index(indexes, plan)
     scan = List.first(plan.scans)
 
     with {:ok, rows} <- structured_candidate_rows(adapter, selected, scan),
          :ok <- check_deadline(deadline),
-         {:ok, documents} <- decode_query_documents(rows) do
-      {:ok, documents, length(documents)}
+         {:ok, documents} <-
+           decode_query_documents(candidate_rows_for_decode(rows, plan, request, limit)) do
+      {:ok, documents, length(rows)}
     end
   end
 
-  defp candidate_documents(adapter, %Plan{kind: :union} = plan, indexes, _request, deadline) do
+  defp candidate_documents(
+         adapter,
+         %Plan{kind: :union} = plan,
+         indexes,
+         _request,
+         deadline,
+         _limit
+       ) do
     Enum.reduce_while(plan.scans, {:ok, [], 0}, fn scan, {:ok, candidates, examined} ->
       selected = selected_index(indexes, scan["index_id"])
 
@@ -372,14 +411,39 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp filter_query(documents, request, deadline) do
+  defp candidate_rows_for_decode(rows, %Plan{kind: :single} = plan, request, limit)
+       when is_integer(limit) and limit >= 0 do
+    if fully_pushed_default_order_query?(plan, request),
+      do: Enum.take(rows, limit + 1),
+      else: rows
+  end
+
+  defp candidate_rows_for_decode(rows, _plan, _request, _limit), do: rows
+
+  defp fully_pushed_default_order_query?(plan, request) do
+    is_nil(MapAccess.get(request, :search)) and
+      MapAccess.get(request, :sort, []) == [] and
+      is_nil(MapAccess.get(request, :after_id)) and
+      is_nil(MapAccess.get(request, :after_ordering)) and
+      no_post_filter?(plan, request)
+  end
+
+  defp no_post_filter?(plan, request) do
+    case MapAccess.get(request, :predicate) do
+      nil -> false
+      predicate -> Predicate.post_filter_predicates(predicate, plan_pushdowns(plan)) == []
+    end
+  end
+
+  defp filter_query(documents, request, plan, deadline) do
     predicate = MapAccess.get(request, :predicate)
 
     if is_nil(predicate) do
       {:error, ElixirDB.Error.invalid_request("normalized predicate is required")}
     else
-      with {:ok, filtered} <- filter_documents(documents, predicate, deadline),
-           do: sort_documents(filtered, request, deadline)
+      if no_post_filter?(plan, request),
+        do: {:ok, documents},
+        else: filter_documents(documents, predicate, deadline)
     end
   end
 

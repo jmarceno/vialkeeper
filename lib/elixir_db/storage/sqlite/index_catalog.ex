@@ -121,15 +121,27 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   """
   @spec refresh_ready(Connection.handle(), integer(), map()) :: :ok | {:error, ElixirDB.Error.t()}
   def refresh_ready(conn, doc_key, winner) do
-    with {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT index_id, definition_json, adapter_metadata_json FROM index_definitions WHERE lifecycle_state = 'ready' ORDER BY index_id"
-           ) do
-      Enum.reduce_while(rows, :ok, fn [index_id, definition_json, metadata_json], :ok ->
-        refresh_index_row(conn, doc_key, winner, index_id, definition_json, metadata_json)
-      end)
+    with {:ok, rows} <- ready_definitions(conn) do
+      refresh_ready(conn, doc_key, winner, rows)
     end
+  end
+
+  @doc "Loads ready-index metadata for reuse within one SQLite transaction."
+  @spec ready_definitions(Connection.handle()) :: {:ok, [[term()]]} | {:error, term()}
+  def ready_definitions(conn) do
+    Connection.query(
+      conn,
+      "SELECT index_id, definition_json, adapter_metadata_json FROM index_definitions WHERE lifecycle_state = 'ready' ORDER BY index_id"
+    )
+  end
+
+  @doc false
+  @spec refresh_ready(Connection.handle(), integer(), map(), [[term()]]) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def refresh_ready(conn, doc_key, winner, rows) when is_list(rows) do
+    Enum.reduce_while(rows, :ok, fn [index_id, definition_json, metadata_json], :ok ->
+      refresh_index_row(conn, doc_key, winner, index_id, definition_json, metadata_json)
+    end)
   end
 
   defp refresh_index_row(conn, doc_key, winner, index_id, definition_json, metadata_json) do

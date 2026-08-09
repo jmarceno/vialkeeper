@@ -18,14 +18,27 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   """
   @spec allocate_sequence(Connection.handle()) :: {:ok, integer()} | {:error, ElixirDB.Error.t()}
   def allocate_sequence(conn) do
+    case allocate_sequences(conn, 1) do
+      {:ok, [sequence]} -> {:ok, sequence}
+      {:error, _} = error -> error
+    end
+  end
+
+  @doc "Allocates one contiguous sequence range for a bulk mutation."
+  @spec allocate_sequences(Connection.handle(), non_neg_integer()) ::
+          {:ok, [integer()]} | {:error, ElixirDB.Error.t()}
+  def allocate_sequences(_conn, 0), do: {:ok, []}
+
+  def allocate_sequences(conn, count) when is_integer(count) and count > 0 do
     with :ok <-
            Connection.execute(
              conn,
-             "UPDATE db_meta SET current_sequence = current_sequence + 1 WHERE id = 1"
+             "UPDATE db_meta SET current_sequence = current_sequence + ? WHERE id = 1",
+             [count]
            ),
          {:ok, [[sequence]]} <-
            Connection.query(conn, "SELECT current_sequence FROM db_meta WHERE id = 1") do
-      {:ok, sequence}
+      {:ok, Enum.to_list((sequence - count + 1)..sequence)}
     else
       {:error, reason} -> {:error, normalize_error(reason)}
     end

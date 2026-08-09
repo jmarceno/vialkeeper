@@ -58,6 +58,8 @@ defmodule ElixirDB.StorageAdapter.MutationsTest do
 
     assert {:ok, %{body: %{"value" => 9}}} =
              @adapter.get_document(adapter, %{document_id: "other"})
+
+    assert {:ok, %{current_sequence: 3}} = @adapter.identity(adapter)
   end
 
   test "bulk mutations reject unknown operation types", %{adapter: adapter} do

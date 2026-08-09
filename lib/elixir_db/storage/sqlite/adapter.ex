@@ -414,7 +414,11 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     started_native = System.monotonic_time()
     started_ms = System.monotonic_time(:millisecond)
 
-    uuid = adapter_identity_uuid(adapter)
+    identity =
+      SQLite.trace_sqlite_phase(:query_identity, fn -> adapter_identity(adapter) end)
+
+    uuid = Map.get(identity, :database_uuid)
+    maximum = get_in(identity, [:config, "queries", "max_execution_ms"]) || 5_000
 
     # Wrap the actual query execution in the span so its duration is real and
     # errors flow through the error.code/status policy (§5.5, §6.5). The
@@ -427,7 +431,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       Query.execute(uuid, 0, started_native, fn ->
         res =
           case prepared_request do
-            {:ok, normalized} -> QueryRunner.execute(adapter, normalized)
+            {:ok, normalized} -> QueryRunner.execute(adapter, normalized, identity)
             {:error, _} = error -> error
           end
 
@@ -435,7 +439,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       end)
 
     elapsed = System.monotonic_time(:millisecond) - started_ms
-    maximum = get_in(adapter_identity(adapter), [:config, "queries", "max_execution_ms"]) || 5_000
 
     if elapsed <= maximum,
       do: result,
@@ -664,9 +667,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     end
   end
 
-  # The database UUID from the adapter identity, used as db.uuid in
-  # instrumentation. Falls back to nil when the identity cannot be read so the
-  # span is still emitted without the attribute.
+  # The database UUID from the adapter identity, used by index instrumentation.
+  # Falls back to nil when the identity cannot be read so the span is still
+  # emitted without the attribute.
   defp adapter_identity_uuid(adapter) do
     case identity(adapter) do
       {:ok, %{database_uuid: uuid}} when is_binary(uuid) -> uuid

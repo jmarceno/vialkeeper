@@ -12,6 +12,7 @@ defmodule ElixirDB.Storage.SQLite.Documents do
   alias ElixirDB.Revisions.Winner
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.Connection
+  alias Exqlite.Sqlite3
   @doc false
   def get(adapter, request), do: Adapter.get_document(adapter, request)
 
@@ -72,10 +73,7 @@ defmodule ElixirDB.Storage.SQLite.Documents do
            [id]
          ) do
       :ok ->
-        case Connection.query(conn, "SELECT doc_key FROM documents WHERE document_id = ?", [id]) do
-          {:ok, [[key]]} -> {:ok, key}
-          {:error, reason} -> {:error, normalize_error(reason)}
-        end
+        Sqlite3.last_insert_rowid(conn)
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
