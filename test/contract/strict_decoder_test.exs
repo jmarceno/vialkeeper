@@ -6,7 +6,7 @@ defmodule ElixirDB.Contract.StrictDecoderTest do
   """
   use ExUnit.Case, async: true
 
-  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.JSON.{StrictCache, StrictDecoder}
 
   @safe_max 9_007_199_254_740_991
 
@@ -159,6 +159,15 @@ defmodule ElixirDB.Contract.StrictDecoderTest do
 
       assert {:error, %ElixirDB.Error{code: :payload_too_large}} =
                StrictDecoder.decode(body, max_bytes: byte_size(body) - 1)
+    end
+
+    test "strict JSON cache keeps nesting limits part of the cache key" do
+      cache_name = :strict_decoder_contract
+
+      assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+               StrictCache.decode_with_cache("[[0]]", 1, cache_name, 2)
+
+      assert {:ok, [[0]]} = StrictCache.decode_with_cache("[[0]]", 2, cache_name, 2)
     end
   end
 

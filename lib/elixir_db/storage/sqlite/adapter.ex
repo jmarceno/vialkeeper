@@ -33,6 +33,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     Schema
   }
 
+  @identity_cache_key :elixir_db_sqlite_identity_cache
+
   defstruct [:path, :conn, :identity, storage_mode: :disk, retention_fault: nil]
   @type storage_mode :: :disk | :memory
   @type retention_fault :: (atom() -> :ok | {:error, ElixirDB.Error.t()}) | nil
@@ -105,22 +107,38 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @impl true
   def close(%__MODULE__{conn: conn}) do
     IndexCatalog.clear_cache(conn)
+    QueryRunner.clear_cache(conn)
+    invalidate_identity_cache(conn)
     Connection.close(conn)
   end
 
   @impl true
   def identity(%__MODULE__{conn: conn, identity: identity}) do
+    case Process.get({@identity_cache_key, conn}) do
+      {:ok, _cached_identity} = cached ->
+        cached
+
+      nil ->
+        load_and_cache_identity(conn, identity)
+    end
+  end
+
+  defp load_and_cache_identity(conn, identity) do
+    result = read_identity_metadata(conn, identity)
+    if match?({:ok, _}, result), do: Process.put({@identity_cache_key, conn}, result)
+    result
+  end
+
+  defp read_identity_metadata(conn, identity) do
     case Connection.query(
            conn,
            "SELECT current_sequence, history_epoch, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
          ) do
       {:ok, [[sequence, history_epoch, floor, compaction_epoch, boundary_digest, config_json]]} ->
         config =
-          if config_json == identity.config_json do
-            identity.config
-          else
-            decode_json!(config_json)
-          end
+          if config_json == identity.config_json,
+            do: identity.config,
+            else: decode_json!(config_json)
 
         {:ok,
          %{
@@ -145,6 +163,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     with {:ok, bounded} <- ElixirDB.Config.merge_and_bound(config),
          {:ok, json} <- Canonical.encode(bounded),
          :ok <- Connection.execute(conn, "UPDATE db_meta SET config_json = ? WHERE id = 1", [json]) do
+      invalidate_identity_cache(conn)
       {:ok, bounded}
     else
       {:error, error} -> {:error, normalize_error(error)}
@@ -584,6 +603,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
           Connection.execute(conn, "ROLLBACK")
         end)
 
+      invalidate_identity_cache(conn)
       reraise exception, __STACKTRACE__
   end
 
@@ -598,6 +618,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
             Connection.execute(conn, "ROLLBACK")
           end)
 
+        invalidate_identity_cache(conn)
         {:error, error}
     end
   end
@@ -606,8 +627,13 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     case SQLite.trace_sqlite_phase(:transaction_commit, fn ->
            Connection.execute(conn, "COMMIT")
          end) do
-      :ok -> {:ok, value}
-      {:error, reason} -> {:error, normalize_error(reason)}
+      :ok ->
+        invalidate_identity_cache(conn)
+        {:ok, value}
+
+      {:error, reason} ->
+        invalidate_identity_cache(conn)
+        {:error, normalize_error(reason)}
     end
   end
 
@@ -713,6 +739,11 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     |> Map.put(:compaction_epoch, Map.get(identity, :compaction_epoch, 0))
     |> Map.put(:retention_mode, get_in(config, ["retention", "mode"]) || "disabled")
   end
+
+  # Clears the process-local metadata snapshot after any operation that may
+  # have changed sequence, retention, configuration, or other database state.
+  defp invalidate_identity_cache(conn),
+    do: Process.delete({@identity_cache_key, conn})
 
   defp normalize_error(%ElixirDB.Error{} = error), do: error
 

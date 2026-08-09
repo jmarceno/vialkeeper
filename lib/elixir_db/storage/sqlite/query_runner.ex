@@ -7,14 +7,24 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   remains storage-neutral in `ElixirDB.Query.Planner`.
   """
 
-  alias ElixirDB.JSON.Pointer
-  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.JSON.{Pointer, StrictCache}
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.SQLite
   alias ElixirDB.Query.{Plan, Planner, Predicate, Projection}
   alias ElixirDB.Query.Selector
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, IndexCatalog, QueryCompiler}
+
+  @plan_cache_key :elixir_db_sqlite_query_plan_cache
+  @plan_cache_limit 16
+  @query_body_cache_limit 256
+
+  @doc "Clears cached query plans owned by a SQLite connection process."
+  @spec clear_cache(Connection.handle()) :: :ok
+  def clear_cache(conn) do
+    Process.delete({@plan_cache_key, conn})
+    :ok
+  end
 
   @doc """
   Executes a normalized query request against an open adapter.
@@ -38,7 +48,9 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
            end),
          :ok <- check_deadline(deadline),
          {:ok, plan} <-
-           SQLite.trace_sqlite_phase(:query_plan, fn -> plan_request(indexes, request) end),
+           SQLite.trace_sqlite_phase(:query_plan, fn ->
+             plan_request(adapter.conn, indexes, request)
+           end),
          :ok <- check_deadline(deadline),
          :ok <- validate_bookmark_plan(request, plan),
          limit <-
@@ -98,16 +110,46 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
     end
   end
 
-  defp plan_request(indexes, request) do
-    case Planner.plan(indexes, request) do
+  defp plan_request(conn, indexes, request) do
+    cache = Process.get({@plan_cache_key, conn}, [])
+
+    case cached_plan(cache, indexes, request) do
       {:ok, plan} ->
         {:ok, plan}
 
+      :miss ->
+        plan_and_cache(conn, indexes, request, cache)
+    end
+  end
+
+  defp cached_plan(cache, indexes, request) do
+    case Enum.find(cache, fn {cached_indexes, cached_request, _plan} ->
+           cached_indexes == indexes and cached_request == request
+         end) do
+      {_cached_indexes, _cached_request, plan} -> {:ok, plan}
+      nil -> :miss
+    end
+  end
+
+  defp plan_and_cache(conn, indexes, request, cache) do
+    case Planner.plan(indexes, request) do
+      {:ok, plan} = result ->
+        Process.put(
+          {@plan_cache_key, conn},
+          [{indexes, request, plan} | Enum.take(cache, @plan_cache_limit - 1)]
+        )
+
+        result
+
       {:error, error} ->
-        case MapAccess.get(request, :bookmark_payload) do
-          nil -> {:error, error}
-          _ -> {:error, ElixirDB.Error.invalid_bookmark("bookmark plan cannot be reproduced")}
-        end
+        plan_error(request, error)
+    end
+  end
+
+  defp plan_error(request, error) do
+    case MapAccess.get(request, :bookmark_payload) do
+      nil -> {:error, error}
+      _ -> {:error, ElixirDB.Error.invalid_bookmark("bookmark plan cannot be reproduced")}
     end
   end
 
@@ -399,15 +441,24 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   end
 
   defp decode_query_documents(rows) do
-    Enum.reduce_while(rows, {:ok, []}, fn [id, revision, body_json], {:ok, acc} ->
-      case StrictDecoder.decode(body_json) do
-        {:ok, body} -> {:cont, {:ok, [%{id: id, revision: revision, body: body} | acc]}}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-    |> case do
-      {:ok, values} -> {:ok, Enum.reverse(values)}
-      error -> error
+    max_depth = ElixirDB.Config.host_limits()[:max_json_nesting_depth] || 100
+    decode_query_documents(rows, [], max_depth)
+  end
+
+  defp decode_query_documents([], acc, _max_depth), do: {:ok, :lists.reverse(acc)}
+
+  defp decode_query_documents([[id, revision, body_json] | rows], acc, max_depth) do
+    case StrictCache.decode_with_cache(
+           body_json,
+           max_depth,
+           :query_body_json,
+           @query_body_cache_limit
+         ) do
+      {:ok, body} ->
+        decode_query_documents(rows, [%{id: id, revision: revision, body: body} | acc], max_depth)
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 

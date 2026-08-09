@@ -7,9 +7,11 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   orchestration remain centralized until further Track A extraction.
   """
 
-  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.JSON.StrictCache
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.Connection
+
+  @leaf_json_cache_limit 256
   @doc false
   def read(adapter, request), do: Adapter.read_changes(adapter, request)
 
@@ -142,40 +144,44 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   """
   @spec decode_rows([[term()]]) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
   def decode_rows(rows) do
-    Enum.reduce_while(rows, {:ok, []}, fn [
-                                            sequence,
-                                            document_id,
-                                            winning,
-                                            deleted,
-                                            leaf_json,
-                                            origin
-                                          ],
-                                          {:ok, acc} ->
-      case StrictDecoder.decode(leaf_json) do
-        {:ok, leaves} ->
-          {:cont,
-           {:ok,
-            [
-              %{
-                sequence: sequence,
-                document_id: document_id,
-                winning_revision: winning,
-                deleted: deleted == 1,
-                leaf_revisions: leaves,
-                origin: origin
-              }
-              | acc
-            ]}}
+    max_depth = ElixirDB.Config.host_limits()[:max_json_nesting_depth] || 100
+    decode_rows(rows, [], max_depth)
+  end
 
-        {:error, error} ->
-          {:halt, {:error, error}}
-      end
-    end)
-    |> case do
-      {:ok, entries} -> {:ok, Enum.reverse(entries)}
-      error -> error
+  defp decode_rows([], acc, _max_depth), do: {:ok, :lists.reverse(acc)}
+
+  defp decode_rows(
+         [[sequence, document_id, winning, deleted, leaf_json, origin] | rows],
+         acc,
+         max_depth
+       ) do
+    case StrictCache.decode_with_cache(
+           leaf_json,
+           max_depth,
+           :changes_leaf_json,
+           @leaf_json_cache_limit
+         ) do
+      {:ok, leaves} ->
+        decode_rows(
+          rows,
+          [change_entry(sequence, document_id, winning, deleted, leaves, origin) | acc],
+          max_depth
+        )
+
+      {:error, error} ->
+        {:error, error}
     end
   end
+
+  defp change_entry(sequence, document_id, winning, deleted, leaves, origin),
+    do: %{
+      sequence: sequence,
+      document_id: document_id,
+      winning_revision: winning,
+      deleted: deleted == 1,
+      leaf_revisions: leaves,
+      origin: origin
+    }
 
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
