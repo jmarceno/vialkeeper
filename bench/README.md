@@ -121,6 +121,29 @@ query, index-build, and changes spans remain exercised through their real
 instrumentation modules. Span counts are reset for each case; metric datapoint
 counts are exporter observations and can include multiple aggregation exports.
 
+The production overhead runner also emits low-cardinality SQLite child spans
+when an OTLP endpoint is configured. They are deliberately phase-level probes,
+not one span per SQL statement or document:
+
+- Reads: `elixir_db.sqlite.document.lookup` and
+  `elixir_db.sqlite.revision.lookup`.
+- Bulk writes: `elixir_db.sqlite.mutation.bulk.prepare` and
+  `elixir_db.sqlite.mutation.bulk.finalize`.
+- Changes: `elixir_db.sqlite.changes.identity`, `.fetch`, `.decode`, and
+  `.has_more`.
+- Indexed queries: `elixir_db.sqlite.query.prepare_request`, `.identity`,
+  `.index_catalog`, `.plan`, `.candidates`, `.filter`, `.sort`, `.cursor`, and
+  `.project`.
+- Transactions: `elixir_db.sqlite.transaction.begin`, `.commit`, and
+  `.rollback`.
+
+The span attributes are restricted to existing safe fields such as bounded
+`entries`, `plan_kind`, and `selected_index_count`; customer IDs, bodies,
+search text, and SQL are never attached. Configure `otlp_endpoint` in the
+production host configuration, run the overhead benchmark, and inspect these
+children under the measured adapter operation in the collector. With no OTLP
+endpoint configured, the instrumentation remains a no-op.
+
 Run the HTTP and replication observability suites separately when changing
 those paths:
 

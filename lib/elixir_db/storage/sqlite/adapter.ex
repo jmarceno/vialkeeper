@@ -12,7 +12,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.MapAccess
-  alias ElixirDB.Observability.Instrumentation.Query
+  alias ElixirDB.Observability.Instrumentation.{Query, SQLite}
   alias ElixirDB.Query.{Normalizer, Prepared}
 
   alias ElixirDB.Storage.SQLite.{
@@ -156,16 +156,26 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def get_document(%__MODULE__{} = adapter, request) when is_map(request) do
-    with {:ok, doc} <- Documents.find(adapter.conn, MapAccess.get(request, :document_id)),
-         {:ok, revision} <- choose_revision(adapter, doc, MapAccess.get(request, :revision)) do
+    with {:ok, doc} <-
+           SQLite.trace_sqlite_phase(:document_lookup, fn ->
+             Documents.find(adapter.conn, MapAccess.get(request, :document_id))
+           end),
+         {:ok, revision} <-
+           SQLite.trace_sqlite_phase(:revision_lookup, fn ->
+             choose_revision(adapter, doc, MapAccess.get(request, :revision))
+           end) do
       include_conflicts = MapAccess.get(request, :include_conflicts, false)
 
-      {:ok,
-       Documents.to_result(
-         doc,
-         revision,
-         if(include_conflicts, do: Revisions.leaves(adapter.conn, doc.doc_key), else: [])
-       )}
+      leaves =
+        if include_conflicts do
+          SQLite.trace_sqlite_phase(:document_leaves, fn ->
+            Revisions.leaves(adapter.conn, doc.doc_key)
+          end)
+        else
+          []
+        end
+
+      {:ok, Documents.to_result(doc, revision, leaves)}
     end
   end
 
@@ -219,17 +229,27 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     limit = MapAccess.get(request, :limit, 100)
 
     with :ok <- validate_non_negative_integer(since, "since"),
-         {:ok, identity} <- identity(adapter),
+         {:ok, identity} <-
+           SQLite.trace_sqlite_phase(:changes_identity, fn -> identity(adapter) end),
          :ok <- validate_changes_since_floor(since, identity),
          :ok <-
            validate_changes_limit(
              limit,
              get_in(identity, [:config, "changes", "max_batch"])
            ),
-         {:ok, rows} <- Changes.fetch_after(conn, since, limit),
-         {:ok, results} <- Changes.decode_rows(rows),
+         {:ok, rows} <-
+           SQLite.trace_sqlite_phase(:changes_fetch, [entries: limit], fn ->
+             Changes.fetch_after(conn, since, limit)
+           end),
+         {:ok, results} <-
+           SQLite.trace_sqlite_phase(:changes_decode, [entries: length(rows)], fn ->
+             Changes.decode_rows(rows)
+           end),
          last_sequence <- List.last(results, %{sequence: since}).sequence,
-         {:ok, has_more} <- Changes.exists_after?(conn, last_sequence) do
+         {:ok, has_more} <-
+           SQLite.trace_sqlite_phase(:changes_has_more, fn ->
+             Changes.exists_after?(conn, last_sequence)
+           end) do
       {:ok,
        %{
          results: results,
@@ -400,7 +420,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     # errors flow through the error.code/status policy (§5.5, §6.5). The
     # wrapper receives {result, examined_count} and returns the bare result
     # after recording the examined attribute.
-    prepared_request = prepare_query_request(request)
+    prepared_request =
+      SQLite.trace_sqlite_phase(:query_prepare_request, fn -> prepare_query_request(request) end)
 
     result =
       Query.execute(uuid, 0, started_native, fn ->
@@ -523,7 +544,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   defp transaction(%__MODULE__{conn: conn}, fun) do
-    case Connection.execute(conn, "BEGIN IMMEDIATE") do
+    case SQLite.trace_sqlite_phase(:transaction_begin, fn ->
+           Connection.execute(conn, "BEGIN IMMEDIATE")
+         end) do
       :ok ->
         transaction_body(conn, fun)
 
@@ -545,7 +568,11 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       UndefinedFunctionError,
       WithClauseError
     ] ->
-      _ = Connection.execute(conn, "ROLLBACK")
+      _ =
+        SQLite.trace_sqlite_phase(:transaction_rollback, fn ->
+          Connection.execute(conn, "ROLLBACK")
+        end)
+
       reraise exception, __STACKTRACE__
   end
 
@@ -555,13 +582,19 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
         commit_transaction(conn, value)
 
       {:error, error} ->
-        _ = Connection.execute(conn, "ROLLBACK")
+        _ =
+          SQLite.trace_sqlite_phase(:transaction_rollback, fn ->
+            Connection.execute(conn, "ROLLBACK")
+          end)
+
         {:error, error}
     end
   end
 
   defp commit_transaction(conn, value) do
-    case Connection.execute(conn, "COMMIT") do
+    case SQLite.trace_sqlite_phase(:transaction_commit, fn ->
+           Connection.execute(conn, "COMMIT")
+         end) do
       :ok -> {:ok, value}
       {:error, reason} -> {:error, normalize_error(reason)}
     end

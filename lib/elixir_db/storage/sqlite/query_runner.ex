@@ -10,6 +10,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   alias ElixirDB.JSON.Pointer
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.SQLite
   alias ElixirDB.Query.{Plan, Planner, Predicate, Projection}
   alias ElixirDB.Query.Selector
   alias ElixirDB.Storage.SQLite.Adapter
@@ -21,17 +22,31 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   @spec execute(map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def execute(adapter, request) do
     started_native = System.monotonic_time()
-    identity = adapter_identity(adapter)
+    identity = SQLite.trace_sqlite_phase(:query_identity, fn -> adapter_identity(adapter) end)
     deadline = query_deadline(identity, started_native)
 
-    with {:ok, indexes} <- IndexCatalog.list(adapter.conn),
+    with {:ok, indexes} <-
+           SQLite.trace_sqlite_phase(:query_index_catalog, fn ->
+             IndexCatalog.list(adapter.conn)
+           end),
          :ok <- check_deadline(deadline),
-         {:ok, plan} <- plan_request(indexes, request),
+         {:ok, plan} <-
+           SQLite.trace_sqlite_phase(:query_plan, fn -> plan_request(indexes, request) end),
          :ok <- check_deadline(deadline),
          :ok <- validate_bookmark_plan(request, plan),
          {:ok, documents, examined} <-
-           candidate_documents(adapter, plan, indexes, request, deadline),
-         {:ok, matched} <- filter_query(documents, request, deadline),
+           SQLite.trace_sqlite_phase(
+             :query_candidates,
+             [
+               plan_kind: plan.kind,
+               selected_index_count: length(Plan.index_bindings(plan))
+             ],
+             fn -> candidate_documents(adapter, plan, indexes, request, deadline) end
+           ),
+         {:ok, matched} <-
+           SQLite.trace_sqlite_phase(:query_filter, [entries: length(documents)], fn ->
+             filter_query(documents, request, deadline)
+           end),
          :ok <- check_deadline(deadline),
          :ok <- enforce_scan_limit(plan, examined, identity),
          limit <-
@@ -39,11 +54,20 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
              MapAccess.get(request, :limit),
              get_in(identity, [:config, "queries", "default_limit"]) || 50
            ),
-         {:ok, ordered} <- sort_documents(matched, request, deadline),
-         {:ok, ordered} <- apply_after_cursor(ordered, request, deadline),
+         {:ok, ordered} <-
+           SQLite.trace_sqlite_phase(:query_sort, [entries: length(matched)], fn ->
+             sort_documents(matched, request, deadline)
+           end),
+         {:ok, ordered} <-
+           SQLite.trace_sqlite_phase(:query_cursor, [entries: length(ordered)], fn ->
+             apply_after_cursor(ordered, request, deadline)
+           end),
          values <- Enum.take(ordered, limit),
          :ok <- check_deadline(deadline),
-         {:ok, projected} <- project_documents(values, request, deadline),
+         {:ok, projected} <-
+           SQLite.trace_sqlite_phase(:query_project, [entries: length(values)], fn ->
+             project_documents(values, request, deadline)
+           end),
          selected_metadata <- selected_metadata(plan) do
       {:ok,
        %{

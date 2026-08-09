@@ -10,6 +10,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.SQLite
   alias ElixirDB.Revisions.ConflictResolution
   alias ElixirDB.Revisions.{Id, Winner}
   alias ElixirDB.Storage.SQLite.Adapter
@@ -63,8 +64,14 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
   """
   @spec bulk_tx(map(), [map()]) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
   def bulk_tx(adapter, operations) when is_list(operations) do
-    with {:ok, effects, affected} <- prepare_bulk_operations(adapter, operations),
-         {:ok, finalized} <- finalize_bulk_documents(adapter, affected) do
+    with {:ok, effects, affected} <-
+           SQLite.trace_sqlite_phase(:bulk_prepare, [entries: length(operations)], fn ->
+             prepare_bulk_operations(adapter, operations)
+           end),
+         {:ok, finalized} <-
+           SQLite.trace_sqlite_phase(:bulk_finalize, [entries: map_size(affected)], fn ->
+             finalize_bulk_documents(adapter, affected)
+           end) do
       {:ok,
        Enum.map(effects, fn effect ->
          result = Map.get(finalized, effect.doc_key, effect.result)
