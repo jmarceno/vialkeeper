@@ -108,8 +108,13 @@ defmodule ElixirDB.Storage.SQLite.Documents do
   """
   @spec update(Connection.handle(), integer(), Revision.t(), integer()) ::
           :ok | {:error, term()}
-  def update(conn, doc_key, %Revision{} = winner, sequence) do
-    body = if winner.deleted, do: nil, else: Canonical.encode!(winner.body)
+  def update(conn, doc_key, %Revision{} = winner, sequence),
+    do: update(conn, doc_key, winner, sequence, nil)
+
+  @spec update(Connection.handle(), integer(), Revision.t(), integer(), binary() | nil) ::
+          :ok | {:error, term()}
+  def update(conn, doc_key, %Revision{} = winner, sequence, body_json) do
+    body = if winner.deleted, do: nil, else: body_json || Canonical.encode!(winner.body)
 
     Connection.execute(
       conn,

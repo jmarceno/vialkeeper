@@ -115,7 +115,12 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
            "SELECT current_sequence, history_epoch, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
          ) do
       {:ok, [[sequence, history_epoch, floor, compaction_epoch, boundary_digest, config_json]]} ->
-        config = decode_json!(config_json)
+        config =
+          if config_json == identity.config_json do
+            identity.config
+          else
+            decode_json!(config_json)
+          end
 
         {:ok,
          %{

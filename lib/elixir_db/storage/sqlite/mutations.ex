@@ -622,8 +622,10 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          ready_indexes,
          materialize_pending?
        ) do
+    body_json = if materialize_pending?, do: nil, else: revision_body_json(candidate)
+
     with {:ok, doc_key} <- Documents.insert(adapter.conn, document_id),
-         :ok <- Revisions.insert(adapter.conn, doc_key, candidate),
+         :ok <- Revisions.insert(adapter.conn, doc_key, candidate, body_json),
          :ok <- Attachments.remove_pending_for_manifest(adapter.conn, candidate.attachments),
          :ok <-
            maybe_update_pending_document(
@@ -638,7 +640,7 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          revision: candidate.revision_id,
          sequence: 0
        })
-       |> maybe_mark_fast_candidate(candidate, materialize_pending?)}
+       |> maybe_mark_fast_candidate(candidate, materialize_pending?, body_json)}
     end
   end
 
@@ -818,10 +820,13 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
       result: result
     }
 
-  defp maybe_mark_fast_candidate(effect, _candidate, true), do: effect
+  defp maybe_mark_fast_candidate(effect, _candidate, true, _body_json), do: effect
 
-  defp maybe_mark_fast_candidate(effect, candidate, false),
-    do: Map.put(effect, :fast_candidate, candidate)
+  defp maybe_mark_fast_candidate(effect, candidate, false, body_json),
+    do: Map.put(effect, :fast_candidate, %{revision: candidate, body_json: body_json})
+
+  defp revision_body_json(%Revision{deleted: true}), do: nil
+  defp revision_body_json(%Revision{body: body}), do: Canonical.encode!(body)
 
   defp maybe_update_pending_document(
          _adapter,
@@ -860,12 +865,13 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
        ) do
     result =
       case entry.fast_candidate do
-        %Revision{} = candidate ->
+        %{revision: %Revision{} = candidate, body_json: body_json} ->
           finalize_new_bulk_document(
             adapter,
             doc_key,
             entry.document_id,
             candidate,
+            body_json,
             ready_indexes,
             sequence
           )
@@ -893,11 +899,12 @@ defmodule ElixirDB.Storage.SQLite.Mutations do
          doc_key,
          document_id,
          candidate,
+         body_json,
          ready_indexes,
          sequence
        ) do
     with {:ok, leaf_json} <- Revisions.encode_leaf_set([candidate]),
-         :ok <- Documents.update(adapter.conn, doc_key, candidate, sequence),
+         :ok <- Documents.update(adapter.conn, doc_key, candidate, sequence, body_json),
          :ok <- refresh_ready_indexes(adapter, doc_key, candidate, ready_indexes),
          :ok <-
            Changes.insert(

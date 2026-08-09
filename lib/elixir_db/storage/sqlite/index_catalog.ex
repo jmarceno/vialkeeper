@@ -11,6 +11,7 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, StructuredIndexes}
 
   @list_cache_key :elixir_db_sqlite_index_catalog
+  @ready_cache_key :elixir_db_sqlite_ready_index_catalog
   @cache_generation_key :elixir_db_sqlite_index_catalog_generation
 
   @doc """
@@ -56,6 +57,7 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   @spec clear_cache(Connection.handle()) :: :ok
   def clear_cache(conn) do
     Process.delete({@list_cache_key, conn})
+    Process.delete({@ready_cache_key, conn})
 
     Process.put(
       {@cache_generation_key, conn},
@@ -160,10 +162,20 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   @doc "Loads ready-index metadata for reuse within one SQLite transaction."
   @spec ready_definitions(Connection.handle()) :: {:ok, [[term()]]} | {:error, term()}
   def ready_definitions(conn) do
-    Connection.query(
-      conn,
-      "SELECT index_id, definition_json, adapter_metadata_json FROM index_definitions WHERE lifecycle_state = 'ready' ORDER BY index_id"
-    )
+    case Process.get({@ready_cache_key, conn}) do
+      {:ok, _rows} = cached ->
+        cached
+
+      nil ->
+        result =
+          Connection.query(
+            conn,
+            "SELECT index_id, definition_json, adapter_metadata_json FROM index_definitions WHERE lifecycle_state = 'ready' ORDER BY index_id"
+          )
+
+        if match?({:ok, _}, result), do: Process.put({@ready_cache_key, conn}, result)
+        result
+    end
   end
 
   @doc false

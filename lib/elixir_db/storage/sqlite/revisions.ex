@@ -143,8 +143,13 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   """
   @spec insert(Connection.handle(), integer(), Revision.t()) ::
           :ok | {:error, ElixirDB.Error.t()}
-  def insert(conn, doc_key, %Revision{} = revision) do
-    body = if revision.deleted, do: nil, else: Canonical.encode!(revision.body)
+  def insert(conn, doc_key, %Revision{} = revision),
+    do: insert(conn, doc_key, revision, nil)
+
+  @spec insert(Connection.handle(), integer(), Revision.t(), binary() | nil) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def insert(conn, doc_key, %Revision{} = revision, body_json) do
+    body = if revision.deleted, do: nil, else: body_json || Canonical.encode!(revision.body)
 
     with :ok <- clear_parent_leaf(conn, doc_key, revision.parent_revision),
          :ok <-
