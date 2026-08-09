@@ -1110,13 +1110,17 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
     IO.puts("ElixirDB overhead benchmark report: #{output}")
 
     Enum.each(report["results"], fn result ->
+      adapter_variant = result["variants"]["elixir_db_adapter"]
+      connection_variant = result["variants"]["elixir_db_connection"]
       adapter = result["overhead_vs_pure_exqlite"]["elixir_db_adapter"]
       connection = result["overhead_vs_pure_exqlite"]["elixir_db_connection"]
 
       IO.puts(
         "  #{result["storage_mode"]}/#{result["scenario"]}: " <>
-          "adapter median #{adapter["median_delta_us"]} us (#{adapter["median_overhead_pct"]}%), " <>
-          "connection median #{connection["median_delta_us"]} us (#{connection["median_overhead_pct"]}%)"
+          "adapter median #{adapter_variant["median_us"]} us " <>
+          "(overhead +#{adapter["median_delta_us"]} us / #{adapter["median_overhead_pct"]}%), " <>
+          "connection median #{connection_variant["median_us"]} us " <>
+          "(overhead #{connection["median_delta_us"]} us / #{connection["median_overhead_pct"]}%)"
       )
     end)
   end

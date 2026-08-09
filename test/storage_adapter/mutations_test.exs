@@ -62,6 +62,26 @@ defmodule ElixirDB.StorageAdapter.MutationsTest do
     assert {:ok, %{current_sequence: 3}} = @adapter.identity(adapter)
   end
 
+  test "duplicate document operations observe each prior mutation", %{adapter: adapter} do
+    assert {:ok, %{revision: base}} =
+             @adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "doc",
+               body: %{"value" => 0}
+             })
+
+    assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+             @adapter.apply_bulk_mutation(adapter, %{
+               operations: [
+                 %{operation: :put, document_id: "doc", if_revision: base, body: %{"value" => 1}},
+                 %{operation: :put, document_id: "doc", if_revision: base, body: %{"value" => 2}}
+               ]
+             })
+
+    assert {:ok, %{body: %{"value" => 0}, revision: ^base}} =
+             @adapter.get_document(adapter, %{document_id: "doc"})
+  end
+
   test "bulk mutations reject unknown operation types", %{adapter: adapter} do
     assert {:error, %ElixirDB.Error{code: :invalid_request}} =
              @adapter.apply_bulk_mutation(adapter, %{
@@ -72,6 +92,45 @@ defmodule ElixirDB.StorageAdapter.MutationsTest do
 
     assert {:error, %ElixirDB.Error{code: :document_not_found}} =
              @adapter.get_document(adapter, %{document_id: "doc"})
+  end
+
+  test "bulk-created documents remain queryable, indexed, and in changes", %{adapter: adapter} do
+    assert {:ok, %{"index_id" => index_id}} =
+             @adapter.create_index(adapter, %{
+               "name" => "by-kind",
+               "type" => "structured",
+               "fields" => [%{"path" => "/kind", "type" => "string", "direction" => "asc"}]
+             })
+
+    assert {:ok, results} =
+             @adapter.apply_bulk_mutation(adapter, %{
+               operations: [
+                 %{operation: :put, document_id: "task", body: %{"kind" => "task"}},
+                 %{operation: :put, document_id: "note", body: %{"kind" => "note"}}
+               ]
+             })
+
+    assert Enum.map(results, & &1.sequence) == [2, 1]
+
+    assert {:ok, %{results: [%{id: "task"}], selected_index: ^index_id}} =
+             @adapter.execute_query(adapter, %{
+               selector: %{"/kind" => "task"},
+               index: "by-kind",
+               limit: 10
+             })
+
+    assert {:ok, %{body: %{"kind" => "task"}}} =
+             @adapter.get_document(adapter, %{document_id: "task"})
+
+    assert {:ok, %{results: [first], last_sequence: 1, has_more: true}} =
+             @adapter.read_changes(adapter, %{since: 0, limit: 1})
+
+    assert first.document_id == "note"
+
+    assert {:ok, %{results: [second], last_sequence: 2, has_more: false}} =
+             @adapter.read_changes(adapter, %{since: 1, limit: 1})
+
+    assert second.document_id == "task"
   end
 
   test "integrity mismatch is detected after revision corruption", %{adapter: adapter} do

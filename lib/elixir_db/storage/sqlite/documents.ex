@@ -44,18 +44,41 @@ defmodule ElixirDB.Storage.SQLite.Documents do
            [document_id]
          ) do
       {:ok, [[key, id, winning, body, deleted, sequence]]} ->
-        {:ok,
-         %{
-           doc_key: key,
-           document_id: id,
-           winning_revision: winning,
-           winning_body_json: body,
-           winning_deleted: deleted == 1,
-           update_sequence: sequence
-         }}
+        {:ok, document_from_row([key, id, winning, body, deleted, sequence])}
 
       {:ok, []} ->
         {:ok, nil}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  @doc "Loads a set of document rows in one query for bulk mutation preparation."
+  @spec find_many(Connection.handle(), [binary()]) ::
+          {:ok, %{optional(binary()) => map() | nil}} | {:error, ElixirDB.Error.t()}
+  def find_many(_conn, []), do: {:ok, %{}}
+
+  def find_many(conn, document_ids) when is_list(document_ids) do
+    placeholders = Enum.map_join(document_ids, ",", fn _id -> "?" end)
+
+    case Connection.query(
+           conn,
+           "SELECT doc_key, document_id, winning_revision, winning_body_json, winning_deleted, update_sequence FROM documents WHERE document_id IN (" <>
+             placeholders <> ")",
+           document_ids
+         ) do
+      {:ok, rows} ->
+        documents =
+          Map.new(document_ids, &{&1, nil})
+          |> Map.merge(
+            Map.new(rows, fn row ->
+              document = document_from_row(row)
+              {document.document_id, document}
+            end)
+          )
+
+        {:ok, documents}
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
@@ -160,4 +183,15 @@ defmodule ElixirDB.Storage.SQLite.Documents do
 
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
+
+  defp document_from_row([key, id, winning, body, deleted, sequence]) do
+    %{
+      doc_key: key,
+      document_id: id,
+      winning_revision: winning,
+      winning_body_json: body,
+      winning_deleted: deleted == 1,
+      update_sequence: sequence
+    }
+  end
 end

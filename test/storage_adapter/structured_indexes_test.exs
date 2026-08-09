@@ -31,12 +31,26 @@ defmodule ElixirDB.StorageAdapter.StructuredIndexesTest do
                limit: 10
              })
 
+    assert {:ok, %{results: [%{id: "t1"}], selected_index: ^index_id}} =
+             @adapter.execute_query(adapter, %{
+               selector: %{"/type" => "task"},
+               index: "by-type",
+               limit: 10
+             })
+
     assert {:ok, indexes} = @adapter.list_indexes(adapter)
     assert Enum.any?(indexes, &(&1["index_id"] == index_id))
 
     assert {:ok, _} = @adapter.delete_index(adapter, index_id)
     assert {:ok, remaining} = @adapter.list_indexes(adapter)
     refute Enum.any?(remaining, &(&1["index_id"] == index_id))
+
+    assert {:error, %ElixirDB.Error{code: :invalid_index_hint}} =
+             @adapter.execute_query(adapter, %{
+               selector: %{"/type" => "task"},
+               index: "by-type",
+               limit: 10
+             })
   end
 
   test "duplicate structured index name with same definition replays", %{adapter: adapter} do

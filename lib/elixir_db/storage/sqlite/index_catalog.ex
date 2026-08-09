@@ -10,33 +10,59 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, StructuredIndexes}
 
+  @list_cache_key :elixir_db_sqlite_index_catalog
+  @cache_generation_key :elixir_db_sqlite_index_catalog_generation
+
   @doc """
   Lists all logical index definitions with adapter metadata attached.
   """
   @spec list(Connection.handle()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
   def list(conn) do
-    case Connection.query(
-           conn,
-           "SELECT index_id, definition_json, definition_digest, lifecycle_state, adapter_metadata_json FROM index_definitions ORDER BY index_id"
-         ) do
-      {:ok, rows} ->
-        {:ok,
-         Enum.map(rows, fn [id, json, digest_value, state, metadata_json] ->
-           definition = decode_json!(json)
-           metadata = decode_json!(metadata_json)
+    case Process.get({@list_cache_key, conn}) do
+      {:ok, _indexes} = cached ->
+        cached
 
-           definition
-           |> Map.merge(%{
-             "index_id" => id,
-             "definition_digest" => digest_value,
-             "lifecycle_state" => state,
-             "_metadata" => metadata
-           })
-         end)}
+      nil ->
+        result =
+          case Connection.query(
+                 conn,
+                 "SELECT index_id, definition_json, definition_digest, lifecycle_state, adapter_metadata_json FROM index_definitions ORDER BY index_id"
+               ) do
+            {:ok, rows} ->
+              {:ok,
+               Enum.map(rows, fn [id, json, digest_value, state, metadata_json] ->
+                 definition = decode_json!(json)
+                 metadata = decode_json!(metadata_json)
 
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
+                 definition
+                 |> Map.merge(%{
+                   "index_id" => id,
+                   "definition_digest" => digest_value,
+                   "lifecycle_state" => state,
+                   "_metadata" => metadata
+                 })
+               end)}
+
+            {:error, reason} ->
+              {:error, normalize_error(reason)}
+          end
+
+        if match?({:ok, _}, result), do: Process.put({@list_cache_key, conn}, result)
+        result
     end
+  end
+
+  @doc false
+  @spec clear_cache(Connection.handle()) :: :ok
+  def clear_cache(conn) do
+    Process.delete({@list_cache_key, conn})
+
+    Process.put(
+      {@cache_generation_key, conn},
+      Process.get({@cache_generation_key, conn}, 0) + 1
+    )
+
+    :ok
   end
 
   @doc """
@@ -44,6 +70,7 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   """
   @spec create_tx(Connection.handle(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def create_tx(conn, definition) do
+    clear_cache(conn)
     definition = Map.delete(definition, "definition_digest") |> Map.delete(:definition_digest)
 
     with {:ok, definition_json} <- Canonical.encode(definition),
@@ -86,6 +113,8 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   """
   @spec delete_tx(Connection.handle(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def delete_tx(conn, index_id) do
+    clear_cache(conn)
+
     with {:ok, row} <- find(conn, index_id),
          {:ok, metadata} <- decode_metadata(row),
          :ok <- drop_physical(conn, metadata),
@@ -100,6 +129,8 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   """
   @spec rebuild_tx(Connection.handle(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def rebuild_tx(conn, index_id) do
+    clear_cache(conn)
+
     with {:ok, row} <- find(conn, index_id),
          {:ok, definition} <- decode_json(row.definition_json),
          {:ok, old_metadata} <- decode_metadata(row),

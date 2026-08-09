@@ -88,6 +88,24 @@ defmodule ElixirDB.Storage.SQLite.Changes do
     end
   end
 
+  @doc "Loads a changes page and derives `has_more` from one ordered query."
+  @spec fetch_page(Connection.handle(), integer(), integer()) ::
+          {:ok, {[[term()]], boolean()}} | {:error, ElixirDB.Error.t()}
+  def fetch_page(conn, since, limit) do
+    case Connection.query(
+           conn,
+           "SELECT sequence, document_id, winning_revision, winning_deleted, leaf_set_json, origin FROM changes WHERE sequence > ? ORDER BY sequence LIMIT ?",
+           [since, limit + 1]
+         ) do
+      {:ok, rows} ->
+        {page, extra} = Enum.split(rows, limit)
+        {:ok, {page, extra != []}}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
   @doc """
   Returns whether any change-feed row exists after `sequence`.
   """

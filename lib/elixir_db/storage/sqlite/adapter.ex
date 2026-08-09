@@ -103,7 +103,10 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   @impl true
-  def close(%__MODULE__{conn: conn}), do: Connection.close(conn)
+  def close(%__MODULE__{conn: conn}) do
+    IndexCatalog.clear_cache(conn)
+    Connection.close(conn)
+  end
 
   @impl true
   def identity(%__MODULE__{conn: conn, identity: identity}) do
@@ -237,9 +240,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
              limit,
              get_in(identity, [:config, "changes", "max_batch"])
            ),
-         {:ok, rows} <-
+         {:ok, {rows, page_has_more}} <-
            SQLite.trace_sqlite_phase(:changes_fetch, [entries: limit], fn ->
-             Changes.fetch_after(conn, since, limit)
+             Changes.fetch_page(conn, since, limit)
            end),
          {:ok, results} <-
            SQLite.trace_sqlite_phase(:changes_decode, [entries: length(rows)], fn ->
@@ -248,7 +251,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
          last_sequence <- List.last(results, %{sequence: since}).sequence,
          {:ok, has_more} <-
            SQLite.trace_sqlite_phase(:changes_has_more, fn ->
-             Changes.exists_after?(conn, last_sequence)
+             {:ok, page_has_more}
            end) do
       {:ok,
        %{

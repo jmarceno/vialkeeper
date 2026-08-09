@@ -9,6 +9,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   boundaries remain in the adapter.
   """
 
+  alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.Storage.SQLite.Adapter
@@ -33,11 +34,23 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   def find(conn, doc_key, revision_id) do
     case Connection.query(
            conn,
-           "SELECT revision_id, generation, parent_revision, history_id, digest, deleted, body_json, insertion_sequence FROM revisions WHERE doc_key = ? AND revision_id = ?",
+           """
+           SELECT r.revision_id, r.generation, r.parent_revision, r.history_id,
+                  r.digest, r.deleted, r.body_json, r.insertion_sequence,
+                  a.attachment_name, a.blob_digest, a.logical_size, a.content_type
+           FROM revisions AS r
+           LEFT JOIN revision_attachments AS a
+             ON a.doc_key = r.doc_key AND a.revision_id = r.revision_id
+           WHERE r.doc_key = ? AND r.revision_id = ?
+           ORDER BY a.attachment_name
+           """,
            [doc_key, revision_id]
          ) do
-      {:ok, [[id, generation, parent, history_id, digest_value, deleted, body_json, sequence]]} ->
-        with {:ok, attachments} <- Attachments.load_manifest(conn, doc_key, revision_id) do
+      {:ok, [first_row | _] = rows} ->
+        [id, generation, parent, history_id, digest_value, deleted, body_json, sequence | _] =
+          first_row
+
+        with {:ok, attachments} <- manifest_from_rows(rows) do
           {:ok,
            from_row(
              [
@@ -60,6 +73,16 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
       {:error, reason} ->
         {:error, normalize_error(reason)}
     end
+  end
+
+  defp manifest_from_rows(rows) do
+    rows
+    |> Enum.reject(fn [_, _, _, _, _, _, _, _, name | _] -> is_nil(name) end)
+    |> Map.new(fn row ->
+      [_, _, _, _, _, _, _, _, name, digest, logical_size, content_type] = row
+      {name, Manifest.entry(digest, logical_size, content_type)}
+    end)
+    |> Manifest.normalize()
   end
 
   @doc """
