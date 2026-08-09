@@ -12,11 +12,12 @@ defmodule ElixirDB.TestServer do
   @spec start(keyword()) :: {:ok, map()} | {:error, term()}
   def start(opts \\ []) do
     plug = Keyword.get(opts, :plug, ElixirDB.HTTP.Router)
+    request_hook = Keyword.get(opts, :request_hook)
     ip = Keyword.get(opts, :ip, {127, 0, 0, 1})
     port = Keyword.get(opts, :port, 0)
 
     bandit_opts = [
-      plug: plug,
+      plug: {__MODULE__.HookPlug, {plug, request_hook}},
       scheme: :http,
       ip: ip,
       port: port
@@ -74,4 +75,30 @@ defmodule ElixirDB.TestServer do
 
   defp format_ip({a, b, c, d}), do: "#{a}.#{b}.#{c}.#{d}"
   defp format_ip(ip) when is_tuple(ip), do: :inet.ntoa(ip) |> to_string()
+
+  defmodule HookPlug do
+    @moduledoc false
+
+    @spec init({module(), (Plug.Conn.t() -> Plug.Conn.t()) | nil}) :: tuple()
+    def init(opts), do: opts
+
+    @spec call(Plug.Conn.t(), {module(), (Plug.Conn.t() -> Plug.Conn.t()) | nil}) ::
+            Plug.Conn.t()
+    def call(conn, {router, nil}), do: router.call(conn, router.init([]))
+
+    def call(conn, {router, hook}) when is_function(hook, 1) do
+      case hook.(conn) do
+        {:halt, conn} ->
+          conn
+
+        {:after, conn, after_fun} when is_function(after_fun, 0) ->
+          conn = router.call(conn, router.init([]))
+          after_fun.()
+          conn
+
+        conn ->
+          router.call(conn, router.init([]))
+      end
+    end
+  end
 end

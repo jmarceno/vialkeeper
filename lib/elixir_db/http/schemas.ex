@@ -50,7 +50,11 @@ defmodule ElixirDB.HTTP.Schemas do
     "enabled",
     "batch",
     "retry",
-    "wait_ms"
+    "wait_ms",
+    "max_concurrent_chain_fetches",
+    "max_concurrent_blob_transfers",
+    "max_transfer_bytes_in_flight",
+    "batch_documents"
   ]
 
   @wire_changes ["since", "limit", "wait_ms"]

@@ -85,7 +85,12 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
   @impl true
   def read_changes(endpoint, request),
     do:
-      call(endpoint, :post, "/v1/databases/#{endpoint.database_uuid}/replication/changes", request)
+      call(
+        endpoint,
+        :post,
+        "/v1/databases/#{endpoint.database_uuid}/replication/changes",
+        changes_request(request)
+      )
 
   @impl true
   def diff_revisions(endpoint, request),
@@ -267,4 +272,9 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
       end
     end
   end
+
+  defp changes_request(%ElixirDB.Changes.Request{since: since, limit: limit, wait_ms: wait_ms}),
+    do: %{"since" => since, "limit" => limit, "wait_ms" => wait_ms}
+
+  defp changes_request(request), do: request
 end

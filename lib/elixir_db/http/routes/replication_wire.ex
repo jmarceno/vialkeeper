@@ -129,11 +129,18 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   put "/peers/:peer_database_uuid" do
     Request.call(conn, fn body, conn ->
       with_peer_path_id(conn, fn conn, peer_id ->
+        body = Map.new(body, fn {k, v} -> {to_string(k), v} end)
+
         peer_fields =
-          body
-          |> Map.new(fn {k, v} -> {to_string(k), v} end)
-          |> Map.delete("expected_version")
-          |> Map.delete("bootstrap_completed")
+          case Map.get(body, "value") do
+            value when is_map(value) ->
+              Map.new(value, fn {k, v} -> {to_string(k), v} end)
+
+            _ ->
+              body
+              |> Map.delete("expected_version")
+              |> Map.delete("bootstrap_completed")
+          end
           |> Map.put("peer_database_uuid", peer_id)
 
         request = %{
