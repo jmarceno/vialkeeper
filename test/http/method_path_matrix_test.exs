@@ -335,6 +335,9 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
     task =
       Task.async(fn ->
+        buffer_key = make_ref()
+        Process.put(buffer_key, "")
+
         Req.post(url,
           json: body,
           receive_timeout: 15_000,
@@ -342,7 +345,11 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
             {:data, data}, {req, resp} ->
               send(parent, {:query_stream_headers, resp.headers})
 
-              for line <- String.split(IO.iodata_to_binary(data), "\n", trim: true) do
+              parts = String.split(Process.get(buffer_key, "") <> IO.iodata_to_binary(data), "\n")
+              {complete, [rest]} = Enum.split(parts, -1)
+              Process.put(buffer_key, rest)
+
+              for line when line != "" <- complete do
                 send(parent, {:query_stream_line, line})
               end
 

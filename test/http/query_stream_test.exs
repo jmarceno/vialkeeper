@@ -109,26 +109,40 @@ defmodule ElixirDB.HTTP.QueryStreamTest do
   end
 
   defp collect_stream_events(url, body, parent) do
-    case Req.post(url,
-           json: body,
-           receive_timeout: 15_000,
-           into: fn
-             {:data, data}, {req, resp} ->
-               for line <- String.split(IO.iodata_to_binary(data), "\n", trim: true) do
-                 case StrictDecoder.decode(line) do
-                   {:ok, event} when is_map(event) -> send(parent, {:ndjson_event, event})
-                   _ -> :ok
-                 end
-               end
+    buffer_key = make_ref()
+    Process.put(buffer_key, "")
 
-               {:cont, {req, resp}}
+    try do
+      case Req.post(url,
+             json: body,
+             receive_timeout: 15_000,
+             into: fn
+               {:data, data}, {req, resp} ->
+                 emit_stream_chunk(parent, buffer_key, IO.iodata_to_binary(data))
+                 {:cont, {req, resp}}
 
-             {:trailer, _}, acc ->
-               {:cont, acc}
-           end
-         ) do
-      {:ok, _resp} -> :ok
-      {:error, reason} -> send(parent, {:ndjson_stream_error, reason})
+               {:trailer, _}, acc ->
+                 {:cont, acc}
+             end
+           ) do
+        {:ok, _resp} -> :ok
+        {:error, reason} -> send(parent, {:ndjson_stream_error, reason})
+      end
+    after
+      Process.delete(buffer_key)
+    end
+  end
+
+  defp emit_stream_chunk(parent, buffer_key, chunk) do
+    parts = String.split(Process.get(buffer_key, "") <> chunk, "\n")
+    {complete, [rest]} = Enum.split(parts, -1)
+    Process.put(buffer_key, rest)
+
+    for line when line != "" <- complete do
+      case StrictDecoder.decode(line) do
+        {:ok, event} when is_map(event) -> send(parent, {:ndjson_event, event})
+        _ -> :ok
+      end
     end
   end
 end

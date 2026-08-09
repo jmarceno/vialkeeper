@@ -287,6 +287,23 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     {:reply, {:ok, value}, state}
   end
 
+  defp mutate({:ok, %{last_sequence: sequence} = value}, state)
+       when is_integer(sequence) and sequence > 0 do
+    ChangeNotifier.publish(state.uuid, sequence)
+    {:reply, {:ok, value}, state}
+  end
+
+  defp mutate({:ok, values} = result, state) when is_list(values) do
+    sequence =
+      Enum.reduce(values, 0, fn
+        %{sequence: value}, maximum when is_integer(value) -> max(maximum, value)
+        _value, maximum -> maximum
+      end)
+
+    if sequence > 0, do: ChangeNotifier.publish(state.uuid, sequence)
+    {:reply, result, state}
+  end
+
   defp mutate({:ok, value}, state), do: {:reply, {:ok, value}, state}
   defp mutate({:error, _} = result, state), do: {:reply, result, state}
   defp reply(result, state), do: {:reply, result, state}

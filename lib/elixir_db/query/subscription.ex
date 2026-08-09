@@ -45,7 +45,6 @@ defmodule ElixirDB.Query.Subscription do
            request: request,
            snapshot_sequence: nil,
            snapshot_documents: [],
-           snapshot_index: 0,
            membership: MapSet.new(),
            queue: :queue.new(),
            waiter: nil,
@@ -91,23 +90,14 @@ defmodule ElixirDB.Query.Subscription do
   def handle_call(
         :next,
         _from,
-        %{status: :draining_snapshot, snapshot_index: index, snapshot_documents: documents} = state
-      )
-      when index < length(documents) do
-    document = Enum.at(documents, index)
-
+        %{status: :draining_snapshot, snapshot_documents: [document | documents]} = state
+      ) do
     {:reply, {:ok, Events.snapshot(state.snapshot_sequence, document)},
-     %{state | snapshot_index: index + 1}}
+     %{state | snapshot_documents: documents}}
   end
 
-  def handle_call(
-        :next,
-        _from,
-        %{status: :draining_snapshot, snapshot_index: index, snapshot_documents: documents} = state
-      )
-      when index == length(documents) do
-    activate_after_snapshot(state)
-  end
+  def handle_call(:next, _from, %{status: :draining_snapshot, snapshot_documents: []} = state),
+    do: activate_after_snapshot(state)
 
   def handle_call(:next, from, %{status: :active, queue: queue} = state) do
     case :queue.out(queue) do
@@ -163,7 +153,6 @@ defmodule ElixirDB.Query.Subscription do
               state
               | snapshot_documents: documents,
                 snapshot_sequence: sequence,
-                snapshot_index: 0,
                 membership: MapSet.new(member_ids),
                 status: :draining_snapshot
             }
@@ -230,20 +219,25 @@ defmodule ElixirDB.Query.Subscription do
   end
 
   def handle_info(:subscription_reset, state) do
-    state = %{
-      state
-      | status: :awaiting_snapshot,
-        membership: MapSet.new(),
-        snapshot_documents: [],
-        snapshot_index: 0,
-        snapshot_sequence: nil,
-        queue: :queue.new(),
-        reset_pending: true,
-        terminal: nil
-    }
+    case refresh_reset_limits(state) do
+      {:ok, state} ->
+        state = %{
+          state
+          | status: :awaiting_snapshot,
+            membership: MapSet.new(),
+            snapshot_documents: [],
+            snapshot_sequence: nil,
+            queue: :queue.new(),
+            reset_pending: true,
+            terminal: nil
+        }
 
-    send(self(), :execute_snapshot)
-    {:noreply, state}
+        send(self(), :execute_snapshot)
+        {:noreply, state}
+
+      {:error, error} ->
+        fail_and_wake(state, error)
+    end
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{client_ref: ref} = state) do
@@ -328,29 +322,21 @@ defmodule ElixirDB.Query.Subscription do
   end
 
   defp drain_next_reply(
-         %{status: :draining_snapshot, snapshot_index: index, snapshot_documents: documents} = state
-       )
-       when index < length(documents) do
-    document = Enum.at(documents, index)
-
+         %{status: :draining_snapshot, snapshot_documents: [document | documents]} = state
+       ) do
     {:reply, {:ok, Events.snapshot(state.snapshot_sequence, document)},
-     %{state | snapshot_index: index + 1}}
+     %{state | snapshot_documents: documents}}
   end
 
-  defp drain_next_reply(
-         %{status: :draining_snapshot, snapshot_index: index, snapshot_documents: documents} = state
-       )
-       when index == length(documents) do
-    activate_after_snapshot(state)
-  end
+  defp drain_next_reply(%{status: :draining_snapshot, snapshot_documents: []} = state),
+    do: activate_after_snapshot(state)
 
   defp drain_next_reply(_state), do: :wait
 
-  defp activate_after_snapshot(%{snapshot_index: index, snapshot_sequence: sequence} = state) do
+  defp activate_after_snapshot(%{snapshot_sequence: sequence} = state) do
     case SubscriptionHub.activate(state.uuid, self(), sequence) do
       :ok ->
-        {:reply, {:ok, Events.caught_up(sequence)},
-         %{state | status: :active, snapshot_index: index + 1}}
+        {:reply, {:ok, Events.caught_up(sequence)}, %{state | status: :active}}
 
       {:error, %ElixirDB.Error{} = error} ->
         cancel_timer(state)
@@ -380,6 +366,34 @@ defmodule ElixirDB.Query.Subscription do
 
   defp snapshot_request(request) do
     Map.take(request, [:selector, :predicate, :fields, :max_members])
+  end
+
+  defp refresh_reset_limits(state) do
+    case DatabaseCatalog.command(state.uuid, {:command, :identity, %{}}) do
+      {:ok, %{config: config}} when is_map(config) ->
+        case get_in(config, ["subscriptions", "max_members"]) do
+          max_members when is_integer(max_members) and max_members > 0 ->
+            {:ok, %{state | request: %{state.request | max_members: max_members}}}
+
+          _ ->
+            {:error,
+             ElixirDB.Error.database_unavailable(
+               "subscription max_members configuration is invalid"
+             )}
+        end
+
+      {:ok, _identity} ->
+        {:error, ElixirDB.Error.database_unavailable("subscription configuration is invalid")}
+
+      {:error, %ElixirDB.Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error,
+         ElixirDB.Error.database_unavailable("subscription configuration refresh failed", %{
+           cause: inspect(reason)
+         })}
+    end
   end
 
   defp cancel_timer(%{heartbeat_timer: nil}), do: :ok

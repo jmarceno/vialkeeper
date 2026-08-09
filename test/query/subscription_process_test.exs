@@ -1,6 +1,7 @@
 defmodule ElixirDB.Query.SubscriptionProcessTest do
   use ExUnit.Case, async: false
 
+  alias ElixirDB.Eventual
   alias ElixirDB.Query.Subscriptions
   alias ElixirDB.Runtime.DatabaseCatalog
 
@@ -73,7 +74,16 @@ defmodule ElixirDB.Query.SubscriptionProcessTest do
       end)
 
     assert_receive {:waiter_started, waiter}, 1_000
-    Process.sleep(20)
+
+    Eventual.eventually(
+      fn ->
+        case :sys.get_state(pid).waiter do
+          nil -> false
+          _from -> :ok
+        end
+      end,
+      message: "expected subscription to hold the first next caller"
+    )
 
     assert {:error, %ElixirDB.Error{code: :invalid_request}} = Subscriptions.next(pid, 1_000)
     Process.exit(waiter, :kill)
@@ -106,8 +116,13 @@ defmodule ElixirDB.Query.SubscriptionProcessTest do
     assert_receive {:opened, pid}, 5_000
     assert Process.alive?(pid)
     Process.exit(client, :kill)
-    Process.sleep(100)
-    refute Process.alive?(pid)
+
+    Eventual.eventually(
+      fn ->
+        if Process.alive?(pid), do: false, else: :ok
+      end,
+      message: "expected client death to terminate the subscription"
+    )
   end
 
   test "supervisor and hub are registered after open", %{uuid: uuid} do

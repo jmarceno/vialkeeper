@@ -211,9 +211,13 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     # The database.open span wraps this call in the CALLER process (see open/1),
     # per Plan §5.1. Rejected opens (unavailable/in_use) become
     # outcome: :rejected there but keep span status UNSET (expected outcomes).
-    case open_runtime(state, uuid) do
-      {:ok, info, new_state} -> {:reply, {:ok, info}, new_state}
-      {:error, error, new_state} -> {:reply, {:error, error}, new_state}
+    if Map.has_key?(state.close_operations, uuid) do
+      {:reply, {:error, ElixirDB.Error.database_closed("database is closing")}, state}
+    else
+      case open_runtime(state, uuid) do
+        {:ok, info, new_state} -> {:reply, {:ok, info}, new_state}
+        {:error, error, new_state} -> {:reply, {:error, error}, new_state}
+      end
     end
   end
 
@@ -251,14 +255,18 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     # unanticipated raise/throw from the adapter or admission layer would otherwise crash
     # this process and propagate a GenServer.call exit to *every* concurrent caller. Catch
     # any exception here and convert it to a typed internal_error so the catalog survives.
-    case open_runtime(state, uuid) do
-      {:ok, _info, state} ->
-        run_command(uuid, command)
-        |> command_reply(state)
+    if Map.has_key?(state.close_operations, uuid) do
+      {:reply, {:error, ElixirDB.Error.database_closed("database is closing")}, state}
+    else
+      case open_runtime(state, uuid) do
+        {:ok, _info, state} ->
+          run_command(uuid, command)
+          |> command_reply(state)
 
-      {:error, error, state} ->
-        {:error, error}
-        |> command_reply(state)
+        {:error, error, state} ->
+          {:error, error}
+          |> command_reply(state)
+      end
     end
   catch
     kind, reason ->

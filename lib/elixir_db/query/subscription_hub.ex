@@ -352,6 +352,9 @@ defmodule ElixirDB.Query.SubscriptionHub do
     end
   end
 
+  defp apply_read_result(%{resetting: true} = state, {:ok, _result}),
+    do: finish_read(state)
+
   defp apply_read_result(state, {:ok, %{results: []} = result}) do
     has_more = Map.get(result, :has_more, false)
     last_sequence = Map.get(result, :last_sequence, state.cursor_sequence)
@@ -390,7 +393,9 @@ defmodule ElixirDB.Query.SubscriptionHub do
         do: %{state | reset_floor: max(state.reset_floor || 0, floor)},
         else: state
 
-    reset_all_subscriptions(state)
+    state
+    |> cancel_read_task()
+    |> reset_all_subscriptions()
   end
 
   defp begin_history_reset(state, error) do

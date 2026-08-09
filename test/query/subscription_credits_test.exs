@@ -49,8 +49,7 @@ defmodule ElixirDB.Query.SubscriptionCreditsTest do
     revision =
       Enum.reduce(1..(@buffer + 5), revision, fn value, current ->
         assert {:ok, %{revision: next}} = put(uuid, "doc", %{"value" => value}, current)
-        # Give the fast consumer time to return credits between batches.
-        Process.sleep(20)
+        assert_receive {:fast_count, count} when count >= value, 5_000
         next
       end)
 
@@ -58,8 +57,6 @@ defmodule ElixirDB.Query.SubscriptionCreditsTest do
              Subscriptions.next(slow, 5_000)
 
     refute Process.alive?(slow)
-
-    assert_receive {:fast_count, count} when count >= @buffer + 5, 5_000
 
     assert {:ok, %{revision: newer}} = put(uuid, "doc", %{"value" => 99}, revision)
 
@@ -167,18 +164,43 @@ defmodule ElixirDB.Query.SubscriptionCreditsTest do
     assert {:ok, subscription} = open_subscription(uuid)
     assert {:ok, %{type: :caught_up}} = drain_snapshot(subscription)
 
+    [{hub, _}] =
+      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+
     # Use one credit without consuming, leaving one credit available.
-    assert {:ok, %{revision: revision}} = put(uuid, "doc", %{"value" => 1}, revision)
-    Process.sleep(50)
+    assert {:ok, %{revision: revision, sequence: first_sequence}} =
+             put(uuid, "doc", %{"value" => 1}, revision)
+
+    Eventual.eventually(
+      fn ->
+        hub_state = :sys.get_state(hub)
+        subscription_state = :sys.get_state(subscription)
+
+        if hub_state.cursor_sequence >= first_sequence and :queue.len(subscription_state.queue) == 1,
+          do: :ok,
+          else: false
+      end,
+      message: "expected matching update to be queued"
+    )
 
     # Non-matching update consumes then returns credit after filter evaluation.
-    assert {:ok, _} =
+    assert {:ok, %{sequence: other_sequence}} =
              Documents.put(uuid, %{
                id: "other",
                body: %{"kind" => "note", "value" => 1}
              })
 
-    Process.sleep(50)
+    Eventual.eventually(
+      fn ->
+        hub_state = :sys.get_state(hub)
+        subscription_state = :sys.get_state(subscription)
+
+        if hub_state.cursor_sequence >= other_sequence and :queue.len(subscription_state.queue) == 1,
+          do: :ok,
+          else: false
+      end,
+      message: "expected non-matching update to return its credit"
+    )
 
     assert {:ok, %{revision: matching}} = put(uuid, "doc", %{"value" => 2}, revision)
 

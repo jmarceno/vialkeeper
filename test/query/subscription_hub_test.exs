@@ -55,6 +55,31 @@ defmodule ElixirDB.Query.SubscriptionHubTest do
     assert sequence_two > sequence_one
   end
 
+  test "fans out committed bulk mutations", %{uuid: uuid} do
+    assert {:ok, subscription} = open_subscription(uuid)
+    assert {:ok, %{type: :caught_up}} = Subscriptions.next(subscription)
+
+    assert {:ok, [%{revision: first_revision}, %{revision: second_revision}]} =
+             ElixirDB.Documents.bulk_write(uuid, [
+               %{
+                 "type" => "put",
+                 "id" => "bulk-a",
+                 "body" => %{"kind" => "task", "value" => 1}
+               },
+               %{
+                 "type" => "put",
+                 "id" => "bulk-b",
+                 "body" => %{"kind" => "task", "value" => 2}
+               }
+             ])
+
+    assert {:ok, %{type: :upsert, document: %{id: "bulk-a", revision: ^first_revision}}} =
+             Subscriptions.next(subscription)
+
+    assert {:ok, %{type: :upsert, document: %{id: "bulk-b", revision: ^second_revision}}} =
+             Subscriptions.next(subscription)
+  end
+
   test "shares one fanout event with all active subscribers", %{uuid: uuid} do
     assert {:ok, %{revision: initial_revision}} = put(uuid, "doc", %{"value" => 0})
     assert {:ok, first} = open_subscription(uuid)

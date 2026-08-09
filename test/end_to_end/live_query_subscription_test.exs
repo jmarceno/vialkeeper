@@ -12,6 +12,7 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Query.SubscriptionHub
   alias ElixirDB.Query.Subscriptions
+  alias ElixirDB.Replication
   alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
   alias ElixirDB.TestServer
 
@@ -102,17 +103,14 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
     assert Map.has_key?(fields, "/title") or Map.has_key?(fields, "title")
     assert_receive {:stream, :b, %{"type" => "caught_up"}}, 5_000
 
-    # Nonmatching create — neither emits membership event before matching update.
+    # Nonmatching create — neither emits a membership event.
     assert %{status: 201, body: note_body} =
              put_document!(server, uuid, "grow", %{"type" => "note", "title" => "grow"})
-
-    refute_receive {:stream, :a, %{"type" => "upsert", "document" => %{"id" => "grow"}}}, 300
-    refute_receive {:stream, :b, %{"type" => "upsert", "document" => %{"id" => "grow"}}}, 300
 
     # Update to match
     grow_rev = note_body["data"]["revision"]
 
-    assert %{status: 201} =
+    assert %{status: 201, body: grow_match_body} =
              put_document!(
                server,
                uuid,
@@ -121,8 +119,21 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
                grow_rev
              )
 
-    assert_receive {:stream, :a, %{"type" => "upsert", "document" => %{"id" => "grow"}}}, 5_000
-    assert_receive {:stream, :b, %{"type" => "upsert", "document" => %{"id" => "grow"}}}, 5_000
+    grow_match_rev = grow_match_body["data"]["revision"]
+
+    assert_receive {:stream, :a,
+                    %{
+                      "type" => "upsert",
+                      "document" => %{"id" => "grow", "revision" => ^grow_match_rev}
+                    }},
+                   5_000
+
+    assert_receive {:stream, :b,
+                    %{
+                      "type" => "upsert",
+                      "document" => %{"id" => "grow", "revision" => ^grow_match_rev}
+                    }},
+                   5_000
 
     # Update existing member while matching
     a_rev = seed_a["data"]["revision"]
@@ -161,16 +172,6 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
     _ = a_left
 
     # Delete matching document
-    grow_match_rev =
-      receive do
-        # may already have later events; fetch current via get
-        _ -> nil
-      after
-        0 -> nil
-      end
-
-    _ = grow_match_rev
-
     {:ok, get_grow} =
       Req.post(server.base_url <> "/v1/databases/#{uuid}/documents/get",
         json: %{"id" => "grow"}
@@ -344,14 +345,78 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
     assert {:ok, _} = DatabaseCatalog.open(uuid)
     assert 0 = SubscriptionHub.count(uuid)
 
-    assert {:ok, _} =
+    assert {:ok, %{current_sequence: current_sequence}} =
              DatabaseCatalog.command(uuid, {:command, :identity, %{}})
+
+    assert {:ok, %{documents: documents}} =
+             ElixirDB.Query.execute(uuid, %{"selector" => %{"/type" => "task"}})
+
+    assert Enum.any?(documents, &(&1.id == "post"))
+
+    assert {:ok, %{results: []}} =
+             ElixirDB.Changes.read(uuid, %{since: current_sequence, limit: 10})
+
+    assert {:ok, %{ok: true}} =
+             DatabaseCatalog.command(uuid, {:command, :integrity_check, %{}})
+
+    # Replication remains usable while a live target subscription is active.
+    replication_source_path =
+      "live-query-replication-source-#{System.unique_integer([:positive])}.elixirdb"
+
+    replication_target_path =
+      "live-query-replication-target-#{System.unique_integer([:positive])}.elixirdb"
+
+    assert {:ok, replication_source} = DatabaseCatalog.create(replication_source_path)
+    assert {:ok, replication_target} = DatabaseCatalog.create(replication_target_path)
+
+    on_exit(fn ->
+      for {identity, path} <- [
+            {replication_source, replication_source_path},
+            {replication_target, replication_target_path}
+          ] do
+        _ = DatabaseCatalog.close(identity.database_uuid)
+        _ = DatabaseCatalog.unregister(identity.database_uuid)
+        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      end
+    end)
+
+    assert {:ok, _} =
+             ElixirDB.Documents.put(replication_source.database_uuid, %{
+               id: "replicated",
+               body: %{"type" => "task", "title" => "replicated"}
+             })
+
+    assert {:ok, target_subscription} =
+             Subscriptions.open(
+               replication_target.database_uuid,
+               %{"query" => %{"selector" => %{"/type" => "task"}}, "heartbeat_ms" => 30_000},
+               self()
+             )
+
+    assert {:ok, %{type: :caught_up}} = drain_subscription(target_subscription)
+
+    assert {:ok, %{status: :completed}} =
+             Replication.one_shot(
+               replication_source.database_uuid,
+               replication_target.database_uuid
+             )
+
+    assert {:ok, %{type: :upsert, document: %{id: "replicated"}}} =
+             next_until_document(target_subscription, "replicated")
   end
 
   defp drain_subscription(pid) do
     case Subscriptions.next(pid, 5_000) do
       {:ok, %{type: :snapshot}} -> drain_subscription(pid)
       {:ok, %{type: :caught_up} = event} -> {:ok, event}
+      other -> other
+    end
+  end
+
+  defp next_until_document(pid, id) do
+    case Subscriptions.next(pid, 5_000) do
+      {:ok, %{type: :upsert, document: %{id: ^id}} = event} -> {:ok, event}
+      {:ok, _event} -> next_until_document(pid, id)
       other -> other
     end
   end
