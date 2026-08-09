@@ -2,7 +2,8 @@ Always use elixir-safe-code skill when writing code.
 
 When receiving a document as a wiki link, this means that document is inside the user UnboundMark workspace, use the UnboundMark MCP to retrieve the document.
 
-Authoritative source docs and plans are inside folder `folder-id:4007e0d9-3cf2-4f17-a694-5680200d6547` in UnboundMark.
+**Authoritative source docs and plans are inside folder `folder-id:4007e0d9-3cf2-4f17-a694-5680200d6547` in UnboundMark.**
+**All supporting docs must be created and maintained inside UnboundMark and not on this repo.**
 
 Never weaken test guarantees.
 
