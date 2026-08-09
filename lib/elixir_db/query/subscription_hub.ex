@@ -137,9 +137,9 @@ defmodule ElixirDB.Query.SubscriptionHub do
       nil ->
         {:noreply, state}
 
-      subscription ->
+      %{credits: credits, max_buffered_events: maximum} = subscription ->
         {:noreply,
-         put_subscription(state, pid, %{subscription | credits: subscription.credits + 1})}
+         put_subscription(state, pid, %{subscription | credits: min(credits + 1, maximum)})}
     end
   end
 
