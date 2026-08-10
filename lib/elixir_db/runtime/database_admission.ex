@@ -46,7 +46,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
             mode: :permit | {:execute, (-> term())},
             owner_fun: nil | (-> term()),
             trace_context: term(),
-            probe_op: atom() | nil
+            probe_op: term() | nil
           }
   end
 
@@ -69,6 +69,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
                   :executor_pid,
                   :executor_monitor_ref,
                   :trace_context,
+                  :probe_op,
                   executor_started?: false
                 ]
 
@@ -86,6 +87,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
             executor_pid: pid() | nil,
             executor_monitor_ref: reference() | nil,
             trace_context: term() | nil,
+            probe_op: term() | nil,
             executor_started?: boolean()
           }
   end
@@ -105,7 +107,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
           active: active_permit() | nil,
           closing?: boolean(),
           admitted_command_supervisor: pid(),
-          idle_waiters: [GenServer.from()]
+          idle_waiters: [GenServer.from()],
+          peak_occupancy: non_neg_integer()
         }
 
   @enforce_keys [
@@ -120,7 +123,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     :active,
     :closing?,
     :admitted_command_supervisor,
-    :idle_waiters
+    :idle_waiters,
+    :peak_occupancy
   ]
   defstruct @enforce_keys
 
@@ -207,11 +211,11 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     )
   end
 
-  @spec execute_owner(binary(), service_class(), (-> term()), timeout()) ::
+  @spec execute_owner(binary(), service_class(), (-> term()), timeout(), term()) ::
           term() | {:error, Error.t()}
-  def execute_owner(uuid, class, owner_fun, timeout \\ @default_timeout)
+  def execute_owner(uuid, class, owner_fun, timeout \\ @default_timeout, probe_op \\ nil)
       when is_binary(uuid) and is_function(owner_fun, 0) do
-    execute_owner_with_deadline(uuid, class, owner_fun, Deadline.from_timeout(timeout), nil)
+    execute_owner_with_deadline(uuid, class, owner_fun, Deadline.from_timeout(timeout), probe_op)
   end
 
   defp execute_owner_with_deadline(uuid, class, owner_fun, :infinity, probe_op)
@@ -274,10 +278,19 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   @spec stats(binary()) :: {:ok, map()} | {:error, Error.t()}
   def stats(uuid), do: call(uuid, :stats)
 
+  @spec reset_peak_occupancy(binary()) :: :ok | {:error, Error.t()}
+  def reset_peak_occupancy(uuid), do: call(uuid, :reset_peak_occupancy)
+
   @spec active_count(binary()) :: {:ok, non_neg_integer()} | {:error, Error.t()}
   def active_count(uuid) do
     with {:ok, stats} <- stats(uuid) do
-      {:ok, Map.fetch!(stats, :total_occupancy)}
+      active =
+        case Map.fetch!(stats, :active_class) do
+          nil -> 0
+          _ -> 1
+        end
+
+      {:ok, active}
     end
   end
 
@@ -303,7 +316,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
            active: nil,
            closing?: false,
            admitted_command_supervisor: admitted_command_supervisor,
-           idle_waiters: []
+           idle_waiters: [],
+           peak_occupancy: 0
          }}
 
       {:error, :not_found} ->
@@ -336,19 +350,11 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   end
 
   def handle_call(:stats, _from, state) do
-    queued = queued_counts(state)
+    {:reply, {:ok, stats_snapshot(state)}, state}
+  end
 
-    stats = %{
-      active_class: active_class(state),
-      queued_foreground: Map.fetch!(queued, :foreground),
-      queued_subscription: Map.fetch!(queued, :subscription),
-      queued_replication: Map.fetch!(queued, :replication),
-      queued_maintenance: Map.fetch!(queued, :maintenance),
-      total_occupancy: total_occupancy(state),
-      closing?: state.closing?
-    }
-
-    {:reply, {:ok, stats}, state}
+  def handle_call(:reset_peak_occupancy, _from, state) do
+    {:reply, :ok, %{state | peak_occupancy: total_occupancy(state)}}
   end
 
   def handle_call({:acquire, request_ref, class, deadline_ms, mode}, from, state) do
@@ -407,18 +413,26 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
         %ActivePermit{request_ref: ^request_ref, executor_started?: true} = active ->
           abandon_post_start(state, active)
 
-        %ActivePermit{request_ref: ^request_ref} = active ->
+        %ActivePermit{request_ref: ^request_ref, from: from} = active ->
+          if from, do: GenServer.reply(from, deadline_error())
           abandon_pre_start(state, active)
 
         _ ->
-          if Map.has_key?(state.waiting_by_ref, request_ref) do
-            remove_queued_waiter_with_outcome(state, request_ref, :cancelled)
-          else
-            state
-          end
+          cancel_queued_waiter(state, request_ref)
       end
 
     {:reply, :ok, grant_loop(state)}
+  end
+
+  defp cancel_queued_waiter(%__MODULE__{} = state, request_ref) do
+    case Map.fetch(state.waiting_by_ref, request_ref) do
+      {:ok, %Waiter{from: from}} ->
+        if from, do: GenServer.reply(from, deadline_error())
+        remove_queued_waiter_with_outcome(state, request_ref, :cancelled)
+
+      :error ->
+        state
+    end
   end
 
   @impl true
@@ -511,9 +525,11 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
         state =
           state
           |> enqueue_waiter(waiter)
-          |> grant_loop()
+          |> track_peak_occupancy()
 
-        {:noreply, state}
+        notify_test_hook(:enqueued, waiter.request_ref, class, probe_op, waiter.caller_pid)
+
+        {:noreply, grant_loop(state)}
 
       true ->
         DatabaseInstrumentation.overload(state.uuid)
@@ -637,6 +653,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   defp scan_grant(_state, _schedule_len, _offset), do: :none
 
   defp grant_waiter(%__MODULE__{} = state, request_ref, class, %Waiter{} = waiter) do
+    notify_test_hook(:granted, request_ref, class, waiter.probe_op)
     probe_admission_class(class, waiter.probe_op)
     token = make_ref()
     granted_at_ms = System.monotonic_time(:millisecond)
@@ -668,7 +685,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
           from: nil
         }
 
-        %{state | active: active}
+        state |> Map.put(:active, active) |> track_peak_occupancy()
 
       {:execute, _owner_fun} ->
         if Deadline.exhausted?(waiter.deadline_ms) do
@@ -687,10 +704,14 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
             deadline_ms: waiter.deadline_ms,
             from: waiter.from,
             owner_fun: waiter.owner_fun,
-            trace_context: waiter.trace_context
+            trace_context: waiter.trace_context,
+            probe_op: waiter.probe_op
           }
 
-          start_executor(%{state | active: active})
+          state
+          |> Map.put(:active, active)
+          |> track_peak_occupancy()
+          |> start_executor()
         end
     end
   end
@@ -702,7 +723,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
       request_ref: active.request_ref,
       owner_fun: active.owner_fun,
       deadline_ms: active.deadline_ms,
-      trace_context: active.trace_context
+      trace_context: active.trace_context,
+      probe_op: active.probe_op
     }
 
     case AdmittedCommand.start(state.admitted_command_supervisor, args) do
@@ -805,7 +827,9 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
 
   defp terminate_executor(%__MODULE__{} = state, %ActivePermit{executor_pid: pid})
        when is_pid(pid) do
-    if Process.alive?(pid), do: Process.exit(pid, :shutdown)
+    # AdmittedCommand may be blocked inside handle_info/2 (test sync gate). GenServers
+    # trap exits, so :shutdown would not interrupt that receive; :kill is required.
+    if Process.alive?(pid), do: Process.exit(pid, :kill)
     state
   end
 
@@ -820,6 +844,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
 
     state
     |> Map.put(:active, nil)
+    |> track_peak_occupancy()
     |> notify_idle()
   end
 
@@ -929,6 +954,45 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     case Application.get_env(:elixir_db, :admission_class_probe) do
       {pid, ref} when is_pid(pid) and is_reference(ref) ->
         send(pid, {ref, :admission_grant, class, probe_op})
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp stats_snapshot(%__MODULE__{} = state) do
+    queued = queued_counts(state)
+
+    %{
+      active_class: active_class(state),
+      queued_foreground: Map.fetch!(queued, :foreground),
+      queued_subscription: Map.fetch!(queued, :subscription),
+      queued_replication: Map.fetch!(queued, :replication),
+      queued_maintenance: Map.fetch!(queued, :maintenance),
+      total_occupancy: total_occupancy(state),
+      peak_occupancy: state.peak_occupancy,
+      closing?: state.closing?
+    }
+  end
+
+  defp track_peak_occupancy(%__MODULE__{} = state) do
+    %{state | peak_occupancy: max(state.peak_occupancy, total_occupancy(state))}
+  end
+
+  defp notify_test_hook(:enqueued, request_ref, class, probe_op, caller_pid) do
+    case Application.get_env(:elixir_db, :admission_test_hook) do
+      {pid, ref} when is_pid(pid) and is_reference(ref) ->
+        send(pid, {ref, :enqueued, request_ref, class, probe_op, caller_pid})
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp notify_test_hook(event, request_ref, class, probe_op) do
+    case Application.get_env(:elixir_db, :admission_test_hook) do
+      {pid, ref} when is_pid(pid) and is_reference(ref) ->
+        send(pid, {ref, event, request_ref, class, probe_op})
 
       _ ->
         :ok

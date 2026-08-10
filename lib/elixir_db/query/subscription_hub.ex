@@ -282,15 +282,27 @@ defmodule ElixirDB.Query.SubscriptionHub do
   defp schedule_read(%{read_task: %Task{}} = state), do: %{state | read_pending: true}
 
   defp schedule_read(state) do
-    uuid = state.uuid
-    since = state.cursor_sequence
+    if subscription_hub_reads_paused?(state.uuid) do
+      %{state | read_pending: true}
+    else
+      uuid = state.uuid
+      since = state.cursor_sequence
 
-    task =
-      Task.Supervisor.async_nolink(ElixirDB.TaskSupervisor, fn ->
-        fetch_batch(uuid, since)
-      end)
+      task =
+        Task.Supervisor.async_nolink(ElixirDB.TaskSupervisor, fn ->
+          fetch_batch(uuid, since)
+        end)
 
-    %{state | reading: true, read_pending: false, read_task: task}
+      %{state | reading: true, read_pending: false, read_task: task}
+    end
+  end
+
+  defp subscription_hub_reads_paused?(uuid) when is_binary(uuid) do
+    case Application.get_env(:elixir_db, :subscription_hub_pause_reads) do
+      ^uuid -> true
+      true -> true
+      _ -> false
+    end
   end
 
   defp finish_read(%{read_pending: true} = state),
@@ -299,6 +311,15 @@ defmodule ElixirDB.Query.SubscriptionHub do
   defp finish_read(state), do: state
 
   defp fetch_batch(uuid, since) do
+    # Test barrier: in-flight hub tasks must not acquire after pause is set.
+    if subscription_hub_reads_paused?(uuid) do
+      {:ok, %{normalize_changes_result(%{}) | last_sequence: since}}
+    else
+      fetch_batch_unpaused(uuid, since)
+    end
+  end
+
+  defp fetch_batch_unpaused(uuid, since) do
     case DatabaseCatalog.command_as(
            uuid,
            :subscription,

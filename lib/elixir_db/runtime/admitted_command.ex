@@ -11,7 +11,8 @@ defmodule ElixirDB.Runtime.AdmittedCommand do
           request_ref: reference(),
           owner_fun: (-> term()),
           deadline_ms: Deadline.t(),
-          trace_context: term()
+          trace_context: term(),
+          probe_op: term() | nil
         }
 
   @spec start(pid(), args()) :: {:ok, pid()} | {:error, term()}
@@ -36,7 +37,7 @@ defmodule ElixirDB.Runtime.AdmittedCommand do
 
   @impl true
   def handle_info(:run, state) do
-    sync_before_begin(state.uuid)
+    sync_before_begin(state.uuid, state[:probe_op])
 
     result =
       case GenServer.call(
@@ -44,8 +45,18 @@ defmodule ElixirDB.Runtime.AdmittedCommand do
              {:admitted_command_begin, state.request_ref, self()},
              5_000
            ) do
-        :proceed -> {:run, run_owner_fun(state.owner_fun, state.deadline_ms, state.trace_context)}
-        :cancel -> :cancelled
+        :proceed ->
+          {:run,
+           run_owner_fun(
+             state.uuid,
+             state.owner_fun,
+             state.deadline_ms,
+             state.trace_context,
+             state[:probe_op]
+           )}
+
+        :cancel ->
+          :cancelled
       end
 
     try do
@@ -63,28 +74,47 @@ defmodule ElixirDB.Runtime.AdmittedCommand do
     send(state.scheduler_pid, {:admitted_command_done, state.request_ref, result})
   end
 
-  defp sync_before_begin(uuid) when is_binary(uuid) do
+  defp sync_before_begin(uuid, probe_op) when is_binary(uuid) do
     case Application.get_env(:elixir_db, :admitted_command_sync) do
+      {pid, ref, ^uuid, only_op} when is_pid(pid) and only_op == probe_op ->
+        wait_for_sync_gate(pid, ref, :before_begin)
+
       {pid, ref, ^uuid} when is_pid(pid) ->
-        wait_for_sync_gate(pid, ref)
+        wait_for_sync_gate(pid, ref, :before_begin)
 
       {pid, ref} when is_pid(pid) ->
-        wait_for_sync_gate(pid, ref)
+        wait_for_sync_gate(pid, ref, :before_begin)
 
       _ ->
         :ok
     end
   end
 
-  defp wait_for_sync_gate(pid, ref) do
-    send(pid, {ref, :before_begin, self()})
+  defp sync_owner_body(uuid, probe_op) when is_binary(uuid) do
+    case Application.get_env(:elixir_db, :admitted_command_owner_body_sync) do
+      {pid, ref, ^uuid, only_op} when is_pid(pid) and only_op == probe_op ->
+        wait_for_sync_gate(pid, ref, :owner_body)
+
+      {pid, ref, ^uuid} when is_pid(pid) ->
+        wait_for_sync_gate(pid, ref, :owner_body)
+
+      {pid, ref} when is_pid(pid) ->
+        wait_for_sync_gate(pid, ref, :owner_body)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp wait_for_sync_gate(pid, ref, event) do
+    send(pid, {ref, event, self()})
 
     receive do
       {:go, ^ref} -> :ok
     end
   end
 
-  defp run_owner_fun(owner_fun, deadline_ms, trace_context) do
+  defp run_owner_fun(uuid, owner_fun, deadline_ms, trace_context, probe_op) do
     if Deadline.exhausted?(deadline_ms) do
       {:error,
        Error.internal_error("database command timed out", %{
@@ -93,6 +123,8 @@ defmodule ElixirDB.Runtime.AdmittedCommand do
     else
       with_trace_context(trace_context, fn ->
         try do
+          # Test barrier after executor_started? and before the owner call body.
+          sync_owner_body(uuid, probe_op)
           owner_fun.()
         catch
           kind, reason ->

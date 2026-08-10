@@ -630,6 +630,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   defp close_runtime(uuid) do
+    # Prefer checking external close blockers before begin_close (§15). Active
+    # replication remains a hard blocker; callers must disable jobs first.
     with false <- JobManager.active?(uuid),
          :ok <- drain_admission(uuid) do
       close_runtime_after_admission_drain(uuid)

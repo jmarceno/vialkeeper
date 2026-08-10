@@ -33,7 +33,8 @@ defmodule ElixirDB.Query.Subscription do
            self(),
            request.max_buffered_events,
            request.max_active
-         ) do
+         )
+         |> normalize_hub_result() do
       {:ok, _hub_sequence} ->
         send(self(), :execute_snapshot)
 
@@ -57,10 +58,6 @@ defmodule ElixirDB.Query.Subscription do
 
       {:error, %ElixirDB.Error{} = error} ->
         {:stop, error}
-
-      {:error, reason} ->
-        {:stop,
-         ElixirDB.Error.database_unavailable("subscription hub failed", %{cause: inspect(reason)})}
     end
   end
 
@@ -138,6 +135,10 @@ defmodule ElixirDB.Query.Subscription do
 
   @impl true
   def handle_info(:execute_snapshot, %{status: :awaiting_snapshot} = state) do
+    # Test barrier: allow E2E to finish hub read_changes before the live
+    # subscription's own snapshot admission starts (occupancy proof).
+    sync_execute_snapshot(state.uuid)
+
     result =
       DatabaseCatalog.command_as(state.uuid, :subscription, {
         :command,
@@ -369,7 +370,10 @@ defmodule ElixirDB.Query.Subscription do
   end
 
   defp refresh_reset_limits(state) do
-    case DatabaseCatalog.command_as(state.uuid, :subscription, {:command, :identity, %{}}) do
+    state.uuid
+    |> DatabaseCatalog.command_as(:subscription, {:command, :identity, %{}})
+    |> normalize_catalog_result()
+    |> case do
       {:ok, %{config: config}} when is_map(config) ->
         case get_in(config, ["subscriptions", "max_members"]) do
           max_members when is_integer(max_members) and max_members > 0 ->
@@ -387,14 +391,49 @@ defmodule ElixirDB.Query.Subscription do
 
       {:error, %ElixirDB.Error{} = error} ->
         {:error, error}
-
-      {:error, reason} ->
-        {:error,
-         ElixirDB.Error.database_unavailable("subscription configuration refresh failed", %{
-           cause: inspect(reason)
-         })}
     end
   end
+
+  @spec normalize_hub_result(term()) :: {:ok, term()} | {:error, ElixirDB.Error.t()}
+  defp normalize_hub_result({:ok, value}), do: {:ok, value}
+
+  defp normalize_hub_result({:error, %ElixirDB.Error{} = error}), do: {:error, error}
+
+  defp normalize_hub_result({:error, reason}),
+    do:
+      {:error,
+       ElixirDB.Error.database_unavailable("subscription hub failed", %{cause: inspect(reason)})}
+
+  defp normalize_hub_result(other),
+    do:
+      {:error,
+       ElixirDB.Error.database_unavailable("subscription hub failed", %{cause: inspect(other)})}
+
+  defp sync_execute_snapshot(uuid) when is_binary(uuid) do
+    case Application.get_env(:elixir_db, :subscription_execute_snapshot_sync) do
+      {pid, ref, ^uuid} when is_pid(pid) and is_reference(ref) ->
+        send(pid, {ref, :execute_snapshot_ready, self()})
+
+        receive do
+          {:go, ^ref} -> :ok
+        end
+
+      {pid, ref} when is_pid(pid) and is_reference(ref) ->
+        send(pid, {ref, :execute_snapshot_ready, self()})
+
+        receive do
+          {:go, ^ref} -> :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  @spec normalize_catalog_result({:ok, term()} | {:error, ElixirDB.Error.t()}) ::
+          {:ok, term()} | {:error, ElixirDB.Error.t()}
+  defp normalize_catalog_result({:ok, _} = ok), do: ok
+  defp normalize_catalog_result({:error, %ElixirDB.Error{}} = error), do: error
 
   defp cancel_timer(%{heartbeat_timer: nil}), do: :ok
 
