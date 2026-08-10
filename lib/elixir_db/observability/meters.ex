@@ -1,13 +1,13 @@
 defmodule ElixirDB.Observability.Meters do
   @moduledoc """
-  Counter and histogram declarations for Plan §11 metrics.
+  Counter and histogram declarations for database observability.
 
   Instruments are created lazily and cached in a persistent term-backed table so
   repeated hot-path calls do not allocate. When no SDK is running (no collector
   configured), the meter resolves to the no-op meter and every operation is a
   safe no-op.
 
-  ## Metric catalog (Plan §3)
+  ## Metric catalog
 
   | Metric | Kind |
   |---|---|

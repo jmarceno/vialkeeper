@@ -10,6 +10,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
     DatabaseAdmission,
     DatabaseCatalog,
     DatabaseOwner,
+    Deadline,
     ServiceClass
   }
 
@@ -23,6 +24,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
     on_exit(fn ->
       Application.delete_env(:elixir_db, :admitted_command_sync)
+      Application.delete_env(:elixir_db, :admission_test_hook)
       Application.delete_env(:elixir_db, :executor_drain_sync_timeout)
       Application.delete_env(:elixir_db, :executor_drain_sync_retry_ms)
 
@@ -168,6 +170,54 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
       await_stats(uuid, &(&1.queued_foreground == 0))
 
       release_holder(holder, ref)
+    end
+
+    test "expired queued request is cancelled before it is reported as granted", %{uuid: uuid} do
+      parent = self()
+      hook_ref = make_ref()
+      request_ref = make_ref()
+      deadline = System.monotonic_time(:millisecond) + 1
+      :ok = Application.put_env(:elixir_db, :admission_test_hook, {parent, hook_ref})
+      {holder, holder_ref} = hold_permit(uuid)
+
+      caller =
+        spawn(fn ->
+          result =
+            GenServer.call(
+              DatabaseAdmission.via(uuid),
+              {:acquire, request_ref, :foreground, deadline,
+               {:execute, fn -> send(parent, :expired_owner_ran) end}, :undefined, :expired},
+              5_000
+            )
+
+          send(parent, {:expired_result, result})
+        end)
+
+      assert_receive {^hook_ref, :enqueued, ^request_ref, :foreground, :expired, _caller}, 2_000
+
+      Eventual.eventually(
+        fn -> Deadline.exhausted?(deadline) end,
+        timeout: 2_000,
+        message: "queued request deadline did not expire"
+      )
+
+      release_holder(holder, holder_ref)
+
+      assert_receive {
+                       :expired_result,
+                       {:error,
+                        %ElixirDB.Error{
+                          code: :internal_error,
+                          details: %{reason: :deadline_exhausted}
+                        }}
+                     },
+                     2_000
+
+      refute_receive {^hook_ref, :granted, ^request_ref, _, _}, 100
+      refute_receive :expired_owner_ran, 100
+
+      monitor_ref = Process.monitor(caller)
+      assert_receive {:DOWN, ^monitor_ref, :process, ^caller, _}, 2_000
     end
 
     test "execute timeout retains permit until executor completes" do

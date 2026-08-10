@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.AdmittedCommand do
-  @moduledoc false
+  @moduledoc "Executes one admitted owner command and reports its completion to the scheduler."
   use GenServer
 
   alias ElixirDB.Error

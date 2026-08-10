@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.DatabaseOwner do
-  @moduledoc false
+  @moduledoc "Serializes SQLite-backed database commands through one owner process."
   use GenServer
   alias ElixirDB.Commands
   alias ElixirDB.DatabaseBundle

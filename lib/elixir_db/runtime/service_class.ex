@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.ServiceClass do
-  @moduledoc false
+  @moduledoc "Trusted service classes used to route database work through admission."
 
   @type t :: :foreground | :subscription | :replication | :maintenance
 

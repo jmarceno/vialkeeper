@@ -1,5 +1,5 @@
 defmodule ElixirDB.TestSupport.AdmissionClassProbe do
-  @moduledoc false
+  @moduledoc "Test helper for observing the service class of admitted commands."
   import ExUnit.Assertions
 
   @type grant :: {atom(), atom() | nil}

@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.Attributes do
   @moduledoc """
-  Attribute allow-list for OpenTelemetry spans and metrics (Plan §11 / OBSV-003).
+  Attribute allow-list for OpenTelemetry spans and metrics.
 
   A single module owns the allow-list so a future field addition cannot
   accidentally leak a document body, search text, revision body, or any other

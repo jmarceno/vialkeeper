@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.Instrumentation.Database do
   @moduledoc """
-  Emitters for Plan §11 database events:
+  Emitters for database events:
 
     * `elixir_db.database.open`        — span + counter
     * `elixir_db.database.command`     — span + histogram

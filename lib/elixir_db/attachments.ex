@@ -202,7 +202,8 @@ defmodule ElixirDB.Attachments do
   Reclaims unreachable attachment blobs under the exclusive GC barrier.
 
   Short owner calls collect the live digest set and clean expired pending rows;
-  physical deletes and tmp cleanup run outside SQLite/owner admission.
+  physical deletes and tmp cleanup run outside SQLite/owner admission. GC metadata
+  work uses the maintenance admission class.
   """
   @spec gc(binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def gc(uuid) when is_binary(uuid) do
@@ -216,7 +217,7 @@ defmodule ElixirDB.Attachments do
         _ ->
           try do
             AttachmentInstr.gc(uuid, fn ->
-              case run_gc(uuid, bundle_root) do
+              case run_gc(uuid, bundle_root, :maintenance) do
                 {:ok, stats} ->
                   {:ok,
                    Map.merge(stats, %{
@@ -795,10 +796,14 @@ defmodule ElixirDB.Attachments do
     @store.abort_put(writer)
   end
 
-  defp run_gc(uuid, bundle_root) do
-    with {:ok, live} <- collect_live_digests(uuid),
+  defp run_gc(uuid, bundle_root, admission_class) do
+    with {:ok, live} <- collect_live_digests(uuid, admission_class),
          {:ok, expired} <-
-           DatabaseCatalog.command(uuid, {:command, :cleanup_expired_pending_blobs, %{}}),
+           metadata_command(
+             uuid,
+             {:command, :cleanup_expired_pending_blobs, %{}},
+             admission_class
+           ),
          {:ok, on_disk} <- @store.list_digests(bundle_root),
          {:ok, deleted} <- delete_unreachable(bundle_root, on_disk, live),
          :ok <- @store.cleanup_tmp(bundle_root, tmp_cleanup_cutoff()) do
@@ -814,9 +819,10 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  defp collect_live_digests(uuid), do: collect_live_digests(uuid, nil, MapSet.new())
+  defp collect_live_digests(uuid, admission_class),
+    do: collect_live_digests(uuid, admission_class, nil, MapSet.new())
 
-  defp collect_live_digests(uuid, after_digest, acc) do
+  defp collect_live_digests(uuid, admission_class, after_digest, acc) do
     request =
       if is_binary(after_digest) do
         %{after_digest: after_digest}
@@ -824,14 +830,18 @@ defmodule ElixirDB.Attachments do
         %{}
       end
 
-    case DatabaseCatalog.command(uuid, {:command, :list_live_attachment_digests, request}) do
+    case metadata_command(
+           uuid,
+           {:command, :list_live_attachment_digests, request},
+           admission_class
+         ) do
       {:ok, page} ->
         digests = MapAccess.get(page, :digests) || []
         next = MapAccess.get(page, :next_after_digest)
         acc = Enum.reduce(digests, acc, &MapSet.put(&2, &1))
 
         if is_binary(next) do
-          collect_live_digests(uuid, next, acc)
+          collect_live_digests(uuid, admission_class, next, acc)
         else
           {:ok, acc}
         end

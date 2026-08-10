@@ -1,5 +1,5 @@
 defmodule ElixirDB.TestSupport.AdmissionGenerators do
-  @moduledoc false
+  @moduledoc "StreamData generators for admission policy and scheduler properties."
 
   alias ElixirDB.Runtime.{AdmissionPolicy, ServiceClass}
 

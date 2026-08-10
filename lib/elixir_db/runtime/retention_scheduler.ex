@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.RetentionScheduler do
-  @moduledoc false
+  @moduledoc "Schedules automatic retention maintenance for an open database."
   use GenServer
 
   alias ElixirDB.Observability.Instrumentation.Compact

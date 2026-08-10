@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.Deadline do
-  @moduledoc false
+  @moduledoc "Monotonic deadline and remaining-time helpers for database operations."
 
   @type t :: integer() | :infinity
   @type deadline_timeout :: non_neg_integer() | :infinity

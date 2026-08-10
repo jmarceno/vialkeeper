@@ -1,7 +1,7 @@
 defmodule ElixirDB.Observability.AdmissionPrivacyTest do
   @moduledoc """
-  Plan §20 privacy gate for admission telemetry: no payloads, PIDs, document ids,
-  or query text in `elixir_db.database.admission.wait` attributes.
+  Admission telemetry privacy gate: no payloads, PIDs, document ids, or query
+  text in `elixir_db.database.admission.wait` attributes.
   """
 
   use ElixirDB.Observability.OtelCase, async: false

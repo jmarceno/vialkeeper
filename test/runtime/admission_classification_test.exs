@@ -1,7 +1,5 @@
 defmodule ElixirDB.Runtime.AdmissionClassificationTest do
   @moduledoc """
-  Wave 4 cross-feature admission classification tests (plan §24).
-
   Proves trusted operation origins acquire the intended service class and do not
   silently fall back to foreground.
   """
@@ -119,6 +117,21 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
                      json: %{"since" => 0, "limit" => 10, "wait_ms" => 0}
                    )
         end)
+      end)
+    end
+
+    test "HTTP database info", %{uuid: uuid, server: server} do
+      with_probe(fn probe ->
+        AdmissionClassProbe.assert_op_only!(
+          probe,
+          :foreground,
+          :identity,
+          @forbidden_foreground,
+          fn ->
+            assert {:ok, %{status: 200}} =
+                     Req.get(server.base_url <> "/v1/databases/#{uuid}")
+          end
+        )
       end)
     end
 
@@ -290,7 +303,23 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
 
     setup %{uuid: uuid} do
       assert {:ok, endpoint} = LocalEndpoint.new(uuid)
-      {:ok, endpoint: endpoint, uuid: uuid}
+      server = TestServer.start_supervised!()
+      {:ok, endpoint: endpoint, server: server, uuid: uuid}
+    end
+
+    test "HTTP replication identity", %{server: server, uuid: uuid} do
+      with_probe(fn probe ->
+        AdmissionClassProbe.assert_op_only!(
+          probe,
+          :replication,
+          :identity,
+          @forbidden_trusted,
+          fn ->
+            assert {:ok, %{status: 200}} =
+                     Req.get(server.base_url <> "/v1/databases/#{uuid}/replication/identity")
+          end
+        )
+      end)
     end
 
     test "local endpoint identity", %{endpoint: endpoint} do

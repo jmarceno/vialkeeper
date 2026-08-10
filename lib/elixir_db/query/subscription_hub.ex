@@ -1,5 +1,5 @@
 defmodule ElixirDB.Query.SubscriptionHub do
-  @moduledoc false
+  @moduledoc "Per-database coordinator for live-query subscription state and change delivery."
   use GenServer
 
   alias ElixirDB.MapAccess

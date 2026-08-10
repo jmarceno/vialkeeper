@@ -1,7 +1,7 @@
 defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
   @moduledoc """
-  Plan §15: admission close commits before external services and aborted
-  eligibility must not wedge admission in closing state.
+  Admission close commits before external services and aborted eligibility must
+  not wedge admission in closing state.
   """
   use ExUnit.Case, async: false
 

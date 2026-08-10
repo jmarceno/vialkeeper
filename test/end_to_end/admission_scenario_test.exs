@@ -1,7 +1,5 @@
 defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   @moduledoc """
-  Plan §27 mandatory admission end-to-end scenario — Wave 6 final validation.
-
   Uses real Bandit HTTP, real `.elixirdb` bundles, live query subscriptions,
   background retention scheduling, and bounded concurrent local replication.
   Grant ordering and occupancy are proven with deterministic instrumentation,
@@ -21,9 +19,9 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
   Tags (also all `@tag slow: true`):
 
-  - `:admission_e2e_scheduling` — §27.8–14 fairness, reservations, kill, timeout
-  - `:admission_e2e_isolation` — §27.15–17 disconnect cleanup, streaming, A/B independence
-  - `:admission_e2e_composition` — §27.1–11/18–20 retention, replication, sustained load, close, correctness
+  - `:admission_e2e_scheduling` — fairness, reservations, kill, and timeout races
+  - `:admission_e2e_isolation` — disconnect cleanup, streaming, and A/B independence
+  - `:admission_e2e_composition` — retention, replication, sustained load, close, and correctness
   """
   use ExUnit.Case, async: false
 

@@ -1,6 +1,6 @@
 defmodule ElixirDB.Runtime.AdmissionNonRetentionTest do
   @moduledoc """
-  Plan §26: long-lived waits and byte streams must not retain an owner permit.
+  Long-lived waits and byte streams must not retain an owner permit.
   """
   use ExUnit.Case, async: false
 

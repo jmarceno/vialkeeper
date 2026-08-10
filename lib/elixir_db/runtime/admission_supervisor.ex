@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.AdmissionSupervisor do
-  @moduledoc false
+  @moduledoc "Supervises one database admission scheduler and its command executors."
   use Supervisor
 
   alias ElixirDB.Runtime.{AdmittedCommandSupervisor, ChildSpec, DatabaseAdmission}

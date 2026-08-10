@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.AdmissionCapacity do
-  @moduledoc false
+  @moduledoc "Capacity checks for bounded per-database admission reservations."
 
   alias ElixirDB.Runtime.ServiceClass
 

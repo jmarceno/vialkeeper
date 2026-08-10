@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.AdmissionModel do
-  @moduledoc false
+  @moduledoc "Pure reference model for class-aware bounded admission scheduling."
 
   alias ElixirDB.Runtime.{
     AdmissionCapacity,

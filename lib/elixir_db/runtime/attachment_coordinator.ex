@@ -1,8 +1,8 @@
 defmodule ElixirDB.Runtime.AttachmentCoordinator do
-  @moduledoc false
+  @moduledoc "Coordinates attachment guards and serialized post-compact garbage collection."
   use GenServer
 
-  alias ElixirDB.Runtime.DatabaseOwner
+  alias ElixirDB.Runtime.DatabaseAdmission
 
   def start_link(uuid), do: GenServer.start_link(__MODULE__, uuid, name: via(uuid))
 
@@ -394,7 +394,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   end
 
   defp load_limits(uuid) do
-    case DatabaseOwner.command(uuid, {:command, :identity, %{}}) do
+    case DatabaseAdmission.execute(uuid, :maintenance, {:command, :identity, %{}}) do
       {:ok, %{config: config}} when is_map(config) ->
         limits_from_config(Map.get(config, "attachments", %{}))
 

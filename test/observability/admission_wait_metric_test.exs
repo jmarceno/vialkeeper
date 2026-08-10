@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
   @moduledoc """
-  Plan §20: `elixir_db.database.admission.wait` histogram with bounded attributes.
+  `elixir_db.database.admission.wait` histogram with bounded attributes.
 
   Queue depth semantics (queued waiters only, excluding the active permit):
 

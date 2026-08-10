@@ -1,5 +1,5 @@
 defmodule ElixirDB.TestSupport.AdmissionScenario do
-  @moduledoc false
+  @moduledoc "Shared end-to-end scenario helpers for admission behavior tests."
   import ExUnit.Assertions
 
   alias ElixirDB.Eventual

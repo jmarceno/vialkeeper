@@ -1,5 +1,5 @@
 defmodule ElixirDB.Query.Subscription do
-  @moduledoc false
+  @moduledoc "Supervised live-query subscription process for one client."
   use GenServer
 
   alias ElixirDB.Query.Subscription.{Events, Membership}

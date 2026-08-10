@@ -1,5 +1,5 @@
 defmodule ElixirDB.HTTP.Routes.ReplicationWire do
-  @moduledoc false
+  @moduledoc "HTTP routes for the replication wire protocol."
   use Plug.Router
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.Checkpoint
@@ -11,7 +11,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   plug(:dispatch)
 
   get "/identity" do
-    case DatabaseCatalog.command(
+    case replication_command(
            Request.uuid(conn),
            {:command, :identity, %{}}
          ) do
@@ -48,7 +48,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
       fn body, conn ->
         Response.result(
           conn,
-          DatabaseCatalog.command(
+          replication_command(
             Request.uuid(conn),
             {:command, :install_boundary_pages, body}
           )
@@ -60,7 +60,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   get "/peers" do
     Response.result(
       conn,
-      DatabaseCatalog.command(Request.uuid(conn), {:command, :list_peer_positions, %{}})
+      replication_command(Request.uuid(conn), {:command, :list_peer_positions, %{}})
     )
   end
 
@@ -73,7 +73,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
         do: {:command, :has_local_origin_changes, peer_database_uuid},
         else: {:command, :has_local_origin_changes}
 
-    case DatabaseCatalog.command(Request.uuid(conn), command) do
+    case replication_command(Request.uuid(conn), command) do
       {:ok, has_local?} when is_boolean(has_local?) ->
         Response.ok(conn, %{"has_local_origin_changes" => has_local?})
 
@@ -91,7 +91,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
           do: {:command, :clear_pending_local_causal, peer_database_uuid},
           else: {:command, :clear_pending_local_causal}
 
-      Response.result(conn, DatabaseCatalog.command(Request.uuid(conn), command))
+      Response.result(conn, replication_command(Request.uuid(conn), command))
     end)
   end
 
@@ -99,7 +99,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     with_peer_path_id(conn, fn conn, peer_id ->
       Response.result(
         conn,
-        DatabaseCatalog.command(
+        replication_command(
           Request.uuid(conn),
           {:command, :get_local_record, "peer_ledger", peer_id}
         )
@@ -112,7 +112,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
       if namespace == "retention_boundary_state" do
         Response.result(
           conn,
-          DatabaseCatalog.command(
+          replication_command(
             Request.uuid(conn),
             {:command, :get_local_record, namespace, key}
           )
@@ -152,7 +152,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
 
         Response.result(
           conn,
-          DatabaseCatalog.command(
+          replication_command(
             Request.uuid(conn),
             {:command, :put_peer_position_cas, request}
           )
@@ -166,7 +166,10 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
       conn,
       Schemas.opts(:wire_changes, "replication changes contains an unknown field"),
       fn body, conn ->
-        Response.result(conn, ElixirDB.Changes.wait(Request.uuid(conn), body))
+        Response.result(
+          conn,
+          ElixirDB.Changes.wait(Request.uuid(conn), body, admission_class: :replication)
+        )
       end
     )
   end
@@ -178,7 +181,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
       fn body, conn ->
         Response.result(
           conn,
-          DatabaseCatalog.command(
+          replication_command(
             Request.uuid(conn),
             {:command, :diff_revisions, body}
           )
@@ -194,7 +197,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
       fn body, conn ->
         Response.result(
           conn,
-          DatabaseCatalog.command(
+          replication_command(
             Request.uuid(conn),
             {:command, :get_revision_chains, body}
           )
@@ -210,7 +213,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
       fn body, conn ->
         Response.result(
           conn,
-          DatabaseCatalog.command(
+          replication_command(
             Request.uuid(conn),
             {:command, :import_revision_chains, body}
           )
@@ -227,7 +230,12 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
         digests = body["digests"]
 
         if is_list(digests) do
-          Response.result(conn, ElixirDB.Attachments.diff_blobs(Request.uuid(conn), digests))
+          Response.result(
+            conn,
+            ElixirDB.Attachments.diff_blobs(Request.uuid(conn), digests,
+              admission_class: :replication
+            )
+          )
         else
           Response.error(
             conn,
@@ -240,7 +248,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
 
   get "/blobs/:digest" do
     with_blob_digest(conn, fn conn, digest ->
-      case ElixirDB.Attachments.open_blob(Request.uuid(conn), digest) do
+      case ElixirDB.Attachments.open_blob(Request.uuid(conn), digest, admission_class: :replication) do
         {:ok, stream} -> send_blob(conn, stream)
         {:error, error} -> Response.error(conn, error)
       end
@@ -255,7 +263,13 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
             {:ok, length} ->
               Response.result(
                 conn,
-                ElixirDB.Attachments.put_blob(Request.uuid(conn), digest, length, conn)
+                ElixirDB.Attachments.put_blob(
+                  Request.uuid(conn),
+                  digest,
+                  length,
+                  conn,
+                  admission_class: :replication
+                )
               )
 
             {:error, error} ->
@@ -272,7 +286,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     with_path_id(conn, fn conn, replication_id ->
       Response.result(
         conn,
-        DatabaseCatalog.command(
+        replication_command(
           Request.uuid(conn),
           {:command, :get_local_record, "checkpoints", replication_id}
         )
@@ -290,7 +304,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
             with_path_id(conn, fn conn, replication_id ->
               Response.result(
                 conn,
-                DatabaseCatalog.command(
+                replication_command(
                   Request.uuid(conn),
                   {:command, :put_local_record,
                    %{
@@ -318,6 +332,9 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     )
   end
 
+  defp replication_command(uuid, command),
+    do: DatabaseCatalog.command_as(uuid, :replication, command)
+
   defp valid_checkpoint_put?(body), do: Checkpoint.valid_wire_put?(body)
 
   defp boundary_request(body) when is_map(body) do
@@ -334,7 +351,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   end
 
   defp boundary_page_result(uuid, request) do
-    case DatabaseCatalog.command(uuid, {:command, :read_boundary_pages, request}) do
+    case replication_command(uuid, {:command, :read_boundary_pages, request}) do
       {:ok, page} -> {:ok, Wire.boundary_page(page)}
       error -> error
     end

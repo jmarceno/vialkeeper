@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
-  @moduledoc false
+  @moduledoc "Supervises the processes that make up one open database runtime."
   use Supervisor
   alias ElixirDB.DatabaseBundle
   alias ElixirDB.Runtime.{AdmissionPolicy, AdmissionSupervisor, ChildSpec}

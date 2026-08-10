@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.DatabaseAdmission do
-  @moduledoc false
+  @moduledoc "Per-database bounded scheduler that admits owner work by service class."
 
   use GenServer
 
@@ -477,10 +477,27 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
 
   defp call(uuid, message, timeout \\ @default_timeout) do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid}) do
-      [{pid, _}] -> GenServer.call(pid, message, timeout)
-      [] -> {:error, closed_error()}
+      [{pid, _}] ->
+        try do
+          GenServer.call(pid, message, timeout)
+        catch
+          :exit, reason ->
+            if no_process_exit?(reason) do
+              {:error, closed_error()}
+            else
+              exit(reason)
+            end
+        end
+
+      [] ->
+        {:error, closed_error()}
     end
   end
+
+  defp no_process_exit?(:noproc), do: true
+  defp no_process_exit?({:noproc, _details}), do: true
+  defp no_process_exit?({{:noproc, _details}, _call}), do: true
+  defp no_process_exit?(_reason), do: false
 
   defp handle_acquire(request_ref, class, deadline_ms, mode, trace_context, from, state, probe_op) do
     cond do
@@ -653,46 +670,57 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   defp scan_grant(_state, _schedule_len, _offset), do: :none
 
   defp grant_waiter(%__MODULE__{} = state, request_ref, class, %Waiter{} = waiter) do
-    notify_test_hook(:granted, request_ref, class, waiter.probe_op)
-    probe_admission_class(class, waiter.probe_op)
-    token = make_ref()
-    granted_at_ms = System.monotonic_time(:millisecond)
     state = remove_queued_waiter(state, request_ref, false)
     queue_depth_at_grant = queue_depth(state)
 
-    record_admission_wait(
-      state.uuid,
-      class,
-      :granted,
-      wait_duration_native(waiter.enqueued_at_ms, granted_at_ms),
-      waiter.queue_depth_at_enqueue,
-      queue_depth_at_grant
-    )
+    if Deadline.exhausted?(waiter.deadline_ms) do
+      Process.demonitor(waiter.monitor_ref, [:flush])
+      GenServer.reply(waiter.from, deadline_error())
 
-    case waiter.mode do
-      :permit ->
-        GenServer.reply(waiter.from, {:ok, token})
+      record_admission_wait(
+        state.uuid,
+        class,
+        :cancelled,
+        wait_duration_native(waiter.enqueued_at_ms, System.monotonic_time(:millisecond)),
+        waiter.queue_depth_at_enqueue,
+        queue_depth_at_grant
+      )
 
-        active = %ActivePermit{
-          request_ref: request_ref,
-          token: token,
-          caller_pid: waiter.caller_pid,
-          caller_monitor_ref: waiter.monitor_ref,
-          class: class,
-          granted_at_ms: granted_at_ms,
-          mode: :permit,
-          deadline_ms: waiter.deadline_ms,
-          from: nil
-        }
+      grant_loop(state)
+    else
+      notify_test_hook(:granted, request_ref, class, waiter.probe_op)
+      probe_admission_class(class, waiter.probe_op)
+      token = make_ref()
+      granted_at_ms = System.monotonic_time(:millisecond)
 
-        state |> Map.put(:active, active) |> track_peak_occupancy()
+      record_admission_wait(
+        state.uuid,
+        class,
+        :granted,
+        wait_duration_native(waiter.enqueued_at_ms, granted_at_ms),
+        waiter.queue_depth_at_enqueue,
+        queue_depth_at_grant
+      )
 
-      {:execute, _owner_fun} ->
-        if Deadline.exhausted?(waiter.deadline_ms) do
-          Process.demonitor(waiter.monitor_ref, [:flush])
-          GenServer.reply(waiter.from, deadline_error())
-          grant_loop(state)
-        else
+      case waiter.mode do
+        :permit ->
+          GenServer.reply(waiter.from, {:ok, token})
+
+          active = %ActivePermit{
+            request_ref: request_ref,
+            token: token,
+            caller_pid: waiter.caller_pid,
+            caller_monitor_ref: waiter.monitor_ref,
+            class: class,
+            granted_at_ms: granted_at_ms,
+            mode: :permit,
+            deadline_ms: waiter.deadline_ms,
+            from: nil
+          }
+
+          state |> Map.put(:active, active) |> track_peak_occupancy()
+
+        {:execute, _owner_fun} ->
           active = %ActivePermit{
             request_ref: request_ref,
             token: token,
@@ -712,7 +740,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
           |> Map.put(:active, active)
           |> track_peak_occupancy()
           |> start_executor()
-        end
+      end
     end
   end
 

@@ -11,7 +11,6 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     AttachmentCoordinator,
     ChangeNotifier,
     DatabaseAdmission,
-    DatabaseOwner,
     DatabaseRuntimeSupervisor,
     Deadline,
     RegistrationManifest
@@ -28,7 +27,14 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   def register(relative_path), do: GenServer.call(__MODULE__, {:register, relative_path})
   def unregister(uuid), do: GenServer.call(__MODULE__, {:unregister, uuid})
   def list, do: GenServer.call(__MODULE__, :list)
-  def info(uuid), do: GenServer.call(__MODULE__, {:info, uuid})
+
+  def info(uuid) do
+    case GenServer.call(__MODULE__, {:info, uuid}) do
+      {:route, ^uuid} -> command(uuid, {:command, :identity, %{}}, 30_000)
+      result -> result
+    end
+  end
+
   def close(uuid), do: GenServer.call(__MODULE__, {:close, uuid}, 30_000)
 
   @doc "Returns the absolute bundle root for a registered database UUID."
@@ -264,7 +270,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       entry ->
         case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
           [{_pid, _}] ->
-            {:reply, DatabaseOwner.command(uuid, {:command, :identity, %{}}), state}
+            {:reply, {:route, uuid}, state}
 
           [] ->
             inspect_unregistered_entry(state, uuid, entry)

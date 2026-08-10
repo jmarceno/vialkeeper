@@ -1,8 +1,8 @@
 defmodule ElixirDB.Observability.OverloadMetricTest do
   @moduledoc """
-  Plan §7.2: saturate admission; assert `elixir_db.database.overload.count`
+  Saturate admission and assert `elixir_db.database.overload.count`
   increments and NO span is created (overload is not a unit of work). Also
-  enforces the §9 migration gate: no bare telemetry emitter remains in either
+  enforce the migration gate: no bare telemetry emitter remains in either
   migrated module.
   """
 

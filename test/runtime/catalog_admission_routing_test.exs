@@ -1,7 +1,5 @@
 defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
   @moduledoc """
-  Wave 3 catalog routing boundary tests.
-
   Proves per-database admission waiting happens outside the host-global catalog
   GenServer so independent databases remain concurrently schedulable.
   """

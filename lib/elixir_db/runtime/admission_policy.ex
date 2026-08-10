@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.AdmissionPolicy do
-  @moduledoc false
+  @moduledoc "Validated service-class weights and reservation limits for admission scheduling."
 
   alias ElixirDB.Runtime.ServiceClass
 

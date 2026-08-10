@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.AdmittedCommandSupervisor do
-  @moduledoc false
+  @moduledoc "Dynamic supervisor for the short-lived executors of admitted commands."
   use DynamicSupervisor
 
   alias ElixirDB.Runtime.ChildSpec

@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.AdmissionSchedule do
-  @moduledoc false
+  @moduledoc "Builds the deterministic weighted-round-robin schedule for admission."
 
   alias ElixirDB.Runtime.{AdmissionPolicy, ServiceClass}
 
