@@ -6,6 +6,7 @@ defmodule ElixirDB.Runtime.AdmittedCommand do
   alias ElixirDB.Runtime.Deadline
 
   @type args :: %{
+          uuid: binary(),
           scheduler_pid: pid(),
           request_ref: reference(),
           owner_fun: (-> term()),
@@ -35,7 +36,7 @@ defmodule ElixirDB.Runtime.AdmittedCommand do
 
   @impl true
   def handle_info(:run, state) do
-    sync_before_begin()
+    sync_before_begin(state.uuid)
 
     result =
       case GenServer.call(
@@ -62,17 +63,24 @@ defmodule ElixirDB.Runtime.AdmittedCommand do
     send(state.scheduler_pid, {:admitted_command_done, state.request_ref, result})
   end
 
-  defp sync_before_begin do
+  defp sync_before_begin(uuid) when is_binary(uuid) do
     case Application.get_env(:elixir_db, :admitted_command_sync) do
-      {pid, ref} when is_pid(pid) ->
-        send(pid, {ref, :before_begin, self()})
+      {pid, ref, ^uuid} when is_pid(pid) ->
+        wait_for_sync_gate(pid, ref)
 
-        receive do
-          {:go, ^ref} -> :ok
-        end
+      {pid, ref} when is_pid(pid) ->
+        wait_for_sync_gate(pid, ref)
 
       _ ->
         :ok
+    end
+  end
+
+  defp wait_for_sync_gate(pid, ref) do
+    send(pid, {ref, :before_begin, self()})
+
+    receive do
+      {:go, ^ref} -> :ok
     end
   end
 

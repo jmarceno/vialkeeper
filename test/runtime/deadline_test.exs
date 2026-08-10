@@ -33,4 +33,12 @@ defmodule ElixirDB.Runtime.DeadlineTest do
     assert Deadline.remaining(past) == 0
     assert Deadline.exhausted?(past)
   end
+
+  test "genserver_call_timeout? recognizes GenServer.call timeout exits" do
+    assert Deadline.genserver_call_timeout?(:timeout)
+
+    assert Deadline.genserver_call_timeout?({:timeout, {GenServer, :call, [self(), :request, 1]}})
+
+    refute Deadline.genserver_call_timeout?({:noproc, {GenServer, :call, [self(), :request]}})
+  end
 end

@@ -646,6 +646,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
 
   defp start_executor(%__MODULE__{active: %ActivePermit{} = active} = state) do
     args = %{
+      uuid: state.uuid,
       scheduler_pid: self(),
       request_ref: active.request_ref,
       owner_fun: active.owner_fun,

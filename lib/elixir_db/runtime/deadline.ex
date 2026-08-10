@@ -28,4 +28,9 @@ defmodule ElixirDB.Runtime.Deadline do
   @spec call_timeout(t()) :: deadline_timeout()
   def call_timeout(:infinity), do: :infinity
   def call_timeout(deadline_ms) when is_integer(deadline_ms), do: remaining(deadline_ms)
+
+  @spec genserver_call_timeout?(term()) :: boolean()
+  def genserver_call_timeout?(:timeout), do: true
+  def genserver_call_timeout?({:timeout, {GenServer, :call, _}}), do: true
+  def genserver_call_timeout?(_), do: false
 end

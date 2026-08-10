@@ -43,9 +43,72 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end)
   end
 
-  def command(uuid, command, timeout \\ 30_000) do
+  @doc """
+  Ensures a database is registered and its runtime is open for command routing.
+
+  This is a short host-global catalog call. Queue wait and owner execution happen
+  outside the catalog GenServer via per-database admission.
+  """
+  @spec ensure_command_target(binary(), Deadline.t()) :: :ok | {:error, ElixirDB.Error.t()}
+  def ensure_command_target(uuid) when is_binary(uuid) do
+    ensure_command_target(uuid, Deadline.from_timeout(30_000))
+  end
+
+  def ensure_command_target(uuid, :infinity) when is_binary(uuid) do
+    GenServer.call(__MODULE__, {:ensure_command_target, uuid}, :infinity)
+  end
+
+  def ensure_command_target(uuid, deadline_ms) when is_binary(uuid) do
+    if Deadline.exhausted?(deadline_ms) do
+      {:error, command_deadline_error()}
+    else
+      GenServer.call(
+        __MODULE__,
+        {:ensure_command_target, uuid},
+        Deadline.call_timeout(deadline_ms)
+      )
+    end
+  catch
+    :exit, :timeout ->
+      {:error, command_deadline_error()}
+
+    :exit, {:timeout, {GenServer, :call, _}} ->
+      {:error, command_deadline_error()}
+  end
+
+  @spec command(binary(), term(), timeout()) :: term() | {:error, ElixirDB.Error.t()}
+  def command(uuid, command, timeout \\ 30_000)
+
+  def command(uuid, command, :infinity) when is_binary(uuid) do
+    command_as(uuid, :foreground, command, :infinity)
+  end
+
+  def command(uuid, command, timeout) when is_binary(uuid) do
+    command_as(uuid, :foreground, command, timeout)
+  end
+
+  @doc "Trusted internal command routing with an explicit admission service class."
+  @spec command_as(binary(), DatabaseAdmission.service_class(), term(), timeout()) ::
+          term() | {:error, ElixirDB.Error.t()}
+  def command_as(uuid, class, command, timeout \\ 30_000)
+
+  def command_as(uuid, class, command, :infinity) when is_binary(uuid) do
+    with :ok <- ensure_command_target(uuid, :infinity) do
+      Database.command(uuid, command, fn ->
+        DatabaseAdmission.execute_with_deadline(uuid, class, command, :infinity)
+      end)
+    end
+  end
+
+  def command_as(uuid, class, command, timeout)
+      when is_binary(uuid) and is_integer(timeout) and timeout >= 0 do
     deadline_ms = Deadline.from_timeout(timeout)
-    GenServer.call(__MODULE__, {:command, uuid, command, deadline_ms}, timeout)
+
+    with :ok <- ensure_command_target(uuid, deadline_ms) do
+      Database.command(uuid, command, fn ->
+        DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline_ms)
+      end)
+    end
   end
 
   @impl true
@@ -249,45 +312,20 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   @impl true
-  def handle_call({:command, uuid, command, deadline_ms}, _from, state) do
-    # Plan §5.2: wrap the central command dispatch in the database.command span.
-    # command.type is derived from the command struct; expected domain errors
-    # keep span status UNSET, only :internal_error sets ERROR (policy §6.5).
-    #
-    # SAFETY: the catalog is a single shared GenServer serving every database. An
-    # unanticipated raise/throw from the adapter or admission layer would otherwise crash
-    # this process and propagate a GenServer.call exit to *every* concurrent caller. Catch
-    # any exception here and convert it to a typed internal_error so the catalog survives.
+  def handle_call({:ensure_command_target, uuid}, _from, state) do
+    safe(fn -> reply_ensure_command_target(uuid, state) end, state)
+  end
+
+  defp reply_ensure_command_target(uuid, state) do
     if Map.has_key?(state.close_operations, uuid) do
       {:reply, {:error, ElixirDB.Error.database_closed("database is closing")}, state}
     else
       case open_runtime(state, uuid) do
-        {:ok, _info, state} ->
-          run_command(uuid, command, deadline_ms)
-          |> command_reply(state)
-
-        {:error, error, state} ->
-          {:error, error}
-          |> command_reply(state)
+        {:ok, _info, new_state} -> {:reply, :ok, new_state}
+        {:error, error, new_state} -> {:reply, {:error, error}, new_state}
       end
     end
-  catch
-    kind, reason ->
-      Logger.error("database command raised",
-        database_uuid: inspect(uuid),
-        kind: kind,
-        reason: inspect(reason)
-      )
-
-      {:reply,
-       {:error,
-        ElixirDB.Error.internal_error("database command failed", %{
-          cause: inspect(reason),
-          kind: kind
-        })}, state}
   end
-
-  defp command_reply(result, state), do: {:reply, result, state}
 
   defp unregister_entry(next, state) do
     case RegistrationManifest.write(Map.values(next.entries)) do
@@ -306,10 +344,10 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
-  defp run_command(uuid, command, deadline_ms) do
-    Database.command(uuid, command, fn ->
-      DatabaseAdmission.execute_with_deadline(uuid, :foreground, command, deadline_ms)
-    end)
+  defp command_deadline_error do
+    ElixirDB.Error.internal_error("database command timed out", %{
+      reason: :deadline_exhausted
+    })
   end
 
   # SAFETY: final catch-all net for handle_call clauses that touch the adapter. An
