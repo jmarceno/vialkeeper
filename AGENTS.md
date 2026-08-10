@@ -16,3 +16,7 @@ When editing any document inside `docs/Architecture.md` or user UnboundMark work
 We do not work with PRs or any other GitHub features.
 
 **NEVER PUSH ANYTHING IF NOT EXPLICITLY ASKED.**
+
+**Never add  `@moduledoc false` just to satisfy requirements, every ` @moduledoc false` must be justifiable, otherwise insert a real documentation.**
+
+Never add comments with the plan/wave/phase that a code satisfies, this kind of comment is strictly forbidden.
