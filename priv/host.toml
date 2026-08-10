@@ -44,6 +44,20 @@ max_query_subscription_members = 10000
 max_query_subscription_buffered_events = 4096
 max_query_subscription_heartbeat_ms = 300000
 
+# Per-database admission scheduling policy. Weights control deterministic
+# weighted round-robin grant order across service classes; reserved slots
+# guarantee each class can enqueue under saturation.
+[admission]
+foreground_weight = 8
+subscription_weight = 4
+replication_weight = 2
+maintenance_weight = 1
+
+foreground_reserved_slots = 1
+subscription_reserved_slots = 1
+replication_reserved_slots = 1
+maintenance_reserved_slots = 1
+
 # Bearer-token authentication (AUTH-001). When enabled, every request must
 # present `Authorization: Bearer <token>`. Tokens are stored as SHA-256 hex
 # digests; generate a token and its digest with `bin/elixir_db token`.

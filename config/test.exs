@@ -45,6 +45,16 @@ config :elixir_db,
     max_retention_schedule_ms: 604_800_000
   ],
   listener: [ip: {127, 0, 0, 1}, port: 0],
+  admission_policy: [
+    foreground_weight: 8,
+    subscription_weight: 4,
+    replication_weight: 2,
+    maintenance_weight: 1,
+    foreground_reserved_slots: 1,
+    subscription_reserved_slots: 1,
+    replication_reserved_slots: 1,
+    maintenance_reserved_slots: 1
+  ],
   auth: [enabled: false, token_digests: []],
   tls: [enabled: false],
   security: [allow_insecure_remote: false],

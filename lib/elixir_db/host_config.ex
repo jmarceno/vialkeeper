@@ -8,7 +8,7 @@ defmodule ElixirDB.HostConfig do
   root relocates a complete, working configuration.
   """
 
-  alias ElixirDB.Runtime.AtomicWrite
+  alias ElixirDB.Runtime.{AdmissionPolicy, AtomicWrite}
 
   @filename "host.toml"
 
@@ -81,12 +81,27 @@ defmodule ElixirDB.HostConfig do
   @default_security %{"allow_insecure_remote" => false}
   @default_observability %{"otlp_endpoint" => ""}
 
-  @known_sections ~w(listener limits auth tls security observability)
+  @default_admission AdmissionPolicy.default_toml_map()
+
+  @known_sections ~w(listener limits admission auth tls security observability)
   @allowed_listener ~w(ip port)
   @allowed_auth ~w(enabled tokens)
   @allowed_tls ~w(enabled certfile keyfile)
   @allowed_security ~w(allow_insecure_remote)
   @allowed_observability ~w(otlp_endpoint)
+  @allowed_admission Map.keys(@default_admission)
+
+  @admission_key_atoms %{
+    "foreground_weight" => :foreground_weight,
+    "subscription_weight" => :subscription_weight,
+    "replication_weight" => :replication_weight,
+    "maintenance_weight" => :maintenance_weight,
+    "foreground_reserved_slots" => :foreground_reserved_slots,
+    "subscription_reserved_slots" => :subscription_reserved_slots,
+    "replication_reserved_slots" => :replication_reserved_slots,
+    "maintenance_reserved_slots" => :maintenance_reserved_slots
+  }
+
   @digest_hex_length 64
 
   @spec defaults :: map
@@ -94,6 +109,7 @@ defmodule ElixirDB.HostConfig do
     %{
       "listener" => @default_listener,
       "limits" => @default_limits,
+      "admission" => @default_admission,
       "auth" => @default_auth,
       "tls" => @default_tls,
       "security" => @default_security,
@@ -195,6 +211,7 @@ defmodule ElixirDB.HostConfig do
     with :ok <- validate_sections(raw),
          {:ok, listener} <- validate_listener(raw["listener"]),
          {:ok, limits} <- validate_limits(raw["limits"]),
+         {:ok, admission} <- validate_admission(raw["admission"], limits),
          {:ok, auth} <- validate_auth(raw["auth"]),
          {:ok, tls} <- validate_tls(raw["tls"], root),
          {:ok, security} <- validate_security(raw["security"]),
@@ -211,6 +228,7 @@ defmodule ElixirDB.HostConfig do
         []
         |> Keyword.put(:listener, listener)
         |> Keyword.put(:host_limits, host_limits)
+        |> Keyword.put(:admission_policy, admission)
         |> Keyword.put(:auth, auth)
         |> Keyword.put(:tls, tls)
         |> Keyword.put(:security, security)
@@ -280,6 +298,26 @@ defmodule ElixirDB.HostConfig do
   end
 
   defp validate_limits(_), do: {:error, "host.toml: [limits] must be a table"}
+
+  defp validate_admission(nil, limits), do: validate_admission(@default_admission, limits)
+
+  defp validate_admission(%{} = admission, limits) do
+    merged_limits = Map.merge(@default_limits, limits)
+    merged = Map.merge(@default_admission, admission)
+    admission_limit = merged_limits["admission_limit"]
+    keyword = admission_keyword(merged)
+
+    with :ok <- allow_only(admission, @allowed_admission, "admission"),
+         {:ok, _policy} <- AdmissionPolicy.from_keyword(keyword, admission_limit) do
+      {:ok, keyword}
+    end
+  end
+
+  defp validate_admission(_, _limits), do: {:error, "host.toml: [admission] must be a table"}
+
+  defp admission_keyword(admission) do
+    Enum.map(admission, fn {key, value} -> {@admission_key_atoms[key], value} end)
+  end
 
   defp validate_limit_entry(key, value) when not is_integer(value),
     do: {:halt, {:error, "host.toml: limits.#{key} must be an integer"}}

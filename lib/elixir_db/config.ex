@@ -53,6 +53,11 @@ defmodule ElixirDB.Config do
     Application.get_env(:elixir_db, :host_limits, []) |> Map.new()
   end
 
+  @spec admission_policy() :: map()
+  def admission_policy do
+    Application.get_env(:elixir_db, :admission_policy, []) |> Map.new()
+  end
+
   @spec shutdown_timeout() :: pos_integer()
   def shutdown_timeout,
     do: Application.get_env(:elixir_db, :shutdown_timeout, 30_000)

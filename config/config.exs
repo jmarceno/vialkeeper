@@ -1,9 +1,8 @@
 import Config
 
-# Host configuration defaults (database root, listener, limits, auth, tls,
-# observability) live in `ElixirDB.HostConfig` and are loaded from
-# `<database_root>/host.toml` at runtime by config/runtime.exs. Per-database
-# defaults are owned by `ElixirDB.Config`.
+# Host configuration defaults (database root, listener, limits, admission
+# policy, auth, tls, observability) live in `ElixirDB.HostConfig` and are
+# loaded from `<database_root>/host.toml` at runtime by config/runtime.exs.
 
 config :logger, :console,
   format: "[$level] $message\n",

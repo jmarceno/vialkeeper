@@ -77,6 +77,16 @@ defmodule ElixirDB.HostConfigTest do
     assert limits[:max_replication_concurrent_chain_fetches] == 32
     assert limits[:max_replication_concurrent_blob_transfers] == 32
     assert limits[:max_replication_transfer_bytes_in_flight] == 4_294_967_296
+
+    policy = Keyword.get(config, :admission_policy) |> Map.new()
+    assert policy[:foreground_weight] == 8
+    assert policy[:subscription_weight] == 4
+    assert policy[:replication_weight] == 2
+    assert policy[:maintenance_weight] == 1
+    assert policy[:foreground_reserved_slots] == 1
+    assert policy[:subscription_reserved_slots] == 1
+    assert policy[:replication_reserved_slots] == 1
+    assert policy[:maintenance_reserved_slots] == 1
   end
 
   test "listener ip and port override", %{dir: dir} do
@@ -114,6 +124,21 @@ defmodule ElixirDB.HostConfigTest do
     write_config(dir, "[limits]\nmax_open_databases = 0\n")
     assert {:error, msg} = HostConfig.load_from(dir)
     assert String.contains?(msg, "max_open_databases")
+  end
+
+  test "partial limits override still validates admission against default admission_limit", %{
+    dir: dir
+  } do
+    write_config(dir, "[limits]\nmax_open_databases = 32\n")
+
+    assert {:ok, config} = HostConfig.load_from(dir)
+    limits = Keyword.get(config, :host_limits) |> Map.new()
+    assert limits[:max_open_databases] == 32
+    assert limits[:admission_limit] == 128
+
+    policy = Keyword.get(config, :admission_policy) |> Map.new()
+    assert policy[:foreground_weight] == 8
+    assert policy[:foreground_reserved_slots] == 1
   end
 
   test "auth enabled with empty tokens is rejected", %{dir: dir} do
@@ -187,5 +212,57 @@ defmodule ElixirDB.HostConfigTest do
 
     assert {:ok, config} = HostConfig.load_from(dir)
     assert Keyword.get(config, :otlp_endpoint) == "http://collector:4318"
+  end
+
+  test "admission policy defaults load from template", %{dir: dir} do
+    assert {:ok, config} = HostConfig.load_from(dir)
+    policy = Keyword.get(config, :admission_policy) |> Map.new()
+    assert policy[:foreground_weight] == 8
+    assert policy[:maintenance_reserved_slots] == 1
+  end
+
+  test "admission weight out of range is named in the error", %{dir: dir} do
+    write_config(dir, "[admission]\nforeground_weight = 0\n")
+
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "admission.foreground_weight")
+  end
+
+  test "admission reserved slot above limit is named in the error", %{dir: dir} do
+    write_config(dir, "[admission]\nforeground_reserved_slots = 200\n")
+
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "admission.foreground_reserved_slots")
+  end
+
+  test "sum of reserved slots exceeding admission_limit is rejected", %{dir: dir} do
+    write_config(
+      dir,
+      """
+      [limits]
+      admission_limit = 3
+
+      [admission]
+      foreground_reserved_slots = 2
+      subscription_reserved_slots = 2
+      """
+    )
+
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "reserved slots")
+  end
+
+  test "admission negative reserved slot is named in the error", %{dir: dir} do
+    write_config(dir, "[admission]\nforeground_reserved_slots = -1\n")
+
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "admission.foreground_reserved_slots")
+  end
+
+  test "unknown admission key is named in the error", %{dir: dir} do
+    write_config(dir, "[admission]\nunknown_weight = 1\n")
+
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "unknown_weight")
   end
 end
