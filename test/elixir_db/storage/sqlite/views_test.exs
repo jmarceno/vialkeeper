@@ -1,4 +1,5 @@
 defmodule ElixirDB.Storage.SQLite.ViewsTest do
+  @moduledoc "Behavioral tests for SQLite-backed declarative view storage."
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
   alias ElixirDB.Storage.FaultAdapter
@@ -26,6 +27,19 @@ defmodule ElixirDB.Storage.SQLite.ViewsTest do
 
     assert {:ok, %{deleted: true}} = @adapter.delete_view(adapter, view_id)
     assert {:error, %ElixirDB.Error{code: :view_not_found}} = @adapter.view_state(adapter, view_id)
+  end
+
+  test "query rejects missing identifiers and invalid options", %{adapter: adapter} do
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             @adapter.query_view(adapter, %{})
+
+    assert {:ok, %{"view_id" => view_id}} = @adapter.create_view(adapter, @view)
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             @adapter.query_view(adapter, %{"view_id" => view_id, "limit" => 0})
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             @adapter.query_view(adapter, %{"view_id" => view_id, "inclusive_end" => "false"})
   end
 
   test "create_view enforces max_definitions", %{adapter: adapter} do
@@ -225,6 +239,54 @@ defmodule ElixirDB.Storage.SQLite.ViewsTest do
              })
   end
 
+  test "view query supports an exact key bound", %{adapter: adapter} do
+    assert {:ok, %{"view_id" => view_id}} =
+             @adapter.create_view(adapter, %{
+               "name" => "exact-key",
+               "key" => [%{"path" => "/k"}],
+               "value" => %{"path" => "/v"}
+             })
+
+    assert {:ok, _} =
+             @adapter.apply_view_batch(adapter, %{
+               "view_id" => view_id,
+               "expected_indexed_through" => 0,
+               "through_sequence" => 1,
+               "rows" => [
+                 %{
+                   "document_id" => "a",
+                   "revision_id" => "1-a",
+                   "key" => ["match"],
+                   "value" => 1
+                 },
+                 %{
+                   "document_id" => "b",
+                   "revision_id" => "1-b",
+                   "key" => ["other"],
+                   "value" => 2
+                 }
+               ],
+               "removals" => []
+             })
+
+    assert {:ok, %{results: [%{"id" => "a", "key" => ["match"], "value" => 1}]}} =
+             @adapter.query_view(adapter, %{"view_id" => view_id, "key" => ["match"]})
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             @adapter.query_view(adapter, %{
+               "view_id" => view_id,
+               "key" => ["match"],
+               "start_key" => ["match"]
+             })
+
+    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+             @adapter.query_view(adapter, %{
+               "view_id" => view_id,
+               "key" => ["match"],
+               "inclusive_end" => false
+             })
+  end
+
   test "reduced query with limit aggregates all rows in each group", %{adapter: adapter} do
     assert {:ok, %{"view_id" => view_id}} = @adapter.create_view(adapter, @view)
 
@@ -248,6 +310,44 @@ defmodule ElixirDB.Storage.SQLite.ViewsTest do
 
     assert {:ok, %{results: [%{"key" => ["shared"], "value" => 20.0}]}} =
              @adapter.query_view(adapter, %{"view_id" => view_id, "limit" => 1})
+  end
+
+  test "reduced query bookmarks advance past every row in a group", %{adapter: adapter} do
+    assert {:ok, %{"view_id" => view_id}} = @adapter.create_view(adapter, @view)
+
+    rows = [
+      {"a1", "alpha", 1, 0, 1},
+      {"a2", "alpha", 2, 1, 2},
+      {"b1", "beta", 3, 2, 3}
+    ]
+
+    Enum.each(rows, fn {id, kind, score, expected, through} ->
+      assert {:ok, _} =
+               @adapter.apply_view_batch(adapter, %{
+                 "view_id" => view_id,
+                 "expected_indexed_through" => expected,
+                 "through_sequence" => through,
+                 "rows" => [
+                   %{
+                     "document_id" => id,
+                     "revision_id" => "1-#{id}",
+                     "key" => [kind],
+                     "value" => score
+                   }
+                 ],
+                 "removals" => []
+               })
+    end)
+
+    assert {:ok, %{results: [%{"key" => ["alpha"], "value" => 3.0}], bookmark: bookmark}} =
+             @adapter.query_view(adapter, %{"view_id" => view_id, "limit" => 1})
+
+    assert {:ok, %{results: [%{"key" => ["beta"], "value" => 3.0}]}} =
+             @adapter.query_view(adapter, %{
+               "view_id" => view_id,
+               "bookmark" => bookmark,
+               "limit" => 1
+             })
   end
 
   test "read_winning_documents_page returns only winning non-deleted documents", %{adapter: adapter} do

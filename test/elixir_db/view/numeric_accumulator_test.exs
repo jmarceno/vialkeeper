@@ -1,4 +1,5 @@
 defmodule ElixirDB.View.NumericAccumulatorTest do
+  @moduledoc "Numerical accuracy tests for view reducers."
   use ExUnit.Case, async: true
 
   alias ElixirDB.View.NumericAccumulator
@@ -10,6 +11,20 @@ defmodule ElixirDB.View.NumericAccumulatorTest do
       assert {:ok, acc} = NumericAccumulator.add(NumericAccumulator.new(), value)
       assert {:ok, ^value} = NumericAccumulator.sum(acc)
     end
+  end
+
+  test "sum rounds an exact halfway value to the even binary64" do
+    assert {:ok, acc} = NumericAccumulator.add(NumericAccumulator.new(), 1.0)
+    assert {:ok, acc} = NumericAccumulator.add(acc, 2.0 ** -53)
+    assert {:ok, 1.0} = NumericAccumulator.sum(acc)
+  end
+
+  test "sum carries into the next exponent after mantissa rounding" do
+    acc = NumericAccumulator.new()
+    assert {:ok, acc} = NumericAccumulator.add(acc, 1.0)
+    assert {:ok, acc} = NumericAccumulator.add(acc, 1.0 - 2.0 ** -52)
+    assert {:ok, acc} = NumericAccumulator.add(acc, 2.0 ** -53)
+    assert {:ok, 2.0} = NumericAccumulator.sum(acc)
   end
 
   @sumsqr_cases [1.0, 0.1, -3.5]

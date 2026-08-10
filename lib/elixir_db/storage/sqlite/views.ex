@@ -10,6 +10,9 @@ defmodule ElixirDB.Storage.SQLite.Views do
   alias ElixirDB.View.{BookmarkCodec, Definition, KeyCodec, Reducer}
 
   @list_cache_key :elixir_db_sqlite_view_catalog
+  @default_query_limit 100
+  @default_query_max_limit 500
+  @query_fields ~w(view_id consistency key start_key end_key inclusive_end group_level limit bookmark)
 
   @spec list(Connection.handle()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
   def list(conn) do
@@ -193,20 +196,32 @@ defmodule ElixirDB.Storage.SQLite.Views do
     end
   end
 
-  @spec query_tx(Connection.handle(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def query_tx(conn, request) do
-    view_id = required_string(request, "view_id")
-    limit = positive_integer(MapAccess.get(request, :limit) || Map.get(request, "limit"), 100)
-    group_level = Map.get(request, "group_level")
-    bookmark = Map.get(request, "bookmark")
+  @spec query_tx(Connection.handle(), map(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def query_tx(conn, request, config \\ %{})
 
-    with {:ok, definition_row} <- fetch_definition(conn, view_id),
+  def query_tx(conn, request, config) when is_map(request) and is_map(config) do
+    with :ok <- validate_query_fields(request),
+         {:ok, view_id} <- query_view_id(request),
+         {:ok, limit} <- normalize_query_limit(request, config),
+         :ok <- validate_query_options(request),
+         {:ok, definition_row} <- fetch_definition(conn, view_id),
          {:ok, state} <- fetch_state(conn, view_id),
          {:ok, definition} <- decode_definition(definition_row),
-         {:ok, query_plan} <- build_query_plan(request, definition, state, group_level, bookmark),
+         {:ok, query_plan} <- build_query_plan(request, definition, state),
          {:ok, {rows, fetch_has_more}} <-
            fetch_query_rows(conn, view_id, state.active_generation, query_plan, limit, definition) do
       format_query_result(rows, fetch_has_more, definition, state, query_plan, limit)
+    end
+  end
+
+  def query_tx(_conn, _request, _config),
+    do: {:error, ElixirDB.Error.invalid_request("view query must be an object")}
+
+  defp query_view_id(request) do
+    case fetch_query_option(request, :view_id) do
+      {:ok, view_id} when is_binary(view_id) and view_id != "" -> {:ok, view_id}
+      _ -> {:error, ElixirDB.Error.invalid_request("view query requires a view_id")}
     end
   end
 
@@ -216,39 +231,40 @@ defmodule ElixirDB.Storage.SQLite.Views do
     after_id = Map.get(request, "after_document_id")
     limit = page_limit(request)
 
-    with {:ok, {ids, next_after}} <- list_winning_document_ids(conn, after_id, limit),
-         {:ok, documents} <- load_winning_documents(conn, ids) do
+    with {:ok, rows} <- fetch_winning_document_rows(conn, after_id, limit),
+         {page_rows, extra_rows} <- Enum.split(rows, limit),
+         {:ok, documents} <- decode_winning_document_rows(page_rows) do
+      next_after = next_document_id(extra_rows)
       {:ok, %{documents: documents, next_after: next_after}}
     end
   end
 
-  defp list_winning_document_ids(conn, after_id, limit) do
-    query =
+  defp fetch_winning_document_rows(conn, after_id, limit) do
+    {filter, params} =
       case after_id do
         nil ->
-          {"SELECT document_id FROM documents WHERE winning_deleted = 0 ORDER BY document_id LIMIT ?",
-           [limit + 1]}
+          {"winning_deleted = 0", []}
 
         id when is_binary(id) ->
-          {"SELECT document_id FROM documents WHERE winning_deleted = 0 AND document_id > ? ORDER BY document_id LIMIT ?",
-           [id, limit + 1]}
+          {"winning_deleted = 0 AND document_id > ?", [id]}
       end
 
-    case Connection.query(conn, elem(query, 0), elem(query, 1)) do
-      {:ok, rows} ->
-        ids = Enum.map(rows, &List.first/1)
-        page = Enum.take(ids, limit)
-        next_after = ids |> Enum.drop(limit) |> List.first()
-        {:ok, {page, next_after}}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
+    case Connection.query(
+           conn,
+           "SELECT document_id, winning_revision, winning_body_json, winning_body_term, update_sequence FROM documents WHERE #{filter} ORDER BY document_id LIMIT ?",
+           params ++ [limit + 1]
+         ) do
+      {:ok, rows} -> {:ok, rows}
+      {:error, reason} -> {:error, normalize_error(reason)}
     end
   end
 
-  defp load_winning_documents(conn, ids) do
-    Enum.reduce_while(ids, {:ok, []}, fn document_id, {:ok, acc} ->
-      load_winning_document_row(conn, document_id, acc)
+  defp next_document_id([[document_id | _] | _]), do: document_id
+  defp next_document_id([]), do: nil
+
+  defp decode_winning_document_rows(rows) do
+    Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
+      decode_winning_document_row(row, acc)
     end)
     |> then(fn
       {:ok, documents} -> {:ok, Enum.reverse(documents)}
@@ -256,23 +272,16 @@ defmodule ElixirDB.Storage.SQLite.Views do
     end)
   end
 
-  defp load_winning_document_row(conn, document_id, acc) do
-    case Connection.query(
-           conn,
-           "SELECT document_id, winning_revision, winning_body_json, winning_body_term, update_sequence FROM documents WHERE document_id = ? AND winning_deleted = 0",
-           [document_id]
-         ) do
-      {:ok, [[id, revision_id, body_json, body_term, sequence]]} ->
-        case decode_body(body_json, body_term) do
-          {:ok, body} -> {:cont, {:ok, [winning_document(id, revision_id, body, sequence) | acc]}}
-          {:error, _} = error -> {:halt, error}
-        end
+  defp decode_winning_document_row(
+         [id, revision_id, body_json, body_term, sequence],
+         acc
+       ) do
+    case decode_body(body_json, body_term) do
+      {:ok, body} ->
+        {:cont, {:ok, [winning_document(id, revision_id, body, sequence) | acc]}}
 
-      {:ok, []} ->
-        {:cont, {:ok, acc}}
-
-      {:error, reason} ->
-        {:halt, {:error, normalize_error(reason)}}
+      {:error, _} = error ->
+        {:halt, error}
     end
   end
 
@@ -301,12 +310,18 @@ defmodule ElixirDB.Storage.SQLite.Views do
     positive_integer(override || Map.get(request, "limit"), 100)
   end
 
-  defp build_query_plan(request, definition, state, group_level, bookmark) do
+  defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive_integer(_value, default), do: default
+
+  defp build_query_plan(request, definition, state) do
     key_length = length(definition.key)
+    group_level = MapAccess.get(request, :group_level)
+    bookmark = MapAccess.get(request, :bookmark)
     group_level = normalize_group_level(group_level, key_length, definition.reducer)
-    start_key = Map.get(request, "start_key")
-    end_key = Map.get(request, "end_key")
-    inclusive_end = Map.get(request, "inclusive_end", true) == true
+    exact_key = MapAccess.get(request, :key)
+    start_key = exact_key || MapAccess.get(request, :start_key)
+    end_key = exact_key || MapAccess.get(request, :end_key)
+    inclusive_end = MapAccess.get(request, :inclusive_end, true) == true
 
     with {:ok, start_sort} <- encode_bound(start_key),
          {:ok, end_sort} <- encode_bound(end_key),
@@ -322,6 +337,129 @@ defmodule ElixirDB.Storage.SQLite.Views do
          bookmark: bookmark,
          bookmark_after: bookmark_plan[:after]
        }}
+    end
+  end
+
+  defp validate_query_fields(request) do
+    allowed = @query_fields ++ Enum.map(@query_fields, &String.to_atom/1)
+
+    if Enum.all?(Map.keys(request), &(&1 in allowed)),
+      do: :ok,
+      else: {:error, ElixirDB.Error.invalid_request("view query contains an unknown field")}
+  end
+
+  defp normalize_query_limit(request, config) do
+    maximum = get_in(config, ["queries", "max_limit"]) || @default_query_max_limit
+
+    case fetch_query_option(request, :limit) do
+      :missing ->
+        {:ok, @default_query_limit}
+
+      {:ok, value} when is_integer(value) and value > 0 and value <= maximum ->
+        {:ok, value}
+
+      {:ok, value} when is_integer(value) and value > maximum ->
+        {:error, ElixirDB.Error.resource_limit("view query limit exceeds the configured maximum")}
+
+      {:ok, _value} ->
+        {:error, ElixirDB.Error.invalid_request("view query limit must be a positive integer")}
+    end
+  end
+
+  defp validate_query_options(request) do
+    with :ok <-
+           validate_query_option(
+             request,
+             :consistency,
+             &(&1 in ["stale_ok", "update_after", "consistent"]),
+             "view consistency is invalid"
+           ),
+         :ok <-
+           validate_query_option(
+             request,
+             :key,
+             &is_list/1,
+             "view query key must be an array"
+           ),
+         :ok <- validate_exact_key(request),
+         :ok <-
+           validate_query_option(
+             request,
+             :start_key,
+             &(is_list(&1) or is_nil(&1)),
+             "view query start_key must be an array"
+           ),
+         :ok <-
+           validate_query_option(
+             request,
+             :end_key,
+             &(is_list(&1) or is_nil(&1)),
+             "view query end_key must be an array"
+           ),
+         :ok <-
+           validate_query_option(
+             request,
+             :inclusive_end,
+             &is_boolean/1,
+             "view query inclusive_end must be a boolean"
+           ),
+         :ok <-
+           validate_query_option(
+             request,
+             :group_level,
+             &(is_integer(&1) and &1 >= 0),
+             "view query group_level must be a non-negative integer"
+           ) do
+      validate_query_option(
+        request,
+        :bookmark,
+        &(is_binary(&1) or is_nil(&1)),
+        "view query bookmark must be a string"
+      )
+    end
+  end
+
+  defp validate_exact_key(request) do
+    case fetch_query_option(request, :key) do
+      :missing ->
+        :ok
+
+      {:ok, _key} ->
+        if query_option_present?(request, :start_key) or
+             query_option_present?(request, :end_key) or
+             fetch_query_option(request, :inclusive_end) == {:ok, false} do
+          {:error,
+           ElixirDB.Error.invalid_request("view query key cannot be combined with range options")}
+        else
+          :ok
+        end
+    end
+  end
+
+  defp query_option_present?(request, key) do
+    Map.has_key?(request, key) or Map.has_key?(request, Atom.to_string(key))
+  end
+
+  defp validate_query_option(request, key, predicate, message) do
+    case fetch_query_option(request, key) do
+      :missing ->
+        :ok
+
+      {:ok, value} ->
+        if predicate.(value), do: :ok, else: {:error, ElixirDB.Error.invalid_request(message)}
+    end
+  end
+
+  defp fetch_query_option(request, key) do
+    case Map.fetch(request, key) do
+      {:ok, value} ->
+        {:ok, value}
+
+      :error ->
+        case Map.fetch(request, Atom.to_string(key)) do
+          {:ok, value} -> {:ok, value}
+          :error -> :missing
+        end
     end
   end
 
@@ -819,9 +957,6 @@ defmodule ElixirDB.Storage.SQLite.Views do
   defp map_get(map, "generation"), do: MapAccess.get(map, :generation)
   defp map_get(map, "indexed_through"), do: MapAccess.get(map, :indexed_through)
   defp map_get(map, key) when is_binary(key), do: Map.get(map, key)
-
-  defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
-  defp positive_integer(_value, default), do: default
 
   defp normalize_error(%ElixirDB.Error{} = error), do: error
 

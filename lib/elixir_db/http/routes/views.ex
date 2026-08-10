@@ -29,18 +29,24 @@ defmodule ElixirDB.HTTP.Routes.Views do
 
   post "/:view_id/rebuild" do
     with_path_id(conn, fn conn, view_id ->
-      uuid = Request.uuid(conn)
+      Request.call(
+        conn,
+        Schemas.opts(:view_rebuild, "view rebuild contains an unknown field"),
+        fn _body, conn ->
+          uuid = Request.uuid(conn)
 
-      case ElixirDB.Views.rebuild(uuid, view_id) do
-        :ok ->
-          case ElixirDB.Views.state(uuid, view_id) do
-            {:ok, state} -> Response.ok(conn, %{"accepted" => true, "state" => state})
-            {:error, error} -> Response.error(conn, error)
+          case ElixirDB.Views.rebuild(uuid, view_id) do
+            :ok ->
+              case ElixirDB.Views.state(uuid, view_id) do
+                {:ok, state} -> Response.ok(conn, %{"accepted" => true, "state" => state})
+                {:error, error} -> Response.error(conn, error)
+              end
+
+            {:error, error} ->
+              Response.error(conn, error)
           end
-
-        {:error, error} ->
-          Response.error(conn, error)
-      end
+        end
+      )
     end)
   end
 

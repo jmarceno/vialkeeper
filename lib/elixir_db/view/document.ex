@@ -41,11 +41,13 @@ defmodule ElixirDB.View.Document do
     Enum.reduce_while(expressions, {:ok, []}, fn expression, {:ok, acc} ->
       case Expression.evaluate(expression, body) do
         {:ok, component} -> {:cont, {:ok, [component | acc]}}
+        :missing -> {:halt, :skip}
         {:error, _} = error -> {:halt, error}
       end
     end)
     |> then(fn
       {:ok, key} -> {:ok, Enum.reverse(key)}
+      :skip -> :skip
       error -> error
     end)
   end
@@ -68,6 +70,7 @@ defmodule ElixirDB.View.Document do
   defp evaluate_value(%{value: expression}, body) do
     case Expression.evaluate(expression, body) do
       {:ok, value} -> {:ok, value}
+      :missing -> {:ok, :omit}
       {:error, _} = error -> error
     end
   end

@@ -48,9 +48,9 @@ defmodule ElixirDB.View.Reducer do
   end
 
   def reduce_rows(rows, reducer) do
-    rows
-    |> Enum.group_by(& &1.key)
-    |> aggregate_grouped_map(reducer)
+    with {:ok, grouped} <- group_rows(rows, & &1.key) do
+      aggregate_grouped_map(grouped, reducer)
+    end
   end
 
   @spec reduce_grouped([row()], reducer(), non_neg_integer(), non_neg_integer()) ::
@@ -60,7 +60,9 @@ defmodule ElixirDB.View.Reducer do
     if group_level > key_length do
       {:error, ElixirDB.Error.invalid_request("group_level exceeds key length")}
     else
-      grouped_reduce(rows, reducer, group_level)
+      with {:ok, grouped} <- group_rows(rows, &Enum.take(&1.key, group_level)) do
+        aggregate_grouped_map(grouped, reducer)
+      end
     end
   end
 
@@ -76,24 +78,9 @@ defmodule ElixirDB.View.Reducer do
     end
   end
 
-  defp grouped_reduce([], _reducer, _group_level), do: {:ok, []}
-
-  defp grouped_reduce(rows, reducer, 0) do
-    case aggregate_group([], rows, reducer) do
-      {:ok, result} -> {:ok, [result]}
-      {:error, _} = error -> error
-    end
-  end
-
-  defp grouped_reduce(rows, reducer, group_level) do
-    rows
-    |> Enum.group_by(fn row -> Enum.take(row.key, group_level) end)
-    |> aggregate_grouped_map(reducer)
-  end
-
   defp aggregate_grouped_map(grouped, reducer) do
     grouped
-    |> Enum.reduce_while({:ok, []}, fn {group_key, group_rows}, {:ok, acc} ->
+    |> Enum.reduce_while({:ok, []}, fn {_group_sort, {group_key, group_rows}}, {:ok, acc} ->
       case aggregate_group(group_key, group_rows, reducer) do
         {:ok, result} -> {:cont, {:ok, [result | acc]}}
         {:error, _} = error -> {:halt, error}
@@ -105,7 +92,25 @@ defmodule ElixirDB.View.Reducer do
     end
   end
 
+  defp group_rows(rows, key_fun) do
+    Enum.reduce_while(rows, {:ok, %{}}, fn row, {:ok, groups} ->
+      group_key = key_fun.(row)
+
+      case KeyCodec.encode(group_key) do
+        {:ok, group_sort} ->
+          group_rows = Map.get(groups, group_sort, {group_key, []})
+          {existing_key, existing_rows} = group_rows
+          groups = Map.put(groups, group_sort, {existing_key, [row | existing_rows]})
+          {:cont, {:ok, groups}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
   defp aggregate_group(key, rows, reducer) do
+    rows = Enum.reverse(rows)
     values = Enum.map(rows, &Map.get(&1, :value))
 
     with {:ok, encoded} <- KeyCodec.encode(List.wrap(key)),

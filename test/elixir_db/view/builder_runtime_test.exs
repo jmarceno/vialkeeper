@@ -1,4 +1,5 @@
 defmodule ElixirDB.View.BuilderRuntimeTest do
+  @moduledoc "Runtime tests for declarative view rebuild and catch-up behavior."
   use ExUnit.Case, async: false
 
   alias ElixirDB.Eventual
@@ -82,6 +83,52 @@ defmodule ElixirDB.View.BuilderRuntimeTest do
              DatabaseCatalog.command(uuid, {:command, :view_state, view_id})
 
     assert indexed_through >= target
+  end
+
+  test "incremental batches keep only the latest change for each document", %{uuid: uuid} do
+    probe = ViewBuilderProbe.install()
+
+    assert {:ok, %{"view_id" => view_id}} = Views.create(uuid, @view)
+    ViewBuilderProbe.await(probe, :generation_activated)
+    assert :ok = Manager.stop_builder(uuid, view_id)
+
+    assert :ok =
+             await_builder_absent(uuid, view_id,
+               message: "builder did not stop before incremental changes"
+             )
+
+    assert {:ok, first} =
+             DatabaseCatalog.command(
+               uuid,
+               {:command, :put, %{document_id: "a", body: %{"k" => "first"}}}
+             )
+
+    assert {:ok, _second} =
+             DatabaseCatalog.command(
+               uuid,
+               {:command, :put,
+                %{
+                  document_id: "a",
+                  body: %{"k" => "latest"},
+                  if_revision: first.revision
+                }}
+             )
+
+    assert :ok = Manager.start_builder(uuid, view_id)
+
+    Eventual.eventually(
+      fn ->
+        case DatabaseCatalog.command(
+               uuid,
+               {:command, :query_view, %{"view_id" => view_id, "limit" => 10}}
+             ) do
+          {:ok, %{results: [%{"key" => ["latest"], "value" => 1}]}} -> true
+          _ -> false
+        end
+      end,
+      timeout: 30_000,
+      message: "view did not converge to the latest document revision"
+    )
   end
 
   test "history truncation abandons and restarts generation", %{uuid: uuid} do

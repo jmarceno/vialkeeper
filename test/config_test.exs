@@ -1,4 +1,5 @@
 defmodule ElixirDB.ConfigTest do
+  @moduledoc "Configuration validation tests."
   use ExUnit.Case, async: true
 
   alias ElixirDB.Config

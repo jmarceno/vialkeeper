@@ -1,5 +1,5 @@
 defmodule ElixirDB.HTTP.Router do
-  @moduledoc false
+  @moduledoc "Top-level Plug router for the ElixirDB HTTP API."
   use Plug.Router
 
   alias ElixirDB.HTTP.Response
@@ -25,10 +25,9 @@ defmodule ElixirDB.HTTP.Router do
   plug(:match)
   plug(:dispatch)
 
-  # Plan §5.7: wrap the routing pipeline in the elixir_db.http.request server
-  # span. Overriding call/2 (rather than a plug in the pipeline) guarantees the
-  # span is ended — and the prior trace context restored — even when a
-  # downstream plug raises before any response is sent.
+  # Wrap the routing pipeline in the request span. Overriding call/2 rather
+  # than using a plug guarantees the span is ended and the prior trace context
+  # is restored even when a downstream plug raises before any response is sent.
   def call(conn, opts) do
     HTTP.wrap(conn, fn conn ->
       super(conn, opts)

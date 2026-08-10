@@ -91,6 +91,7 @@ defmodule ElixirDB.HTTP.Schemas do
   @view_create ["name", "selector", "key", "value", "reducer"]
   @view_query [
     "consistency",
+    "key",
     "start_key",
     "end_key",
     "inclusive_end",
@@ -98,6 +99,7 @@ defmodule ElixirDB.HTTP.Schemas do
     "limit",
     "bookmark"
   ]
+  @view_rebuild []
 
   def allowed(:document_get), do: @document_get
   def allowed(:document_put), do: @document_put
@@ -124,6 +126,7 @@ defmodule ElixirDB.HTTP.Schemas do
   def allowed(:compact_retention), do: @compact_retention
   def allowed(:view_create), do: @view_create
   def allowed(:view_query), do: @view_query
+  def allowed(:view_rebuild), do: @view_rebuild
 
   def opts(schema, message) when is_atom(schema) and is_binary(message) do
     [allowed_fields: allowed(schema), unknown_message: message]

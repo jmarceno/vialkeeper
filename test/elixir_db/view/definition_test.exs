@@ -1,4 +1,5 @@
 defmodule ElixirDB.View.DefinitionTest do
+  @moduledoc "Validation tests for declarative view definitions."
   use ExUnit.Case, async: true
 
   alias ElixirDB.Query.Normalizer

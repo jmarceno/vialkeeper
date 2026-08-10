@@ -132,7 +132,8 @@ defmodule ElixirDB.View.NumericAccumulator do
     dropped = Bitwise.band(absolute, Bitwise.bsl(1, shift) - 1)
     mantissa = Bitwise.bsr(absolute, shift)
     guard = Bitwise.band(Bitwise.bsr(absolute, shift - 1), 1) == 1
-    {mantissa, guard, dropped != 0}
+    sticky = Bitwise.band(dropped, Bitwise.bsl(1, shift - 1) - 1) != 0
+    {mantissa, guard, sticky}
   end
 
   defp split_mantissa(absolute, shift)
@@ -151,7 +152,7 @@ defmodule ElixirDB.View.NumericAccumulator do
   defp apply_rounding(mantissa, exponent, negative) when is_integer(mantissa) do
     bit_len = integer_bit_length(mantissa)
 
-    if bit_len > @mantissa_bits + 1 do
+    if bit_len > @mantissa_bits do
       apply_rounding(Bitwise.bsr(mantissa, 1), exponent + 1, negative)
     else
       encode_binary64(mantissa, exponent, negative)

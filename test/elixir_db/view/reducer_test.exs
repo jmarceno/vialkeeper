@@ -1,4 +1,5 @@
 defmodule ElixirDB.View.ReducerTest do
+  @moduledoc "Aggregation behavior tests for declarative view reducers."
   use ExUnit.Case, async: true
 
   alias ElixirDB.View.Reducer
@@ -14,6 +15,15 @@ defmodule ElixirDB.View.ReducerTest do
     values = Map.new(results, fn row -> {row.key, row.value} end)
     assert values[["a"]] == 2
     assert values[["b"]] == 1
+  end
+
+  test "numeric representations of one key share a reduced group" do
+    rows = [
+      %{key: [1], value: 1, id: "integer"},
+      %{key: [1.0], value: 2, id: "float"}
+    ]
+
+    assert {:ok, [%{key: [1], value: 2}]} = Reducer.reduce_grouped(rows, :_count, 1, 1)
   end
 
   test "empty reduced query returns no synthetic zero group" do

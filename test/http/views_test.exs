@@ -1,4 +1,5 @@
 defmodule ElixirDB.HTTP.ViewsTest do
+  @moduledoc "HTTP lifecycle and query tests for declarative views."
   use ExUnit.Case, async: false
 
   alias ElixirDB.Eventual
@@ -117,6 +118,11 @@ defmodule ElixirDB.HTTP.ViewsTest do
              )
 
     assert state["view_id"] == view_id
+
+    assert {:ok, %{status: 400, body: %{"error" => %{"code" => "invalid_request"}}}} =
+             Req.post(server.base_url <> "/v1/databases/#{uuid}/views/#{view_id}/rebuild",
+               json: %{"unexpected" => true}
+             )
 
     assert {:ok, %{status: 200, body: %{"data" => %{"deleted" => true}}}} =
              Req.delete(server.base_url <> "/v1/databases/#{uuid}/views/#{view_id}")

@@ -1,5 +1,5 @@
 defmodule ElixirDB.Query.BookmarkCodec do
-  @moduledoc false
+  @moduledoc "Encodes and validates opaque query pagination bookmarks."
   alias ElixirDB.Domain.Bookmark
   alias ElixirDB.JSON.{Canonical, SignedPayload, StrictDecoder}
 

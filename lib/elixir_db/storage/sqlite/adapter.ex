@@ -481,9 +481,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   @impl true
-  def query_view(%__MODULE__{conn: conn}, request) do
-    transaction(%__MODULE__{conn: conn}, fn -> Views.query_tx(conn, request) end)
-  end
+  def query_view(%__MODULE__{conn: conn} = adapter, request),
+    do: Views.query_tx(conn, request, adapter_config(adapter))
 
   @impl true
   def read_winning_documents_page(%__MODULE__{conn: conn}, request),

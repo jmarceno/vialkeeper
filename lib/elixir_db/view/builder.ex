@@ -72,10 +72,12 @@ defmodule ElixirDB.View.Builder do
                )}
 
             :exit, {:noproc, _} ->
+              Process.sleep(min(remaining, 10))
               await_sequence_loop(uuid, view_id, target, deadline)
           end
 
         [] ->
+          Process.sleep(min(remaining, 10))
           await_sequence_loop(uuid, view_id, target, deadline)
       end
     end
@@ -513,10 +515,19 @@ defmodule ElixirDB.View.Builder do
 
   defp envelopes_to_rows(state, changes) do
     with {:ok, envelopes} <- fetch_envelopes(state.uuid, changes) do
-      Enum.reduce(envelopes, {:ok, [], []}, fn envelope, acc ->
+      envelopes
+      |> latest_envelopes_by_document()
+      |> Enum.reduce({:ok, [], []}, fn envelope, acc ->
         map_envelope_row(state, envelope, acc)
       end)
     end
+  end
+
+  defp latest_envelopes_by_document(envelopes) do
+    envelopes
+    |> Map.new(&{&1.id, &1})
+    |> Map.values()
+    |> Enum.sort_by(& &1.id)
   end
 
   defp map_envelope_row(_state, %{deleted: true, id: id}, {:ok, rows, removals}),

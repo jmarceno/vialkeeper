@@ -6,7 +6,7 @@ defmodule ElixirDB.View.Expression do
 
   @type t :: %{required(:path) => binary()} | %{required(:literal) => term()}
 
-  @spec evaluate(t(), map()) :: {:ok, term()} | {:error, ElixirDB.Error.t()}
+  @spec evaluate(t(), map()) :: {:ok, term()} | :missing | {:error, ElixirDB.Error.t()}
   def evaluate(%{"path" => path}, document) when is_binary(path),
     do: evaluate(%{path: path}, document)
 
@@ -52,7 +52,7 @@ defmodule ElixirDB.View.Expression do
   def normalize(_),
     do: {:error, ElixirDB.Error.invalid_request("view expression must be an object")}
 
-  defp normalize_path(path) when is_binary(path) and path != "" do
+  defp normalize_path(path) when is_binary(path) do
     case Pointer.parse(path) do
       {:ok, _} -> {:ok, %{"path" => path}}
       {:error, _} = error -> error
@@ -84,7 +84,7 @@ defmodule ElixirDB.View.Expression do
   defp resolve_pointer(document, path) do
     case Pointer.get(document, path) do
       {:ok, value} -> {:ok, value}
-      :missing -> {:ok, nil}
+      :missing -> :missing
       {:error, _} = error -> error
     end
   end

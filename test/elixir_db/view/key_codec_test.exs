@@ -1,4 +1,5 @@
 defmodule ElixirDB.View.KeyCodecTest do
+  @moduledoc "Ordering and encoding tests for declarative view keys."
   use ExUnit.Case, async: true
 
   alias ElixirDB.View.KeyCodec

@@ -1,8 +1,9 @@
 defmodule ElixirDB.JSON.SignedPayload do
-  @moduledoc false
+  @moduledoc "Encodes canonical JSON payloads with an integrity checksum."
 
   alias ElixirDB.JSON.Canonical
 
+  @doc "Encodes a map as unpadded URL-safe base64 with a SHA-256 checksum."
   @spec encode(map()) :: {:ok, binary()} | {:error, ElixirDB.Error.t()}
   def encode(payload) when is_map(payload) do
     with {:ok, unsigned} <- Canonical.encode(payload),
