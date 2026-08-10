@@ -93,7 +93,7 @@ defmodule ElixirDB.Observability.Attributes do
 
   Unknown keys are dropped silently; callers should only ever pass allow-listed
   keys. A value that cannot be coerced is dropped rather than raised — build/1
-  runs on hot paths and must never crash the caller (§1).
+  runs on hot paths and must never crash the caller.
   """
   @spec build(keyword()) :: map()
   def build(attrs) when is_list(attrs) do

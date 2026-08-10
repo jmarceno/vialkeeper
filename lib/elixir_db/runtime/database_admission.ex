@@ -20,7 +20,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   @default_timeout 30_000
 
   defmodule Waiter do
-    @moduledoc false
+    @moduledoc "Internal wait-queue entry tracked by `DatabaseAdmission`."
     @enforce_keys [
       :request_ref,
       :from,
@@ -51,7 +51,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   end
 
   defmodule ActivePermit do
-    @moduledoc false
+    @moduledoc "Internal active permit tracked by `DatabaseAdmission`."
     @enforce_keys [
       :request_ref,
       :token,

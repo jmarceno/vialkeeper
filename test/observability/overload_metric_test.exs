@@ -2,8 +2,7 @@ defmodule ElixirDB.Observability.OverloadMetricTest do
   @moduledoc """
   Saturate admission and assert `elixir_db.database.overload.count`
   increments and NO span is created (overload is not a unit of work). Also
-  enforce the migration gate: no bare telemetry emitter remains in either
-  migrated module.
+  verify migrated modules no longer emit bare telemetry events.
   """
 
   use ElixirDB.Observability.OtelCase, async: false
@@ -81,8 +80,8 @@ defmodule ElixirDB.Observability.OverloadMetricTest do
   end
 
   test "no bare telemetry emitter remains in the migrated modules" do
-    # The migration gate (plan §9): the bare emitters in database_admission.ex
-    # and replication.ex must be gone, replaced by the OTel emitters.
+    # Migrated modules must not keep bare :telemetry.execute emitters; OTel
+    # instrumentation owns overload and admission observability instead.
     for file <- [
           "lib/elixir_db/runtime/database_admission.ex",
           "lib/elixir_db/replication.ex"

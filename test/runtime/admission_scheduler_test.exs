@@ -1,4 +1,8 @@
 defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
+  @moduledoc """
+  Unit and integration tests for per-database admission scheduling, capacity,
+  and owner execution paths.
+  """
   use ExUnit.Case, async: false
 
   alias ElixirDB.Eventual
@@ -1213,7 +1217,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 end
 
 defmodule FakeOwner do
-  @moduledoc false
+  @moduledoc "Minimal stand-in owner process for admission scheduler tests."
   use GenServer
 
   alias ElixirDB.Runtime.DatabaseRegistry

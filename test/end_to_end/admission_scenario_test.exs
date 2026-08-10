@@ -74,7 +74,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   @tag slow: true
   @tag admission_e2e_scheduling: true
   @tag timeout: 90_000
-  test "Plan §27 scheduling: fairness, reservations, kill, and timeout races" do
+  test "scheduling: fairness, reservations, kill, and timeout races" do
     ctx = bootstrap_seeded_pair!()
     %{a_uuid: a_uuid, probe_ref: probe_ref, hook_ref: hook_ref} = ctx
 
@@ -96,7 +96,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   @tag slow: true
   @tag admission_e2e_isolation: true
   @tag timeout: 90_000
-  test "Plan §27 isolation: disconnect cleanup, streaming permits, and A/B independence" do
+  test "isolation: disconnect cleanup, streaming permits, and A/B independence" do
     ctx = bootstrap_seeded_pair!()
     %{server: server, a_uuid: a_uuid, b_uuid: b_uuid, blob: blob, hook_ref: hook_ref} = ctx
 
@@ -112,7 +112,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   @tag slow: true
   @tag admission_e2e_composition: true
   @tag timeout: 120_000
-  test "Plan §27 composition: retention, replication, sustained load, close, and correctness" do
+  test "composition: retention, replication, sustained load, close, and correctness" do
     ctx = bootstrap_seeded_pair!()
 
     %{
@@ -137,8 +137,8 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     assert {:ok, %{state: :disabled}} = JobManager.disable(a_uuid, job_id)
     AdmissionScenario.await_stats(a_uuid, &(&1.total_occupancy == 0), timeout: 30_000)
 
-    # §27.7/9/10/11 real-path fairness while replication is disabled and no live
-    # subscriptions are open — avoids contaminating the grant sample.
+    # Real-path fairness while replication is disabled and no live subscriptions
+    # are open — avoids contaminating the grant sample.
     AdmissionScenario.begin_peak_occupancy_tracking(a_uuid)
     _ = AdmissionScenario.drain_grants(probe_ref, 0)
 
@@ -242,16 +242,16 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
       Enum.filter(grants_during_sustained, fn {class, _op} -> class == :foreground end)
 
     refute replication_grants == [],
-           "§27.6/10 continuous replication did not produce replication-class grants during sustained load"
+           "continuous replication did not produce replication-class grants during sustained load"
 
     refute subscription_grants == [],
-           "§27.6/10 subscription work did not produce subscription-class grants during sustained load"
+           "subscription work did not produce subscription-class grants during sustained load"
 
     refute maintenance_grants == [],
-           "§27.6/10 maintenance work did not produce maintenance-class grants during sustained load"
+           "maintenance work did not produce maintenance-class grants during sustained load"
 
     refute foreground_grants == [],
-           "§27.6/9 foreground HTTP work did not produce foreground grants during sustained load"
+           "foreground HTTP work did not produce foreground grants during sustained load"
 
     peak_a = AdmissionScenario.peak_occupancy(a_uuid)
     peak_b = AdmissionScenario.peak_occupancy(b_uuid)
@@ -437,14 +437,14 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
                end)
              end,
              timeout: 10_000,
-             message: "§27.5 RetentionScheduler did not grant :maintenance compact_retention on A"
+             message: "RetentionScheduler did not grant :maintenance compact_retention on A"
            )
 
     assert {:ok, %{floor_sequence: floor}} =
              DatabaseCatalog.command(a_uuid, {:command, :retention_status, %{}})
 
     assert is_integer(floor) and floor > 0,
-           "§27.5 retention maintenance did not advance floor_sequence"
+           "retention maintenance did not advance floor_sequence"
 
     assert {:ok, _} =
              DatabaseCatalog.command(
@@ -902,7 +902,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
       end
     )
 
-    # B remains independent while A is blocked (§27.17).
+    # B remains independent while A is blocked.
     assert %{status: 200, body: body} =
              Req.post!(
                server.base_url <> "/v1/databases/#{b_uuid}/documents/get",
@@ -912,7 +912,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     assert body["data"]["body"]["title"] == "seed"
 
-    # Force a non-vacuous B occupancy peak (§27.8), then drain.
+    # Force a non-vacuous B occupancy peak, then drain.
     AdmissionScenario.begin_peak_occupancy_tracking(b_uuid)
     :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, b_gate, b_uuid})
 
@@ -957,7 +957,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     Application.delete_env(:elixir_db, :admitted_command_owner_body_sync)
     await_replication_active(uuid, job_id)
 
-    # Contract: active replication blocks close; callers must disable/cancel the job first (§15).
+    # Active replication blocks close; callers must disable or cancel the job first.
     assert {:error, %ElixirDB.Error{code: :database_not_closable}} =
              DatabaseCatalog.close(uuid)
 

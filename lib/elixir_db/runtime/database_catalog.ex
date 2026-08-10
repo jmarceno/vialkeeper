@@ -40,9 +40,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   @doc "Returns the absolute bundle root for a registered database UUID."
   def bundle_root(uuid), do: GenServer.call(__MODULE__, {:bundle_root, uuid})
 
-  # Plan §5.1: the database.open span is created HERE, in the caller process,
-  # before the GenServer.call — so the span is a child of the caller's trace
-  # (e.g. the HTTP request that triggered the open) and covers call latency.
+  # The database.open span is created here, in the caller process, before the
+  # GenServer.call — so the span is a child of the caller's trace (e.g. the
+  # HTTP request that triggered the open) and covers call latency.
   def open(uuid) do
     Database.open(uuid, fn ->
       GenServer.call(__MODULE__, {:open, uuid}, 30_000)
@@ -280,9 +280,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   @impl true
   def handle_call({:open, uuid}, _from, state) do
-    # The database.open span wraps this call in the CALLER process (see open/1),
-    # per Plan §5.1. Rejected opens (unavailable/in_use) become
-    # outcome: :rejected there but keep span status UNSET (expected outcomes).
+    # The database.open span wraps this call in the caller process (see open/1).
+    # Rejected opens (unavailable/in_use) become outcome: :rejected there but
+    # keep span status UNSET (expected outcomes).
     if Map.has_key?(state.close_operations, uuid) do
       {:reply, {:error, ElixirDB.Error.database_closed("database is closing")}, state}
     else
@@ -636,7 +636,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   defp close_runtime(uuid) do
-    # Prefer checking external close blockers before begin_close (§15). Active
+    # Prefer checking external close blockers before begin_close. Active
     # replication remains a hard blocker; callers must disable jobs first.
     with false <- JobManager.active?(uuid),
          :ok <- drain_admission(uuid) do

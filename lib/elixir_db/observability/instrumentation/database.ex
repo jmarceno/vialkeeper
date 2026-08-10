@@ -48,8 +48,8 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
   @doc """
   Wraps a database command in the `elixir_db.database.command` span and records
   `elixir_db.database.command.duration`. `command.type` is derived from the
-  command struct. Span status follows the §6.5 policy: only `:internal_error`
-  sets ERROR; expected domain errors stay UNSET.
+  command struct. Span status follows the observability error policy: only
+  `:internal_error` sets ERROR; expected domain errors stay UNSET.
   """
   @spec command(binary(), term(), (-> {:ok, term()} | {:error, ElixirDB.Error.t()})) ::
           {:ok, term()} | {:error, ElixirDB.Error.t()}
