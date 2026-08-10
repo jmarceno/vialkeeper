@@ -1,9 +1,8 @@
 name: CI
 
+# Never add auto workflow runs of any type.
+# Workflows must always be manually triggered.
 on:
-  push:
-    branches: [master, main]
-  pull_request:
   workflow_dispatch:
 
 jobs:
