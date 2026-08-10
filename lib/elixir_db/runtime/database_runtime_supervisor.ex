@@ -23,6 +23,7 @@ defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
       AdmissionSupervisor.child_spec(uuid, limit, policy),
       {ElixirDB.Runtime.AttachmentCoordinator, uuid},
       {ElixirDB.Runtime.ChangeNotifier, uuid},
+      {ElixirDB.View.Supervisor, uuid},
       {ElixirDB.Query.SubscriptionSupervisor, uuid},
       {ElixirDB.Runtime.RetentionScheduler, uuid}
     ]

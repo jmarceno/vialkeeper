@@ -69,7 +69,11 @@ defmodule ElixirDB.Observability.Meters do
     {:"elixir_db.replication.blob.transfer.duration", :histogram},
     {:"elixir_db.query.subscription.open", :counter},
     {:"elixir_db.query.subscription.update", :counter},
-    {:"elixir_db.query.subscription.overload", :counter}
+    {:"elixir_db.query.subscription.overload", :counter},
+    {:"elixir_db.view.builder.started", :counter},
+    {:"elixir_db.view.rebuild.activated", :counter},
+    {:"elixir_db.view.batch.applied", :counter},
+    {:"elixir_db.view.history_truncated", :counter}
   ]
 
   @doc "Returns the instrument catalog declared by this module."

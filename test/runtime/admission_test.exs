@@ -2,6 +2,7 @@ defmodule ElixirDB.Runtime.AdmissionTest do
   use ExUnit.Case, async: false
 
   alias ElixirDB.Runtime.{DatabaseAdmission, DatabaseCatalog}
+  alias ElixirDB.View.Manager
 
   setup do
     previous_limits = Application.get_env(:elixir_db, :host_limits)
@@ -34,6 +35,7 @@ defmodule ElixirDB.Runtime.AdmissionTest do
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     assert {:ok, _} = DatabaseCatalog.open(identity.database_uuid)
+    assert :ok = Manager.await_resumed(identity.database_uuid)
 
     on_exit(fn ->
       _ = DatabaseCatalog.close(identity.database_uuid)

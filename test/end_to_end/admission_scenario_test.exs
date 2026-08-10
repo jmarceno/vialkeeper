@@ -42,6 +42,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
   alias ElixirDB.TestServer
   alias ElixirDB.TestSupport.{AdmissionClassProbe, AdmissionScenario}
+  alias ElixirDB.View.Manager
 
   @admission_limit 12
   @blob_payload "admission-e2e-attachment-payload"
@@ -261,6 +262,8 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     assert_close_drains_admission!(a_uuid, job_id, sub_a, sub_b)
 
     assert {:ok, _} = DatabaseCatalog.open(a_uuid)
+    assert :ok = Manager.await_resumed(a_uuid)
+    AdmissionScenario.await_stats(a_uuid, &(&1.total_occupancy == 0), timeout: 30_000)
 
     assert {:ok, stats} = DatabaseAdmission.stats(a_uuid)
     assert stats.total_occupancy == 0

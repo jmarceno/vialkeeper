@@ -10,6 +10,7 @@ defmodule ElixirDB.Observability.AdmissionPrivacyTest do
   alias ElixirDB.Eventual
   alias ElixirDB.Observability.TestMetricExporter
   alias ElixirDB.Runtime.{AdmissionPolicy, DatabaseAdmission, DatabaseCatalog}
+  alias ElixirDB.View.Manager
 
   @metric "elixir_db.database.admission.wait"
   @doc_secret "PRIVACY_ADMISSION_DOC_SENTINEL_42"
@@ -49,6 +50,7 @@ defmodule ElixirDB.Observability.AdmissionPrivacyTest do
     end)
 
     assert {:ok, _} = DatabaseCatalog.open(uuid)
+    assert :ok = Manager.await_resumed(uuid)
 
     assert {:ok, _} =
              Documents.put(uuid, %{id: @doc_secret, body: %{"marker" => @query_secret}})

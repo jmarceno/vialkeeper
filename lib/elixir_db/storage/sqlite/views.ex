@@ -160,8 +160,11 @@ defmodule ElixirDB.Storage.SQLite.Views do
     generation = required_integer(request, "generation")
     rows = Map.get(request, "rows", [])
 
+    removals = Map.get(request, "removals", [])
+
     with {:ok, state} <- fetch_state(conn, view_id),
          :ok <- ensure_building_generation(state, generation),
+         :ok <- delete_removals(conn, view_id, generation, removals),
          :ok <- upsert_rows(conn, view_id, generation, rows) do
       {:ok, %{view_id: view_id, generation: generation, appended: length(rows)}}
     end
@@ -626,7 +629,7 @@ defmodule ElixirDB.Storage.SQLite.Views do
          :ok <-
            Connection.execute(
              conn,
-             "INSERT INTO view_state(view_id, active_generation, building_generation, indexed_through, status, last_error_code) VALUES (?, 1, NULL, 0, 'ready', NULL)",
+             "INSERT INTO view_state(view_id, active_generation, building_generation, indexed_through, status, last_error_code) VALUES (?, 1, NULL, 0, 'building', NULL)",
              [view_id]
            ) do
       {:ok,
@@ -636,7 +639,7 @@ defmodule ElixirDB.Storage.SQLite.Views do
          "definition_digest" => normalized.definition_digest,
          "definition_json" => normalized.definition_json,
          "created_at" => created_at,
-         "status" => "ready",
+         "status" => "building",
          "indexed_through" => 0,
          "active_generation" => 1
        }}
@@ -740,6 +743,7 @@ defmodule ElixirDB.Storage.SQLite.Views do
     %{
       "view_id" => view_id,
       "name" => name,
+      "definition" => definition,
       "definition_digest" => definition_digest,
       "created_at" => created_at,
       "active_generation" => active_generation,

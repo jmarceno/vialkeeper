@@ -19,6 +19,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   alias ElixirDB.DatabaseBundle
   alias ElixirDB.PathSafety
   alias ElixirDB.Storage.SQLite.Adapter
+  alias ElixirDB.View.Manager
   def start_link(_args), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
   def create(relative_path, options \\ %{}),
@@ -682,10 +683,15 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp abort_close_on_error(other, _uuid), do: other
 
   defp close_external_services(uuid) do
-    with :ok <- close_attachment_coordinator(uuid),
+    with :ok <- close_view_manager(uuid),
+         :ok <- close_attachment_coordinator(uuid),
          :ok <- close_subscription_hub(uuid) do
       close_change_notifier(uuid)
     end
+  end
+
+  defp close_view_manager(uuid) do
+    Manager.close(uuid)
   end
 
   defp close_attachment_coordinator(uuid) do
