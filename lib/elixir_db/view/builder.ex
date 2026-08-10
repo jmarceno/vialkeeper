@@ -93,6 +93,18 @@ defmodule ElixirDB.View.Builder do
     end
   end
 
+  @spec request_catch_up(binary(), binary()) :: :ok | {:error, ElixirDB.Error.t()}
+  def request_catch_up(uuid, view_id) when is_binary(uuid) and is_binary(view_id) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:view_builder, uuid, view_id}) do
+      [{pid, _}] ->
+        GenServer.cast(pid, :catch_up)
+        :ok
+
+      [] ->
+        {:error, ElixirDB.Error.view_not_found("view builder is not running", %{view_id: view_id})}
+    end
+  end
+
   @impl true
   def init({uuid, view_id, page_size}) do
     ViewInstrumentation.builder_started(uuid)
@@ -113,6 +125,8 @@ defmodule ElixirDB.View.Builder do
 
   @impl true
   def handle_cast(:request_rebuild, state), do: {:noreply, schedule_rebuild(state)}
+
+  def handle_cast(:catch_up, state), do: {:noreply, schedule_work(state)}
 
   @impl true
   def handle_info(:bootstrap, state) do

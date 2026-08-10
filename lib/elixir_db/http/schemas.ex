@@ -88,6 +88,16 @@ defmodule ElixirDB.HTTP.Schemas do
   ]
   @wire_blob_diff ["digests"]
   @compact_retention []
+  @view_create ["name", "selector", "key", "value", "reducer"]
+  @view_query [
+    "consistency",
+    "start_key",
+    "end_key",
+    "inclusive_end",
+    "group_level",
+    "limit",
+    "bookmark"
+  ]
 
   def allowed(:document_get), do: @document_get
   def allowed(:document_put), do: @document_put
@@ -112,6 +122,8 @@ defmodule ElixirDB.HTTP.Schemas do
   def allowed(:wire_boundary_install), do: @wire_boundary_install
   def allowed(:wire_blob_diff), do: @wire_blob_diff
   def allowed(:compact_retention), do: @compact_retention
+  def allowed(:view_create), do: @view_create
+  def allowed(:view_query), do: @view_query
 
   def opts(schema, message) when is_atom(schema) and is_binary(message) do
     [allowed_fields: allowed(schema), unknown_message: message]

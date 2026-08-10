@@ -45,8 +45,9 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
          :ok <- validate_document_rows(conn),
          :ok <- validate_change_rows(conn, meta.retention_floor_sequence),
          :ok <- validate_checkpoints(conn, meta),
-         :ok <- validate_index_rows(conn, indexes) do
-      {:ok, attachment_report}
+         :ok <- validate_index_rows(conn, indexes),
+         {:ok, view_report} <- view_metadata(conn) do
+      {:ok, Map.put(attachment_report, :views, view_report)}
     else
       {:ok, rows} when is_list(rows) ->
         {:error,
@@ -913,6 +914,44 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
         {:error, error} -> {:halt, {:error, error}}
       end
     end)
+  end
+
+  defp view_metadata(conn) do
+    case Connection.query(
+           conn,
+           """
+           SELECT d.view_id, d.name, d.definition_digest, s.status, s.indexed_through,
+                  s.active_generation, s.building_generation
+           FROM view_definitions AS d
+           JOIN view_state AS s ON s.view_id = d.view_id
+           ORDER BY d.name
+           """
+         ) do
+      {:ok, rows} ->
+        {:ok,
+         Enum.map(rows, fn [
+                             view_id,
+                             name,
+                             definition_digest,
+                             status,
+                             indexed_through,
+                             active_generation,
+                             building_generation
+                           ] ->
+           %{
+             view_id: view_id,
+             name: name,
+             definition_digest: definition_digest,
+             status: status,
+             indexed_through: indexed_through,
+             active_generation: active_generation,
+             building_generation: building_generation
+           }
+         end)}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
   end
 
   defp validate_db_meta(meta) do

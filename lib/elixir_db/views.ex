@@ -38,10 +38,63 @@ defmodule ElixirDB.Views do
   def rebuild(uuid, view_id) when is_binary(uuid) and is_binary(view_id),
     do: Builder.request_rebuild(uuid, view_id)
 
+  @spec query(binary(), binary(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def query(uuid, view_id, request)
+      when is_binary(uuid) and is_binary(view_id) and is_map(request) do
+    consistency = Map.get(request, "consistency", "stale_ok")
+
+    with :ok <- validate_consistency(consistency),
+         {:ok, _state} <- state(uuid, view_id),
+         {:ok, target, timeout} <- consistency_target(uuid, consistency),
+         :ok <- await_if_consistent(uuid, view_id, consistency, target, timeout),
+         result <-
+           DatabaseCatalog.command(
+             uuid,
+             {:command, :query_view, Map.put(request, "view_id", view_id)}
+           ),
+         :ok <- request_catch_up(uuid, view_id, consistency) do
+      result
+    end
+  end
+
   @spec await_consistent(binary(), binary(), non_neg_integer(), timeout()) ::
           :ok | {:error, ElixirDB.Error.t()}
   def await_consistent(uuid, view_id, target_sequence, timeout \\ 5_000)
       when is_binary(uuid) and is_binary(view_id) and is_integer(target_sequence) do
     Builder.await_sequence(uuid, view_id, target_sequence, timeout)
+  end
+
+  defp validate_consistency(mode) when mode in ["stale_ok", "update_after", "consistent"], do: :ok
+
+  defp validate_consistency(_mode),
+    do:
+      {:error,
+       ElixirDB.Error.invalid_request(
+         "view consistency must be stale_ok, update_after, or consistent"
+       )}
+
+  defp consistency_target(_uuid, "stale_ok"), do: {:ok, nil, 0}
+  defp consistency_target(_uuid, "update_after"), do: {:ok, nil, 0}
+
+  defp consistency_target(uuid, "consistent") do
+    with {:ok, identity} <- DatabaseCatalog.command(uuid, {:command, :identity, %{}}) do
+      config_wait = get_in(identity, [:config, "views", "consistent_wait_ms"]) || 5_000
+      {:ok, identity.current_sequence, config_wait}
+    end
+  end
+
+  defp await_if_consistent(_uuid, _view_id, mode, _target, _timeout) when mode != "consistent",
+    do: :ok
+
+  defp await_if_consistent(uuid, view_id, "consistent", target, timeout),
+    do: await_consistent(uuid, view_id, target, timeout)
+
+  defp request_catch_up(_uuid, _view_id, "stale_ok"), do: :ok
+
+  defp request_catch_up(uuid, view_id, _mode) do
+    case Builder.request_catch_up(uuid, view_id) do
+      :ok -> :ok
+      _ -> :ok
+    end
   end
 end
