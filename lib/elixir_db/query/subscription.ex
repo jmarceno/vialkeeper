@@ -139,7 +139,7 @@ defmodule ElixirDB.Query.Subscription do
   @impl true
   def handle_info(:execute_snapshot, %{status: :awaiting_snapshot} = state) do
     result =
-      DatabaseCatalog.command(state.uuid, {
+      DatabaseCatalog.command_as(state.uuid, :subscription, {
         :command,
         :execute_subscription_snapshot,
         snapshot_request(state.request)
@@ -369,7 +369,7 @@ defmodule ElixirDB.Query.Subscription do
   end
 
   defp refresh_reset_limits(state) do
-    case DatabaseCatalog.command(state.uuid, {:command, :identity, %{}}) do
+    case DatabaseCatalog.command_as(state.uuid, :subscription, {:command, :identity, %{}}) do
       {:ok, %{config: config}} when is_map(config) ->
         case get_in(config, ["subscriptions", "max_members"]) do
           max_members when is_integer(max_members) and max_members > 0 ->

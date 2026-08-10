@@ -6,7 +6,8 @@ defmodule ElixirDB.Query.Subscriptions do
   alias ElixirDB.Runtime.DatabaseCatalog
 
   def open(uuid, request, client_pid \\ self()) do
-    with {:ok, identity} <- DatabaseCatalog.command(uuid, {:command, :identity, %{}}),
+    with {:ok, identity} <-
+           DatabaseCatalog.command_as(uuid, :subscription, {:command, :identity, %{}}),
          {:ok, normalized} <- normalize(request, identity),
          {:ok, supervisor} <- SubscriptionSupervisor.dynamic_supervisor(uuid) do
       case DynamicSupervisor.start_child(

@@ -3,7 +3,7 @@ defmodule ElixirDB.Runtime.RetentionScheduler do
   use GenServer
 
   alias ElixirDB.Observability.Instrumentation.Compact
-  alias ElixirDB.Runtime.{DatabaseAdmission, DatabaseOwner}
+  alias ElixirDB.Runtime.{DatabaseAdmission, DatabaseCatalog}
 
   def start_link(uuid), do: GenServer.start_link(__MODULE__, uuid, name: via(uuid))
 
@@ -53,7 +53,10 @@ defmodule ElixirDB.Runtime.RetentionScheduler do
   end
 
   defp schedule_ms(uuid) do
-    case DatabaseOwner.command(uuid, {:command, :identity, %{}}) do
+    # Route through per-database admission as :maintenance without catalog.command:
+    # schedule_state runs during runtime startup while DatabaseCatalog may still be
+    # inside {:open, _} / {:ensure_command_target, _}.
+    case DatabaseAdmission.execute(uuid, :maintenance, {:command, :identity, %{}}) do
       {:ok, %{config: config}} when is_map(config) ->
         retention_schedule_ms(config)
 
@@ -75,9 +78,11 @@ defmodule ElixirDB.Runtime.RetentionScheduler do
   defp run_scheduled_compact(uuid) do
     Compact.requested(uuid, :scheduled)
 
-    DatabaseAdmission.with_token(uuid, fn ->
-      DatabaseOwner.command(uuid, {:command, :compact_retention, %{trigger: :scheduled}})
-    end)
+    DatabaseCatalog.command_as(
+      uuid,
+      :maintenance,
+      {:command, :compact_retention, %{trigger: :scheduled}}
+    )
     |> case do
       {:ok, _} -> :ok
       {:error, _} -> :ok

@@ -31,7 +31,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
       :deadline_ms,
       :mode
     ]
-    defstruct @enforce_keys ++ [:owner_fun, :trace_context]
+    defstruct @enforce_keys ++ [:owner_fun, :trace_context, :probe_op]
 
     @type t :: %__MODULE__{
             request_ref: reference(),
@@ -43,7 +43,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
             deadline_ms: Deadline.t(),
             mode: :permit | {:execute, (-> term())},
             owner_fun: nil | (-> term()),
-            trace_context: term()
+            trace_context: term(),
+            probe_op: atom() | nil
           }
   end
 
@@ -188,7 +189,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
       uuid,
       class,
       fn -> DatabaseOwner.command(uuid, command, :infinity) end,
-      :infinity
+      :infinity,
+      probe_op_from_command(command)
     )
   end
 
@@ -198,7 +200,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
       uuid,
       class,
       fn -> DatabaseOwner.command(uuid, command, Deadline.call_timeout(deadline_ms)) end,
-      deadline_ms
+      deadline_ms,
+      probe_op_from_command(command)
     )
   end
 
@@ -206,20 +209,20 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
           term() | {:error, Error.t()}
   def execute_owner(uuid, class, owner_fun, timeout \\ @default_timeout)
       when is_binary(uuid) and is_function(owner_fun, 0) do
-    execute_owner_with_deadline(uuid, class, owner_fun, Deadline.from_timeout(timeout))
+    execute_owner_with_deadline(uuid, class, owner_fun, Deadline.from_timeout(timeout), nil)
   end
 
-  defp execute_owner_with_deadline(uuid, class, owner_fun, :infinity)
+  defp execute_owner_with_deadline(uuid, class, owner_fun, :infinity, probe_op)
        when is_binary(uuid) and is_function(owner_fun, 0) do
-    execute_owner_with_deadline_impl(uuid, class, owner_fun, :infinity)
+    execute_owner_with_deadline_impl(uuid, class, owner_fun, :infinity, probe_op)
   end
 
-  defp execute_owner_with_deadline(uuid, class, owner_fun, deadline_ms)
+  defp execute_owner_with_deadline(uuid, class, owner_fun, deadline_ms, probe_op)
        when is_binary(uuid) and is_function(owner_fun, 0) and is_integer(deadline_ms) do
-    execute_owner_with_deadline_impl(uuid, class, owner_fun, deadline_ms)
+    execute_owner_with_deadline_impl(uuid, class, owner_fun, deadline_ms, probe_op)
   end
 
-  defp execute_owner_with_deadline_impl(uuid, class, owner_fun, deadline_ms) do
+  defp execute_owner_with_deadline_impl(uuid, class, owner_fun, deadline_ms, probe_op) do
     unless ServiceClass.valid?(class),
       do: raise(ArgumentError, "invalid service class #{inspect(class)}")
 
@@ -232,7 +235,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
       try do
         call(
           uuid,
-          {:acquire, request_ref, class, deadline_ms, {:execute, owner_fun}, trace_context},
+          {:acquire, request_ref, class, deadline_ms, {:execute, owner_fun}, trace_context,
+           probe_op},
           Deadline.call_timeout(deadline_ms)
         )
       catch
@@ -344,11 +348,19 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   end
 
   def handle_call({:acquire, request_ref, class, deadline_ms, mode}, from, state) do
-    handle_acquire(request_ref, class, deadline_ms, mode, :undefined, from, state)
+    handle_acquire(request_ref, class, deadline_ms, mode, :undefined, from, state, nil)
   end
 
   def handle_call({:acquire, request_ref, class, deadline_ms, mode, trace_context}, from, state) do
-    handle_acquire(request_ref, class, deadline_ms, mode, trace_context, from, state)
+    handle_acquire(request_ref, class, deadline_ms, mode, trace_context, from, state, nil)
+  end
+
+  def handle_call(
+        {:acquire, request_ref, class, deadline_ms, mode, trace_context, probe_op},
+        from,
+        state
+      ) do
+    handle_acquire(request_ref, class, deadline_ms, mode, trace_context, from, state, probe_op)
   end
 
   def handle_call({:admitted_command_begin, request_ref, executor_pid}, _from, state) do
@@ -462,7 +474,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     end
   end
 
-  defp handle_acquire(request_ref, class, deadline_ms, mode, trace_context, from, state) do
+  defp handle_acquire(request_ref, class, deadline_ms, mode, trace_context, from, state, probe_op) do
     cond do
       state.closing? ->
         {:reply, {:error, closed_error()}, state}
@@ -488,7 +500,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
           deadline_ms: deadline_ms,
           mode: mode,
           owner_fun: owner_fun_from_mode(mode),
-          trace_context: trace_context
+          trace_context: trace_context,
+          probe_op: probe_op
         }
 
         state =
@@ -596,6 +609,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   defp scan_grant(_state, _schedule_len, _offset), do: :none
 
   defp grant_waiter(%__MODULE__{} = state, request_ref, class, %Waiter{} = waiter) do
+    probe_admission_class(class, waiter.probe_op)
     token = make_ref()
     granted_at_ms = System.monotonic_time(:millisecond)
 
@@ -855,5 +869,18 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
 
   defp drain_sync_retry_ms do
     Application.get_env(:elixir_db, :executor_drain_sync_retry_ms, 10)
+  end
+
+  defp probe_op_from_command({:command, op, _}) when is_atom(op), do: op
+  defp probe_op_from_command(_), do: nil
+
+  defp probe_admission_class(class, probe_op) do
+    case Application.get_env(:elixir_db, :admission_class_probe) do
+      {pid, ref} when is_pid(pid) and is_reference(ref) ->
+        send(pid, {ref, :admission_grant, class, probe_op})
+
+      _ ->
+        :ok
+    end
   end
 end

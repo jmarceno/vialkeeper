@@ -240,16 +240,21 @@ defmodule ElixirDB.Attachments do
 
   Preserves request order. Each digest must be lowercase SHA-256 hex.
   """
-  @spec diff_blobs(binary(), [binary()]) :: {:ok, [binary()]} | {:error, ElixirDB.Error.t()}
-  def diff_blobs(uuid, digests) when is_binary(uuid) and is_list(digests) do
+  @spec diff_blobs(binary(), [binary()], keyword()) ::
+          {:ok, [binary()]} | {:error, ElixirDB.Error.t()}
+  def diff_blobs(uuid, digests, opts \\ [])
+
+  def diff_blobs(uuid, digests, opts) when is_binary(uuid) and is_list(digests) do
+    admission_class = Keyword.get(opts, :admission_class, :foreground)
+
     with :ok <- ensure_open(uuid),
          {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
          {:ok, validated} <- validate_digest_list(digests) do
-      {:ok, missing_digests(uuid, bundle_root, validated)}
+      {:ok, missing_digests(uuid, bundle_root, validated, admission_class)}
     end
   end
 
-  def diff_blobs(_uuid, _digests),
+  def diff_blobs(_uuid, _digests, _opts),
     do: {:error, ElixirDB.Error.invalid_request("blob digests must be a list")}
 
   @doc """
@@ -258,15 +263,18 @@ defmodule ElixirDB.Attachments do
   The returned `BlobStream` body enumerable releases the reader and guard when
   consumed or abandoned.
   """
-  @spec open_blob(binary(), binary()) :: {:ok, BlobStream.t()} | {:error, ElixirDB.Error.t()}
-  def open_blob(uuid, digest) when is_binary(uuid) do
+  @spec open_blob(binary(), binary(), keyword()) ::
+          {:ok, BlobStream.t()} | {:error, ElixirDB.Error.t()}
+  def open_blob(uuid, digest, opts \\ []) when is_binary(uuid) do
+    admission_class = Keyword.get(opts, :admission_class, :foreground)
+
     with :ok <- ensure_open(uuid),
          {:ok, digest} <- Manifest.validate_digest(digest),
          {:ok, read_guard} <- AttachmentCoordinator.acquire_read(uuid) do
       read_handle = AttachmentInstr.start_read(uuid)
 
       try do
-        case open_blob_under_guard(uuid, digest, read_guard, read_handle) do
+        case open_blob_under_guard(uuid, digest, read_guard, read_handle, admission_class) do
           {:ok, _} = ok ->
             ok
 
@@ -306,23 +314,37 @@ defmodule ElixirDB.Attachments do
   Validates the finished digest and logical size against the request. `source`
   may be a `BlobStream`, `Plug.Conn`, enumerable, or zero-arity chunk function.
   """
-  @spec put_blob(binary(), BlobStream.t()) :: :ok | {:error, ElixirDB.Error.t()}
-  def put_blob(uuid, %BlobStream{digest: digest, length: length, body: body})
+  @spec put_blob(binary(), BlobStream.t(), keyword()) :: :ok | {:error, ElixirDB.Error.t()}
+  def put_blob(uuid, stream, opts \\ [])
+
+  def put_blob(uuid, %BlobStream{digest: digest, length: length, body: body}, opts)
       when is_binary(uuid) do
-    put_blob(uuid, digest, length, body)
+    put_blob(uuid, digest, length, body, opts)
   end
 
-  @spec put_blob(binary(), binary(), non_neg_integer(), chunk_source()) ::
+  @spec put_blob(binary(), binary(), non_neg_integer(), chunk_source(), keyword()) ::
           :ok | {:error, ElixirDB.Error.t()}
-  def put_blob(uuid, digest, length, source)
+  def put_blob(uuid, digest, length, source, opts \\ [])
+
+  def put_blob(uuid, digest, length, source, opts)
       when is_binary(uuid) and is_integer(length) and length >= 0 do
+    admission_class = Keyword.get(opts, :admission_class, :foreground)
+
     with :ok <- ensure_open(uuid),
          {:ok, digest} <- Manifest.validate_digest(digest),
          {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
          {:ok, write_guard, max_bytes} <- AttachmentCoordinator.acquire_write(uuid) do
       try do
         case AttachmentInstr.write(uuid, fn ->
-               put_blob_under_guard(uuid, bundle_root, digest, length, source, max_bytes)
+               put_blob_under_guard(
+                 uuid,
+                 bundle_root,
+                 digest,
+                 length,
+                 source,
+                 max_bytes,
+                 admission_class
+               )
              end) do
           {:ok, _stats} -> :ok
           {:error, _} = error -> error
@@ -333,10 +355,10 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  def put_blob(_uuid, _digest, _length, _source),
+  def put_blob(_uuid, _digest, _length, _source, _opts),
     do: {:error, ElixirDB.Error.invalid_request("invalid blob put")}
 
-  defp put_blob_under_guard(uuid, bundle_root, digest, length, source, max_bytes) do
+  defp put_blob_under_guard(uuid, bundle_root, digest, length, source, max_bytes, admission_class) do
     case @store.begin_put(bundle_root, max_bytes, %{}) do
       {:ok, writer} ->
         try do
@@ -344,7 +366,8 @@ defmodule ElixirDB.Attachments do
                {:ok, finished} <- @store.finish_put(writer),
                :ok <-
                  match_blob_identity(digest, length, finished.digest, finished.logical_size),
-               {:ok, protected} <- protect_uploaded_blob(uuid, digest, finished.logical_size) do
+               {:ok, protected} <-
+                 protect_uploaded_blob(uuid, digest, finished.logical_size, admission_class) do
             {:ok,
              Map.merge(protected, %{
                stream_chunks: stream_chunks,
@@ -393,7 +416,7 @@ defmodule ElixirDB.Attachments do
           with {:ok, stream_chunks} <- write_all_chunks(writer, source),
                {:ok, finished} <- @store.finish_put(writer),
                {:ok, protected} <-
-                 protect_uploaded_blob(uuid, finished.digest, finished.logical_size) do
+                 protect_uploaded_blob(uuid, finished.digest, finished.logical_size, :foreground) do
             {:ok,
              Map.merge(protected, %{
                stream_chunks: stream_chunks,
@@ -436,9 +459,13 @@ defmodule ElixirDB.Attachments do
   defp reverse_digest_list({:ok, reversed}), do: {:ok, Enum.reverse(reversed)}
   defp reverse_digest_list({:error, _} = error), do: error
 
-  defp durable_blob?(uuid, bundle_root, digest) do
+  defp durable_blob?(uuid, bundle_root, digest, admission_class) do
     with {:ok, metadata} <-
-           DatabaseCatalog.command(uuid, {:command, :resolve_blob_metadata, %{digest: digest}}),
+           metadata_command(
+             uuid,
+             {:command, :resolve_blob_metadata, %{digest: digest}},
+             admission_class
+           ),
          length when is_integer(length) and length >= 0 <-
            MapAccess.get_first(metadata, [:logical_size, :length]),
          :ok <- @store.verify(bundle_root, digest, length) do
@@ -448,15 +475,19 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  defp missing_digests(uuid, bundle_root, digests) do
-    Enum.reject(digests, &durable_blob?(uuid, bundle_root, &1))
+  defp missing_digests(uuid, bundle_root, digests, admission_class) do
+    Enum.reject(digests, &durable_blob?(uuid, bundle_root, &1, admission_class))
   end
 
-  defp open_blob_under_guard(uuid, digest, read_guard, read_handle) do
+  defp open_blob_under_guard(uuid, digest, read_guard, read_handle, admission_class) do
     with {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
          true <- @store.exists?(bundle_root, digest),
          {:ok, meta} <-
-           DatabaseCatalog.command(uuid, {:command, :resolve_blob_metadata, %{digest: digest}}),
+           metadata_command(
+             uuid,
+             {:command, :resolve_blob_metadata, %{digest: digest}},
+             admission_class
+           ),
          length when is_integer(length) and length >= 0 <-
            MapAccess.get_first(meta, [:logical_size, :length]),
          {:ok, reader} <- @store.open_read(bundle_root, digest),
@@ -603,20 +634,21 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  defp protect_uploaded_blob(uuid, digest, logical_size) do
+  defp protect_uploaded_blob(uuid, digest, logical_size, admission_class) do
     expires_at =
       DateTime.utc_now()
       |> DateTime.add(@pending_protection_hours * 3600, :second)
       |> DateTime.to_iso8601()
 
-    case DatabaseCatalog.command(
+    case metadata_command(
            uuid,
            {:command, :protect_pending_blob,
             %{
               digest: digest,
               logical_size: logical_size,
               expires_at: expires_at
-            }}
+            }},
+           admission_class
          ) do
       {:ok, _} ->
         {:ok, %{blob: digest, length: logical_size, expires_at: expires_at}}
@@ -841,5 +873,13 @@ defmodule ElixirDB.Attachments do
       fun when is_function(fun, 1) -> fun.(event)
       _ -> :ok
     end
+  end
+
+  defp metadata_command(uuid, command, :foreground) do
+    DatabaseCatalog.command(uuid, command)
+  end
+
+  defp metadata_command(uuid, command, admission_class) do
+    DatabaseCatalog.command_as(uuid, admission_class, command)
   end
 end

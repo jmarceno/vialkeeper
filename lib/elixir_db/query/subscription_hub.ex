@@ -210,11 +210,13 @@ defmodule ElixirDB.Query.SubscriptionHub do
   end
 
   defp ensure_notifier(%{notifier_ref: nil} = state) do
-    with {:ok, identity} <- DatabaseCatalog.command(state.uuid, {:command, :identity, %{}}),
+    with {:ok, identity} <-
+           DatabaseCatalog.command_as(state.uuid, :subscription, {:command, :identity, %{}}),
          sequence when is_integer(sequence) <-
            MapAccess.get(identity, :current_sequence, 0),
          {:ok, ref, _notifier_sequence} <- ChangeNotifier.subscribe(state.uuid, sequence),
-         {:ok, identity_after} <- DatabaseCatalog.command(state.uuid, {:command, :identity, %{}}) do
+         {:ok, identity_after} <-
+           DatabaseCatalog.command_as(state.uuid, :subscription, {:command, :identity, %{}}) do
       current = MapAccess.get(identity_after, :current_sequence, sequence)
 
       state = %{
@@ -297,8 +299,9 @@ defmodule ElixirDB.Query.SubscriptionHub do
   defp finish_read(state), do: state
 
   defp fetch_batch(uuid, since) do
-    case DatabaseCatalog.command(
+    case DatabaseCatalog.command_as(
            uuid,
+           :subscription,
            {:command, :read_changes, %{since: since, limit: @batch_limit}}
          ) do
       {:ok, %{results: []} = result} ->
@@ -336,8 +339,9 @@ defmodule ElixirDB.Query.SubscriptionHub do
         %{document_id: result_item.document_id, revision_id: result_item.winning_revision}
       end)
 
-    case DatabaseCatalog.command(
+    case DatabaseCatalog.command_as(
            uuid,
+           :subscription,
            {:command, :get_revisions_batch, %{requests: requests}}
          ) do
       {:ok, envelopes} -> attach_envelopes(result, results, envelopes)

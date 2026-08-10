@@ -5,40 +5,52 @@ defmodule ElixirDB.Changes do
   alias ElixirDB.Observability.Instrumentation.Changes, as: ChangesModule
   alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
 
-  def read(uuid, request \\ %{}) do
+  @type admission_class :: :foreground | :replication
+
+  def read(uuid, request \\ %{}, opts \\ []) do
+    admission_class = Keyword.get(opts, :admission_class, :foreground)
+
     ChangesModule.read(uuid, 0, fn ->
       with {:ok, normalized} <- normalize_request(request) do
-        DatabaseCatalog.command(uuid, {:command, :read_changes, normalized})
+        catalog_read(uuid, normalized, admission_class)
       end
     end)
   end
 
-  def wait(uuid, request) do
+  def wait(uuid, request, opts \\ []) do
     with {:ok, normalized} <- normalize_request(request) do
-      wait_request(uuid, normalized)
+      wait_request(uuid, normalized, Keyword.get(opts, :admission_class, :foreground))
     end
   end
 
-  defp wait_request(uuid, request) do
+  defp catalog_read(uuid, normalized, :foreground) do
+    DatabaseCatalog.command(uuid, {:command, :read_changes, normalized})
+  end
+
+  defp catalog_read(uuid, normalized, admission_class) do
+    DatabaseCatalog.command_as(uuid, admission_class, {:command, :read_changes, normalized})
+  end
+
+  defp wait_request(uuid, request, admission_class) do
     wait_ms = request.wait_ms
     since = request.since
 
-    case read(uuid, request) do
+    case read(uuid, request, admission_class: admission_class) do
       {:ok, %{results: [_ | _]} = result} ->
         {:ok, result}
 
       {:ok, result} ->
-        wait_result(uuid, request, since, wait_ms, result)
+        wait_result(uuid, request, since, wait_ms, result, admission_class)
 
       error ->
         error
     end
   end
 
-  defp wait_result(_uuid, _request, _since, 0, result), do: {:ok, result}
+  defp wait_result(_uuid, _request, _since, 0, result, _admission_class), do: {:ok, result}
 
-  defp wait_result(uuid, request, since, wait_ms, _result),
-    do: wait_for_change(uuid, request, since, wait_ms)
+  defp wait_result(uuid, request, since, wait_ms, _result, admission_class),
+    do: wait_for_change(uuid, request, since, wait_ms, admission_class)
 
   defp normalize_request(%Request{} = request), do: validate_values(request)
 
@@ -110,32 +122,32 @@ defmodule ElixirDB.Changes do
   defp validate_wait_max(_value, _max),
     do: ElixirDB.Error.resource_limit("wait_ms exceeds the host limit")
 
-  defp wait_for_change(uuid, request, since, wait_ms) do
+  defp wait_for_change(uuid, request, since, wait_ms, admission_class) do
     with {:ok, ref, current} <- ChangeNotifier.subscribe(uuid, since) do
-      read_after_subscription(uuid, request, ref, current, wait_ms)
+      read_after_subscription(uuid, request, ref, current, wait_ms, admission_class)
     end
   end
 
-  defp read_after_subscription(uuid, request, ref, current, wait_ms) do
-    result = read(uuid, request)
+  defp read_after_subscription(uuid, request, ref, current, wait_ms, admission_class) do
+    result = read(uuid, request, admission_class: admission_class)
 
     if has_newer?(result, current) do
       unsubscribe(uuid, ref)
       result
     else
-      receive_change(uuid, request, ref, wait_ms)
+      receive_change(uuid, request, ref, wait_ms, admission_class)
     end
   end
 
-  defp receive_change(uuid, request, ref, wait_ms) do
+  defp receive_change(uuid, request, ref, wait_ms, admission_class) do
     receive do
       {:database_changed, ^uuid, _sequence} ->
         unsubscribe(uuid, ref)
-        read(uuid, request)
+        read(uuid, request, admission_class: admission_class)
 
       {:database_maintenance, ^uuid, _event} ->
         unsubscribe(uuid, ref)
-        read(uuid, request)
+        read(uuid, request, admission_class: admission_class)
 
       {:database_closed, ^uuid} ->
         unsubscribe(uuid, ref)
@@ -144,7 +156,7 @@ defmodule ElixirDB.Changes do
     after
       min(wait_ms, ElixirDB.Config.host_limits()[:max_wait_ms] || 30_000) ->
         unsubscribe(uuid, ref)
-        read(uuid, request)
+        read(uuid, request, admission_class: admission_class)
     end
   end
 
