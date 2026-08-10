@@ -6,6 +6,24 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   background retention scheduling, and bounded concurrent local replication.
   Grant ordering and occupancy are proven with deterministic instrumentation,
   not wall-clock timing.
+
+  Split into tagged slow tests so agents can iterate on one proof without
+  replaying the full scenario. CI must run all tags (`mix test --include slow`
+  on this file, or the project slow gate). Never skip, weaken, re-tag, or
+  quarantine these proofs.
+
+  Focused iteration (do **not** also pass `--include slow` with `--only`, or
+  every slow test in the file matches):
+
+      mix test test/end_to_end/admission_scenario_test.exs --only admission_e2e_scheduling
+      mix test test/end_to_end/admission_scenario_test.exs --only admission_e2e_isolation
+      mix test test/end_to_end/admission_scenario_test.exs --only admission_e2e_composition
+
+  Tags (also all `@tag slow: true`):
+
+  - `:admission_e2e_scheduling` — §27.8–14 fairness, reservations, kill, timeout
+  - `:admission_e2e_isolation` — §27.15–17 disconnect cleanup, streaming, A/B independence
+  - `:admission_e2e_composition` — §27.1–11/18–20 retention, replication, sustained load, close, correctness
   """
   use ExUnit.Case, async: false
 
@@ -55,185 +73,13 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     :ok
   end
 
-  @tag slow: true, timeout: 120_000
-  test "Plan §27 mandatory admission end-to-end scenario" do
-    server = TestServer.start_supervised!()
-    root = ElixirDB.Config.database_root()
-    prefix = "admission-e2e-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+  @tag slow: true
+  @tag admission_e2e_scheduling: true
+  @tag timeout: 90_000
+  test "Plan §27 scheduling: fairness, reservations, kill, and timeout races" do
+    ctx = bootstrap_seeded_pair!()
+    %{a_uuid: a_uuid, probe_ref: probe_ref, hook_ref: hook_ref} = ctx
 
-    for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
-    end
-
-    a_uuid = create_database!(server, a_path)
-    b_uuid = create_database!(server, b_path)
-
-    on_exit(fn ->
-      _ = maybe_disable_jobs(a_uuid)
-      _ = DatabaseCatalog.close(a_uuid)
-      _ = DatabaseCatalog.close(b_uuid)
-      _ = DatabaseCatalog.unregister(a_uuid)
-      _ = DatabaseCatalog.unregister(b_uuid)
-
-      for path <- [a_path, b_path] do
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
-      end
-    end)
-
-    blob =
-      upload_attachment!(server, a_uuid, @blob_payload)
-
-    seed_docs = [
-      {"task-open", %{"type" => "task", "status" => "open", "title" => "seed", "priority" => 3}},
-      {"task-done", %{"type" => "task", "status" => "done", "title" => "done", "priority" => 1}},
-      {"note", %{"type" => "note", "title" => "note"}}
-    ]
-
-    for {id, body} <- seed_docs do
-      assert %{status: 201} = put_document!(server, a_uuid, id, body)
-    end
-
-    assert %{status: 201} =
-             put_document!(
-               server,
-               a_uuid,
-               "attached",
-               %{"type" => "task", "status" => "open", "title" => "with-blob"},
-               %{"file.bin" => %{"blob" => blob, "content_type" => "application/octet-stream"}}
-             )
-
-    create_index!(server, a_uuid)
-
-    assert {:ok, _} =
-             DatabaseCatalog.command(
-               a_uuid,
-               {:command, :update_config,
-                %{
-                  "subscriptions" => %{"max_buffered_events" => 8},
-                  "retention" => %{
-                    "mode" => "stable_frontier",
-                    "history_depth" => 0,
-                    "peer_expiry_ms" => 86_400_000,
-                    "schedule" => "disabled"
-                  }
-                }}
-             )
-
-    assert {:ok, sub_a} =
-             Subscriptions.open(
-               a_uuid,
-               %{"query" => %{"selector" => %{"/type" => "task"}}, "heartbeat_ms" => 100},
-               self()
-             )
-
-    assert {:ok, sub_b} =
-             Subscriptions.open(
-               a_uuid,
-               %{"query" => %{"selector" => %{"/status" => "open"}}, "heartbeat_ms" => 100},
-               self()
-             )
-
-    assert {:ok, %{type: :snapshot, document: %{id: _}}} = Subscriptions.next(sub_a, 5_000)
-    assert {:ok, %{type: :caught_up}} = drain_to_caught_up(sub_a)
-    assert {:ok, %{type: :snapshot, document: %{id: _}}} = Subscriptions.next(sub_b, 5_000)
-    assert {:ok, %{type: :caught_up}} = drain_to_caught_up(sub_b)
-
-    probe_ref = AdmissionScenario.install_probe()
-    hook_ref = AdmissionScenario.install_test_hook()
-    :ok = AdmissionScenario.begin_peak_occupancy_tracking(a_uuid)
-
-    assert [{scheduler_pid, _}] =
-             Registry.lookup(
-               ElixirDB.Runtime.DatabaseRegistry,
-               {:retention_scheduler, a_uuid}
-             )
-
-    :sys.suspend(scheduler_pid)
-
-    assert {:ok, _} =
-             DatabaseCatalog.command(
-               a_uuid,
-               {:command, :update_config,
-                %{
-                  "retention" => %{
-                    "mode" => "stable_frontier",
-                    "history_depth" => 0,
-                    "peer_expiry_ms" => 86_400_000,
-                    "schedule" => 50
-                  }
-                }}
-             )
-
-    :ok = RetentionScheduler.reschedule(a_uuid)
-    _ = AdmissionScenario.drain_grants(probe_ref, 0)
-    send(scheduler_pid, :scheduled_compact)
-    :sys.resume(scheduler_pid)
-
-    assert Eventual.eventually(
-             fn ->
-               grants = AdmissionScenario.drain_grants(probe_ref, 100)
-
-               Enum.any?(grants, fn {class, op} ->
-                 class == :maintenance and op == :compact_retention
-               end)
-             end,
-             timeout: 10_000,
-             message: "RetentionScheduler did not grant :maintenance compact_retention on A"
-           )
-
-    assert {:ok, %{floor_sequence: floor}} =
-             DatabaseCatalog.command(a_uuid, {:command, :retention_status, %{}})
-
-    assert is_integer(floor) and floor > 0,
-           "retention maintenance did not advance floor_sequence"
-
-    assert {:ok, _} =
-             DatabaseCatalog.command(
-               a_uuid,
-               {:command, :update_config,
-                %{
-                  "retention" => %{
-                    "mode" => "stable_frontier",
-                    "history_depth" => 0,
-                    "peer_expiry_ms" => 86_400_000,
-                    "schedule" => "disabled"
-                  }
-                }}
-             )
-
-    await_attachment_gc_idle(a_uuid)
-
-    assert {:ok, %{job_id: job_id}} =
-             JobManager.put(a_uuid, %{
-               "persist" => true,
-               "mode" => "continuous",
-               "direction" => "push",
-               "enabled" => true,
-               "wait_ms" => 50,
-               "max_concurrent_chain_fetches" => 2,
-               "max_concurrent_blob_transfers" => 2,
-               "max_transfer_bytes_in_flight" => 1_048_576,
-               "retry" => %{
-                 "max_attempts" => 8,
-                 "base_delay_ms" => 20,
-                 "max_delay_ms" => 200,
-                 "jitter_ms" => 1
-               },
-               "endpoint" => %{"kind" => "local", "database_uuid" => b_uuid}
-             })
-
-    await_replication_active(a_uuid, job_id)
-    await_replication_doc(b_uuid, "task-open")
-    await_replication_doc(b_uuid, "attached")
-
-    Subscriptions.close(sub_a)
-    Subscriptions.close(sub_b)
-
-    # Pause continuous replication for deterministic synthetic scheduling proofs.
-    # Real replication concurrency is re-enabled for the sustained HTTP phase below.
-    assert {:ok, %{state: :disabled}} = JobManager.disable(a_uuid, job_id)
     AdmissionScenario.await_stats(a_uuid, &(&1.total_occupancy == 0), timeout: 30_000)
 
     AdmissionScenario.assert_sustained_fairness!(a_uuid, probe_ref, @admission_limit,
@@ -247,12 +93,51 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     AdmissionScenario.assert_killed_queued_never_granted!(a_uuid, probe_ref, hook_ref)
     AdmissionScenario.assert_timeout_race_clean!(a_uuid, hook_ref)
+  end
+
+  @tag slow: true
+  @tag admission_e2e_isolation: true
+  @tag timeout: 90_000
+  test "Plan §27 isolation: disconnect cleanup, streaming permits, and A/B independence" do
+    ctx = bootstrap_seeded_pair!()
+    %{server: server, a_uuid: a_uuid, b_uuid: b_uuid, blob: blob, hook_ref: hook_ref} = ctx
+
+    seed_database_mirror!(server, b_uuid, blob)
 
     assert_subscription_disconnect_cleanup!(a_uuid, hook_ref)
     assert_active_subscription_disconnect_cleanup!(a_uuid, hook_ref)
 
     assert_streaming_non_retaining!(a_uuid, b_uuid, blob)
     assert_database_independence!(a_uuid, b_uuid, server)
+  end
+
+  @tag slow: true
+  @tag admission_e2e_composition: true
+  @tag timeout: 120_000
+  test "Plan §27 composition: retention, replication, sustained load, close, and correctness" do
+    ctx = bootstrap_seeded_pair!()
+
+    %{
+      server: server,
+      a_uuid: a_uuid,
+      b_uuid: b_uuid,
+      blob: blob,
+      probe_ref: probe_ref,
+      hook_ref: hook_ref
+    } = ctx
+
+    {sub_a, sub_b} = open_live_subscriptions!(a_uuid)
+    prove_retention_maintenance!(a_uuid, probe_ref)
+    job_id = start_continuous_replication!(a_uuid, b_uuid)
+
+    await_replication_doc(b_uuid, "task-open")
+    await_replication_doc(b_uuid, "attached")
+
+    Subscriptions.close(sub_a)
+    Subscriptions.close(sub_b)
+
+    assert {:ok, %{state: :disabled}} = JobManager.disable(a_uuid, job_id)
+    AdmissionScenario.await_stats(a_uuid, &(&1.total_occupancy == 0), timeout: 30_000)
 
     # §27.7/9/10/11 real-path fairness while replication is disabled and no live
     # subscriptions are open — avoids contaminating the grant sample.
@@ -359,16 +244,16 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
       Enum.filter(grants_during_sustained, fn {class, _op} -> class == :foreground end)
 
     refute replication_grants == [],
-           "continuous replication did not produce replication-class grants during sustained load"
+           "§27.6/10 continuous replication did not produce replication-class grants during sustained load"
 
     refute subscription_grants == [],
-           "subscription work did not produce subscription-class grants during sustained load"
+           "§27.6/10 subscription work did not produce subscription-class grants during sustained load"
 
     refute maintenance_grants == [],
-           "maintenance work did not produce maintenance-class grants during sustained load"
+           "§27.6/10 maintenance work did not produce maintenance-class grants during sustained load"
 
     refute foreground_grants == [],
-           "foreground HTTP work did not produce foreground grants during sustained load"
+           "§27.6/9 foreground HTTP work did not produce foreground grants during sustained load"
 
     peak_a = AdmissionScenario.peak_occupancy(a_uuid)
     peak_b = AdmissionScenario.peak_occupancy(b_uuid)
@@ -399,6 +284,210 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     assert 1 = Subscriptions.count(a_uuid)
     assert_correctness!(server, a_uuid, b_uuid, job_id, blob, sub_after)
+  end
+
+  defp bootstrap_seeded_pair! do
+    server = TestServer.start_supervised!()
+    root = ElixirDB.Config.database_root()
+    prefix = "admission-e2e-#{System.unique_integer([:positive])}"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
+
+    for path <- [a_path, b_path] do
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+    end
+
+    a_uuid = create_database!(server, a_path)
+    b_uuid = create_database!(server, b_path)
+
+    on_exit(fn ->
+      _ = maybe_disable_jobs(a_uuid)
+      _ = DatabaseCatalog.close(a_uuid)
+      _ = DatabaseCatalog.close(b_uuid)
+      _ = DatabaseCatalog.unregister(a_uuid)
+      _ = DatabaseCatalog.unregister(b_uuid)
+
+      for path <- [a_path, b_path] do
+        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      end
+    end)
+
+    blob = upload_attachment!(server, a_uuid, @blob_payload)
+    seed_database!(server, a_uuid, blob)
+    create_index!(server, a_uuid)
+
+    assert {:ok, _} =
+             DatabaseCatalog.command(
+               a_uuid,
+               {:command, :update_config,
+                %{
+                  "subscriptions" => %{"max_buffered_events" => 8},
+                  "retention" => %{
+                    "mode" => "stable_frontier",
+                    "history_depth" => 0,
+                    "peer_expiry_ms" => 86_400_000,
+                    "schedule" => "disabled"
+                  }
+                }}
+             )
+
+    probe_ref = AdmissionScenario.install_probe()
+    hook_ref = AdmissionScenario.install_test_hook()
+    :ok = AdmissionScenario.begin_peak_occupancy_tracking(a_uuid)
+
+    %{
+      server: server,
+      a_uuid: a_uuid,
+      b_uuid: b_uuid,
+      a_path: a_path,
+      b_path: b_path,
+      blob: blob,
+      probe_ref: probe_ref,
+      hook_ref: hook_ref
+    }
+  end
+
+  defp seed_database!(server, uuid, blob) do
+    seed_docs = [
+      {"task-open", %{"type" => "task", "status" => "open", "title" => "seed", "priority" => 3}},
+      {"task-done", %{"type" => "task", "status" => "done", "title" => "done", "priority" => 1}},
+      {"note", %{"type" => "note", "title" => "note"}}
+    ]
+
+    for {id, body} <- seed_docs do
+      assert %{status: 201} = put_document!(server, uuid, id, body)
+    end
+
+    assert %{status: 201} =
+             put_document!(
+               server,
+               uuid,
+               "attached",
+               %{"type" => "task", "status" => "open", "title" => "with-blob"},
+               %{"file.bin" => %{"blob" => blob, "content_type" => "application/octet-stream"}}
+             )
+
+    :ok
+  end
+
+  defp seed_database_mirror!(server, uuid, _blob) do
+    # Isolation proofs need B populated without continuous replication; upload
+    # the payload into B's attachment store so document puts resolve locally.
+    mirrored_blob = upload_attachment!(server, uuid, @blob_payload)
+    seed_database!(server, uuid, mirrored_blob)
+    create_index!(server, uuid)
+    :ok
+  end
+
+  defp open_live_subscriptions!(a_uuid) do
+    assert {:ok, sub_a} =
+             Subscriptions.open(
+               a_uuid,
+               %{"query" => %{"selector" => %{"/type" => "task"}}, "heartbeat_ms" => 100},
+               self()
+             )
+
+    assert {:ok, sub_b} =
+             Subscriptions.open(
+               a_uuid,
+               %{"query" => %{"selector" => %{"/status" => "open"}}, "heartbeat_ms" => 100},
+               self()
+             )
+
+    assert {:ok, %{type: :snapshot, document: %{id: _}}} = Subscriptions.next(sub_a, 5_000)
+    assert {:ok, %{type: :caught_up}} = drain_to_caught_up(sub_a)
+    assert {:ok, %{type: :snapshot, document: %{id: _}}} = Subscriptions.next(sub_b, 5_000)
+    assert {:ok, %{type: :caught_up}} = drain_to_caught_up(sub_b)
+
+    {sub_a, sub_b}
+  end
+
+  defp prove_retention_maintenance!(a_uuid, probe_ref) do
+    assert [{scheduler_pid, _}] =
+             Registry.lookup(
+               ElixirDB.Runtime.DatabaseRegistry,
+               {:retention_scheduler, a_uuid}
+             )
+
+    :sys.suspend(scheduler_pid)
+
+    assert {:ok, _} =
+             DatabaseCatalog.command(
+               a_uuid,
+               {:command, :update_config,
+                %{
+                  "retention" => %{
+                    "mode" => "stable_frontier",
+                    "history_depth" => 0,
+                    "peer_expiry_ms" => 86_400_000,
+                    "schedule" => 50
+                  }
+                }}
+             )
+
+    :ok = RetentionScheduler.reschedule(a_uuid)
+    _ = AdmissionScenario.drain_grants(probe_ref, 0)
+    send(scheduler_pid, :scheduled_compact)
+    :sys.resume(scheduler_pid)
+
+    assert Eventual.eventually(
+             fn ->
+               grants = AdmissionScenario.drain_grants(probe_ref, 100)
+
+               Enum.any?(grants, fn {class, op} ->
+                 class == :maintenance and op == :compact_retention
+               end)
+             end,
+             timeout: 10_000,
+             message: "§27.5 RetentionScheduler did not grant :maintenance compact_retention on A"
+           )
+
+    assert {:ok, %{floor_sequence: floor}} =
+             DatabaseCatalog.command(a_uuid, {:command, :retention_status, %{}})
+
+    assert is_integer(floor) and floor > 0,
+           "§27.5 retention maintenance did not advance floor_sequence"
+
+    assert {:ok, _} =
+             DatabaseCatalog.command(
+               a_uuid,
+               {:command, :update_config,
+                %{
+                  "retention" => %{
+                    "mode" => "stable_frontier",
+                    "history_depth" => 0,
+                    "peer_expiry_ms" => 86_400_000,
+                    "schedule" => "disabled"
+                  }
+                }}
+             )
+
+    await_attachment_gc_idle(a_uuid)
+    :ok
+  end
+
+  defp start_continuous_replication!(a_uuid, b_uuid) do
+    assert {:ok, %{job_id: job_id}} =
+             JobManager.put(a_uuid, %{
+               "persist" => true,
+               "mode" => "continuous",
+               "direction" => "push",
+               "enabled" => true,
+               "wait_ms" => 50,
+               "max_concurrent_chain_fetches" => 2,
+               "max_concurrent_blob_transfers" => 2,
+               "max_transfer_bytes_in_flight" => 1_048_576,
+               "retry" => %{
+                 "max_attempts" => 8,
+                 "base_delay_ms" => 20,
+                 "max_delay_ms" => 200,
+                 "jitter_ms" => 1
+               },
+               "endpoint" => %{"kind" => "local", "database_uuid" => b_uuid}
+             })
+
+    await_replication_active(a_uuid, job_id)
+    job_id
   end
 
   defp assert_subscription_disconnect_cleanup!(uuid, hook_ref) do
@@ -1019,6 +1108,9 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
       {:ok, %{type: :caught_up}} ->
         acc
+
+      {:ok, %{type: :heartbeat}} ->
+        snapshot_membership_loop(pid, acc)
 
       other ->
         flunk("expected subscription snapshot/caught_up, got #{inspect(other)}")
