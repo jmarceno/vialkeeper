@@ -62,12 +62,12 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
 
   defp required_tables_present(conn) do
     required =
-      ~w(db_meta documents revisions changes local_records replication_jobs index_definitions revision_attachments pending_blobs)
+      ~w(db_meta documents revisions changes local_records replication_jobs index_definitions revision_attachments pending_blobs view_definitions view_state view_rows)
 
     with {:ok, rows} <-
            Connection.query(
              conn,
-             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('db_meta', 'documents', 'revisions', 'changes', 'local_records', 'replication_jobs', 'index_definitions', 'revision_attachments', 'pending_blobs')"
+             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('db_meta', 'documents', 'revisions', 'changes', 'local_records', 'replication_jobs', 'index_definitions', 'revision_attachments', 'pending_blobs', 'view_definitions', 'view_state', 'view_rows')"
            ) do
       present = MapSet.new(rows, &List.first/1)
 

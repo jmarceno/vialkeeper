@@ -43,6 +43,9 @@ max_query_subscriptions = 4096
 max_query_subscription_members = 10000
 max_query_subscription_buffered_events = 4096
 max_query_subscription_heartbeat_ms = 300000
+max_views_per_database = 256
+max_view_batch_changes = 500
+max_view_consistent_wait_ms = 30000
 
 # Per-database admission scheduling policy. Weights control deterministic
 # weighted round-robin grant order across service classes; reserved slots

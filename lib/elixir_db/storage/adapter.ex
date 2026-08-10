@@ -57,4 +57,15 @@ defmodule ElixirDB.Storage.Adapter do
               {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback cleanup_expired_pending_blobs(term(), map()) ::
               {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback list_views(term()) :: {:ok, list()} | {:error, ElixirDB.Error.t()}
+  @callback create_view(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback delete_view(term(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback view_state(term(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback apply_view_batch(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback begin_view_rebuild(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback append_view_rebuild_page(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback finish_view_rebuild(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback query_view(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback read_winning_documents_page(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
 end

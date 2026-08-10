@@ -114,3 +114,33 @@ CREATE TABLE IF NOT EXISTS pending_blobs (
   expires_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS view_definitions (
+  view_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  definition_json TEXT NOT NULL,
+  definition_digest TEXT NOT NULL,
+  created_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS view_state (
+  view_id TEXT PRIMARY KEY REFERENCES view_definitions(view_id) ON DELETE RESTRICT,
+  active_generation INTEGER NOT NULL CHECK (active_generation > 0),
+  building_generation INTEGER NULL CHECK (building_generation IS NULL OR building_generation > 0),
+  indexed_through INTEGER NOT NULL CHECK (indexed_through >= 0),
+  status TEXT NOT NULL,
+  last_error_code TEXT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS view_rows (
+  view_id TEXT NOT NULL REFERENCES view_definitions(view_id) ON DELETE RESTRICT,
+  generation INTEGER NOT NULL CHECK (generation > 0),
+  document_id TEXT NOT NULL,
+  revision_id TEXT NOT NULL,
+  key_json TEXT NOT NULL,
+  key_sort BLOB NOT NULL,
+  value_json TEXT NULL,
+  PRIMARY KEY (view_id, generation, document_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS view_rows_sort ON view_rows(view_id, generation, key_sort, document_id);

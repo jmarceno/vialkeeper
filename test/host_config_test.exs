@@ -77,6 +77,9 @@ defmodule ElixirDB.HostConfigTest do
     assert limits[:max_replication_concurrent_chain_fetches] == 32
     assert limits[:max_replication_concurrent_blob_transfers] == 32
     assert limits[:max_replication_transfer_bytes_in_flight] == 4_294_967_296
+    assert limits[:max_views_per_database] == 256
+    assert limits[:max_view_batch_changes] == 500
+    assert limits[:max_view_consistent_wait_ms] == 30_000
 
     policy = Keyword.get(config, :admission_policy) |> Map.new()
     assert policy[:foreground_weight] == 8

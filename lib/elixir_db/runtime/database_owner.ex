@@ -223,6 +223,36 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp handle_command(%Commands.CleanupExpiredPendingBlobs{request: request}, _from, state),
     do: reply(Adapter.cleanup_expired_pending_blobs(state.adapter, request), state)
 
+  defp handle_command(%Commands.ListViews{}, _from, state),
+    do: reply(Adapter.list_views(state.adapter), state)
+
+  defp handle_command(%Commands.CreateView{request: request}, _from, state),
+    do: reply(Adapter.create_view(state.adapter, request), state)
+
+  defp handle_command(%Commands.DeleteView{view_id: view_id}, _from, state),
+    do: reply(Adapter.delete_view(state.adapter, view_id), state)
+
+  defp handle_command(%Commands.ViewState{view_id: view_id}, _from, state),
+    do: reply(Adapter.view_state(state.adapter, view_id), state)
+
+  defp handle_command(%Commands.ApplyViewBatch{request: request}, _from, state),
+    do: reply(Adapter.apply_view_batch(state.adapter, request), state)
+
+  defp handle_command(%Commands.BeginViewRebuild{request: request}, _from, state),
+    do: reply(Adapter.begin_view_rebuild(state.adapter, request), state)
+
+  defp handle_command(%Commands.AppendViewRebuildPage{request: request}, _from, state),
+    do: reply(Adapter.append_view_rebuild_page(state.adapter, request), state)
+
+  defp handle_command(%Commands.FinishViewRebuild{request: request}, _from, state),
+    do: reply(Adapter.finish_view_rebuild(state.adapter, request), state)
+
+  defp handle_command(%Commands.QueryView{request: request}, _from, state),
+    do: reply(Adapter.query_view(state.adapter, request), state)
+
+  defp handle_command(%Commands.ReadWinningDocumentsPage{request: request}, _from, state),
+    do: reply(Adapter.read_winning_documents_page(state.adapter, request), state)
+
   defp handle_command(%Commands.Close{}, _from, state),
     do: {:stop, :shutdown, :ok, state}
 

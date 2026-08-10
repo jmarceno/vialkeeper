@@ -1,7 +1,7 @@
 defmodule ElixirDB.Query.BookmarkCodec do
   @moduledoc false
   alias ElixirDB.Domain.Bookmark
-  alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.JSON.{Canonical, SignedPayload, StrictDecoder}
 
   def encode(%Bookmark{} = bookmark) do
     encode(%{
@@ -16,18 +16,10 @@ defmodule ElixirDB.Query.BookmarkCodec do
   end
 
   def encode(payload) when is_map(payload) do
-    payload = Map.put(payload, "version", 1) |> Map.put("protocol_major", ElixirDB.protocol_major())
-
-    with {:ok, unsigned} <- Canonical.encode(payload),
-         value <-
-           Map.put(
-             payload,
-             "checksum",
-             :crypto.hash(:sha256, unsigned) |> Base.encode16(case: :lower)
-           ),
-         {:ok, encoded} <- Canonical.encode(value) do
-      {:ok, Base.url_encode64(encoded, padding: false)}
-    end
+    payload
+    |> Map.put("version", 1)
+    |> Map.put("protocol_major", ElixirDB.protocol_major())
+    |> SignedPayload.encode()
   end
 
   def decode(bookmark, expected \\ %{})

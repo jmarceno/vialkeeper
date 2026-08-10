@@ -42,6 +42,11 @@ defmodule ElixirDB.Config do
       "max_buffered_events" => 256,
       "default_heartbeat_ms" => 15_000,
       "max_heartbeat_ms" => 60_000
+    },
+    "views" => %{
+      "max_definitions" => 32,
+      "batch_changes" => 100,
+      "consistent_wait_ms" => 5000
     }
   }
 
@@ -206,7 +211,25 @@ defmodule ElixirDB.Config do
              ["subscriptions", "max_heartbeat_ms"],
              limits[:max_query_subscription_heartbeat_ms]
            ),
-         :ok <- validate_subscription_heartbeat_order(merged) do
+         :ok <- validate_subscription_heartbeat_order(merged),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["views", "max_definitions"],
+             limits[:max_views_per_database]
+           ),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["views", "batch_changes"],
+             limits[:max_view_batch_changes]
+           ),
+         :ok <-
+           ensure_integer_limit(
+             merged,
+             ["views", "consistent_wait_ms"],
+             limits[:max_view_consistent_wait_ms]
+           ) do
       {:ok, merged}
     end
   end
@@ -252,7 +275,8 @@ defmodule ElixirDB.Config do
       "replication",
       "retention",
       "attachments",
-      "subscriptions"
+      "subscriptions",
+      "views"
     ]
 
     if Enum.all?(Map.keys(config), &(&1 in known)) do
@@ -288,6 +312,7 @@ defmodule ElixirDB.Config do
         "default_heartbeat_ms",
         "max_heartbeat_ms"
       ],
+      "views" => ["max_definitions", "batch_changes", "consistent_wait_ms"],
       "retry" => ["max_attempts", "base_delay_ms", "max_delay_ms", "jitter_ms"]
     }
 
@@ -356,7 +381,10 @@ defmodule ElixirDB.Config do
       ["subscriptions", "max_members"],
       ["subscriptions", "max_buffered_events"],
       ["subscriptions", "default_heartbeat_ms"],
-      ["subscriptions", "max_heartbeat_ms"]
+      ["subscriptions", "max_heartbeat_ms"],
+      ["views", "max_definitions"],
+      ["views", "batch_changes"],
+      ["views", "consistent_wait_ms"]
     ]
 
     Enum.reduce_while(values, :ok, fn path, :ok ->

@@ -260,6 +260,65 @@ defmodule ElixirDB.Commands do
     defstruct [:request]
   end
 
+  defmodule ListViews do
+    @moduledoc false
+    defstruct request: %{}
+  end
+
+  defmodule CreateView do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule DeleteView do
+    @moduledoc false
+    @enforce_keys [:view_id]
+    defstruct [:view_id]
+  end
+
+  defmodule ViewState do
+    @moduledoc false
+    @enforce_keys [:view_id]
+    defstruct [:view_id]
+  end
+
+  defmodule ApplyViewBatch do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule BeginViewRebuild do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule AppendViewRebuildPage do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule FinishViewRebuild do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule QueryView do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule ReadWinningDocumentsPage do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
   @doc "Converts tagged owner tuples and already-normalized structs into command structs."
   @spec normalize(term()) :: struct() | term()
   def normalize(%_{} = command), do: command
@@ -365,6 +424,28 @@ defmodule ElixirDB.Commands do
 
   def normalize({:command, :cleanup_expired_pending_blobs, request}),
     do: %CleanupExpiredPendingBlobs{request: request}
+
+  def normalize({:command, :list_views, request}), do: %ListViews{request: request || %{}}
+  def normalize({:command, :create_view, request}), do: %CreateView{request: request}
+  def normalize({:command, :delete_view, view_id}), do: %DeleteView{view_id: view_id}
+  def normalize({:command, :view_state, view_id}), do: %ViewState{view_id: view_id}
+
+  def normalize({:command, :apply_view_batch, request}),
+    do: %ApplyViewBatch{request: request}
+
+  def normalize({:command, :begin_view_rebuild, request}),
+    do: %BeginViewRebuild{request: request}
+
+  def normalize({:command, :append_view_rebuild_page, request}),
+    do: %AppendViewRebuildPage{request: request}
+
+  def normalize({:command, :finish_view_rebuild, request}),
+    do: %FinishViewRebuild{request: request}
+
+  def normalize({:command, :query_view, request}), do: %QueryView{request: request}
+
+  def normalize({:command, :read_winning_documents_page, request}),
+    do: %ReadWinningDocumentsPage{request: request}
 
   def normalize({:command, :close}), do: %Close{}
   def normalize(other), do: other

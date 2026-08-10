@@ -76,6 +76,26 @@ defmodule ElixirDB.ConfigTest do
     assert config["replication"]["max_transfer_bytes_in_flight"] == 2_000_000_000
   end
 
+  test "view defaults are present" do
+    views = Config.defaults()["views"]
+
+    assert views["max_definitions"] == 32
+    assert views["batch_changes"] == 100
+    assert views["consistent_wait_ms"] == 5000
+  end
+
+  test "view max_definitions cannot exceed the host ceiling" do
+    assert_resource_limit(%{"views" => %{"max_definitions" => 512}})
+  end
+
+  test "view batch_changes cannot exceed the host ceiling" do
+    assert_resource_limit(%{"views" => %{"batch_changes" => 1000}})
+  end
+
+  test "view consistent_wait_ms cannot exceed the host ceiling" do
+    assert_resource_limit(%{"views" => %{"consistent_wait_ms" => 60_000}})
+  end
+
   defp assert_resource_limit(config) do
     assert {:error, %ElixirDB.Error{code: :resource_limit}} = Config.merge_and_bound(config)
   end

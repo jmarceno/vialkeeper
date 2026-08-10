@@ -141,6 +141,15 @@ defmodule ElixirDB.Storage.FaultAdapter do
     end
   end
 
+  defp view_fault_fn(fault) do
+    fn point ->
+      case Fault.maybe_fail(fault, point) do
+        {:ok, _} -> :ok
+        {:error, error, _} -> {:error, error}
+      end
+    end
+  end
+
   @impl true
   def list_replication_jobs(%__MODULE__{inner: inner}),
     do: inner_module(inner).list_replication_jobs(inner)
@@ -207,6 +216,54 @@ defmodule ElixirDB.Storage.FaultAdapter do
   @impl true
   def cleanup_expired_pending_blobs(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).cleanup_expired_pending_blobs(inner, request)
+
+  @impl true
+  def list_views(%__MODULE__{inner: inner}), do: inner_module(inner).list_views(inner)
+
+  @impl true
+  def create_view(%__MODULE__{inner: inner}, definition),
+    do: inner_module(inner).create_view(inner, definition)
+
+  @impl true
+  def delete_view(%__MODULE__{inner: inner}, view_id),
+    do: inner_module(inner).delete_view(inner, view_id)
+
+  @impl true
+  def view_state(%__MODULE__{inner: inner}, view_id),
+    do: inner_module(inner).view_state(inner, view_id)
+
+  @impl true
+  def apply_view_batch(%__MODULE__{inner: inner, fault: fault}, request) do
+    inner_with_fault = %{inner | view_fault: view_fault_fn(fault)}
+
+    case inner_module(inner).apply_view_batch(inner_with_fault, request) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  @impl true
+  def begin_view_rebuild(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).begin_view_rebuild(inner, request)
+
+  @impl true
+  def append_view_rebuild_page(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).append_view_rebuild_page(inner, request)
+
+  @impl true
+  def finish_view_rebuild(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).finish_view_rebuild(inner, request)
+
+  @impl true
+  def query_view(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).query_view(inner, request)
+
+  @impl true
+  def read_winning_documents_page(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).read_winning_documents_page(inner, request)
 
   defp fail_after_compact(%__MODULE__{fault: fault}, result) do
     case Fault.maybe_fail(fault, :after_compact_retention) do

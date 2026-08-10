@@ -30,15 +30,17 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     ReplicationJobs,
     Retention,
     Revisions,
-    Schema
+    Schema,
+    Views
   }
 
   @identity_cache_key :elixir_db_sqlite_identity_cache
   @query_normalization_cache_limit 16
 
-  defstruct [:path, :conn, :identity, storage_mode: :disk, retention_fault: nil]
+  defstruct [:path, :conn, :identity, storage_mode: :disk, retention_fault: nil, view_fault: nil]
   @type storage_mode :: :disk | :memory
   @type retention_fault :: (atom() -> :ok | {:error, ElixirDB.Error.t()}) | nil
+  @type view_fault :: (atom() -> :ok | {:error, ElixirDB.Error.t()}) | nil
   @query_public_keys [
     :selector,
     :sort,
@@ -60,7 +62,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
           conn: Connection.handle(),
           identity: map(),
           storage_mode: storage_mode(),
-          retention_fault: retention_fault()
+          retention_fault: retention_fault(),
+          view_fault: view_fault()
         }
 
   @impl true
@@ -108,6 +111,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @impl true
   def close(%__MODULE__{conn: conn}) do
     IndexCatalog.clear_cache(conn)
+    Views.clear_cache(conn)
     QueryRunner.clear_cache(conn)
     invalidate_identity_cache(conn)
     Connection.close(conn)
@@ -433,6 +437,57 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def list_indexes(%__MODULE__{conn: conn}), do: IndexCatalog.list(conn)
+
+  @impl true
+  def list_views(%__MODULE__{conn: conn}), do: Views.list(conn)
+
+  @impl true
+  def create_view(%__MODULE__{conn: conn} = adapter, definition) do
+    config = adapter_config(adapter)
+
+    transaction(%__MODULE__{conn: conn}, fn ->
+      Views.create_tx(conn, definition, config)
+    end)
+  end
+
+  @impl true
+  def delete_view(%__MODULE__{conn: conn}, view_id) do
+    transaction(%__MODULE__{conn: conn}, fn -> Views.delete_tx(conn, view_id) end)
+  end
+
+  @impl true
+  def view_state(%__MODULE__{conn: conn}, view_id), do: Views.state(conn, view_id)
+
+  @impl true
+  def apply_view_batch(%__MODULE__{conn: conn, view_fault: view_fault}, request) do
+    transaction(%__MODULE__{conn: conn}, fn ->
+      Views.apply_batch_tx(conn, request, view_fault: view_fault)
+    end)
+  end
+
+  @impl true
+  def begin_view_rebuild(%__MODULE__{conn: conn}, request) do
+    transaction(%__MODULE__{conn: conn}, fn -> Views.begin_rebuild_tx(conn, request) end)
+  end
+
+  @impl true
+  def append_view_rebuild_page(%__MODULE__{conn: conn}, request) do
+    transaction(%__MODULE__{conn: conn}, fn -> Views.append_rebuild_page_tx(conn, request) end)
+  end
+
+  @impl true
+  def finish_view_rebuild(%__MODULE__{conn: conn}, request) do
+    transaction(%__MODULE__{conn: conn}, fn -> Views.finish_rebuild_tx(conn, request) end)
+  end
+
+  @impl true
+  def query_view(%__MODULE__{conn: conn}, request) do
+    transaction(%__MODULE__{conn: conn}, fn -> Views.query_tx(conn, request) end)
+  end
+
+  @impl true
+  def read_winning_documents_page(%__MODULE__{conn: conn}, request),
+    do: Views.read_winning_documents_page(conn, request)
 
   @impl true
   def execute_query(%__MODULE__{} = adapter, request) when is_map(request) do
@@ -834,6 +889,12 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       {:ok, %{database_uuid: uuid}} when is_binary(uuid) -> uuid
       _ -> nil
     end
+  end
+
+  defp adapter_config(adapter) do
+    adapter
+    |> adapter_identity()
+    |> Map.get(:config, ElixirDB.Config.defaults())
   end
 
   defp attachment_bundle_root(%__MODULE__{storage_mode: :memory}), do: nil
