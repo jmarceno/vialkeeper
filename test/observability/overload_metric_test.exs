@@ -10,13 +10,27 @@ defmodule ElixirDB.Observability.OverloadMetricTest do
 
   alias ElixirDB.Eventual
   alias ElixirDB.Observability.{TestExporter, TestMetricExporter}
-  alias ElixirDB.Runtime.DatabaseAdmission
+  alias ElixirDB.Runtime.{AdmissionPolicy, AdmissionSupervisor, DatabaseAdmission}
 
   @metric "elixir_db.database.overload.count"
 
   test "saturating admission increments overload.count and creates no span" do
     uuid = ElixirDB.UUID.v4()
-    {:ok, admission} = DatabaseAdmission.start_link({uuid, 1})
+    limit = 1
+
+    {:ok, policy} =
+      AdmissionPolicy.from_keyword(
+        Keyword.merge(
+          AdmissionPolicy.default_keyword(),
+          foreground_reserved_slots: 0,
+          subscription_reserved_slots: 0,
+          replication_reserved_slots: 0,
+          maintenance_reserved_slots: 0
+        ),
+        limit
+      )
+
+    {:ok, _supervisor} = AdmissionSupervisor.start_link({uuid, limit, policy})
 
     parent = self()
 
@@ -43,7 +57,14 @@ defmodule ElixirDB.Observability.OverloadMetricTest do
              end)
 
     send(holder, :release)
-    GenServer.stop(admission)
+
+    ref = Process.monitor(holder)
+    assert_receive {:DOWN, ^ref, :process, _, _}, 2_000
+
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission_supervisor, uuid}) do
+      [{pid, _}] -> Supervisor.stop(pid)
+      [] -> :ok
+    end
 
     # The periodic test metric reader exports every 50ms; poll for the
     # datapoint carrying this db.uuid.

@@ -21,6 +21,14 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     end
   end
 
+  @spec sync(binary(), timeout()) :: :ok
+  def sync(uuid, timeout \\ 5_000) when is_binary(uuid) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
+      [{pid, _}] -> GenServer.call(pid, :sync, timeout)
+      [] -> :ok
+    end
+  end
+
   @impl true
   def init({uuid, %DatabaseBundle{} = bundle}) do
     path = DatabaseBundle.sqlite_path(bundle)
@@ -48,6 +56,8 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   end
 
   @impl true
+  def handle_call(:sync, _from, state), do: {:reply, :ok, state}
+
   def handle_call(command, from, state) do
     handle_command(Commands.normalize(command), from, state)
   end

@@ -2,7 +2,7 @@ defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
   @moduledoc false
   use Supervisor
   alias ElixirDB.DatabaseBundle
-  alias ElixirDB.Runtime.ChildSpec
+  alias ElixirDB.Runtime.{AdmissionPolicy, AdmissionSupervisor, ChildSpec}
 
   def start_link(%{uuid: uuid} = args), do: Supervisor.start_link(__MODULE__, args, name: via(uuid))
   def via(uuid), do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid}}}
@@ -14,12 +14,13 @@ defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
   @impl true
   def init(%{uuid: uuid, bundle: %DatabaseBundle{} = bundle}) do
     limit = ElixirDB.Config.host_limits()[:admission_limit] || 128
+    policy = admission_policy(limit)
     sqlite_path = DatabaseBundle.sqlite_path(bundle)
 
     children = [
       {ElixirDB.Runtime.FileLease, sqlite_path},
       {ElixirDB.Runtime.DatabaseOwner, {uuid, bundle}},
-      {ElixirDB.Runtime.DatabaseAdmission, {uuid, limit}},
+      AdmissionSupervisor.child_spec(uuid, limit, policy),
       {ElixirDB.Runtime.AttachmentCoordinator, uuid},
       {ElixirDB.Runtime.ChangeNotifier, uuid},
       {ElixirDB.Query.SubscriptionSupervisor, uuid},
@@ -27,5 +28,11 @@ defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)
+  end
+
+  defp admission_policy(limit) do
+    keyword = Map.to_list(ElixirDB.Config.admission_policy())
+    {:ok, policy} = AdmissionPolicy.from_keyword(keyword, limit)
+    policy
   end
 end

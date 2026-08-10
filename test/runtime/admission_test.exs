@@ -4,12 +4,28 @@ defmodule ElixirDB.Runtime.AdmissionTest do
   alias ElixirDB.Runtime.{DatabaseAdmission, DatabaseCatalog}
 
   setup do
-    previous = Application.get_env(:elixir_db, :host_limits)
-    limits = Keyword.put(previous || [], :admission_limit, 1)
+    previous_limits = Application.get_env(:elixir_db, :host_limits)
+    previous_policy = Application.get_env(:elixir_db, :admission_policy)
+
+    limits = Keyword.put(previous_limits || [], :admission_limit, 1)
+
+    policy = [
+      foreground_weight: 8,
+      subscription_weight: 4,
+      replication_weight: 2,
+      maintenance_weight: 1,
+      foreground_reserved_slots: 0,
+      subscription_reserved_slots: 0,
+      replication_reserved_slots: 0,
+      maintenance_reserved_slots: 0
+    ]
+
     Application.put_env(:elixir_db, :host_limits, limits)
+    Application.put_env(:elixir_db, :admission_policy, policy)
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :host_limits, previous)
+      Application.put_env(:elixir_db, :host_limits, previous_limits)
+      Application.put_env(:elixir_db, :admission_policy, previous_policy)
     end)
 
     relative = "admission-#{System.unique_integer([:positive])}.elixirdb"
@@ -59,5 +75,29 @@ defmodule ElixirDB.Runtime.AdmissionTest do
     assert :after = DatabaseAdmission.with_token(uuid, fn -> :after end)
 
     assert {:ok, 0} = DatabaseAdmission.active_count(uuid)
+  end
+
+  test "execute_with_deadline fails when absolute deadline is already past", %{uuid: uuid} do
+    deadline_ms = System.monotonic_time(:millisecond) - 1
+
+    assert {:error, %ElixirDB.Error{}} =
+             DatabaseAdmission.execute_with_deadline(
+               uuid,
+               :foreground,
+               {:command, :identity, %{}},
+               deadline_ms
+             )
+  end
+
+  test "execute_owner completes with :infinity timeout", %{uuid: uuid} do
+    assert {:ok, :done} =
+             DatabaseAdmission.execute_owner(uuid, :foreground, fn -> {:ok, :done} end, :infinity)
+  end
+
+  test "catalog command completes with :infinity timeout", %{uuid: uuid} do
+    assert {:ok, identity} =
+             DatabaseCatalog.command(uuid, {:command, :identity, %{}}, :infinity)
+
+    assert identity.database_uuid == uuid
   end
 end

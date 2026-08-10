@@ -13,6 +13,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     DatabaseAdmission,
     DatabaseOwner,
     DatabaseRuntimeSupervisor,
+    Deadline,
     RegistrationManifest
   }
 
@@ -42,8 +43,10 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end)
   end
 
-  def command(uuid, command, timeout \\ 30_000),
-    do: GenServer.call(__MODULE__, {:command, uuid, command}, timeout)
+  def command(uuid, command, timeout \\ 30_000) do
+    deadline_ms = Deadline.from_timeout(timeout)
+    GenServer.call(__MODULE__, {:command, uuid, command, deadline_ms}, timeout)
+  end
 
   @impl true
   def init(_) do
@@ -246,7 +249,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   @impl true
-  def handle_call({:command, uuid, command}, _from, state) do
+  def handle_call({:command, uuid, command, deadline_ms}, _from, state) do
     # Plan §5.2: wrap the central command dispatch in the database.command span.
     # command.type is derived from the command struct; expected domain errors
     # keep span status UNSET, only :internal_error sets ERROR (policy §6.5).
@@ -260,7 +263,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     else
       case open_runtime(state, uuid) do
         {:ok, _info, state} ->
-          run_command(uuid, command)
+          run_command(uuid, command, deadline_ms)
           |> command_reply(state)
 
         {:error, error, state} ->
@@ -303,9 +306,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
-  defp run_command(uuid, command) do
+  defp run_command(uuid, command, deadline_ms) do
     Database.command(uuid, command, fn ->
-      DatabaseAdmission.with_token(uuid, fn -> DatabaseOwner.command(uuid, command) end)
+      DatabaseAdmission.execute_with_deadline(uuid, :foreground, command, deadline_ms)
     end)
   end
 
@@ -590,23 +593,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   defp close_runtime(uuid) do
     with false <- JobManager.active?(uuid),
-         :ok <-
-           (case DatabaseAdmission.active_count(uuid) do
-              {:ok, 0} ->
-                :ok
-
-              {:ok, count} ->
-                {:error,
-                 ElixirDB.Error.database_not_closable("database has admitted operations", %{
-                   count: count
-                 })}
-
-              {:error, error} ->
-                error
-            end),
-         :ok <- AttachmentCoordinator.begin_close(uuid),
-         :ok <- SubscriptionHub.close(uuid),
-         :ok <- ChangeNotifier.close(uuid),
+         :ok <- close_external_services(uuid),
+         :ok <- drain_admission(uuid),
          runtime when not is_nil(runtime) <- runtime_pid(uuid) do
       if Process.alive?(runtime),
         do: Supervisor.stop(runtime, :shutdown, ElixirDB.Config.shutdown_timeout()),
@@ -621,6 +609,62 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       {:error, _} = error ->
         error
     end
+  end
+
+  defp close_external_services(uuid) do
+    with :ok <- close_attachment_coordinator(uuid),
+         :ok <- close_subscription_hub(uuid) do
+      close_change_notifier(uuid)
+    end
+  end
+
+  defp close_attachment_coordinator(uuid) do
+    case AttachmentCoordinator.begin_close(uuid) do
+      :ok -> :ok
+      {:error, %ElixirDB.Error{code: :database_closed}} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp close_subscription_hub(uuid) do
+    case SubscriptionHub.close(uuid) do
+      :ok -> :ok
+      {:error, %ElixirDB.Error{code: :database_closed}} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp close_change_notifier(uuid) do
+    case ChangeNotifier.close(uuid) do
+      :ok -> :ok
+      {:error, %ElixirDB.Error{code: :database_closed}} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp drain_admission(uuid) do
+    with :ok <- DatabaseAdmission.begin_close(uuid) do
+      await_admission_idle(uuid)
+    end
+  end
+
+  defp await_admission_idle(uuid) do
+    case DatabaseAdmission.await_idle(uuid, ElixirDB.Config.shutdown_timeout()) do
+      :ok ->
+        :ok
+
+      other ->
+        _ = DatabaseAdmission.cancel_close(uuid)
+        other
+    end
+  catch
+    :exit, reason ->
+      _ = DatabaseAdmission.cancel_close(uuid)
+
+      {:error,
+       ElixirDB.Error.internal_error("database admission drain failed during close", %{
+         cause: inspect(reason)
+       })}
   end
 
   defp start_close_operation(uuid, catalog) do
