@@ -631,23 +631,47 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   defp close_runtime(uuid) do
     with false <- JobManager.active?(uuid),
-         :ok <- close_external_services(uuid),
-         :ok <- drain_admission(uuid),
-         runtime when not is_nil(runtime) <- runtime_pid(uuid) do
-      if Process.alive?(runtime),
-        do: Supervisor.stop(runtime, :shutdown, ElixirDB.Config.shutdown_timeout()),
-        else: :ok
+         :ok <- drain_admission(uuid) do
+      close_runtime_after_admission_drain(uuid)
     else
       true ->
         {:error, ElixirDB.Error.database_not_closable("database has active replication jobs")}
-
-      nil ->
-        :ok
 
       {:error, _} = error ->
         error
     end
   end
+
+  defp close_runtime_after_admission_drain(uuid) do
+    try do
+      with :ok <- close_external_services(uuid),
+           runtime when not is_nil(runtime) <- runtime_pid(uuid) do
+        if Process.alive?(runtime),
+          do: Supervisor.stop(runtime, :shutdown, ElixirDB.Config.shutdown_timeout()),
+          else: :ok
+      else
+        nil ->
+          :ok
+
+        {:error, _} = error ->
+          error
+      end
+    catch
+      :exit, reason ->
+        {:error,
+         ElixirDB.Error.internal_error("database runtime shutdown failed during close", %{
+           cause: inspect(reason)
+         })}
+    end
+    |> abort_close_on_error(uuid)
+  end
+
+  defp abort_close_on_error({:error, _} = error, uuid) do
+    _ = DatabaseAdmission.cancel_close(uuid)
+    error
+  end
+
+  defp abort_close_on_error(other, _uuid), do: other
 
   defp close_external_services(uuid) do
     with :ok <- close_attachment_coordinator(uuid),
@@ -718,11 +742,20 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   catch
     kind, reason ->
+      _ = maybe_cancel_admission_close(uuid)
+
       {:error,
        ElixirDB.Error.internal_error("database close failed", %{
          kind: kind,
          cause: inspect(reason)
        })}
+  end
+
+  defp maybe_cancel_admission_close(uuid) do
+    case DatabaseAdmission.closing?(uuid) do
+      {:ok, true} -> DatabaseAdmission.cancel_close(uuid)
+      _ -> :ok
+    end
   end
 
   defp open_count do

@@ -28,6 +28,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
       :monitor_ref,
       :class,
       :enqueued_at_ms,
+      :queue_depth_at_enqueue,
       :deadline_ms,
       :mode
     ]
@@ -40,6 +41,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
             monitor_ref: reference(),
             class: ServiceClass.t(),
             enqueued_at_ms: integer(),
+            queue_depth_at_enqueue: non_neg_integer(),
             deadline_ms: Deadline.t(),
             mode: :permit | {:execute, (-> term())},
             owner_fun: nil | (-> term()),
@@ -283,6 +285,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   def init({uuid, limit, %AdmissionPolicy{} = policy}) do
     case AdmittedCommandSupervisor.lookup(uuid) do
       {:ok, admitted_command_supervisor} ->
+        :ok = sync_owner_before_accepting(uuid)
+
         schedule = AdmissionSchedule.build(policy)
         queues = Map.new(ServiceClass.classes(), fn class -> {class, :queue.new()} end)
 
@@ -408,7 +412,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
 
         _ ->
           if Map.has_key?(state.waiting_by_ref, request_ref) do
-            remove_queued_waiter(state, request_ref)
+            remove_queued_waiter_with_outcome(state, request_ref, :cancelled)
           else
             state
           end
@@ -423,11 +427,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
       %ActivePermit{request_ref: ^request_ref} = active ->
         case sync_owner_for_drain(state.uuid) do
           :ok ->
-            {:noreply,
-             state
-             |> clear_active(active)
-             |> notify_idle()
-             |> grant_loop()}
+            {:noreply, grant_loop(clear_active(state, active))}
 
           :retry ->
             Process.send_after(self(), {:executor_drain, request_ref}, drain_sync_retry_ms())
@@ -444,13 +444,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
       %ActivePermit{request_ref: ^request_ref, from: from} = active ->
         if from, do: GenServer.reply(from, result)
 
-        state =
-          state
-          |> clear_active(active)
-          |> notify_idle()
-          |> grant_loop()
-
-        {:noreply, state}
+        {:noreply, grant_loop(clear_active(state, active))}
 
       _ ->
         {:noreply, state}
@@ -477,6 +471,15 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   defp handle_acquire(request_ref, class, deadline_ms, mode, trace_context, from, state, probe_op) do
     cond do
       state.closing? ->
+        record_admission_wait(
+          state.uuid,
+          class,
+          :closed,
+          0,
+          queue_depth(state),
+          queue_depth(state)
+        )
+
         {:reply, {:error, closed_error()}, state}
 
       not ServiceClass.valid?(class) ->
@@ -497,6 +500,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
           monitor_ref: monitor_ref,
           class: class,
           enqueued_at_ms: enqueued_at_ms,
+          queue_depth_at_enqueue: queue_depth(state) + 1,
           deadline_ms: deadline_ms,
           mode: mode,
           owner_fun: owner_fun_from_mode(mode),
@@ -513,6 +517,16 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
 
       true ->
         DatabaseInstrumentation.overload(state.uuid)
+        queue_depth = queue_depth(state)
+
+        record_admission_wait(
+          state.uuid,
+          class,
+          :rejected,
+          0,
+          queue_depth,
+          0
+        )
 
         {:reply,
          {:error,
@@ -556,9 +570,21 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     end
   end
 
+  defp remove_queued_waiter_with_outcome(%__MODULE__{} = state, request_ref, outcome) do
+    case Map.fetch(state.waiting_by_ref, request_ref) do
+      {:ok, %Waiter{} = waiter} ->
+        state = remove_queued_waiter(state, request_ref)
+        record_waiter_outcome(state.uuid, waiter, outcome, queue_depth(state))
+        state
+
+      :error ->
+        state
+    end
+  end
+
   defp remove_queued_by_monitor(%__MODULE__{} = state, monitor_ref) do
     case Enum.find(state.waiting_by_ref, fn {_ref, waiter} -> waiter.monitor_ref == monitor_ref end) do
-      {request_ref, _} -> remove_queued_waiter(state, request_ref)
+      {request_ref, _} -> remove_queued_waiter_with_outcome(state, request_ref, :cancelled)
       nil -> state
     end
   end
@@ -566,7 +592,9 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   defp fail_all_queued(%__MODULE__{} = state) do
     Enum.reduce(state.waiting_by_ref, state, fn {request_ref, waiter}, acc ->
       GenServer.reply(waiter.from, {:error, closed_error()})
-      remove_queued_waiter(acc, request_ref)
+      acc = remove_queued_waiter(acc, request_ref)
+      record_waiter_outcome(acc.uuid, waiter, :closed, queue_depth(acc))
+      acc
     end)
   end
 
@@ -612,8 +640,17 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     probe_admission_class(class, waiter.probe_op)
     token = make_ref()
     granted_at_ms = System.monotonic_time(:millisecond)
-
     state = remove_queued_waiter(state, request_ref, false)
+    queue_depth_at_grant = queue_depth(state)
+
+    record_admission_wait(
+      state.uuid,
+      class,
+      :granted,
+      wait_duration_native(waiter.enqueued_at_ms, granted_at_ms),
+      waiter.queue_depth_at_enqueue,
+      queue_depth_at_grant
+    )
 
     case waiter.mode do
       :permit ->
@@ -781,7 +818,9 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     if active.executor_monitor_ref,
       do: Process.demonitor(active.executor_monitor_ref, [:flush])
 
-    %{state | active: nil}
+    state
+    |> Map.put(:active, nil)
+    |> notify_idle()
   end
 
   defp dequeue_valid(queues, class, waiting_by_ref) do
@@ -831,8 +870,10 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     end)
   end
 
+  defp queue_depth(%__MODULE__{} = state), do: state.queued_count
+
   defp total_occupancy(%__MODULE__{} = state) do
-    map_size(state.waiting_by_ref) + if(state.active, do: 1, else: 0)
+    queue_depth(state) + if(state.active, do: 1, else: 0)
   end
 
   defp active_class(%__MODULE__{active: %ActivePermit{class: class}}), do: class
@@ -854,6 +895,16 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
      Error.internal_error("database command timed out", %{
        reason: :deadline_exhausted
      })}
+  end
+
+  defp sync_owner_before_accepting(uuid) do
+    try do
+      DatabaseOwner.sync(uuid, :infinity)
+    catch
+      :exit, _ -> :ok
+    end
+
+    :ok
   end
 
   defp sync_owner_for_drain(uuid) do
@@ -882,5 +933,40 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
       _ ->
         :ok
     end
+  end
+
+  defp record_waiter_outcome(uuid, %Waiter{} = waiter, outcome, queue_depth_at_grant) do
+    record_admission_wait(
+      uuid,
+      waiter.class,
+      outcome,
+      wait_duration_native(waiter.enqueued_at_ms, System.monotonic_time(:millisecond)),
+      waiter.queue_depth_at_enqueue,
+      queue_depth_at_grant
+    )
+  end
+
+  defp record_admission_wait(
+         uuid,
+         class,
+         outcome,
+         duration,
+         queue_depth_at_enqueue,
+         queue_depth_at_grant
+       ) do
+    DatabaseInstrumentation.admission_wait(
+      uuid,
+      class,
+      outcome,
+      duration,
+      queue_depth_at_enqueue,
+      queue_depth_at_grant
+    )
+  end
+
+  defp wait_duration_native(enqueued_at_ms, now_ms)
+       when is_integer(enqueued_at_ms) and is_integer(now_ms) do
+    wait_ms = max(0, now_ms - enqueued_at_ms)
+    System.convert_time_unit(wait_ms, :millisecond, :native)
   end
 end

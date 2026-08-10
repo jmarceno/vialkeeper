@@ -58,6 +58,14 @@ defmodule ElixirDB.Observability.TestMetricExporter do
     |> Enum.reduce(0, fn dp, acc -> acc + (dp[:value] || 0) end)
   end
 
+  @doc "Returns datapoints recorded for metric `name` whose attributes match `attr_subset`."
+  @spec datapoints_matching(binary(), map()) :: [map()]
+  def datapoints_matching(name, attr_subset \\ %{}) do
+    name
+    |> datapoints()
+    |> Enum.filter(fn dp -> attrs_match?(dp[:attributes], attr_subset) end)
+  end
+
   @doc "Returns the value of attribute `key` on a datapoint, or nil."
   @spec datapoint_attr(map(), atom() | binary()) :: term()
   def datapoint_attr(datapoint, key) do

@@ -5,6 +5,7 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
     * `elixir_db.database.open`        — span + counter
     * `elixir_db.database.command`     — span + histogram
     * `elixir_db.database.overload`    — counter only (not a unit of work)
+    * `elixir_db.database.admission.wait` — histogram (queue wait, not owner work)
 
   Instrumentation lives at the service/owner boundary (the catalog and owner),
   never inside the SQLite adapter.
@@ -111,6 +112,36 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
   @spec overload(binary()) :: :ok
   def overload(uuid) when is_binary(uuid) do
     Meters.add(:"elixir_db.database.overload.count", db_uuid: uuid)
+  end
+
+  @admission_outcomes [:granted, :rejected, :cancelled, :closed]
+
+  @doc """
+  Records `elixir_db.database.admission.wait` for one admission-queue outcome.
+
+  `duration` is a native monotonic-time delta. Depth attributes are bounded by
+  the host admission limit.
+  """
+  @spec admission_wait(
+          binary(),
+          atom(),
+          :granted | :rejected | :cancelled | :closed,
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer()
+        ) :: :ok
+  def admission_wait(uuid, class, outcome, duration, queue_depth_at_enqueue, queue_depth_at_grant)
+      when is_binary(uuid) and is_atom(class) and outcome in @admission_outcomes and
+             is_integer(duration) and duration >= 0 and is_integer(queue_depth_at_enqueue) and
+             queue_depth_at_enqueue >= 0 and is_integer(queue_depth_at_grant) and
+             queue_depth_at_grant >= 0 do
+    Meters.record(:"elixir_db.database.admission.wait", duration,
+      db_uuid: uuid,
+      admission_class: class,
+      outcome: outcome,
+      queue_depth_at_enqueue: queue_depth_at_enqueue,
+      queue_depth_at_grant: queue_depth_at_grant
+    )
   end
 
   @doc """

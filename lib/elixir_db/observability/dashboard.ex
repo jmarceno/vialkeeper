@@ -1,5 +1,5 @@
 defmodule ElixirDB.Observability.Dashboard do
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.Runtime.{DatabaseAdmission, DatabaseCatalog}
 
   @moduledoc """
   Local OpenTelemetry metric exporter and compact runtime snapshot.
@@ -25,6 +25,7 @@ defmodule ElixirDB.Observability.Dashboard do
   @replication_metric "elixir_db.replication.batch.duration"
   @checkpoint_metric "elixir_db.replication.checkpoint.count"
   @database_open_metric "elixir_db.database.open.count"
+  @admission_metric "elixir_db.database.admission.wait"
 
   @doc false
   @spec init(term()) :: {:ok, []}
@@ -100,6 +101,7 @@ defmodule ElixirDB.Observability.Dashboard do
     replication = histogram_summary(current.metrics, @replication_metric)
     checkpoints = counter_summary(current.metrics, @checkpoint_metric)
     database_opens = counter_summary(current.metrics, @database_open_metric)
+    admission = histogram_summary(current.metrics, @admission_metric)
     runtime = runtime_snapshot()
 
     %{
@@ -113,6 +115,7 @@ defmodule ElixirDB.Observability.Dashboard do
         "replication" => replication,
         "checkpoints" => checkpoints,
         "database_opens" => database_opens,
+        "admission" => admission,
         "errors" => %{
           "http" => http["error_count"],
           "commands" => commands["error_count"],
@@ -438,9 +441,46 @@ defmodule ElixirDB.Observability.Dashboard do
       "process_count" => :erlang.system_info(:process_count),
       "replication_workers" => safe_registry_count(ElixirDB.Replication.WorkerRegistry),
       "registered_databases" => databases.registered,
-      "open_databases" => databases.open
+      "open_databases" => databases.open,
+      "admission_queues" => admission_queue_snapshot()
     }
   end
+
+  defp admission_queue_snapshot do
+    case DatabaseCatalog.list() do
+      {:ok, entries} when is_list(entries) ->
+        entries
+        |> Enum.filter(&(&1[:state] == :open))
+        |> Enum.map(&admission_stats_for/1)
+        |> Enum.reject(&is_nil/1)
+
+      _ ->
+        []
+    end
+  catch
+    _kind, _reason -> []
+  end
+
+  defp admission_stats_for(%{database_uuid: uuid}) when is_binary(uuid) do
+    case DatabaseAdmission.stats(uuid) do
+      {:ok, stats} ->
+        %{
+          "database_uuid" => uuid,
+          "active_class" => stats.active_class && to_string(stats.active_class),
+          "queued_foreground" => stats.queued_foreground,
+          "queued_subscription" => stats.queued_subscription,
+          "queued_replication" => stats.queued_replication,
+          "queued_maintenance" => stats.queued_maintenance,
+          "total_occupancy" => stats.total_occupancy,
+          "closing" => stats.closing?
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp admission_stats_for(_), do: nil
 
   defp database_counts do
     case DatabaseCatalog.list() do

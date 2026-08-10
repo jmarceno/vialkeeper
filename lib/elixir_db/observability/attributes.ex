@@ -78,7 +78,10 @@ defmodule ElixirDB.Observability.Attributes do
     max_blob_concurrency_observed: :max_blob_concurrency_observed,
     peak_reserved_transfer_bytes: :peak_reserved_transfer_bytes,
     finch_duration: :"finch.duration",
-    event_type: :event_type
+    event_type: :event_type,
+    admission_class: :"admission.class",
+    queue_depth_at_enqueue: :queue_depth_at_enqueue,
+    queue_depth_at_grant: :queue_depth_at_grant
   ]
 
   @allowed_keys Keyword.keys(@allowed)

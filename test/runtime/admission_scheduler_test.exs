@@ -8,6 +8,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
     AdmissionPolicy,
     AdmissionSupervisor,
     DatabaseAdmission,
+    DatabaseCatalog,
     DatabaseOwner,
     ServiceClass
   }
@@ -355,7 +356,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
       end)
     end
 
-    test "subscriber caller death before executor start is removed", %{uuid: uuid} do
+    test "subscription caller death before executor start is removed", %{uuid: uuid} do
       with_sync_gate(fn gate_ref ->
         caller =
           spawn(fn ->
@@ -370,6 +371,126 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
         await_stats(uuid, &(&1.total_occupancy == 0))
       end)
+    end
+
+    test "subscription caller death while queued is removed", %{uuid: uuid} do
+      {holder, ref} = hold_permit(uuid)
+
+      pid =
+        spawn(fn ->
+          DatabaseAdmission.execute_owner(uuid, :subscription, fn -> :never end)
+        end)
+
+      mon = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^mon, :process, ^pid, _}, 2_000
+
+      await_stats(uuid, &(&1.queued_subscription == 0))
+      release_holder(holder, ref)
+    end
+
+    test "replication caller death while queued is removed", %{uuid: uuid} do
+      {holder, ref} = hold_permit(uuid)
+
+      pid =
+        spawn(fn ->
+          DatabaseAdmission.execute_owner(uuid, :replication, fn -> :never end)
+        end)
+
+      mon = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^mon, :process, ^pid, _}, 2_000
+
+      await_stats(uuid, &(&1.queued_replication == 0))
+      release_holder(holder, ref)
+    end
+
+    test "maintenance caller death while queued is removed", %{uuid: uuid} do
+      {holder, ref} = hold_permit(uuid)
+
+      pid =
+        spawn(fn ->
+          DatabaseAdmission.execute_owner(uuid, :maintenance, fn -> :never end)
+        end)
+
+      mon = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^mon, :process, ^pid, _}, 2_000
+
+      await_stats(uuid, &(&1.queued_maintenance == 0))
+      release_holder(holder, ref)
+    end
+  end
+
+  describe "owner restart" do
+    test "owner crash recreates admission with no stale permit or queued work" do
+      relative = "admission-owner-restart-#{System.unique_integer([:positive])}.elixirdb"
+      absolute = Path.join(ElixirDB.Config.database_root(), relative)
+      ElixirDB.TempDatabase.cleanup(absolute)
+
+      assert {:ok, identity} = DatabaseCatalog.create(relative)
+      uuid = identity.database_uuid
+      assert {:ok, _} = DatabaseCatalog.open(uuid)
+
+      on_exit(fn ->
+        _ = DatabaseCatalog.close(uuid)
+        _ = DatabaseCatalog.unregister(uuid)
+        ElixirDB.TempDatabase.cleanup(absolute)
+      end)
+
+      [{owner_before, _}] =
+        Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+
+      [{admission_before, _}] =
+        Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid})
+
+      parent = self()
+      gate = make_ref()
+
+      holder =
+        spawn(fn ->
+          try do
+            DatabaseAdmission.execute_owner(uuid, :foreground, fn ->
+              send(parent, {:owner_blocked, gate, self()})
+              receive(do: (:finish -> :done))
+            end)
+          catch
+            :exit, _ -> :ok
+          end
+        end)
+
+      assert_receive {:owner_blocked, ^gate, owner_executor}, 2_000
+      assert {:ok, 1} = DatabaseAdmission.active_count(uuid)
+
+      ref = Process.monitor(owner_before)
+      Process.exit(owner_before, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^owner_before, :killed}, 2_000
+
+      Eventual.eventually(
+        fn ->
+          case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid}) do
+            [{pid, _}] when pid != admission_before -> Process.alive?(pid)
+            _ -> false
+          end
+        end,
+        timeout: 5_000,
+        message: "admission did not restart after owner kill"
+      )
+
+      send(owner_executor, :finish)
+      ref = Process.monitor(holder)
+      assert_receive {:DOWN, ^ref, :process, ^holder, _}, 5_000
+
+      Eventual.eventually(
+        fn ->
+          case DatabaseAdmission.stats(uuid) do
+            {:ok, %{total_occupancy: 0, queued_foreground: 0}} -> true
+            _ -> false
+          end
+        end,
+        timeout: 5_000,
+        message: "admission did not drain after owner restart"
+      )
     end
   end
 
@@ -586,6 +707,83 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
   end
 
   describe "supervision restart" do
+    setup %{uuid: uuid} do
+      {:ok, fake_owner} = FakeOwner.start_link(uuid)
+
+      on_exit(fn ->
+        if Process.alive?(fake_owner) do
+          try do
+            GenServer.stop(fake_owner)
+          catch
+            _, _ -> :ok
+          end
+        end
+      end)
+
+      {:ok, fake_owner: fake_owner}
+    end
+
+    test "admission crash during owner call cannot double-grant before owner sync", %{uuid: uuid} do
+      parent = self()
+
+      with_sync_gate(fn gate_ref ->
+        caller =
+          spawn(fn ->
+            DatabaseAdmission.execute_owner(uuid, :foreground, fn ->
+              DatabaseOwner.command(uuid, {:block, parent})
+            end)
+          end)
+
+        assert_receive {^gate_ref, :before_begin, executor_pid}, 2_000
+        send(executor_pid, {:go, gate_ref})
+        assert_receive :owner_blocked, 2_000
+
+        [{admission_pid, _}] =
+          Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid})
+
+        Process.exit(admission_pid, :kill)
+        ref = Process.monitor(admission_pid)
+        assert_receive {:DOWN, ^ref, :process, ^admission_pid, _}, 2_000
+
+        assert {:error, %ElixirDB.Error{code: :database_closed}} = DatabaseAdmission.stats(uuid)
+
+        refute GenServer.call(FakeOwner.via(uuid), :owner_idle?, 1_000)
+
+        Application.delete_env(:elixir_db, :admitted_command_sync)
+        GenServer.cast(FakeOwner.via(uuid), :release_block)
+
+        Eventual.eventually(
+          fn ->
+            case DatabaseAdmission.stats(uuid) do
+              {:ok, %{total_occupancy: 0}} -> true
+              _ -> false
+            end
+          end,
+          timeout: 5_000,
+          message: "admission did not restart after owner sync"
+        )
+
+        successor_ref = make_ref()
+
+        successor =
+          spawn(fn ->
+            DatabaseAdmission.execute_owner(uuid, :foreground, fn ->
+              send(parent, {:successor, successor_ref})
+              :successor
+            end)
+          end)
+
+        assert_receive {:successor, ^successor_ref}, 2_000
+
+        ref = Process.monitor(successor)
+        assert_receive {:DOWN, ^ref, :process, ^successor, _}, 2_000
+        ref = Process.monitor(caller)
+        assert_receive {:DOWN, ^ref, :process, ^caller, _}, 2_000
+
+        await_stats(uuid, &(&1.total_occupancy == 0))
+      end)
+    end
+
     test "admission supervisor restart clears permits", %{uuid: uuid, supervisor: supervisor} do
       {holder, holder_ref} = hold_permit(uuid)
       assert {:ok, 1} = DatabaseAdmission.active_count(uuid)
@@ -723,6 +921,94 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
       assert :ok = DatabaseAdmission.await_idle(uuid, 2_000)
       assert {:ok, stats} = DatabaseAdmission.stats(uuid)
       assert stats.total_occupancy == 0
+    end
+
+    test "await_idle unblocks after permit release during close", %{uuid: uuid} do
+      {holder, ref} = hold_permit(uuid)
+
+      assert :ok = DatabaseAdmission.begin_close(uuid)
+
+      idle_waiter =
+        Task.async(fn ->
+          DatabaseAdmission.await_idle(uuid, 5_000)
+        end)
+
+      refute match?({:ok, :ok}, Task.yield(idle_waiter, 200))
+
+      release_holder(holder, ref)
+
+      assert :ok = Task.await(idle_waiter, 2_000)
+      assert {:ok, stats} = DatabaseAdmission.stats(uuid)
+      assert stats.total_occupancy == 0
+    end
+
+    test "await_idle unblocks after permit cancel during close", %{uuid: uuid} do
+      request_ref = make_ref()
+      parent = self()
+      hold_ref = make_ref()
+
+      holder =
+        Task.async(fn ->
+          case GenServer.call(
+                 DatabaseAdmission.via(uuid),
+                 {:acquire, request_ref, :foreground, :infinity, :permit},
+                 5_000
+               ) do
+            {:ok, _token} ->
+              send(parent, {:permit_held, hold_ref})
+              receive(do: ({:release, ^hold_ref} -> :ok))
+          end
+        end)
+
+      assert_receive {:permit_held, ^hold_ref}, 2_000
+
+      assert :ok = DatabaseAdmission.begin_close(uuid)
+
+      idle_waiter =
+        Task.async(fn ->
+          DatabaseAdmission.await_idle(uuid, 5_000)
+        end)
+
+      refute match?({:ok, :ok}, Task.yield(idle_waiter, 200))
+
+      assert :ok = DatabaseAdmission.cancel(uuid, request_ref)
+
+      assert :ok = Task.await(idle_waiter, 2_000)
+      assert {:ok, stats} = DatabaseAdmission.stats(uuid)
+      assert stats.total_occupancy == 0
+
+      send(holder.pid, {:release, hold_ref})
+      Task.await(holder, 2_000)
+    end
+
+    test "await_idle unblocks after pre-start abandonment during close", %{uuid: uuid} do
+      with_sync_gate(fn gate_ref ->
+        caller =
+          spawn(fn ->
+            DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :never end)
+          end)
+
+        assert_receive {^gate_ref, :before_begin, executor_pid}, 2_000
+
+        assert :ok = DatabaseAdmission.begin_close(uuid)
+
+        idle_waiter =
+          Task.async(fn ->
+            DatabaseAdmission.await_idle(uuid, 5_000)
+          end)
+
+        refute match?({:ok, :ok}, Task.yield(idle_waiter, 200))
+
+        Process.exit(caller, :kill)
+        down_ref = Process.monitor(caller)
+        assert_receive {:DOWN, ^down_ref, :process, ^caller, _}, 2_000
+
+        send(executor_pid, {:go, gate_ref})
+
+        assert :ok = Task.await(idle_waiter, 2_000)
+        assert {:ok, stats} = DatabaseAdmission.stats(uuid)
+        assert stats.total_occupancy == 0
+      end)
     end
   end
 
@@ -898,6 +1184,10 @@ defmodule FakeOwner do
 
   def handle_call(:sync, from, state) do
     {:noreply, %{state | sync_waiters: [from | state.sync_waiters]}}
+  end
+
+  def handle_call(:owner_idle?, _from, state) do
+    {:reply, state.block_from == nil, state}
   end
 
   def handle_call({:block, notify_pid}, from, state) do

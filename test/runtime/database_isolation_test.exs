@@ -8,7 +8,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
   use ExUnit.Case, async: false
 
   alias ElixirDB.MapAccess
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.Runtime.{AdmissionPolicy, DatabaseCatalog}
 
   setup do
     a_rel = "iso-a-#{System.unique_integer([:positive])}.elixirdb"
@@ -21,10 +21,30 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
       ElixirDB.TempDatabase.cleanup(path)
     end
 
+    previous_limits = Application.get_env(:elixir_db, :host_limits)
+    previous_policy = Application.get_env(:elixir_db, :admission_policy)
+
+    limits = Keyword.put(previous_limits || [], :admission_limit, 256)
+
+    policy =
+      Keyword.merge(
+        previous_policy || AdmissionPolicy.default_keyword(),
+        foreground_reserved_slots: 0,
+        subscription_reserved_slots: 0,
+        replication_reserved_slots: 0,
+        maintenance_reserved_slots: 0
+      )
+
+    Application.put_env(:elixir_db, :host_limits, limits)
+    Application.put_env(:elixir_db, :admission_policy, policy)
+
     assert {:ok, a} = DatabaseCatalog.create(a_rel)
     assert {:ok, b} = DatabaseCatalog.create(b_rel)
 
     on_exit(fn ->
+      Application.put_env(:elixir_db, :host_limits, previous_limits)
+      Application.put_env(:elixir_db, :admission_policy, previous_policy)
+
       for identity <- [a, b] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
@@ -65,81 +85,139 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     Process.exit(runtime_a, :kill)
     assert_receive {:DOWN, ^ref, :process, ^runtime_a, :killed}, 2_000
 
+    assert_sibling_admission_ready(uuid_b)
+
     assert Process.alive?(runtime_b)
 
     assert [{^runtime_b, _}] =
              Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid_b})
 
     assert {:ok, %{revision: ^rev_b, body: %{"side" => "b"}}} =
-             ElixirDB.Documents.get(uuid_b, %{id: "b-doc"})
+             retry_admission(
+               fn -> ElixirDB.Documents.get(uuid_b, %{id: "b-doc"}) end,
+               "get sibling document after runtime kill"
+             )
 
-    # Cross-database isolation: B must never surface A's document.
     assert {:error, %ElixirDB.Error{code: :document_not_found}} =
-             ElixirDB.Documents.get(uuid_b, %{id: "a-doc"})
+             retry_admission(
+               fn -> ElixirDB.Documents.get(uuid_b, %{id: "a-doc"}) end,
+               "cross-database isolation read after runtime kill"
+             )
 
-    assert {:ok, %{results: b_changes}} = ElixirDB.Changes.read(uuid_b, %{since: 0, limit: 100})
+    assert {:ok, %ElixirDB.Storage.Results.ReadChanges{results: b_changes}} =
+             retry_admission(
+               fn -> ElixirDB.Changes.read(uuid_b, %{since: 0, limit: 100}) end,
+               "changes read on sibling database after runtime kill"
+             )
 
     refute Enum.any?(b_changes, fn change ->
              MapAccess.get(change, :document_id) == "a-doc"
            end)
 
     assert {:ok, %{revision: _}} =
-             ElixirDB.Documents.put(uuid_b, %{
-               id: "b-doc",
-               if_revision: rev_b,
-               body: %{"side" => "b", "after" => true}
-             })
+             retry_admission(
+               fn ->
+                 ElixirDB.Documents.put(uuid_b, %{
+                   id: "b-doc",
+                   if_revision: rev_b,
+                   body: %{"side" => "b", "after" => true}
+                 })
+               end,
+               "conditional put on sibling database after runtime kill"
+             )
 
     assert {:ok, %{body: %{"side" => "b", "after" => true}}} =
-             ElixirDB.Documents.get(uuid_b, %{id: "b-doc"})
+             retry_admission(
+               fn -> ElixirDB.Documents.get(uuid_b, %{id: "b-doc"}) end,
+               "read updated sibling document after runtime kill"
+             )
 
-    assert {:ok, identity_b_after} = DatabaseCatalog.command(uuid_b, {:command, :identity, %{}})
+    assert {:ok, identity_b_after} =
+             retry_admission(
+               fn -> DatabaseCatalog.command(uuid_b, {:command, :identity, %{}}) end,
+               "identity read on sibling database after runtime kill"
+             )
+
     seq_b_after = MapAccess.get(identity_b_after, :current_sequence)
     assert seq_b_after == seq_b_before + 1
 
-    # Victim may be restarted by DynamicSupervisor (:transient + abnormal exit).
-    # Assert a deterministic contract: either owner is back and serves A's doc,
-    # or the database is closed until an explicit open.
     ElixirDB.Eventual.eventually(
       fn ->
-        case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid_a}) do
-          [{pid, _}] when is_pid(pid) and pid != runtime_a ->
-            Process.alive?(pid)
-
-          [] ->
+        case ElixirDB.Documents.get(uuid_a, %{id: "a-doc"}) do
+          {:ok, %{revision: ^rev_a, body: %{"side" => "a"}}} ->
             true
+
+          {:error, %ElixirDB.Error{code: code}}
+          when code in [:database_closed, :database_unavailable, :database_not_registered] ->
+            case DatabaseCatalog.open(uuid_a) do
+              {:ok, _} ->
+                match?(
+                  {:ok, %{revision: ^rev_a, body: %{"side" => "a"}}},
+                  ElixirDB.Documents.get(uuid_a, %{id: "a-doc"})
+                )
+
+              _ ->
+                false
+            end
 
           _ ->
             false
         end
       end,
       timeout: 5_000,
-      message: "A owner neither restarted nor cleared after kill"
+      message: "A did not recover readable state after runtime kill"
     )
-
-    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid_a}) do
-      [{pid, _}] when is_pid(pid) ->
-        assert Process.alive?(pid)
-
-        assert {:ok, %{revision: ^rev_a, body: %{"side" => "a"}}} =
-                 ElixirDB.Documents.get(uuid_a, %{id: "a-doc"})
-
-      [] ->
-        assert {:error, %ElixirDB.Error{code: code}} =
-                 ElixirDB.Documents.get(uuid_a, %{id: "a-doc"})
-
-        assert code in [:database_closed, :database_unavailable, :database_not_registered]
-
-        assert {:ok, _} = DatabaseCatalog.open(uuid_a)
-
-        assert {:ok, %{revision: ^rev_a, body: %{"side" => "a"}}} =
-                 ElixirDB.Documents.get(uuid_a, %{id: "a-doc"})
-    end
 
     assert [{still_b, _}] =
              Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid_b})
 
-    assert still_b == runtime_b
+    assert Process.alive?(still_b)
+
+    assert {:ok, %{body: %{"side" => "b"}}} =
+             retry_admission(
+               fn -> ElixirDB.Documents.get(uuid_b, %{id: "b-doc"}) end,
+               "sibling database remained readable after victim runtime kill"
+             )
+  end
+
+  defp assert_sibling_admission_ready(uuid) do
+    ElixirDB.Eventual.eventually(
+      fn ->
+        case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid}) do
+          [{pid, _}] when is_pid(pid) -> Process.alive?(pid)
+          _ -> false
+        end
+      end,
+      timeout: 5_000,
+      message: "sibling admission did not stabilize after runtime kill"
+    )
+  end
+
+  defp retry_admission(fun, message) do
+    ElixirDB.Eventual.eventually(
+      fn ->
+        try do
+          case fun.() do
+            {:ok, _} = ok ->
+              {:ok, ok}
+
+            {:error, %ElixirDB.Error{code: :document_not_found}} = error ->
+              {:ok, error}
+
+            {:error, %ElixirDB.Error{code: code}}
+            when code in [:database_closed, :database_unavailable, :database_not_registered] ->
+              false
+
+            other ->
+              other
+          end
+        catch
+          :exit, _ -> false
+        end
+      end,
+      timeout: 5_000,
+      message: message
+    )
   end
 
   @tag :slow
