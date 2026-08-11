@@ -11,10 +11,16 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   alias ElixirDB.Storage.Services
   alias ElixirDB.Storage.SQLite.{Adapter, Connection}
 
-  @doc "Clears cached query plans owned by a SQLite connection process."
+  @doc """
+  Clears process-local query candidate caches for a SQLite connection.
+
+  Plan shaping no longer uses a connection-keyed plan cache; candidate SQL and
+  body-term memoization live in `ElixirDB.JSON.StrictCache`.
+  """
   @spec clear_cache(Connection.handle()) :: :ok
-  def clear_cache(conn) do
-    Process.delete({:elixir_db_sqlite_query_plan_cache, conn})
+  def clear_cache(_conn) do
+    Process.delete({:elixir_db_json_strict_cache, :query_candidate_sql})
+    Process.delete({:elixir_db_json_strict_cache, :query_body_term})
     :ok
   end
 

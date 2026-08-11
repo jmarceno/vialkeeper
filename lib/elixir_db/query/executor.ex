@@ -249,7 +249,11 @@ defmodule ElixirDB.Query.Executor do
       selector: MapAccess.get(request, :selector, %{}),
       sort: MapAccess.get(request, :sort, []),
       pagination: plan.pagination,
-      sort_compatible: plan.sort_compatible?
+      sort_compatible: plan.sort_compatible?,
+      backend_detail: %{
+        ready_index_count: length(indexes),
+        candidate_retrieval: plan.pagination
+      }
     }
   end
 

@@ -62,10 +62,12 @@ defmodule ElixirDB.Storage.Memory.IndexCandidates do
   def refresh_document(%BackendContext{}, _document_id, _winner, _ready), do: :ok
 
   defp bounded_scan_candidates(documents) do
-    # Deliberately unordered: product order comes from Query.Executor.
-    Enum.reduce(documents, [], fn {document_id, doc}, acc ->
+    # Deliberately disordered: product order comes from Query.Executor.
+    documents
+    |> Enum.reduce([], fn {document_id, doc}, acc ->
       append_live_candidate(acc, document_id, doc)
     end)
+    |> Enum.shuffle()
   end
 
   defp append_live_candidate(acc, _document_id, %{winning_deleted: true}), do: acc

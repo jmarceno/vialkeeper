@@ -2,8 +2,13 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
   @moduledoc """
   SQLite index definition and candidate-retrieval port.
 
-  Candidate rows are normalized maps. Physical names, SQL, and rowids stay
-  inside this backend; shared query code only sees opaque candidates.
+  Shared-facing index definitions are logical only: catalog `_metadata`,
+  physical names, and other adapter-private fields are stripped before
+  `Services.Query` / `Planner` see them. Physical names remain available
+  inside this module when compiling SQL from `Adapter.list_indexes/1`.
+
+  Candidate rows are normalized maps. Document `doc_key` values may stay in
+  opaque `:backend_meta`; shared query code only sees logical candidates.
   """
   @behaviour ElixirDB.Storage.Ports.IndexCandidates
 
@@ -310,11 +315,14 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
   end
 
   defp public_index(index) when is_map(index) do
-    physical = MapAccess.get(index, :physical_name) || MapAccess.get(index, "physical_name")
-
-    index
-    |> Map.drop([:physical_name, "physical_name"])
-    |> Map.put(:backend_meta, %{physical_name: physical})
+    Map.drop(index, [
+      :physical_name,
+      "physical_name",
+      :_metadata,
+      "_metadata",
+      :backend_meta,
+      "backend_meta"
+    ])
   end
 
   defp public_candidate(row) when is_map(row) do

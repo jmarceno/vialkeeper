@@ -31,7 +31,8 @@ defmodule ElixirDB.WebUI.Routes.Queries do
     "selector",
     "sort",
     "pagination",
-    "sort_compatible"
+    "sort_compatible",
+    "backend_detail"
   ]
 
   @index_keys [

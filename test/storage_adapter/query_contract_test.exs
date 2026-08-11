@@ -1,7 +1,7 @@
 defmodule ElixirDB.StorageAdapter.QueryContractTest do
   @moduledoc """
   Dual-backend query contract: product order and explain stay backend-neutral
-  even when candidates arrive unordered.
+  even when candidates arrive disordered (Memory shuffles bounded-scan rows).
   """
 
   for {name, adapter_module} <- [
@@ -10,6 +10,8 @@ defmodule ElixirDB.StorageAdapter.QueryContractTest do
       ] do
     defmodule Module.concat([ElixirDB.StorageAdapter, "#{name}QueryContractTest"]) do
       use ElixirDB.Storage.AdapterCase, adapter: adapter_module
+
+      alias ElixirDB.Storage.Ports.Access
 
       test "selector queries return canonical document-id order", %{adapter: adapter} do
         for {id, body} <- [
@@ -104,6 +106,45 @@ defmodule ElixirDB.StorageAdapter.QueryContractTest do
         assert explanation.plan_kind == :bounded_scan
         assert explanation.full_scan == true
         assert is_integer(explanation.candidate_count)
+
+        assert %{ready_index_count: 0, candidate_retrieval: :bounded_scan} =
+                 explanation.backend_detail
+      end
+
+      test "index-candidate port strips physical names from shared definitions", %{
+        adapter: adapter
+      } do
+        context = @adapter.to_context(adapter)
+        port = Access.port(context, :index_candidates)
+
+        if @adapter == ElixirDB.Storage.SQLite.Adapter do
+          assert {:ok, _} =
+                   @adapter.create_index(adapter, %{
+                     "name" => "by-state",
+                     "type" => "structured",
+                     "fields" => [
+                       %{"path" => "/state", "type" => "string", "direction" => "asc"}
+                     ]
+                   })
+
+          assert {:ok, indexes} = port.list_indexes(context)
+          assert indexes != []
+
+          for index <- indexes do
+            refute Map.has_key?(index, "physical_name")
+            refute Map.has_key?(index, :physical_name)
+            refute Map.has_key?(index, "_metadata")
+            refute Map.has_key?(index, :_metadata)
+            refute Map.has_key?(index, :backend_meta)
+          end
+
+          refute Jason.encode!(indexes) =~ "physical_name"
+
+          assert {:ok, raw} = @adapter.list_indexes(adapter)
+          assert is_binary(get_in(hd(raw), ["_metadata", "physical_name"]))
+        else
+          assert {:ok, []} = port.list_indexes(context)
+        end
       end
 
       test "field projection and deleted winners stay consistent", %{adapter: adapter} do
