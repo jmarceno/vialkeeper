@@ -22,10 +22,12 @@ defmodule ElixirDB.Storage.BoundaryGuard do
     {:database_sqlite3, ~r/database\.sqlite3/},
     {:sqlite_path, ~r/\bsqlite_path\b/},
     {:validate_sqlite, ~r/\bvalidate_sqlite!?\b/},
-    {:begin_exclusive, ~r/\bBEGIN\s+EXCLUSIVE\b/i},
-    {:begin_immediate, ~r/\bBEGIN\s+IMMEDIATE\b/i},
+    {:begin_mode, ~r/\bBEGIN(?:\s+(?:EXCLUSIVE|IMMEDIATE|DEFERRED))?\b/i},
+    {:commit_mode, ~r/\bCOMMIT\b/i},
+    {:rollback_mode, ~r/\bROLLBACK\b/i},
     {:pragma, ~r/\bPRAGMA\b/},
-    {:rowid, ~r/\browid\b/i}
+    {:rowid, ~r/\browid\b/i},
+    {:sql_string, ~r/["']\s*(?:SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\b/i}
   ]
 
   @scan_roots ["lib", "test", "bench", "priv"]

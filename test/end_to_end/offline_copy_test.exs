@@ -3,6 +3,7 @@ defmodule ElixirDB.EndToEnd.OfflineCopyTest do
 
   use ExUnit.Case, async: false
 
+  @moduletag :sqlite_physical
   @moduletag :integration
 
   alias ElixirDB.Attachments

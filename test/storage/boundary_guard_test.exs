@@ -33,8 +33,12 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
     assert PhysicalAllowlist.allowed_path?("priv/sqlite/schema_v1.sql")
     assert PhysicalAllowlist.allowed_path?("lib/elixir_db/observability/instrumentation/sqlite.ex")
     assert PhysicalAllowlist.allowed_path?("test/storage_adapter/portability_test.exs")
+    assert PhysicalAllowlist.allowed_path?("test/support/temp_database.ex")
     refute PhysicalAllowlist.allowed_path?("lib/elixir_db/runtime/database_owner.ex")
     refute PhysicalAllowlist.allowed_path?("lib/elixir_db/database_bundle.ex")
+    refute PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/registry.ex")
+    refute PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/sentinel/adapter.ex")
+    refute PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/adapter.ex")
   end
 
   test "boundary guard reports known product/runtime leaks with file and line" do
@@ -52,15 +56,33 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
 
     refute "lib/elixir_db/storage/sqlite/adapter.ex" in leaking
     refute "lib/elixir_db/storage/sentinel/adapter.ex" in leaking
+    refute "lib/elixir_db/storage/registry.ex" in leaking
   end
 
-  test "classified physical tests exist on disk and carry the sqlite_physical tag" do
+  test "boundary guard reports transaction modes and SQL strings in diagnostics and lease" do
+    findings = BoundaryGuard.scan()
+    diagnostics = BoundaryGuard.findings_for(findings, "lib/elixir_db/diagnostics.ex")
+    lease = BoundaryGuard.findings_for(findings, "lib/elixir_db/runtime/file_lease.ex")
+
+    assert Enum.any?(diagnostics, &(&1.pattern == :commit_mode))
+    assert Enum.any?(diagnostics, &(&1.pattern == :rollback_mode))
+    assert Enum.any?(diagnostics, &(&1.pattern == :begin_mode))
+    assert Enum.any?(diagnostics, &(&1.pattern == :sql_string))
+    assert Enum.any?(lease, &(&1.pattern == :rollback_mode))
+    assert Enum.any?(lease, &(&1.pattern == :begin_mode))
+  end
+
+  test "classified physical tests and support exist on disk and carry tags where required" do
     for path <- PhysicalAllowlist.classified_physical_tests() do
       assert File.regular?(path), "missing classified physical test #{path}"
       source = File.read!(path)
 
       assert source =~ "@moduletag :sqlite_physical",
              "#{path} must declare @moduletag :sqlite_physical"
+    end
+
+    for path <- PhysicalAllowlist.classified_physical_support() do
+      assert File.regular?(path), "missing classified physical support #{path}"
     end
   end
 

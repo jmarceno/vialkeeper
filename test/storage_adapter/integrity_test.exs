@@ -1,6 +1,8 @@
 defmodule ElixirDB.StorageAdapter.IntegrityTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   alias ElixirDB.Attachments.FilesystemStore
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.JSON.Canonical

@@ -3,6 +3,8 @@ defmodule ElixirDB.StorageAdapter.FullTextIndexesTest do
   alias ElixirDB.Storage.SQLite.QueryRunner
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   alias ElixirDB.Storage.SQLite.Connection
 
   @fts_definition %{

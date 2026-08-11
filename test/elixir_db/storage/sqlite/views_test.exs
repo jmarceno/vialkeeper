@@ -2,6 +2,8 @@ defmodule ElixirDB.Storage.SQLite.ViewsTest do
   @moduledoc "Behavioral tests for SQLite-backed declarative view storage."
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   alias ElixirDB.Storage.FaultAdapter
 
   @view %{
