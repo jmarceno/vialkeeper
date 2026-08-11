@@ -1195,9 +1195,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     end
   end
 
-  defp validate_materialization(_metadata, _request),
-    do: {:error, ElixirDB.Error.invalid_request("derived request must be an object")}
-
   defp fetch_source(conn, source_uuid) do
     case Connection.query(
            conn,

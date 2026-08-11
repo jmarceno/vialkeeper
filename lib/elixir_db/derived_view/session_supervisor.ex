@@ -3,19 +3,19 @@ defmodule ElixirDB.DerivedView.SessionSupervisor do
   use Supervisor
 
   alias ElixirDB.DerivedView.Worker
+  alias ElixirDB.Runtime.ChildSpec
 
   @registry ElixirDB.Runtime.DatabaseRegistry
 
   @spec child_spec(binary()) :: map()
-  def child_spec(uuid) when is_binary(uuid) do
-    %{
-      id: {:derived_session, uuid},
-      start: {__MODULE__, :start_link, [uuid]},
-      restart: :transient,
-      shutdown: :infinity,
-      type: :supervisor
-    }
-  end
+  def child_spec(uuid) when is_binary(uuid),
+    do:
+      ChildSpec.supervisor(
+        {:derived_session, uuid},
+        {__MODULE__, :start_link, [uuid]},
+        :transient,
+        :infinity
+      )
 
   @spec start_link(binary()) :: Supervisor.on_start()
   def start_link(uuid), do: Supervisor.start_link(__MODULE__, uuid, name: via(uuid))
@@ -29,13 +29,12 @@ defmodule ElixirDB.DerivedView.SessionSupervisor do
   @impl true
   def init(uuid) do
     children = [
-      %{
-        id: {:derived_task_supervisor, uuid},
-        start: {Task.Supervisor, :start_link, [[name: task_via(uuid)]]},
-        restart: :permanent,
-        shutdown: :infinity,
-        type: :supervisor
-      },
+      ChildSpec.supervisor(
+        {:derived_task_supervisor, uuid},
+        {Task.Supervisor, :start_link, [[name: task_via(uuid)]]},
+        :permanent,
+        :infinity
+      ),
       Worker.child_spec(uuid)
     ]
 

@@ -33,14 +33,12 @@ defmodule ElixirDB.Query.SubscriptionSupervisor do
   def init(uuid) do
     children = [
       SubscriptionHub.child_spec(uuid),
-      %{
-        id: {:query_subscription_dynamic_supervisor, uuid},
-        start:
-          {DynamicSupervisor, :start_link, [[strategy: :one_for_one, name: dynamic_via(uuid)]]},
-        restart: :permanent,
-        shutdown: :infinity,
-        type: :supervisor
-      }
+      ChildSpec.supervisor(
+        {:query_subscription_dynamic_supervisor, uuid},
+        {DynamicSupervisor, :start_link, [[strategy: :one_for_one, name: dynamic_via(uuid)]]},
+        :permanent,
+        :infinity
+      )
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)

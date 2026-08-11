@@ -730,20 +730,22 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
           result
         else
           {:error,
-           ElixirDB.Error.integrity_violation("database kind does not match registration hint", %{
-             reason: :database_kind_mismatch,
-             expected: Map.get(entry, :database_kind, :ordinary),
-             actual: database_kind
-           })}
+           ElixirDB.Error.integrity_violation(
+             "database kind does not match registration hint",
+             ElixirDB.Error.identity_mismatch_details(
+               :database_kind_mismatch,
+               Map.get(entry, :database_kind, :ordinary),
+               database_kind
+             )
+           )}
         end
 
       {:ok, %{database_uuid: actual}} ->
         {:error,
-         ElixirDB.Error.database_unavailable("database UUID mismatch", %{
-           reason: :uuid_mismatch,
-           expected: entry.uuid,
-           actual: actual
-         })}
+         ElixirDB.Error.database_unavailable(
+           "database UUID mismatch",
+           ElixirDB.Error.identity_mismatch_details(:uuid_mismatch, entry.uuid, actual)
+         )}
 
       other ->
         other

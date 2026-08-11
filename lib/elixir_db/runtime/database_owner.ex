@@ -47,21 +47,23 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
             _ = Adapter.close(adapter)
 
             {:stop,
-             ElixirDB.Error.integrity_violation("database kind does not match registration hint", %{
-               reason: :database_kind_mismatch,
-               expected: expected_kind,
-               actual: actual_kind
-             })}
+             ElixirDB.Error.integrity_violation(
+               "database kind does not match registration hint",
+               ElixirDB.Error.identity_mismatch_details(
+                 :database_kind_mismatch,
+                 expected_kind,
+                 actual_kind
+               )
+             )}
 
           {actual_uuid, _actual_kind} ->
             _ = Adapter.close(adapter)
 
             {:stop,
-             ElixirDB.Error.database_unavailable("database UUID mismatch", %{
-               reason: :uuid_mismatch,
-               expected: uuid,
-               actual: actual_uuid
-             })}
+             ElixirDB.Error.database_unavailable(
+               "database UUID mismatch",
+               ElixirDB.Error.identity_mismatch_details(:uuid_mismatch, uuid, actual_uuid)
+             )}
         end
 
       {:error, %ElixirDB.Error{} = error} ->

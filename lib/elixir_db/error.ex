@@ -86,6 +86,11 @@ defmodule ElixirDB.Error do
   @spec registry() :: map()
   def registry, do: @registry
 
+  @spec identity_mismatch_details(atom(), term(), term()) :: map()
+  def identity_mismatch_details(reason, expected, actual) when is_atom(reason) do
+    %{reason: reason, expected: expected, actual: actual}
+  end
+
   for {name, _} <- @registry do
     def unquote(name)(message \\ nil, details \\ %{}) do
       new(unquote(name), message || unquote(to_string(name)), details)
