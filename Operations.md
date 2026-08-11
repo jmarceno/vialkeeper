@@ -1,85 +1,120 @@
 # ElixirDB operations
 
-Practical runbook for a Version 1 ElixirDB host. Operational behavior is defined by the CONFIG / LIFE / REPL / QUERY / MAINT sections of `Architecture.md`; module names below identify the implementation boundaries that realize that contract.
+Runbook for deploying and running a Version 1 ElixirDB host. For API usage
+from applications, see [README.md](README.md).
 
-Production and staging hosts run an assembled OTP release. `mix` is for
-local development and CI only.
+Production and staging run an assembled OTP release. `mix` is for local
+development and CI only.
+
+```text
+ELIXIR_DB_ROOT/
+  host.toml              # listener, auth, TLS, limits, federation, …
+  registrations.json     # routing only (UUID → relative path)
+  notes.elixirdb/        # one bundle per logical database
+    database.sqlite3
+    blobs/
+    tmp/
+  notes.elixirdb.lease   # transient exclusive lock (not data)
+  _derived/…             # optional derived DBs from materialized views
+```
+
+---
 
 ## Build the release
 
-On a machine with the pinned Elixir/OTP toolchain (see `mise.toml`):
+Pinned toolchain: Elixir 1.20.2 / OTP 29.0.4 (`mise.toml`).
 
 ```sh
 export MIX_ENV=prod
 mix release.build
 ```
 
-The assembled tree is `_build/prod/rel/elixir_db/`. It includes ERTS and the
-application BEAMs. Copy that directory to the target host (same OS/ABI as the
-build machine). `ElixirDB.Diagnostics.runtime/0` reports the Mix application
-version and runtime/SQLite identity from the assembled BEAMs; it does not
-read VCS metadata.
+Output: `_build/prod/rel/elixir_db/` (includes ERTS). Copy that tree to the
+target host (same OS/ABI as the build machine).
+
+```sh
+/opt/elixir_db/bin/elixir_db eval \
+  'IO.inspect(ElixirDB.Diagnostics.runtime(), pretty: true)'
+```
+
+`Diagnostics.runtime/0` reports Mix app version and runtime / SQLite identity
+from the BEAMs. It does not read git metadata.
+
+---
 
 ## Start and stop
 
 ```sh
 export ELIXIR_DB_ROOT=/var/lib/elixirdb
 
-# first start: the directory and host.toml are created automatically
-/opt/elixir_db/bin/elixir_db daemon    # background
-# or: /opt/elixir_db/bin/elixir_db start   # foreground
+/opt/elixir_db/bin/elixir_db daemon   # background
+# or: /opt/elixir_db/bin/elixir_db start
 ```
-
-Control a running release:
 
 ```sh
 /opt/elixir_db/bin/elixir_db pid
-/opt/elixir_db/bin/elixir_db remote    # remote console
+/opt/elixir_db/bin/elixir_db remote   # remote console
 /opt/elixir_db/bin/elixir_db stop
 ```
 
-`ELIXIR_DB_ROOT` locates the database root (the single directory holding
-`host.toml`, `registrations.json`, and the `*.elixirdb` bundle directories). On
-first run in an empty root, a fully commented `host.toml` is created; it is
-never overwritten once present.
+On first start in an empty root, ElixirDB creates the directory and a fully
+commented `host.toml` from `priv/host.toml`. Existing `host.toml` is **never**
+overwritten.
 
-All host configuration lives in `<database_root>/host.toml` — a single visible,
-editable TOML file. Default listener binds **loopback only**
-(`127.0.0.1:4000`). Binding to a non-loopback interface requires
-authentication or TLS to be enabled (see below, and `CONFIG-005`); the server
-refuses to start otherwise.
+Default listener: **loopback only** `127.0.0.1:4000`. Binding a non-loopback
+address requires `[auth] enabled = true` or `[tls] enabled = true`, unless
+you set `[security] allow_insecure_remote = true` (risky).
 
-* `[listener]` — `ip` and `port`.
-* `[limits]` — host-enforced admission, open-database, body, batch, replication-transfer, live-subscription, local-view, and materialized-view ceilings.
-* `[admission]` — per-database owner service weights and reserved queue slots for foreground, subscription, replication, and background maintenance work.
-* `[federation]` — bounded ad-hoc cross-database query policy plus named virtual saved queries.
-* `[web_ui]` — enables/disables the embedded offline administration console.
-* `[auth]` — bearer-token authentication (see Authentication).
-* `[tls]` — TLS listener enablement and cert/key paths (see Transport-layer
-  security).
-* `[security] allow_insecure_remote` — explicit override of the loopback
-  failsafe.
-* `[observability] otlp_endpoint` — OTLP collector endpoint; empty means no
-  exporter and no network (OBSV-004).
+Stop with `bin/elixir_db stop` or SIGTERM. Open databases close; each runtime
+rolls back its companion `.lease` transaction.
 
-Stop with `bin/elixir_db stop` (or SIGTERM to the release OS process). The
-catalog closes open database runtimes; each runtime rolls back its companion
-`.lease` transaction on terminate (`ElixirDB.Runtime.FileLease`).
+### Development only
+
+```sh
+mix run --no-halt
+```
+
+Same supervision tree. Do not use Mix as the production entrypoint.
+
+---
+
+## `host.toml` map
+
+All host config is one editable file under the database root. Edit, then
+**restart**.
+
+| Section | Purpose |
+| ------- | ------- |
+| `[listener]` | `ip`, `port` |
+| `[limits]` | Host ceilings (bodies, batches, subscriptions, views, …) |
+| `[admission]` | Fair scheduling weights / reserved slots per work class |
+| `[federation]` | Cross-DB query bounds + `[[federation.saved_query]]` |
+| `[web_ui]` | Embedded admin console on/off |
+| `[auth]` | Bearer tokens (SHA-256 digests) |
+| `[tls]` | HTTPS cert/key paths (relative to root) |
+| `[security]` | `allow_insecure_remote` |
+| `[observability]` | `otlp_endpoint` (empty = no exporter, no network) |
+
+Template with defaults: `priv/host.toml`.
+
+---
 
 ## Authentication
 
-Bearer-token authentication (`AUTH-001`) gates the HTTP API and every state-bearing administration-console request. When `[auth] enabled = true` in `host.toml`, every `/v1` request and every `/ui/fragments/...` or `/ui/actions/...` request must present a valid `Authorization: Bearer <token>` header. The inert `/ui` shell and its fixed embedded `/ui/assets/...` resources remain anonymously retrievable so a browser can collect the bearer token locally; they expose no database/server state.
+When `[auth] enabled = true`:
 
-Tokens are stored as SHA-256 hex digests (never raw token text). Generate a
-token and its digest with the release command:
+- Every `/v1` request needs `Authorization: Bearer <token>`.
+- Every `/ui/fragments/…` and `/ui/actions/…` request needs the same header.
+- `/ui` shell and `/ui/assets/…` stay anonymous so the browser can collect a
+  token. They expose no database state.
+
+Generate a token:
 
 ```sh
 /opt/elixir_db/bin/elixir_db token
-# token:  <64-char hex>      (use as the Bearer value)
-# digest: <64-char hex>      (paste into host.toml)
+# token:  <64-char hex>   ← clients send this
+# digest: <64-char hex>   ← paste into host.toml
 ```
-
-Paste the **digest** into `host.toml`:
 
 ```toml
 [auth]
@@ -87,28 +122,25 @@ enabled = true
 tokens  = ["<digest>"]
 ```
 
-Restart the release. Clients send the raw token:
+Restart. Clients send the **raw** token, never the digest.
 
 ```sh
 curl -H "Authorization: Bearer <token>" http://127.0.0.1:4000/v1/databases
 ```
 
-Multiple digests may be listed to support rotation. To rotate with zero
-downtime: add the new digest alongside the old, restart, then remove the old
-digest and restart. There is no runtime revocation endpoint; rotation is done
-by editing `host.toml` and restarting. Authentication failures return
-`unauthorized` (HTTP 401) with an identical message regardless of whether the
-header was missing, malformed, or wrong (`AUTH-004`).
+Rotate with zero downtime: add the new digest, restart, remove the old digest,
+restart. There is no runtime revocation API. Failures always return
+`unauthorized` (HTTP 401) with the same message.
 
-A replication source authenticates to a target with auth enabled by carrying an
-`auth_token` in the remote endpoint reference (`AUTH-003`); see the replication
-endpoints documentation.
+Remote replication to an auth-enabled target: put the raw token in the job
+endpoint as `auth_token`.
 
-## Transport-layer security
+---
 
-When `[tls] enabled = true` in `host.toml`, the listener serves HTTPS only on
-a single listener (no parallel plaintext port). `certfile` and `keyfile` are
-resolved relative to the database root:
+## TLS
+
+When `[tls] enabled = true`, the listener serves **HTTPS only** (no parallel
+plaintext port). Paths are relative to the database root:
 
 ```toml
 [tls]
@@ -117,9 +149,7 @@ certfile = "cert.pem"
 keyfile  = "key.pem"
 ```
 
-Place `cert.pem` and `key.pem` inside the database root so that copying the
-root relocates a working HTTPS listener (`TLS-002`). A quick self-signed pair
-for local testing:
+Self-signed for local tests:
 
 ```sh
 openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
@@ -127,481 +157,454 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
   -subj "/CN=localhost"
 ```
 
-Use a real CA (Let's Encrypt, an internal CA) for production. Replication
-sources connect over TLS when the endpoint `base_url` uses the `https` scheme
-(`TLS-003`).
+Use a real CA in production. Replication uses TLS when `base_url` is `https://…`.
 
-### Development only
+---
 
-From a source checkout, `mix run --no-halt` starts the same supervision tree
-for interactive work. Do not use Mix as the production entrypoint.
+## Database root and registration
 
-## Database root and registration manifest
-
-Every durable database bundle lives under the configured **database root**
-(`ElixirDB.Config.database_root/0`, `LIFE-002`). Clients never submit absolute
-filesystem paths; create/register accept **relative** paths that must not
-traverse (`..`), escape the root, or cross symlinks.
-
-Each logical database is one self-contained `.elixirdb` directory (`STORE-004`,
-`FILE-001`):
+Clients never send absolute filesystem paths. Create/register take **relative**
+paths that must not escape the root (`..`, symlinks).
 
 ```text
 notes.elixirdb/
-├── database.sqlite3
-├── blobs/
-│   └── <digest-prefix>/<sha256>[.raw|.zst]
-└── tmp/
+├── database.sqlite3   # metadata, revisions, indexes, views, jobs, …
+├── blobs/             # content-addressed attachment bytes
+└── tmp/               # incomplete uploads (not authoritative)
 ```
 
-`database.sqlite3` stores transactional metadata, including database kind, revisions, manifests, configuration, indexes, local declarative-view definitions/state, jobs, checkpoints, and maintenance state. A derived database additionally stores its complete materialized-view definition, source checkpoints, contribution state, and generated result documents there. `blobs/` stores immutable content-addressed attachment bytes. `tmp/` contains incomplete uploads and installation files and is not authoritative.
-
-The **registration manifest** (`ElixirDB.Runtime.RegistrationManifest`) is a
-routing-only UTF-8 JSON document (`LIFE-007`):
+`registrations.json` is routing only:
 
 ```json
 {
   "version": 1,
   "databases": [
-    {"uuid": "…", "path": "relative/path.elixirdb", "database_kind": "ordinary"}
+    {"uuid": "…", "path": "notes.elixirdb", "database_kind": "ordinary"}
   ]
 }
 ```
 
-Writes use temp file → fsync → atomic rename. A failed write leaves the previous manifest intact. `database_kind` is only a reconstructible routing hint; SQLite metadata inside the bundle is authoritative whenever a bundle is registered/opened. Unregistered `.elixirdb` bundles under the root stay inert; the server does **not** auto-adopt them (`LIFE-004`).
+`database_kind` is a reconstructible hint. SQLite metadata inside the bundle
+wins on open. Unregistered bundles under the root stay inert — ElixirDB does
+**not** auto-adopt them.
 
-## Registering and unregistering databases
+| Action | How |
+| ------ | --- |
+| Create | `POST /v1/databases` `{"path":"notes.elixirdb"}` |
+| Register existing | `POST /v1/registrations` `{"path":"…"}` |
+| List / info | `GET /v1/databases`, `GET /v1/databases/:uuid` |
+| Close | `POST /v1/databases/:uuid/close` |
+| Unregister | `DELETE /v1/registrations/:uuid` (bundle files kept) |
 
-| Action                   | API / module                                                            | Notes                                                                  |
-| ------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Create                   | `POST /v1/databases` or `DatabaseCatalog.create/2`                      | Creates the `.elixirdb` bundle, writes identity, adds a manifest entry |
-| Register existing bundle | `POST /v1/registrations` `{"path":"…"}` or `DatabaseCatalog.register/1` | Opens briefly to validate format/UUID/layout, then routes traffic      |
-| List / info              | `GET /v1/databases`, `GET /v1/databases/:uuid`                          | Public identity is the UUID, never the path (`LIFE-008`)               |
-| Unregister               | `DELETE /v1/registrations/:uuid` or `DatabaseCatalog.unregister/1`      | Removes routing metadata **only**; the bundle directory is kept        |
-| Close                    | `POST /v1/databases/:uuid/close` or `DatabaseCatalog.close/1`           | Required before unregister or offline copy (`LIFE-009`)                |
+Public identity is the UUID, never the path. Duplicate UUID →
+`duplicate_database_uuid`. Missing file after registration →
+`database_unavailable` (manifest entry is not silently dropped).
 
-Duplicate UUID registration returns `duplicate_database_uuid`. A missing file
-after registration surfaces as `unavailable` / `database_unavailable` rather
-than silently dropping the manifest entry.
+---
 
 ## Offline copy, move, and restore
 
-1. Stop writes; ensure no continuous replication worker requires the DB open. If the database is a source for an enabled materialized federated view, disable that materialization first. If it is itself a derived database, disable its materializer first.
-2. `POST /v1/databases/:uuid/close` (or close via the catalog). Active live-query subscriptions are terminated with closed-stream semantics; queued owner work is rejected/drained by database admission. Local view builders stop with the database runtime. Confirm no attachment upload, download, installation, or GC remains active.
-3. Copy the complete closed `.elixirdb` directory with ordinary OS tools
-   (`FILE-002`). The portable unit is the bundle directory, not a lone SQLite
-   file.
-4. Do **not** treat `.lease` as authoritative state — it is transient ownership.
-5. At the destination root, place the bundle and `POST /v1/registrations` with
-   the relative path. Registration re-validates SQLite markers, schema, UUID,
-   and required bundle layout.
-6. Reopen by addressing the UUID (`POST` document routes auto-open via the
-   catalog, or call `DatabaseCatalog.open/1`).
-
-A copy retains the original UUID (`LIFE-005`). Two copies with the same UUID under one host are rejected. Copying is backup/relocation, not cloning. Do not copy an active or crash-recoverable bundle piecemeal: keep the SQLite rollback journal with `database.sqlite3` until recovery finishes.
-
-Automatically created materialized federated views use `_derived/<slug>--<short-uuid>.derived.elixirdb`. Both `_derived/` and the suffix are operator hints only: internal `database_kind = derived` metadata is authoritative. A clean derived bundle can be moved or renamed outside `_derived/` and re-registered normally; its last committed result and all materialization state remain in the bundle.
-
-## Attachments
-
-Uploads use raw `application/octet-stream` bytes:
-
-```text
-POST /v1/databases/:uuid/attachments/upload
-POST /v1/databases/:uuid/attachments/get
+```mermaid
+flowchart LR
+  A[Stop writers / disable continuous deps] --> B[Close database]
+  B --> C[Copy whole .elixirdb dir]
+  C --> D[Place under destination root]
+  D --> E[POST /v1/registrations]
+  E --> F[Use UUID as before]
 ```
 
-The upload response contains the validated SHA-256 `blob`, original `length`,
-and `expires_at`. Reference it in `Documents.put/2` (or the document HTTP
-route):
-
-```elixir
-{:ok, %{blob: digest}} = ElixirDB.Attachments.upload_stream(uuid, [bytes])
-
-{:ok, _} =
-  ElixirDB.Documents.put(uuid, %{
-    id: "note-1",
-    body: %{"title" => "Hello"},
-    attachments: %{
-      "source.txt" => %{blob: digest, content_type: "text/plain"}
-    }
-  })
-```
-
-`ElixirDB.Attachments.open_stream/2` and the attachment GET route stream
-original bytes after metadata resolution. Attachment names are metadata, not
-filesystem paths. Uploads durably install bytes before a revision can
-reference them; a pending protection record prevents premature collection.
-
-### Attachment limits
-
-Database configuration exposes independent limits:
-
-* `max_attachment_bytes` — maximum original, uncompressed size of one upload.
-* `max_concurrent_attachment_reads` — simultaneous download streams.
-* `max_concurrent_attachment_writes` — simultaneous upload or replication-write
-  streams.
-
-Host ceilings bound database values. Limits are enforced by
-`AttachmentCoordinator`, independently of database-owner admission. Admission
-overruns return retryable `attachment_overloaded` before streaming starts.
-Oversize uploads terminate with `payload_too_large` and do not create a
-revision reference. Changing limits does not rewrite stored blobs.
-
-### Attachment GC and integrity
-
-A blob is live when a retained revision manifest references it or an unexpired
-pending record protects it. Compact retention can remove a manifest; physical
-deletion happens afterward through attachment GC under the exclusive
-coordinator barrier. GC releases SQLite and owner resources before deleting
-files, is idempotent, and can also reclaim expired pending uploads when compact
-is a no-op.
-
-`POST /v1/databases/:uuid/integrity-check` checks SQLite integrity, schema,
-revision and index state, attachment manifests, and physical blob
-availability. Unreferenced physical blobs are reclaimable orphans rather than
-evidence that a committed revision is missing bytes. A crash during GC may
-leave such orphaned bytes; rerun GC after recovery.
-
-## Lease recovery (`database_in_use`)
-
-Each open database holds an exclusive SQLite transaction on a companion
-`<path>.lease` file (`ElixirDB.Runtime.FileLease`, `ARCH-004`): busy timeout is
-zero, so a second owner fails immediately with `database_in_use` (HTTP 409,
-retryable).
-
-Safe recovery:
-
-1. Confirm no live ElixirDB release process owns the database (OS process list /
-   `bin/elixir_db pid`). A healthy owner always holds the lease while open.
-2. If the previous process crashed and left a stale `.lease` **file** but no
-   live SQLite exclusive lock, a new open can succeed — FileLease opens the
-   lease DB and takes `BEGIN EXCLUSIVE`. Do not delete a `.lease` while another
-   host process may still hold the lock.
-3. Only remove a leftover `.lease` file after you are certain no process has the
-   database open. Prefer letting the crashed BEAM release die and retry open.
-4. Never delete or rewrite the main `database.sqlite3` to “clear” a lease.
-
-## Integrity checking
-
-`POST /v1/databases/:uuid/integrity-check` (or
-`Adapter.integrity_check/2` / `ElixirDB.Storage.SQLite.Integrity`) runs
-`MAINT-001` checks:
-
-* SQLite `integrity_check` and `foreign_key_check`
-* Required Version 1 tables
-* Revision identity, ancestry, and leaf markers
-* Attachment manifests and physical blob verification
-* Materialized document winners
-* Changes-feed leaf/winner references
-* Physical structured / full-text index consistency
-
-Unreferenced physical blobs are reclaimable orphans rather than evidence that a
-committed revision is missing bytes. Failures return `integrity_violation`.
-Rebuild a damaged logical index with the index rebuild endpoint after
-investigating the reported details.
-
-`ElixirDB.Diagnostics.runtime/0` reports Elixir/OTP/SQLite/protocol versions for
-release notes; it is not a substitute for per-database integrity checks. From a
-running release:
-
-```sh
-/opt/elixir_db/bin/elixir_db eval 'IO.inspect(ElixirDB.Diagnostics.runtime(), pretty: true)'
-```
-
-## Replication job states
-
-Persistent jobs live in `database.sqlite3`; workers are transient (`REPL-013`, `JobManager`, `Replication.Worker`). The worker state machine remains the authority for the complete session. Independent revision-chain fetches and missing attachment transfers execute beneath it as bounded supervised transfer tasks.
-
-Observed states include:
-
-| State                                     | Meaning                                                                |
-| ----------------------------------------- | ---------------------------------------------------------------------- |
-| `idle`                                    | Registered / waiting to start                                          |
-| `handshake` / `install_boundaries`        | Endpoint compatibility and retention-boundary preparation              |
-| `bootstrap`                               | Snapshot/bootstrap transfer when incremental history is unavailable    |
-| `read_changes` / `diff`                   | Determine the bounded source work and missing target revisions         |
-| `transfer`                                | Concurrent bounded chain fetch/blob transfer before the import barrier |
-| `import`                                  | One atomic target revision import after all required bytes are durable |
-| `checkpoint_target` / `checkpoint_source` | Durable checkpoint advancement in required order                       |
-| `report_peer`                             | Durable safe-position/peer report                                      |
-| `waiting`                                 | Continuous job caught up                                               |
-| `backoff`                                 | Retryable failure; will retry with jittered delay                      |
-| `completed`                               | One-shot reached terminal sequence                                     |
-| `failed`                                  | Non-retryable failure or cancelled                                     |
-
-Database replication configuration includes `max_concurrent_chain_fetches`, `max_concurrent_blob_transfers`, and `max_transfer_bytes_in_flight`, all bounded by host ceilings. The byte budget is based on original logical attachment lengths and controls concurrent transfer admission; it does not change attachment identity, physical compression, or the replication batch contract.
-
-Inspect and control jobs under `/v1/databases/:uuid/replications`. Enabled continuous jobs resume after catalog startup inspection; one-shot workers end in `completed` or `failed`. Cancellation is cooperative: transfer tasks stop/cancel safely, while an already committing import or checkpoint operation is allowed to finish (`REPL-018`, `REPL-019`).
-
-## Database owner admission
-
-Every open database has one bounded admission scheduler in front of its single SQLite-owning `DatabaseOwner`. Waiting work remains in that scheduler rather than accumulating in the owner mailbox. At most one owner-execution permit is active per database.
-
-The scheduler uses four trusted origin classes:
-
-* `foreground` — direct client document/query/changes and interactive administrative work.
-* `subscription` — live-query snapshots, shared changes reads, and sequence-specific revision batches.
-* `replication` — local endpoint metadata/revision/checkpoint work for active replication sessions.
-* `maintenance` — automatically scheduled compact-retention and other explicit background maintenance.
-
-`[admission]` in `host.toml` defines positive service weights and reserved queue slots. Scheduling is deterministic weighted round-robin with FIFO order inside each class. Reserved slots prevent one flooded class from consuming every admission position needed by another class. The total active-plus-queued count remains bounded by `[limits] admission_limit`.
-
-Slow attachment streams, replication network/blob transfers, changes waits, live-query waits, and heartbeats do not hold an owner permit after their short metadata operation completes. `database_overloaded` means the bounded admission capacity applicable to the request is full; it is retryable.
-
-## Live query subscriptions
-
-Live structured subscriptions use:
-
-```text
-POST /v1/databases/:uuid/query/stream
-```
-
-with an NDJSON response. The request contains `query.selector`, optional `query.fields`, and optional `heartbeat_ms`. Live subscriptions deliberately do not accept sort, limit, bookmark, explicit index, or full-text search.
-
-Initial matching documents are emitted as `snapshot` events followed by `caught_up`. Later commits emit `upsert` when a document enters or remains in the result set and changes, and `remove` when a member becomes deleted or stops matching. A retained-history gap produces `reset` followed by a complete replacement snapshot and `caught_up`.
-
-Each database has one shared subscription hub that reads each changes batch once and resolves the exact winning revision identified by each changes entry before fan-out. Each client subscription is a supervised transient process with a bounded membership set and bounded delivery credit. A slow client that exhausts its event capacity receives retryable `subscription_overloaded`; other subscriptions continue unaffected. Subscription runtime state is not stored in `database.sqlite3` and is not restored after reopen.
-
-## Local declarative map/reduce views
-
-Local views are database-local derived state. Their definitions, materialized rows, reducer state, and `indexed_through` checkpoints live inside the owning `database.sqlite3` and do not protocol-replicate.
-
-Manage them under:
-
-```text
-POST   /v1/databases/:uuid/views
-GET    /v1/databases/:uuid/views
-DELETE /v1/databases/:uuid/views/:view_id
-POST   /v1/databases/:uuid/views/:view_id/rebuild
-POST   /v1/databases/:uuid/views/:view_id/query
-```
-
-View definitions are declarative: optional structured selector, scalar path/literal key/value expressions, and optional fixed reducer `_count`, `_sum`, `_min`, `_max`, or `_stats`. There is no JavaScript/Elixir/custom executable map/reduce code.
-
-One supervised builder per view follows the database changes sequence and persists its progress. Notifier delivery only wakes builders; a restart resumes from durable `indexed_through`. View query consistency modes are `stale_ok`, `update_after`, and `consistent`. A `consistent` wait releases owner/admission resources while waiting and is bounded by database/host view limits.
-
-A rebuild scans current winning documents in bounded pages, catches up changes after its captured start sequence, and atomically activates the rebuilt generation. A history gap restarts the rebuild rather than inventing missing changes. Materialized rows are rebuildable; source document revisions remain authoritative.
-
-## Cross-database federation
-
-Ad-hoc federation executes a bounded structured query over an explicit set of **distinct logical database UUIDs**:
-
-```text
-POST /v1/federation/query
-```
-
-The supported query subset is selector, fields, sort, limit, and bookmark. Full-text search, explicit index hints, joins, writes, cross-database transactions, and live federation are not part of this contract.
-
-The coordinator runs independent ordinary source queries above the per-database runtimes. It never holds one database owner/admission resource while waiting for another. Results are globally ordered deterministically and identify every document by both source database UUID and document ID.
-
-There is no atomic snapshot across databases. Each success reports the exact ordered `{database_uuid, sequence}` source vector used. Federation bookmarks are self-contained and bind to that vector; if any source has changed when a later page is requested, continuation returns `bookmark_stale` rather than mixing states.
-
-Federation is strict: one unavailable/overloaded/failed source fails the request. Source count, concurrency, aggregate candidates, and execution time are bounded by `[federation]` in `host.toml`.
-
-Named virtual federated queries that have no derived database are stored only in `host.toml` as `[[federation.saved_query]]` definitions and are available at:
-
-```text
-GET  /v1/federation/saved-queries
-POST /v1/federation/saved-queries/execute
-```
-
-They are operator configuration: list/execute through HTTP, edit in `host.toml`, then restart. No separate federation catalog/database/file exists.
-
-## Materialized federated views and derived databases
-
-A materialized federated view is one derived `.elixirdb` bundle containing its complete definition, ordered source set, per-source history/checkpoints, contribution rows, rebuild state, exact reducer state, and generated result documents.
-
-Lifecycle/status endpoints are:
-
-```text
-POST /v1/materialized-views
-GET  /v1/materialized-views
-GET  /v1/materialized-views/:derived_uuid
-POST /v1/materialized-views/:derived_uuid/refresh
-POST /v1/materialized-views/:derived_uuid/rebuild
-POST /v1/materialized-views/:derived_uuid/enable
-POST /v1/materialized-views/:derived_uuid/disable
-```
-
-The materializer reads source databases independently, releases those owner/admission resources, then applies one bounded source batch atomically in the derived database. Contribution changes, affected generated result revisions, and that source checkpoint commit together. No transaction spans source and derived databases.
-
-Source history gaps enter a bounded progressive rebuild. While rebuilding, affected committed generated documents may transition as source contribution pages are replaced/pruned/caught up; status remains `rebuilding` and MUST NOT be treated as `current` until convergence. Other sources remain independently valid.
-
-A locally materialized derived database is externally read-only for its generated documents: public put/delete/bulk/conflict-resolution, attachment mutation, and replication import are rejected with `derived_database_read_only`. It remains readable/queryable/indexable, can host local views, and may be a replication **source**.
-
-If a source is unavailable, the last committed derived result stays readable and status reports stale/source-unavailable. Enabled materializers are continuous dependencies: disable them before closing the derived DB or one of their source DBs.
-
-## Embedded offline administration console
-
-When `[web_ui] enabled = true` (the default), open:
+1. Stop writes. Disable continuous replication that needs the DB open.
+   If this DB is a source for an **enabled** materialized view, disable that
+   materialization first. If it is itself derived, disable its materializer
+   first.
+2. `POST /v1/databases/:uuid/close`. Live subscriptions end with `closed`.
+   Confirm no attachment upload/download/GC is still running.
+3. Copy the complete closed `.elixirdb` directory with ordinary OS tools.
+4. Ignore `.lease` — it is transient ownership, not data.
+5. At the destination: place the bundle, then register the relative path.
+6. Traffic addresses the same UUID (document routes auto-open, or open via
+   catalog).
+
+A copy keeps the original UUID. Two copies of the same UUID on one host are
+rejected. Copying is backup/relocation, **not** cloning.
+
+Do not copy an active crash-recoverable bundle piecemeal: keep the SQLite
+rollback journal with `database.sqlite3` until recovery finishes.
+
+Derived bundles are often created as
+`_derived/<slug>--<short-uuid>.derived.elixirdb`. Path and suffix are
+operator hints; `database_kind = derived` is authoritative. A clean derived
+bundle can be moved/renamed and re-registered; materialization state stays
+inside the bundle.
+
+---
+
+## Admin console (`/ui`)
+
+When `[web_ui] enabled = true` (default):
 
 ```text
 http://127.0.0.1:4000/ui
 ```
 
-or the corresponding configured HTTPS listener.
+Server-rendered HTMX. Assets are compiled into the release (no CDN, no
+runtime frontend directory). With auth enabled, enter the raw bearer token in
+the console; it stays in browser `sessionStorage` and is sent as
+`Authorization: Bearer` on state-bearing requests. No server UI session /
+cookie. Logout or closing the tab clears the token.
 
-The console is server-rendered and HTMX-based. HTMX, project CSS, and the tiny bearer-header bootstrap are vendored and compiled into BEAM modules; the production release serves them from `/ui/assets/...`. There are no CDN, remote-font, analytics, or other runtime Internet dependencies, and the release does not require a frontend/static source directory at runtime.
+The console calls the same application facades as `/v1`. Status pages use
+bounded HTMX polling (no second WebSocket stack).
 
-With authentication disabled, the console loads directly. With bearer auth enabled, the inert shell/assets remain reachable but contain no database/server state. Enter the raw bearer token in the console: it is kept only in browser `sessionStorage` and attached to state-bearing HTMX requests as the same `Authorization: Bearer` header used by `/v1`. The server creates no UI cookie/session and the token is never put in a URL. Closing the tab/session or using logout clears the browser-held token.
+---
 
-The console operates through the same application facades as `/v1`: database/document/query/index/view/federation/materialized-view/replication/maintenance/observability behavior is not reimplemented for HTML. Status screens use bounded HTMX polling where needed rather than a second WebSocket/SSE subsystem.
+## Lease recovery (`database_in_use`)
 
-## Host limits and error troubleshooting
+Each open database holds an exclusive SQLite transaction on
+`<bundle-path>.lease`. A second owner fails immediately with
+`database_in_use` (HTTP 409, retryable).
 
-Host limits are configured in `:elixir_db, :host_limits` (see `config/config.exs`). Important keys include:
+Safe recovery:
 
-* `admission_limit` — total active plus queued owner operations per open database (`database_overloaded`).
-* `max_open_databases`, `max_replication_workers`.
-* replication chain-fetch, blob-transfer, batch, retry, and logical in-flight-byte ceilings.
-* live-query active-subscription, membership, buffered-event, and heartbeat ceilings.
-* local-view definition count, changes-batch, and consistent-wait ceilings.
-* materialized-view source-count, source-concurrency, batch-document, and retry-delay ceilings.
-* `max_request_bytes`, `max_document_bytes`, `max_document_id_bytes`.
+1. Confirm no live ElixirDB process owns the DB (`bin/elixir_db pid`, process
+   list). A healthy owner always holds the lease while open.
+2. After a crash, a leftover `.lease` **file** with no live exclusive lock
+   can be reopened normally. Do **not** delete `.lease` while another process
+   may still hold the lock.
+3. Prefer letting the crashed BEAM die, then retry open. Only remove a stale
+   `.lease` file when you are sure nothing has the database open.
+4. Never delete or rewrite `database.sqlite3` to “clear” a lease.
 
-Ad-hoc federation has its own `[federation]` bounds for source count, concurrent source work, aggregate candidates, and execution time. These remain host-level because no single source database owns an ad-hoc federated request.
-* `max_bulk_operations`, `max_changes_batch`, `max_query_results`.
-* `max_json_nesting_depth`.
+---
 
-Stable public error codes (see `ElixirDB.Error`) that operators hit most often:
+## Integrity and compaction
 
-| Code                                        | Typical cause                                           |
-| ------------------------------------------- | ------------------------------------------------------- |
-| `invalid_request`                           | Unknown JSON fields, bad path, schema shape             |
-| `database_in_use`                           | Lease held / second owner                               |
-| `database_not_closable`                     | Active work / open waiters / continuous job             |
-| `database_overloaded`                       | Per-database owner admission capacity is saturated      |
-| `subscription_overloaded`                   | Live subscription count or delivery buffer is saturated |
-| `view_not_found` / `view_name_conflict`     | Local-view lifecycle lookup/name collision              |
-| `view_not_caught_up`                        | Bounded consistent-view wait expired                    |
-| `derived_database_read_only`                | External mutation/import attempted on derived result DB |
-| `attachment_overloaded`                     | Attachment read/write or GC admission is saturated      |
-| `attachment_not_found`                      | Document revision has no named attachment               |
-| `attachment_blob_not_found`                 | Referenced physical blob or metadata is unavailable     |
-| `database_unavailable` / `database_closed`  | Missing bundle, closed runtime (retryable when closed)  |
-| `duplicate_database_uuid`                   | Two registrations for one UUID                          |
-| `revision_conflict` / `checkpoint_conflict` | CAS / leaf-set races                                    |
-| `resource_limit` / `payload_too_large`      | Host, DB, or attachment size caps                       |
-| `integrity_violation`                       | Failed integrity check or corrupt revision              |
-| `replication_already_running`               | Worker exclusivity on the same replication id           |
+```sh
+curl -X POST http://127.0.0.1:4000/v1/databases/$UUID/integrity-check \
+  -H 'content-type: application/json' -d '{}'
+```
 
-Backend exception names and SQL text are not part of the public contract; rely
-on the versioned error envelope (`code`, `message`, `retryable`, `details`).
+Checks SQLite integrity / foreign keys, required tables, revision ancestry,
+attachment manifests vs physical blobs, winners, changes references, and
+index consistency. Failures → `integrity_violation`. Rebuild a bad logical
+index with the index rebuild endpoint after you inspect details.
+
+Unreferenced physical blobs are reclaimable orphans, not proof that a
+committed revision is missing bytes.
+
+```sh
+curl -X POST http://127.0.0.1:4000/v1/databases/$UUID/compact \
+  -H 'content-type: application/json' -d '{}'
+```
+
+Runs compact-retention for the database (subject to its `retention` config).
+May schedule attachment GC afterward. Attachment GC is also available from
+the Web UI maintenance actions (not a separate public `/v1` GC route).
+
+Per-database retention defaults (`GET`/`PUT …/config`):
+
+```json
+"retention": {
+  "mode": "disabled",
+  "history_depth": 0,
+  "peer_expiry_ms": 86400000,
+  "schedule": "disabled"
+}
+```
+
+`mode` is `disabled` or `stable_frontier`. Host ceilings still bound values.
+
+---
+
+## Attachments (ops)
+
+Uploads: `POST …/attachments/upload` with `application/octet-stream`.
+Downloads: `POST …/attachments/get` with `{id, revision?, name}`.
+
+Database config keys (host-bounded):
+
+- `attachments.max_attachment_bytes`
+- `attachments.max_concurrent_attachment_reads`
+- `attachments.max_concurrent_attachment_writes`
+
+Admission is separate from database-owner admission. Overrun → retryable
+`attachment_overloaded`. Oversized upload → `payload_too_large` (no revision
+reference). Changing limits does not rewrite stored blobs.
+
+A blob is live if a retained revision manifest references it or an unexpired
+pending upload protects it. After compact removes a manifest, GC deletes
+orphan files under an exclusive coordinator barrier. Crash during GC can leave
+orphans — rerun GC after recovery.
+
+---
+
+## Admission and fairness
+
+Each open database has one bounded admission scheduler in front of its single
+SQLite-owning `DatabaseOwner`. At most one owner permit is active per
+database.
+
+| Class | Typical work |
+| ----- | ------------ |
+| `foreground` | Client document / query / changes / admin |
+| `subscription` | Live-query snapshots and shared changes reads |
+| `replication` | Local revision / checkpoint work for jobs |
+| `maintenance` | Compact-retention and background maintenance |
+
+`[admission]` sets positive service weights and reserved queue slots.
+Scheduling is deterministic weighted round-robin (FIFO inside a class).
+Total active+queued work is capped by `[limits] admission_limit`.
+
+Slow attachment streams, network blob transfers, long waits, and heartbeats
+do **not** hold an owner permit after their short metadata step.
+`database_overloaded` means admission capacity for that class/request is full
+(retryable).
+
+---
+
+## Replication jobs
+
+Persistent jobs live in `database.sqlite3`. Workers are transient.
+
+```sh
+# Inspect / control under:
+# /v1/databases/:uuid/replications
+```
+
+Job create body (shape):
+
+```json
+{
+  "mode": "continuous",
+  "direction": "push",
+  "enabled": true,
+  "endpoint": {
+    "kind": "remote",
+    "database_uuid": "…",
+    "base_url": "https://peer:4000",
+    "auth_token": "raw-token-if-needed"
+  }
+}
+```
+
+Local endpoint: `{"kind":"local","database_uuid":"…"}`.
+
+| State | Meaning |
+| ----- | ------- |
+| `idle` | Registered / waiting |
+| `handshake` / `install_boundaries` | Compatibility + retention boundaries |
+| `bootstrap` | Snapshot when incremental history is unavailable |
+| `read_changes` / `diff` | Bound work and missing revisions |
+| `transfer` | Concurrent chain/blob fetch before import |
+| `import` | One atomic target import after bytes are durable |
+| `checkpoint_target` / `checkpoint_source` | Durable checkpoints in order |
+| `report_peer` | Safe-position / peer report |
+| `waiting` | Continuous job caught up |
+| `backoff` | Retryable failure; jittered retry |
+| `completed` | One-shot finished |
+| `failed` | Non-retryable or cancelled |
+
+Per-DB replication knobs (host-bounded):
+`max_concurrent_chain_fetches`, `max_concurrent_blob_transfers`,
+`max_transfer_bytes_in_flight`. Byte budget uses original attachment lengths
+for admission only; it does not change blob identity or compression.
+
+Enabled continuous jobs resume after catalog startup. Cancellation is
+cooperative: transfer tasks stop; an already committing import/checkpoint is
+allowed to finish.
+
+What replicates vs what stays local: see [README.md](README.md#replication-application-view).
+
+---
+
+## Live subscriptions (ops)
+
+`POST /v1/databases/:uuid/query/stream` (NDJSON). Host ceilings:
+
+- `max_query_subscriptions`
+- `max_query_subscription_members`
+- `max_query_subscription_buffered_events`
+- `max_query_subscription_heartbeat_ms`
+
+Slow clients that exhaust delivery credit get `subscription_overloaded`;
+other subscriptions continue. Subscription runtime state is not durable and
+is not restored after reopen. Database close terminates streams with
+`closed`.
+
+---
+
+## Local views, federation, materialized views
+
+### Local views
+
+Definitions and materialization live in the owning `database.sqlite3` and do
+not protocol-replicate. Host ceilings: `max_views_per_database`,
+`max_view_batch_changes`, `max_view_consistent_wait_ms`.
+
+### Federation
+
+Ad-hoc: `POST /v1/federation/query`. Bounds in `[federation]`:
+`max_sources`, `max_concurrent_sources`, `max_candidates`, `max_execution_ms`.
+
+Saved queries (no derived DB) live only in `host.toml`:
+
+```toml
+[[federation.saved_query]]
+name = "open-tasks"
+sources = ["123e4567-e89b-12d3-a456-426614174000"]
+query_json = '{"selector":{"/state":"open"},"sort":[{"path":"/value","direction":"asc"}],"limit":50}'
+```
+
+Edit file → restart. List/execute over HTTP. Bookmarks are not allowed inside
+saved definitions.
+
+Federation is strict: one bad source fails the whole request. No atomic
+cross-DB snapshot.
+
+### Materialized federated views
+
+Lifecycle: `POST/GET /v1/materialized-views`, plus
+`/:uuid/{refresh,rebuild,enable,disable}`.
+
+```mermaid
+flowchart TB
+  S1[Source ordinary DB] --> W[Materializer worker]
+  S2[Source ordinary DB] --> W
+  W --> D[Derived bundle<br/>read-only generated docs]
+```
+
+- External put/delete/bulk/resolve, attachment mutation, and replication
+  **import** on the derived DB → `derived_database_read_only`.
+- Derived DBs remain readable / queryable / indexable; they may be a
+  replication **source**.
+- If a source is down, last committed derived result stays readable; status
+  reports stale / source-unavailable.
+- Disable materializers before closing sources or the derived DB.
+- While `rebuilding`, do not treat status as `current`.
+
+Host ceilings: `max_materialized_view_sources`,
+`max_materialized_view_concurrent_sources`,
+`max_materialized_view_batch_documents`,
+`max_materialized_view_retry_delay_ms`.
+
+---
+
+## Host limits and troubleshooting
+
+Important `[limits]` keys (see `priv/host.toml` for defaults):
+
+- `admission_limit` — active + queued owner ops per open DB
+- `max_open_databases`, `max_replication_workers`
+- Replication chain-fetch / blob-transfer / batch / in-flight-byte ceilings
+- Live-subscription and local-view ceilings
+- Materialized-view ceilings
+- `max_request_bytes`, `max_document_bytes`, `max_document_id_bytes`
+- `max_bulk_operations`, `max_changes_batch`, `max_query_results`
+- `max_json_nesting_depth`
+- Attachment size and concurrency ceilings
+
+Federation bounds are under `[federation]` (host-level: no single source DB
+owns an ad-hoc federated request).
+
+| Code | Typical cause |
+| ---- | ------------- |
+| `invalid_request` | Unknown JSON fields, bad shape |
+| `unauthorized` | Missing / wrong bearer token |
+| `database_in_use` | Lease held / second owner |
+| `database_not_closable` | Active work / continuous dependency |
+| `database_overloaded` | Owner admission saturated |
+| `subscription_overloaded` | Live subscription / buffer saturated |
+| `attachment_overloaded` | Attachment read/write/GC saturated |
+| `view_not_found` / `view_name_conflict` | Local view lifecycle |
+| `view_not_caught_up` | Consistent view wait expired |
+| `derived_database_read_only` | Mutation/import on derived DB |
+| `database_unavailable` / `database_closed` | Missing bundle / closed runtime |
+| `duplicate_database_uuid` | Two registrations for one UUID |
+| `revision_conflict` / `checkpoint_conflict` | CAS / leaf races |
+| `bookmark_stale` | Continue after source/plan change |
+| `resource_limit` / `payload_too_large` | Size / count caps |
+| `integrity_violation` | Integrity check or corrupt revision |
+| `replication_already_running` | Worker exclusivity on same job id |
+| `history_truncated` | Changes cursor behind retention floor |
+
+Backend exception names and SQL text are not public. Use the envelope:
+`code`, `message`, `retryable`, `details`.
+
+---
 
 ## Observability
 
-ElixirDB ships an OpenTelemetry (OTel) pipeline covering the Plan §11
-telemetry events: each event is emitted as an OTel span and/or metric, and
-trace context propagates across the HTTP boundary and into replication
-workers. Collection is **opt-in** — a host with no collector configured
-behaves exactly as before.
-
-### Enabling collection
-
-Set `otlp_endpoint` in `host.toml` before starting the release:
+OTLP is **opt-in**. Empty `otlp_endpoint` means no exporter and no collector
+network connection.
 
 ```toml
 [observability]
 otlp_endpoint = "http://localhost:4318"
 ```
 
-```sh
-/opt/elixir_db/bin/elixir_db daemon
-```
+Restart the release. Protocol: OTLP HTTP protobuf. Spans batch
+asynchronously; metrics export about every 30 seconds. Instrumentation does
+not block the hot path.
 
-The OTLP exporter uses the HTTP protobuf protocol (`:http_protobuf`) and
-sends traces and metrics to that endpoint. Spans are batched and exported
-asynchronously; a periodic metric reader exports every 30 seconds.
-Instrumentation never blocks the hot path.
+### Span / metric catalog (stable names)
 
-When `otlp_endpoint` is empty or unset, no exporter is wired and **no
-network connection to any collector is attempted** (`OBSV-004`). The app
-starts and serves traffic exactly as before; instrumentation calls are safe
-no-ops. The gate lives in `config/runtime.exs`.
+| Event | Span | Metric |
+| ----- | ---- | ------ |
+| Database open | `elixir_db.database.open` | `….open.count` |
+| Database command | `elixir_db.database.command` | `….command.duration` |
+| Admission overload | — | `elixir_db.database.overload.count` |
+| Admission wait | — | `elixir_db.database.admission.wait` |
+| Changes read | `elixir_db.changes.read` | `….duration` |
+| Query execute | `elixir_db.query.execute` | `….duration` |
+| Index build | `elixir_db.index.build` | `….duration` |
+| Replication batch / transfer / checkpoint | matching `elixir_db.replication.*` | matching |
+| Subscription update / open / overload | `….subscription.update` | matching counters |
+| View update / query | `elixir_db.view.*` | matching |
+| Federation query | `elixir_db.federation.query` | `….duration` |
+| Derived view batch | `elixir_db.derived_view.batch` | `….duration` |
+| HTTP request | `elixir_db.http.request` | `….duration` |
+| Attachment read / write / GC | `elixir_db.attachment.*` | count + duration |
 
-### Span and metric catalog
-
-Span and metric names come verbatim from Plan §11 and are part of the
-operational contract (`OBSV-003`):
-
-| Event                  | OTel span                             | Metric                                                     |
-| ---------------------- | ------------------------------------- | ---------------------------------------------------------- |
-| Database open          | `elixir_db.database.open`             | `elixir_db.database.open.count` (counter)                  |
-| Database command       | `elixir_db.database.command`          | `elixir_db.database.command.duration` (histogram)          |
-| Admission overload     | — (counter only)                      | `elixir_db.database.overload.count` (counter)              |
-| Changes read           | `elixir_db.changes.read`              | `elixir_db.changes.read.duration` (histogram)              |
-| Query execute          | `elixir_db.query.execute`             | `elixir_db.query.execute.duration` (histogram)             |
-| Index build            | `elixir_db.index.build`               | `elixir_db.index.build.duration` (histogram)               |
-| Replication batch      | `elixir_db.replication.batch`         | `elixir_db.replication.batch.duration` (histogram)         |
-| Replication transfer   | `elixir_db.replication.transfer`      | `elixir_db.replication.transfer.duration` (histogram)      |
-| Replication checkpoint | `elixir_db.replication.checkpoint`    | `elixir_db.replication.checkpoint.count` (counter)         |
-| Subscription update    | `elixir_db.query.subscription.update` | `elixir_db.query.subscription.update.duration` (histogram) |
-| Subscription open      | —                                     | `elixir_db.query.subscription.open` (counter)              |
-| Subscription overload  | —                                     | `elixir_db.query.subscription.overload` (counter)          |
-| View update            | `elixir_db.view.update`               | `elixir_db.view.update.duration` (histogram)               |
-| View query             | `elixir_db.view.query`                | `elixir_db.view.query.duration` (histogram)                |
-| Federation query       | `elixir_db.federation.query`          | `elixir_db.federation.query.duration` (histogram)          |
-| Derived view batch     | `elixir_db.derived_view.batch`        | `elixir_db.derived_view.batch.duration` (histogram)        |
-| Admission wait         | —                                     | `elixir_db.database.admission.wait` (histogram)            |
-| HTTP request           | `elixir_db.http.request`              | `elixir_db.http.request.duration` (histogram)              |
-| Attachment read        | `elixir_db.attachment.read`           | `elixir_db.attachment.read.count` / `.read.duration`       |
-| Attachment write       | `elixir_db.attachment.write`          | `elixir_db.attachment.write.count` / `.write.duration`     |
-| Attachment GC          | `elixir_db.attachment.gc`             | `elixir_db.attachment.gc.count` / `.gc.duration`           |
-
-`database.overload` is a counter increment, not a span: overload is not a
-unit of work. `error.code` attributes use the stable error code atom from
-`ElixirDB.Error` (e.g. `:revision_conflict`), never the backend message.
+`error.code` uses stable atoms from `ElixirDB.Error` (e.g.
+`revision_conflict`). Expected domain errors leave span status UNSET; only
+`internal_error` (and unknown adapter failures) mark ERROR.
 
 ### Attribute allow-list
 
-A single module (`ElixirDB.Observability.Attributes`) owns the allow-list;
-anything not listed here is never attached to a span or metric:
+Owned by `ElixirDB.Observability.Attributes`. Includes `db.uuid` (never the
+filesystem path), `command.type`, `error.code`, `outcome`, HTTP method/route
+template/status, index/replication/admission/subscription/view/federation
+ids and bounded counts. **Never** recorded: document bodies, document IDs,
+attachment names/digests/bytes, search text, revision bodies, full remote
+URLs.
 
-* `db.uuid` — database UUID, never the filesystem path
-* `command.type` — normalized command atom (`:put`, `:get`, …)
-* `error.code` — stable error code atom from `ElixirDB.Error`
-* `outcome` — e.g. `:ok`, `:rejected`, `:replayed`
-* `http.method`, `http.route` (the route template, never the raw path),
-  `http.status_code`
-* `index_id`, `index_type`
-* `replication.id`, `endpoint` (`:source` | `:target`)
-* `admission.class` (`foreground`, `subscription`, `replication`, `maintenance`)
-* `subscription.event` (`snapshot`, `upsert`, `remove`, `reset`, `caught_up`)
-* `view.id`, `derived_view.id`
-* `federation.source_count`, `view.consistency`
-* Bounded counts: `entries`, `examined`, `revisions_written`
-* `finch.duration` — set by the telemetry bridge only; the bounded numeric
-  duration of an outbound Finch request
+### Trace context
 
-Document bodies, document IDs, attachment names, digests, attachment bytes,
-search text, revision bodies, and full remote URLs are **never** recorded.
-Document IDs are excluded even though they are not secret: they are
-unbounded-cardinality customer data.
+- Inbound HTTP: W3C `traceparent` / `tracestate` extracted.
+- Outbound replication: current context injected so push jobs share one
+  `trace_id` across hosts.
+- Finch client telemetry is bridged to OTel. Bandit server is **not** bridged
+  (would double-span with `elixir_db.http.request`).
 
-### Error → span status policy
+### Optional in-process snapshot
 
-| Error class                          | Span status | Notes                                                             |
-| ------------------------------------ | ----------- | ----------------------------------------------------------------- |
-| `:internal_error`                    | ERROR       | Surface real failures                                             |
-| All other registered domain errors   | UNSET       | Expected application outcomes; rely on the `error.code` attribute |
-| Adapter error-normalization fallback | ERROR       | Unknown backend failure                                           |
+`GET /v1/observability/snapshot` exists only when application env
+`:observability_dashboard` is `true`. That flag is **not** a `host.toml` key;
+OTLP collection is configured via `otlp_endpoint` only.
 
-Expected domain errors (`revision_conflict`, `database_in_use`, …) never
-mark a span ERROR, so error-rate dashboards alert only on true internal
-failures.
+---
 
-### Trace context propagation
+## Quick checklist
 
-* **Inbound HTTP.** W3C `traceparent`/`tracestate` headers are extracted
-  on every request, so an external caller's trace continues into ElixirDB
-  as the parent of the `elixir_db.http.request` span.
-* **Outbound replication.** Requests to remote endpoints inject the
-  current span context, so a push job's trace spans both servers under a
-  single `trace_id`.
-* **Dependency bridge.** `:telemetry` events from Finch (HTTP client) are
-  bridged into OTel child spans (`finch.request`), giving outbound
-  replication request timing without extra instrumentation. Bandit (HTTP
-  server) is intentionally NOT bridged — the `elixir_db.http.request` server
-  span already covers inbound requests; bridging Bandit too would double-span
-  every request.
+```text
+[ ] Build release on matching OS/ABI
+[ ] Set ELIXIR_DB_ROOT; first start creates host.toml
+[ ] Bind non-loopback only with auth and/or TLS
+[ ] Paste token digests into [auth]; clients use raw tokens
+[ ] Put TLS cert/key under the database root when enabled
+[ ] Register bundles explicitly; do not rely on auto-scan
+[ ] Close before offline copy; copy whole .elixirdb; skip .lease
+[ ] Disable materialized views before closing their sources
+[ ] Point otlp_endpoint only if a collector is ready
+[ ] Prefer Diagnostics.runtime/0 + integrity-check for support dumps
+```

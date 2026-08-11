@@ -5,6 +5,10 @@ When receiving a document as a wiki link, doc-id, folder-id, column-id, card-id 
 **Authoritative source docs and plans are inside folder `folder-id:4007e0d9-3cf2-4f17-a694-5680200d6547` in UnboundMark.**
 **All supporting docs must be created and maintained inside UnboundMark and not on this repo. Execeptions are READMEs and Operations.md, those docs must be kept local**
 
+When done with a change, check if it has any effect on README.md or Operations.md, if so, update the affected section.
+When a new feature lands, be sure to update README.md and/OR Operations.md, each document has it target audience, only update the one that makes sense or both if Developers and DevOps needs to know about this new feature.
+A bug fix must never be documented in those files.
+
 Never weaken test guarantees.
 
 Use the validation ladder in elixir-safe-coding: focused checks while iterating; full project gate only before handoff or wave commit. Adversarial review uses severity tiers (BLOCKER / PLAN_GAP / NIT); do not restart full review for NITs alone.
