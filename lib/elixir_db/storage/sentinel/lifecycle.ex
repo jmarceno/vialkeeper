@@ -6,25 +6,23 @@ defmodule ElixirDB.Storage.Sentinel.Lifecycle do
 
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
-  alias ElixirDB.Storage.Sentinel.Adapter
+  alias ElixirDB.Storage.Sentinel.{Adapter, Context}
 
   use ElixirDB.Storage.Ports.LifecycleHelpers, adapter: Adapter
 
   @impl true
-  def close(%BackendContext{backend_ref: %Adapter{} = adapter}) do
-    Errors.wrap(Adapter.close(adapter))
+  def close(%BackendContext{} = context) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Errors.wrap(Adapter.close(adapter))
+    end
   end
-
-  def close(_),
-    do: {:error, ElixirDB.Error.internal_error("backend context is not a sentinel adapter")}
 
   @impl true
-  def identity(%BackendContext{backend_ref: %Adapter{} = adapter}) do
-    Errors.wrap(Adapter.identity(adapter))
+  def identity(%BackendContext{} = context) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Errors.wrap(Adapter.identity(adapter))
+    end
   end
-
-  def identity(_),
-    do: {:error, ElixirDB.Error.internal_error("backend context is not a sentinel adapter")}
 
   @impl true
   def update_config(%BackendContext{}, _config) do

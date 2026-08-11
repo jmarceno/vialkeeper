@@ -59,6 +59,24 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   end
 
   @impl true
+  def list_ancestors(%BackendContext{} = context, document_id, revision_id)
+      when is_binary(document_id) and is_binary(revision_id) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, doc} <- require_document(doc),
+         {:ok, doc_key} <- require_doc_key(doc),
+         {:ok, ancestors} <- Revisions.load_ancestors(adapter.conn, doc_key, revision_id) do
+      {:ok, ancestors}
+    else
+      :missing_document ->
+        {:error, ElixirDB.Error.document_not_found("document not found")}
+
+      {:error, reason} ->
+        {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
   def ensure_document(%BackendContext{} = context, document_id) when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context),
          {:ok, existing} <- Documents.find(adapter.conn, document_id) do

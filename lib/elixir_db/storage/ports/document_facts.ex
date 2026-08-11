@@ -23,6 +23,7 @@ defmodule ElixirDB.Storage.Ports.DocumentFacts do
   @callback find_document(BackendContext.t(), binary()) :: result(document_fact() | nil)
   @callback find_revision(BackendContext.t(), binary(), binary()) :: result(Revision.t() | nil)
   @callback list_leaves(BackendContext.t(), binary()) :: result([Revision.t()])
+  @callback list_ancestors(BackendContext.t(), binary(), binary()) :: result([Revision.t()])
   @callback ensure_document(BackendContext.t(), binary()) :: result(document_fact())
   @callback insert_revision(BackendContext.t(), binary(), Revision.t()) ::
               :ok | {:error, ElixirDB.Error.t()}

@@ -48,6 +48,11 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
 
   @impl true
   def lookup_candidates(%BackendContext{} = context, request) when is_map(request) do
+    full_text_candidates(context, request)
+  end
+
+  @impl true
+  def full_text_candidates(%BackendContext{} = context, request) when is_map(request) do
     text = MapAccess.get(request, :text) || MapAccess.get(request, :query)
     mode = MapAccess.get(request, :mode, "all")
 
@@ -65,6 +70,18 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
 
       {:error, reason} ->
         {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
+  def range_scan_candidates(%BackendContext{} = context, request) when is_map(request) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, indexes} <- Adapter.list_indexes(adapter),
+         {:ok, metadata} <- find_index(indexes, MapAccess.get(request, :index_id)) do
+      # Structured range scans are executed by QueryRunner today; expose an empty
+      # candidate page when the index exists so shared executors can post-filter.
+      _ = {adapter, metadata, request}
+      {:ok, []}
     end
   end
 

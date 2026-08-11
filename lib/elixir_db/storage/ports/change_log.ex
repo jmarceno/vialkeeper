@@ -22,4 +22,6 @@ defmodule ElixirDB.Storage.Ports.ChangeLog do
   @callback has_local_origin_changes?(BackendContext.t(), binary() | nil) :: result(boolean())
   @callback clear_pending_local_causal(BackendContext.t()) :: result(:cleared)
   @callback clear_pending_local_causal(BackendContext.t(), binary() | nil) :: result(:cleared)
+  @callback delete_through_boundary(BackendContext.t(), non_neg_integer()) ::
+              :ok | {:error, ElixirDB.Error.t()}
 end

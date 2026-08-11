@@ -17,4 +17,6 @@ defmodule ElixirDB.Storage.Ports.IndexCandidates do
   @callback delete_index(BackendContext.t(), binary()) :: :ok | {:error, ElixirDB.Error.t()}
   @callback rebuild_index(BackendContext.t(), binary()) :: result(map())
   @callback lookup_candidates(BackendContext.t(), map()) :: result([candidate()])
+  @callback range_scan_candidates(BackendContext.t(), map()) :: result([candidate()])
+  @callback full_text_candidates(BackendContext.t(), map()) :: result([candidate()])
 end

@@ -9,14 +9,13 @@ defmodule ElixirDB.Storage.Sentinel.Transaction do
 
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
-  alias ElixirDB.Storage.Sentinel.Adapter
+  alias ElixirDB.Storage.Sentinel.Context
 
   @impl true
-  def run(%BackendContext{backend_ref: %Adapter{}} = context, fun) when is_function(fun, 1) do
-    Errors.wrap(fun.(context))
-  end
-
-  def run(%BackendContext{}, _fun) do
-    {:error, ElixirDB.Error.internal_error("backend context is not a sentinel adapter")}
+  def run(%BackendContext{} = context, fun) when is_function(fun, 1) do
+    case Context.unwrap(context) do
+      {:ok, _adapter} -> Errors.wrap(fun.(context))
+      {:error, _} = error -> error
+    end
   end
 end

@@ -2,6 +2,8 @@ defmodule ElixirDB.Application do
   @moduledoc "OTP application supervisor for the ElixirDB runtime."
   use Application
 
+  alias ElixirDB.Storage.OpaqueHandle.Server, as: OpaqueHandleServer
+
   @impl true
   def start(_type, _args) do
     _ = ElixirDB.Diagnostics.validate_backend!()
@@ -12,6 +14,7 @@ defmodule ElixirDB.Application do
     http_server = http_server_child_spec(listener)
 
     children = [
+      OpaqueHandleServer,
       # Starts the OpenTelemetry SDK + exporter if configured, else no-op.
       ElixirDB.Observability.Supervisor,
       {Registry, keys: :unique, name: ElixirDB.Runtime.DatabaseRegistry},

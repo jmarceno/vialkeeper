@@ -1,6 +1,7 @@
 defmodule ElixirDB.Storage.Ports.RetentionRecords do
   @moduledoc """
-  Retention record port: peer positions, boundary pages, and retention state.
+  Retention record port: peer positions, boundary pages, retention state, and
+  compaction result metadata.
 
   Compaction policy and safe-report semantics remain in shared retention code.
   """
@@ -14,4 +15,6 @@ defmodule ElixirDB.Storage.Ports.RetentionRecords do
   @callback put_peer_position_cas(BackendContext.t(), map()) :: result(map())
   @callback read_boundary_pages(BackendContext.t(), map()) :: result(map())
   @callback install_boundary_pages(BackendContext.t(), map()) :: result(map())
+  @callback get_compaction_result(BackendContext.t()) :: result(map() | nil)
+  @callback put_compaction_result(BackendContext.t(), map()) :: :ok | {:error, ElixirDB.Error.t()}
 end

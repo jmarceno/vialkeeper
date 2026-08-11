@@ -5,20 +5,53 @@ defmodule ElixirDB.Storage.SQLite.Context do
   """
 
   alias ElixirDB.Storage.BackendContext
+  alias ElixirDB.Storage.OpaqueHandle
   alias ElixirDB.Storage.SQLite.Adapter
 
-  @doc "Returns the SQLite adapter stored in `context`."
-  @spec unwrap(BackendContext.t() | Adapter.t()) ::
+  @doc "Returns the SQLite adapter stored in `context` or handle."
+  @spec unwrap(BackendContext.t() | OpaqueHandle.t() | Adapter.t()) ::
           {:ok, Adapter.t()} | {:error, ElixirDB.Error.t()}
+  def unwrap(%BackendContext{backend_ref: %OpaqueHandle{} = handle}) do
+    case OpaqueHandle.unwrap(handle) do
+      %Adapter{} = adapter -> {:ok, adapter}
+      _ -> {:error, ElixirDB.Error.internal_error("backend context is not a SQLite adapter")}
+    end
+  end
+
   def unwrap(%BackendContext{backend_ref: %Adapter{} = adapter}), do: {:ok, adapter}
+
+  def unwrap(%OpaqueHandle{} = handle) do
+    case OpaqueHandle.unwrap(handle) do
+      %Adapter{} = adapter -> {:ok, adapter}
+      _ -> {:error, ElixirDB.Error.internal_error("backend context is not a SQLite adapter")}
+    end
+  end
+
   def unwrap(%Adapter{} = adapter), do: {:ok, adapter}
 
   def unwrap(_),
     do: {:error, ElixirDB.Error.internal_error("backend context is not a SQLite adapter")}
 
+  @doc "Raises when `handle` cannot be resolved to a SQLite adapter."
+  @spec resolve!(term()) :: Adapter.t()
+  def resolve!(handle) do
+    case unwrap(handle) do
+      {:ok, adapter} -> adapter
+      {:error, error} -> raise ArgumentError, error.message
+    end
+  end
+
   @doc "Rebuilds a context after mutating adapter fields inside a transaction."
   @spec replace_ref(BackendContext.t(), Adapter.t()) :: BackendContext.t()
+  def replace_ref(
+        %BackendContext{backend_ref: %OpaqueHandle{} = handle} = context,
+        %Adapter{} = adapter
+      ) do
+    _ = OpaqueHandle.replace(handle, adapter)
+    %{context | identity: adapter.identity}
+  end
+
   def replace_ref(%BackendContext{} = context, %Adapter{} = adapter) do
-    %{context | backend_ref: adapter, identity: adapter.identity}
+    %{context | backend_ref: OpaqueHandle.wrap(adapter), identity: adapter.identity}
   end
 end

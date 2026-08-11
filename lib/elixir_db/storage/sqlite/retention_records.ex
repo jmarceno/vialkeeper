@@ -787,6 +787,17 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
     put_maintenance(conn, "last_result", result)
   end
 
+  @spec get_last_result(Connection.handle()) ::
+          {:ok, map() | nil} | {:error, ElixirDB.Error.t()}
+  def get_last_result(conn) do
+    case fetch_maintenance(conn, "last_result") do
+      {:ok, nil} -> {:ok, nil}
+      {:ok, %{value: value}} when is_map(value) -> {:ok, value}
+      {:ok, _} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @spec peer_ledger_namespace() :: binary()
   def peer_ledger_namespace, do: @peer_ledger
 

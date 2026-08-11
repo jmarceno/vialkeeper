@@ -138,12 +138,15 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
   @spec capabilities_report() :: map()
   def capabilities_report, do: %{engine: "sentinel", sql: false}
 
+  alias ElixirDB.Storage.BackendContext
+  alias ElixirDB.Storage.OpaqueHandle
+
   @doc "Wraps a sentinel adapter in an opaque backend context."
   @spec to_context(t()) :: BackendContext.t()
   def to_context(%__MODULE__{} = adapter) do
     BackendContext.new(
       backend: __MODULE__,
-      backend_ref: adapter,
+      backend_ref: OpaqueHandle.wrap(adapter),
       bundle_root: adapter.root,
       capabilities: %{sql: false, engine: "sentinel"},
       identity: adapter.identity

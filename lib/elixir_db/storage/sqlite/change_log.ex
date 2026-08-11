@@ -7,7 +7,7 @@ defmodule ElixirDB.Storage.SQLite.ChangeLog do
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
-  alias ElixirDB.Storage.SQLite.{Adapter, Changes, Context, Retention}
+  alias ElixirDB.Storage.SQLite.{Adapter, Changes, Connection, Context, Retention}
 
   @impl true
   def allocate_sequences(%BackendContext{} = context, count)
@@ -72,6 +72,23 @@ defmodule ElixirDB.Storage.SQLite.ChangeLog do
         :ok -> {:ok, :cleared}
         {:error, reason} -> {:error, Errors.normalize(reason)}
       end
+    end
+  end
+
+  @impl true
+  def delete_through_boundary(%BackendContext{} = context, through)
+      when is_integer(through) and through >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      delete_changes_through(adapter.conn, through)
+    end
+  end
+
+  defp delete_changes_through(_conn, 0), do: :ok
+
+  defp delete_changes_through(conn, through) do
+    case Connection.execute(conn, "DELETE FROM changes WHERE sequence <= ?", [through]) do
+      :ok -> :ok
+      {:error, reason} -> {:error, Errors.normalize(reason)}
     end
   end
 

@@ -20,8 +20,11 @@ defmodule ElixirDB.Storage.PhysicalAllowlist do
   @path_files [
     "lib/elixir_db/observability/instrumentation/sqlite.ex",
     "lib/elixir_db/storage/boundary_guard.ex",
+    "lib/elixir_db/storage/opaque_handle.ex",
+    "lib/elixir_db/storage/opaque_handle/server.ex",
     "lib/elixir_db/storage/physical_allowlist.ex",
     "lib/elixir_db/storage/ports.ex",
+    "lib/elixir_db/storage/sentinel/context.ex",
     "bench/exqlite_overhead_benchmark.exs",
     "config/config.exs",
     "test/storage/boundary_guard_test.exs"

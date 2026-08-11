@@ -34,9 +34,12 @@
       "ElixirDB.Storage.Ports",
       "ElixirDB.Storage.Ports.*",
       "ElixirDB.Storage.BackendContext",
+      "ElixirDB.Storage.OpaqueHandle",
+      "ElixirDB.Storage.OpaqueHandle.Server",
       "ElixirDB.Storage.PhysicalAllowlist",
       "ElixirDB.Storage.BoundaryGuard",
       "ElixirDB.Storage.Registry",
+      "ElixirDB.Storage.Transaction",
       "ElixirDB.Storage.Sentinel",
       "ElixirDB.Storage.Sentinel.*",
       "ElixirDB.Attachments.FilesystemStore",
@@ -105,6 +108,50 @@
           "ElixirDB.Storage.Sentinel.*"
         ],
         ["ElixirDB.Storage.SQLite.*", "Exqlite.*", "Exqlite.Sqlite3.*"]
+      },
+      {
+        [
+          "ElixirDB.Runtime.*",
+          "ElixirDB.Application",
+          "ElixirDB.Diagnostics",
+          "ElixirDB.Domain.*",
+          "ElixirDB.Query.*",
+          "ElixirDB.View.*",
+          "ElixirDB.Views",
+          "ElixirDB.MaterializedViews",
+          "ElixirDB.DerivedView.*",
+          "ElixirDB.Retention.*",
+          "ElixirDB.Federation.*",
+          "ElixirDB.Documents",
+          "ElixirDB.Changes",
+          "ElixirDB.Replication",
+          "ElixirDB.Replication.*",
+          "ElixirDB.Attachments",
+          "ElixirDB.Attachments.*",
+          "ElixirDB.Commands",
+          "ElixirDB.DatabaseBundle",
+          "ElixirDB.Observability.*",
+          "ElixirDB.Storage.Adapter",
+          "ElixirDB.Storage.Ports",
+          "ElixirDB.Storage.Ports.*",
+          "ElixirDB.Storage.BackendContext",
+          "ElixirDB.Storage.BoundaryGuard",
+          "ElixirDB.Storage.PhysicalAllowlist",
+          "ElixirDB.Storage.Registry",
+          "ElixirDB.Storage.Results",
+          "ElixirDB.Storage.Transaction",
+          "ElixirDB.HTTP.*",
+          "ElixirDB.WebUI",
+          "ElixirDB.WebUI.*"
+        ],
+        [
+          "ElixirDB.Storage.OpaqueHandle.unwrap",
+          "ElixirDB.Storage.OpaqueHandle.replace",
+          "ElixirDB.Storage.OpaqueHandle.drop",
+          "ElixirDB.Storage.OpaqueHandle.Server.unwrap",
+          "ElixirDB.Storage.OpaqueHandle.Server.replace",
+          "ElixirDB.Storage.OpaqueHandle.Server.drop"
+        ]
       }
     ]
   ]

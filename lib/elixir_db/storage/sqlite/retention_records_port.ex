@@ -6,7 +6,7 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecordsPort do
 
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
-  alias ElixirDB.Storage.SQLite.{Adapter, Context, Retention, Transaction}
+  alias ElixirDB.Storage.SQLite.{Adapter, Context, Retention, RetentionRecords, Transaction}
 
   @impl true
   def retention_state(%BackendContext{} = context) do
@@ -43,6 +43,22 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecordsPort do
     with {:ok, adapter} <- Context.unwrap(context) do
       Transaction.run_on_adapter(adapter, fn tx_adapter ->
         Errors.wrap(Retention.install_boundary_pages(tx_adapter.conn, request))
+      end)
+    end
+  end
+
+  @impl true
+  def get_compaction_result(%BackendContext{} = context) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Errors.wrap(RetentionRecords.get_last_result(adapter.conn))
+    end
+  end
+
+  @impl true
+  def put_compaction_result(%BackendContext{} = context, result) when is_map(result) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Transaction.run_on_adapter(adapter, fn tx_adapter ->
+        Errors.wrap(RetentionRecords.put_last_result(tx_adapter.conn, result))
       end)
     end
   end

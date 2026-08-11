@@ -1,12 +1,21 @@
 defmodule ElixirDB.Storage.PortsTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Storage.{BackendContext, Ports, Registry, Transaction}
-  alias ElixirDB.Storage.Ports.Errors
+  alias ElixirDB.Storage.{BackendContext, OpaqueHandle, Ports, Registry, Transaction}
+
+  alias ElixirDB.Storage.Ports.{
+    ChangeLog,
+    DocumentFacts,
+    Errors,
+    IndexCandidates,
+    LocalRecords,
+    RetentionRecords
+  }
+
   alias ElixirDB.Storage.Sentinel.Adapter, as: Sentinel
   alias ElixirDB.Storage.Sentinel.Lifecycle, as: SentinelLifecycle
   alias ElixirDB.Storage.SQLite.Adapter, as: SQLite
-  alias ElixirDB.Storage.SQLite.DocumentFacts
+  alias ElixirDB.Storage.SQLite.DocumentFacts, as: SQLiteDocumentFacts
   alias ElixirDB.Storage.SQLite.Lifecycle, as: SQLiteLifecycle
 
   test "every port family has a behaviour module" do
@@ -79,6 +88,64 @@ defmodule ElixirDB.Storage.PortsTest do
     assert :ok = SentinelLifecycle.close(context)
   end
 
+  test "SQLite lifecycle context keeps backend_ref opaque" do
+    assert {:ok, context} = SQLiteLifecycle.create(":memory:", %{storage_mode: :memory})
+    ref = BackendContext.backend_ref(context)
+
+    assert is_struct(ref, OpaqueHandle)
+    refute is_struct(ref, SQLite)
+    refute Map.has_key?(ref, :conn)
+    refute match?(%{conn: _}, ref)
+    assert is_nil(Map.get(ref, :conn))
+    refute function_exported?(BackendContext, :conn, 1)
+    refute function_exported?(ElixirDB.Runtime.DatabaseOwner, :unwrap_handle!, 1)
+    refute function_exported?(SQLite, :unwrap_handle!, 1)
+
+    # Shared/runtime modules must not call OpaqueHandle.unwrap (Reach-enforced).
+    owner_source = File.read!("lib/elixir_db/runtime/database_owner.ex")
+    refute owner_source =~ "OpaqueHandle.unwrap"
+    refute owner_source =~ "unwrap_handle!"
+
+    # Process dictionary must not hold the adapter payload.
+    {:dictionary, entries} = Process.info(self(), :dictionary)
+
+    refute Enum.any?(entries, fn
+             {{ElixirDB.Storage.OpaqueHandle, _}, _} -> true
+             {key, _} when is_tuple(key) -> inspect(key) =~ "OpaqueHandle"
+             _ -> false
+           end)
+
+    # Direct unwrap from shared/test code is rejected (Context not on stack).
+    assert_raise ArgumentError, fn -> OpaqueHandle.unwrap(ref) end
+
+    # Bare GenServer unwrap without Context on the caller stack is rejected.
+    assert {:error, :forbidden} =
+             GenServer.call(ElixirDB.Storage.OpaqueHandle.Server, {:unwrap, ref})
+
+    # Forged stacktrace payloads must not authorize unwrap.
+    fake = [{ElixirDB.Storage.SQLite.Context, :unwrap, 1, []}]
+
+    assert {:error, :forbidden} =
+             GenServer.call(ElixirDB.Storage.OpaqueHandle.Server, {:unwrap, ref, fake})
+
+    # Foreign process cannot unwrap.
+    parent = self()
+
+    _ =
+      spawn(fn ->
+        try do
+          _ = OpaqueHandle.unwrap(ref)
+          send(parent, {:opaque_probe, :unwrapped})
+        rescue
+          ArgumentError -> send(parent, {:opaque_probe, :blocked})
+        end
+      end)
+
+    assert_receive {:opaque_probe, :blocked}, 1_000
+
+    assert :ok = SQLiteLifecycle.close(context)
+  end
+
   test "SQLite transaction port hides the connection from the caller callback" do
     assert {:ok, context} = SQLiteLifecycle.create(":memory:", %{storage_mode: :memory})
 
@@ -86,14 +153,17 @@ defmodule ElixirDB.Storage.PortsTest do
              Transaction.run(context, fn tx_context ->
                assert %BackendContext{} = tx_context
                ref = BackendContext.backend_ref(tx_context)
-               assert is_struct(ref)
+               assert is_struct(ref, OpaqueHandle)
+               refute Map.has_key?(ref, :conn)
+               refute match?(%{conn: _}, ref)
+               assert is_nil(Map.get(ref, :conn))
                refute function_exported?(BackendContext, :conn, 1)
                {:ok, :hidden}
              end)
 
     assert {:ok, doc} =
              Transaction.run(context, fn tx_context ->
-               DocumentFacts.ensure_document(tx_context, "doc-1")
+               SQLiteDocumentFacts.ensure_document(tx_context, "doc-1")
              end)
 
     assert doc.document_id == "doc-1"
@@ -103,6 +173,16 @@ defmodule ElixirDB.Storage.PortsTest do
     refute Map.has_key?(doc, :rowid)
 
     assert :ok = SQLiteLifecycle.close(context)
+  end
+
+  test "port behaviours expose list, retention delete, and candidate scan shapes" do
+    assert {:list, 2} in LocalRecords.behaviour_info(:callbacks)
+    assert {:delete_through_boundary, 2} in ChangeLog.behaviour_info(:callbacks)
+    assert {:range_scan_candidates, 2} in IndexCandidates.behaviour_info(:callbacks)
+    assert {:full_text_candidates, 2} in IndexCandidates.behaviour_info(:callbacks)
+    assert {:list_ancestors, 3} in DocumentFacts.behaviour_info(:callbacks)
+    assert {:get_compaction_result, 1} in RetentionRecords.behaviour_info(:callbacks)
+    assert {:put_compaction_result, 2} in RetentionRecords.behaviour_info(:callbacks)
   end
 
   test "Ports.Errors normalizes untyped backend failures" do

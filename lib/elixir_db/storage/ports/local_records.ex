@@ -15,5 +15,6 @@ defmodule ElixirDB.Storage.Ports.LocalRecords do
   @callback get(BackendContext.t(), binary(), binary()) :: result(local_record() | nil)
   @callback put_cas(BackendContext.t(), map()) ::
               result(%{version: non_neg_integer(), value: term(), replayed: boolean()})
+  @callback list(BackendContext.t(), binary()) :: result([%{key: binary(), record: local_record()}])
   @callback delete(BackendContext.t(), binary(), binary()) :: :ok | {:error, ElixirDB.Error.t()}
 end

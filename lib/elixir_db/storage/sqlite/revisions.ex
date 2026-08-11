@@ -118,6 +118,53 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
     end
   end
 
+  @doc """
+  Walks parent links from `revision_id` toward the root, excluding the start.
+  """
+  @spec load_ancestors(Connection.handle(), integer(), binary()) ::
+          {:ok, [Revision.t()]} | {:error, ElixirDB.Error.t()}
+  def load_ancestors(conn, doc_key, revision_id)
+      when is_integer(doc_key) and is_binary(revision_id) do
+    walk_ancestors(conn, doc_key, revision_id, MapSet.new(), [])
+  end
+
+  defp walk_ancestors(conn, doc_key, revision_id, seen, acc) do
+    if MapSet.member?(seen, revision_id) do
+      {:error, ElixirDB.Error.integrity_violation("revision ancestry cycle detected")}
+    else
+      continue_ancestors(conn, doc_key, revision_id, seen, acc)
+    end
+  end
+
+  defp continue_ancestors(conn, doc_key, revision_id, seen, acc) do
+    case find(conn, doc_key, revision_id) do
+      {:ok, revision} -> append_parent_ancestor(conn, doc_key, revision, seen, acc)
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  defp append_parent_ancestor(conn, doc_key, revision, seen, acc) do
+    case revision.parent_revision do
+      nil ->
+        {:ok, Enum.reverse(acc)}
+
+      parent when is_binary(parent) ->
+        case find(conn, doc_key, parent) do
+          {:ok, parent_revision} ->
+            walk_ancestors(
+              conn,
+              doc_key,
+              parent,
+              MapSet.put(seen, revision.revision_id),
+              [parent_revision | acc]
+            )
+
+          {:error, reason} ->
+            {:error, normalize_error(reason)}
+        end
+    end
+  end
+
   defp append_leaf_revision(conn, doc_key, row, {:ok, acc}) do
     [id, generation, parent, history_id, digest_value, deleted, body_json, body_term, sequence] =
       row

@@ -66,15 +66,13 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     cond do
       actual_uuid == uuid and (is_nil(expected_kind) or expected_kind == actual_kind) ->
         context =
-          BackendContext.new(
-            backend: backend,
-            backend_ref: adapter,
-            bundle_root: DatabaseBundle.root(bundle),
-            identity: identity,
-            capabilities: backend_capabilities(backend)
-          )
+          adapter
+          |> backend.to_context()
+          |> Map.put(:bundle_root, DatabaseBundle.root(bundle))
+          |> Map.put(:identity, identity)
+          |> Map.put(:capabilities, backend_capabilities(backend))
 
-        {:ok, %{uuid: uuid, bundle: bundle, context: context}}
+        {:ok, %{uuid: uuid, bundle: bundle, context: context, adapter: adapter}}
 
       actual_uuid == uuid ->
         _ = backend.close(adapter)
@@ -110,7 +108,9 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
 
   defp backend(%{context: context}), do: BackendContext.backend(context)
 
-  defp handle(%{context: context}), do: BackendContext.backend_ref(context)
+  # Owner-local adapter for the temporary Adapter facade. Port callers must use
+  # `context` only; they must not unwrap `BackendContext.backend_ref/1`.
+  defp handle(%{adapter: adapter}), do: adapter
 
   @impl true
   def handle_call(:sync, _from, state), do: {:reply, :ok, state}

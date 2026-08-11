@@ -4,6 +4,7 @@ defmodule ElixirDB.Storage.SQLite.LocalRecordsPort do
   """
   @behaviour ElixirDB.Storage.Ports.LocalRecords
 
+  alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
   alias ElixirDB.Storage.SQLite.{Connection, Context, LocalRecords, Transaction}
@@ -24,6 +25,45 @@ defmodule ElixirDB.Storage.SQLite.LocalRecordsPort do
       end)
     end
   end
+
+  @impl true
+  def list(%BackendContext{} = context, namespace) when is_binary(namespace) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, rows} <- query_namespace(adapter.conn, namespace) do
+      decode_rows(rows)
+    end
+  end
+
+  defp query_namespace(conn, namespace) do
+    case Connection.query(
+           conn,
+           "SELECT record_key, record_version, value_json FROM local_records WHERE namespace = ? ORDER BY record_key",
+           [namespace]
+         ) do
+      {:ok, rows} -> {:ok, rows}
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  defp decode_rows(rows) do
+    Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
+      decode_row(row, acc)
+    end)
+    |> finalize_list()
+  end
+
+  defp decode_row([key, version, value_json], acc) do
+    case StrictDecoder.decode(value_json) do
+      {:ok, value} ->
+        {:cont, {:ok, [%{key: key, record: %{version: version, value: value}} | acc]}}
+
+      {:error, reason} ->
+        {:halt, {:error, Errors.normalize(reason)}}
+    end
+  end
+
+  defp finalize_list({:ok, list}), do: {:ok, Enum.reverse(list)}
+  defp finalize_list(other), do: other
 
   @impl true
   def delete(%BackendContext{} = context, namespace, key)

@@ -20,6 +20,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   alias ElixirDB.Observability.Instrumentation.{Query, SQLite}
   alias ElixirDB.Query.{Normalizer, Prepared, SubscriptionRequest}
   alias ElixirDB.Storage.BackendContext
+  alias ElixirDB.Storage.OpaqueHandle
   alias ElixirDB.Storage.Ports.Errors
 
   alias ElixirDB.Storage.SQLite.{
@@ -154,7 +155,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
     BackendContext.new(
       backend: __MODULE__,
-      backend_ref: adapter,
+      backend_ref: OpaqueHandle.wrap(adapter),
       bundle_root: bundle_root,
       capabilities: capabilities_report(),
       identity: adapter.identity
