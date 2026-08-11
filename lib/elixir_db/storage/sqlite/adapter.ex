@@ -26,7 +26,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   alias ElixirDB.Storage.Services
 
   alias ElixirDB.Storage.SQLite.{
-    Attachments,
     Capabilities,
     Changes,
     Connection,
@@ -152,12 +151,18 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
         path when is_binary(path) -> Path.dirname(path)
       end
 
+    identity =
+      case adapter.retention_fault do
+        fun when is_function(fun, 1) -> Map.put(adapter.identity || %{}, :retention_fault, fun)
+        _ -> adapter.identity || %{}
+      end
+
     BackendContext.new(
       backend: __MODULE__,
       backend_ref: OpaqueHandle.wrap(adapter),
       bundle_root: bundle_root,
       capabilities: capabilities_report(),
-      identity: adapter.identity
+      identity: identity
     )
   end
 
@@ -474,45 +479,37 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: {:error, ElixirDB.Error.invalid_request("local record request must be an object")}
 
   @impl true
-  def retention_state(%__MODULE__{conn: conn} = adapter) do
-    case identity(adapter) do
-      {:ok, %{config: config}} -> Retention.retention_state(conn, config)
-      {:error, error} -> {:error, error}
-    end
-  end
+  def retention_state(%__MODULE__{} = adapter),
+    do: Services.retention_state(to_context(adapter))
 
   @impl true
-  def list_peer_positions(%__MODULE__{conn: conn}), do: Retention.list_peer_positions(conn)
+  def list_peer_positions(%__MODULE__{} = adapter),
+    do: Services.list_peer_positions(to_context(adapter))
 
   @impl true
   def put_peer_position_cas(%__MODULE__{} = adapter, request) when is_map(request),
-    do: transaction(adapter, fn -> Retention.put_peer_position_cas(adapter, request) end)
+    do: Services.put_peer_position_cas(to_context(adapter), request)
 
   def put_peer_position_cas(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("peer position request must be an object")}
 
   @impl true
-  def read_boundary_pages(%__MODULE__{conn: conn}, request) when is_map(request),
-    do: Retention.read_boundary_pages(conn, request)
+  def read_boundary_pages(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.read_boundary_pages(to_context(adapter), request)
 
   def read_boundary_pages(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("boundary page request must be an object")}
 
   @impl true
   def install_boundary_pages(%__MODULE__{} = adapter, request) when is_map(request),
-    do: transaction(adapter, fn -> Retention.install_boundary_pages(adapter.conn, request) end)
+    do: Services.install_boundary_pages(to_context(adapter), request)
 
   def install_boundary_pages(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("boundary page request must be an object")}
 
   @impl true
   def compact_retention(%__MODULE__{} = adapter, request \\ %{}) when is_map(request),
-    do:
-      transaction(adapter, fn ->
-        with :ok <- retention_fault_check(adapter.retention_fault, :compact_retention_mid_tx) do
-          Retention.compact(adapter, request)
-        end
-      end)
+    do: Services.compact_retention(to_context(adapter), request)
 
   @impl true
   def list_replication_jobs(%__MODULE__{conn: conn}), do: ReplicationJobs.list_all(conn)
@@ -866,33 +863,29 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def resolve_attachment_ticket(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Attachments.resolve_attachment_ticket(adapter, request)
+    do: Services.resolve_attachment_ticket(to_context(adapter), request)
 
   def resolve_attachment_ticket(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("attachment ticket request must be an object")}
 
   @impl true
-  def resolve_blob_metadata(%__MODULE__{conn: conn}, request) when is_map(request),
-    do: Attachments.resolve_blob_metadata(conn, request)
+  def resolve_blob_metadata(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.resolve_blob_metadata(to_context(adapter), request)
 
   def resolve_blob_metadata(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("blob metadata request must be an object")}
 
   @impl true
-  def protect_pending_blob(%__MODULE__{} = adapter, request) when is_map(request) do
-    transaction(adapter, fn -> Attachments.protect_pending_blob(adapter.conn, request) end)
-  end
+  def protect_pending_blob(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.protect_pending_blob(to_context(adapter), request)
 
   def protect_pending_blob(_adapter, _request),
     do:
       {:error, ElixirDB.Error.invalid_request("pending blob protection request must be an object")}
 
   @impl true
-  def remove_pending_blob_protection(%__MODULE__{} = adapter, request) when is_map(request) do
-    transaction(adapter, fn ->
-      Attachments.remove_pending_blob_protection(adapter.conn, request)
-    end)
-  end
+  def remove_pending_blob_protection(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.remove_pending_blob_protection(to_context(adapter), request)
 
   def remove_pending_blob_protection(_adapter, _request),
     do:
@@ -900,22 +893,18 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
        ElixirDB.Error.invalid_request("remove pending blob protection request must be an object")}
 
   @impl true
-  def list_live_attachment_digests(%__MODULE__{conn: conn}, request) when is_map(request),
-    do: Attachments.list_live_attachment_digests(conn, request)
+  def list_live_attachment_digests(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.list_live_attachment_digests(to_context(adapter), request)
 
   def list_live_attachment_digests(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("live attachment digest request must be an object")}
 
   @impl true
-  def cleanup_expired_pending_blobs(%__MODULE__{} = adapter, request) when is_map(request) do
-    transaction(adapter, fn ->
-      Attachments.cleanup_expired_pending_blobs(adapter.conn, request)
-    end)
-  end
+  def cleanup_expired_pending_blobs(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.cleanup_expired_pending_blobs(to_context(adapter), request)
 
-  def cleanup_expired_pending_blobs(%__MODULE__{} = adapter, _request) do
-    cleanup_expired_pending_blobs(adapter, %{})
-  end
+  def cleanup_expired_pending_blobs(%__MODULE__{} = adapter, _request),
+    do: cleanup_expired_pending_blobs(adapter, %{})
 
   defp transaction(%__MODULE__{} = adapter, fun) when is_function(fun, 0) do
     Transaction.run_on_adapter(adapter, fn _tx_adapter -> fun.() end)
@@ -945,15 +934,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   defp validate_changes_since_floor(since, identity),
     do: RequestValidation.validate_changes_since_floor(since, identity)
-
-  defp retention_fault_check(nil, _point), do: :ok
-
-  defp retention_fault_check(fun, point) when is_function(fun, 1) do
-    case fun.(point) do
-      :ok -> :ok
-      {:error, %ElixirDB.Error{} = error} -> {:error, error}
-    end
-  end
 
   defp adapter_identity(adapter) do
     case identity(adapter) do

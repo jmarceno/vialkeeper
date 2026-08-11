@@ -228,6 +228,78 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
     end
   end
 
+  @impl true
+  def list_compaction_documents(%BackendContext{} = context, candidate_floor)
+      when is_integer(candidate_floor) and candidate_floor >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      case Connection.query(
+             adapter.conn,
+             "SELECT doc_key, document_id, winning_revision, update_sequence FROM documents WHERE update_sequence <= ?",
+             [candidate_floor]
+           ) do
+        {:ok, rows} ->
+          {:ok, Enum.map(rows, &compaction_document(adapter.conn, &1))}
+
+        {:error, reason} ->
+          {:error, Errors.normalize(reason)}
+      end
+    end
+  end
+
+  @impl true
+  def delete_revisions(%BackendContext{} = context, document_id, revision_ids)
+      when is_binary(document_id) and is_list(revision_ids) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc} <- Documents.find(adapter.conn, document_id) do
+      delete_document_revisions(adapter.conn, doc, revision_ids)
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  defp compaction_document(conn, [doc_key, document_id, winning_revision, update_sequence]) do
+    %{
+      document_id: document_id,
+      latest_change_sequence: update_sequence,
+      winning_revision: winning_revision,
+      revisions: load_document_revisions(conn, doc_key)
+    }
+  end
+
+  defp delete_document_revisions(_conn, nil, _revision_ids), do: :ok
+
+  defp delete_document_revisions(conn, doc, revision_ids) do
+    with {:ok, doc_key} <- require_doc_key(doc) do
+      delete_revision_ids(conn, doc_key, revision_ids)
+    end
+  end
+
+  defp load_document_revisions(conn, doc_key) do
+    case Connection.query(
+           conn,
+           "SELECT revision_id, generation, parent_revision, history_id, digest, deleted, body_json, body_term, insertion_sequence FROM revisions WHERE doc_key = ?",
+           [doc_key]
+         ) do
+      {:ok, rows} -> Enum.map(rows, fn row -> Revisions.from_row(row) end)
+      _ -> []
+    end
+  end
+
+  defp delete_revision_ids(_conn, _doc_key, []), do: :ok
+
+  defp delete_revision_ids(conn, doc_key, revision_ids) do
+    Enum.reduce_while(revision_ids, :ok, fn revision_id, :ok ->
+      case Connection.execute(
+             conn,
+             "DELETE FROM revisions WHERE doc_key = ? AND revision_id = ?",
+             [doc_key, revision_id]
+           ) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, Errors.normalize(reason)}}
+      end
+    end)
+  end
+
   defp require_document(nil), do: :missing_document
   defp require_document(doc), do: {:ok, doc}
 

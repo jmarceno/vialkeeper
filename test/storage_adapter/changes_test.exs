@@ -185,13 +185,8 @@ for {name, adapter_module} <- [
              end)
     end
 
-    test "malformed trusted leaf terms surface as integrity errors", %{
-      adapter: adapter,
-      adapter_module: adapter_module
-    } do
-      if adapter_module != ElixirDB.Storage.SQLite.Adapter do
-        :ok
-      else
+    if adapter_module == ElixirDB.Storage.SQLite.Adapter do
+      test "malformed trusted leaf terms surface as integrity errors", %{adapter: adapter} do
         assert {:ok, _} =
                  @adapter.apply_local_mutation(adapter, %{
                    operation: :put,
@@ -211,41 +206,34 @@ for {name, adapter_module} <- [
       end
     end
 
-    test "read below retention floor returns history_truncated", %{
-      adapter: adapter,
-      adapter_module: adapter_module
-    } do
-      if adapter_module != ElixirDB.Storage.SQLite.Adapter do
-        :ok
-      else
-        assert {:ok, _} =
-                 @adapter.update_config(adapter, %{
-                   "retention" => %{
-                     "mode" => "stable_frontier",
-                     "history_depth" => 0,
-                     "peer_expiry_ms" => 86_400_000,
-                     "schedule" => "disabled"
-                   }
-                 })
+    test "read below retention floor returns history_truncated", %{adapter: adapter} do
+      assert {:ok, _} =
+               @adapter.update_config(adapter, %{
+                 "retention" => %{
+                   "mode" => "stable_frontier",
+                   "history_depth" => 0,
+                   "peer_expiry_ms" => 86_400_000,
+                   "schedule" => "disabled"
+                 }
+               })
 
-        assert {:ok, %{revision: _}} =
-                 @adapter.apply_local_mutation(adapter, %{
-                   operation: :put,
-                   document_id: "doc",
-                   body: %{"n" => 1}
-                 })
+      assert {:ok, %{revision: _}} =
+               @adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: "doc",
+                 body: %{"n" => 1}
+               })
 
-        assert {:ok, %{database_uuid: uuid}} = @adapter.identity(adapter)
-        assert {:ok, _} = @adapter.compact_retention(adapter, %{})
+      assert {:ok, %{database_uuid: uuid}} = @adapter.identity(adapter)
+      assert {:ok, _} = @adapter.compact_retention(adapter, %{})
 
-        assert {:error, %ElixirDB.Error{code: :history_truncated, details: details}} =
-                 @adapter.read_changes(adapter, %{since: 0, limit: 10})
+      assert {:error, %ElixirDB.Error{code: :history_truncated, details: details}} =
+               @adapter.read_changes(adapter, %{since: 0, limit: 10})
 
-        assert details.database_uuid == uuid
-        assert is_binary(details.history_epoch)
-        assert details.retention_floor == 1
-        assert details.compaction_epoch == 1
-      end
+      assert details.database_uuid == uuid
+      assert is_binary(details.history_epoch)
+      assert details.retention_floor == 1
+      assert details.compaction_epoch == 1
     end
   end
 end

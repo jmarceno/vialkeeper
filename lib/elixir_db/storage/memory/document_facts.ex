@@ -137,6 +137,27 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
     end
   end
 
+  @impl true
+  def list_compaction_documents(%BackendContext{} = context, candidate_floor)
+      when is_integer(candidate_floor) and candidate_floor >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      {:ok, Store.list_compaction_documents(Store.get(adapter.store), candidate_floor)}
+    end
+  end
+
+  @impl true
+  def delete_revisions(%BackendContext{} = context, document_id, revision_ids)
+      when is_binary(document_id) and is_list(revision_ids) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      adapter.store
+      |> Store.update(fn state ->
+        {:ok, new_state} = Store.delete_revisions(state, document_id, revision_ids)
+        {:ok, new_state, :ok}
+      end)
+      |> normalize_ok()
+    end
+  end
+
   defp lookup_revision(state, document_id, revision_id) do
     case Store.find_document(state, document_id) do
       nil ->

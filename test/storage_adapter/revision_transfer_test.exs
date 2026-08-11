@@ -193,13 +193,8 @@ for {name, adapter_module} <- [
       assert {:ok, %{current_sequence: ^seq}} = @adapter.identity(adapter)
     end
 
-    test "different content under one revision id is rejected", %{
-      adapter: adapter,
-      adapter_module: adapter_module
-    } do
-      if adapter_module != ElixirDB.Storage.SQLite.Adapter do
-        :ok
-      else
+    if adapter_module == ElixirDB.Storage.SQLite.Adapter do
+      test "different content under one revision id is rejected", %{adapter: adapter} do
         {:ok, root} = Id.calculate("doc", nil, false, %{"n" => 0})
         {:ok, leaf} = Id.calculate("doc", root, false, %{"n" => 1})
 

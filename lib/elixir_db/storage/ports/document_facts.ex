@@ -40,4 +40,15 @@ defmodule ElixirDB.Storage.Ports.DocumentFacts do
   @callback empty_document(BackendContext.t(), binary()) :: :ok | {:error, ElixirDB.Error.t()}
   @callback delete_history(BackendContext.t(), binary(), binary()) ::
               :ok | {:error, ElixirDB.Error.t()}
+  @callback list_compaction_documents(BackendContext.t(), non_neg_integer()) ::
+              result([
+                %{
+                  document_id: binary(),
+                  latest_change_sequence: non_neg_integer(),
+                  winning_revision: binary() | nil,
+                  revisions: [Revision.t()]
+                }
+              ])
+  @callback delete_revisions(BackendContext.t(), binary(), [binary()]) ::
+              :ok | {:error, ElixirDB.Error.t()}
 end

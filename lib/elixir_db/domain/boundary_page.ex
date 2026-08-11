@@ -87,6 +87,31 @@ defmodule ElixirDB.Domain.BoundaryPage do
     |> Base.encode16(case: :lower)
   end
 
+  @doc """
+  Source-qualified boundary record key using NUL separators.
+
+  Document IDs may contain `:` or `/`; NUL cannot appear in UTF-8 document IDs
+  or UUID text, so backends share this encoding without SQL coupling.
+  """
+  @spec record_key(binary(), binary(), binary()) :: binary()
+  def record_key(source_database_uuid, document_id, history_id)
+      when is_binary(source_database_uuid) and is_binary(document_id) and is_binary(history_id) do
+    source_database_uuid <> <<0>> <> document_id <> <<0>> <> history_id
+  end
+
+  @doc "Parses a `record_key/3` value into `{source_uuid, document_id, history_id}`."
+  @spec parse_record_key(binary()) :: {binary(), binary(), binary()} | :error
+  def parse_record_key(key) when is_binary(key) do
+    case :binary.split(key, <<0>>, [:global]) do
+      [source_uuid, document_id, history_id]
+      when source_uuid != "" and document_id != "" and history_id != "" ->
+        {source_uuid, document_id, history_id}
+
+      _ ->
+        :error
+    end
+  end
+
   defp build(attrs) do
     with {:ok, boundaries} <- normalize_boundaries(attrs[:boundaries]),
          :ok <- validate_page_fields(attrs) do

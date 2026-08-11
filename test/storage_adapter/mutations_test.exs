@@ -165,13 +165,8 @@ for {name, adapter_module} <- [
       end
     end
 
-    test "integrity mismatch is detected after revision corruption", %{
-      adapter: adapter,
-      adapter_module: adapter_module
-    } do
-      if adapter_module != ElixirDB.Storage.SQLite.Adapter do
-        :ok
-      else
+    if adapter_module == ElixirDB.Storage.SQLite.Adapter do
+      test "integrity mismatch is detected after revision corruption", %{adapter: adapter} do
         assert {:ok, %{revision: revision}} =
                  @adapter.apply_local_mutation(adapter, %{
                    operation: :put,

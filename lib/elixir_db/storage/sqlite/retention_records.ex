@@ -20,6 +20,7 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
 
   alias ElixirDB.Domain.{BoundaryPage, PeerPosition, RetentionBoundary}
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.Retention.Service, as: RetentionService
   alias ElixirDB.Storage.SQLite.Connection
 
   @peer_ledger "peer_ledger"
@@ -34,19 +35,10 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
 
   @spec boundary_key(binary(), binary(), binary()) :: binary()
   def boundary_key(source_database_uuid, document_id, history_id),
-    do: source_database_uuid <> @boundary_key_sep <> document_id <> @boundary_key_sep <> history_id
+    do: BoundaryPage.record_key(source_database_uuid, document_id, history_id)
 
   @spec parse_boundary_key(binary()) :: {binary(), binary(), binary()} | :error
-  def parse_boundary_key(key) when is_binary(key) do
-    case :binary.split(key, @boundary_key_sep, [:global]) do
-      [source_uuid, document_id, history_id]
-      when source_uuid != "" and document_id != "" and history_id != "" ->
-        {source_uuid, document_id, history_id}
-
-      _ ->
-        :error
-    end
-  end
+  def parse_boundary_key(key) when is_binary(key), do: BoundaryPage.parse_record_key(key)
 
   @spec list_by_namespace(Connection.handle(), binary()) ::
           {:ok, [%{key: binary(), version: non_neg_integer(), value: map()}]}
@@ -261,7 +253,7 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
           :ok | {:error, ElixirDB.Error.t()}
   def stage_boundary_page(conn, install_id, page) when is_binary(install_id) and is_map(page) do
     with {:ok, metadata} <- staging_metadata(conn, install_id),
-         :ok <- same_boundary_install?(metadata, page) do
+         :ok <- RetentionService.same_boundary_install?(metadata, page) do
       Enum.reduce_while(page.boundaries, :ok, fn boundary, :ok ->
         stage_boundary(conn, install_id, metadata, boundary)
       end)
@@ -451,17 +443,6 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
 
   defp decode_staging_metadata(_value),
     do: {:error, ElixirDB.Error.integrity_violation("boundary install session is invalid")}
-
-  defp same_boundary_install?(metadata, page) do
-    if page.source_database_uuid == metadata.source_database_uuid and
-         page.source_history_epoch == metadata.source_history_epoch and
-         page.compaction_epoch == metadata.compaction_epoch and
-         page.boundary_digest == metadata.boundary_digest do
-      :ok
-    else
-      {:error, ElixirDB.Error.boundary_conflict("boundary pages belong to different installs")}
-    end
-  end
 
   defp staged_boundaries(conn, install_id) do
     case list_by_namespace(conn, @boundary_staging) do
@@ -798,11 +779,237 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
     end
   end
 
+  @doc "Applies a shared compaction effect to SQLite physical stores."
+  @spec apply_compaction_effect(Connection.handle(), map()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def apply_compaction_effect(conn, effect) when is_map(effect) do
+    source_uuid = Map.fetch!(effect, :source_database_uuid)
+    source_epoch = Map.fetch!(effect, :source_history_epoch)
+    new_epoch = Map.fetch!(effect, :new_compaction_epoch)
+    digest = Map.get(effect, :boundary_digest) || conn_digest(conn, source_uuid)
+
+    with :ok <- persist_expired_peers(conn, Map.get(effect, :peers_to_expire, [])),
+         :ok <-
+           upsert_boundaries(
+             conn,
+             Map.get(effect, :boundaries_to_upsert, []),
+             source_uuid,
+             source_epoch,
+             new_epoch
+           ),
+         :ok <-
+           remove_boundaries(conn, Map.get(effect, :boundaries_to_remove, []), source_uuid),
+         :ok <- delete_revisions(conn, Map.get(effect, :removals, %{})),
+         :ok <- empty_documents(conn, Map.get(effect, :documents_to_empty, [])),
+         :ok <- delete_changes(conn, Map.get(effect, :delete_changes_through, 0)),
+         :ok <- update_meta(conn, Map.fetch!(effect, :new_floor), new_epoch, digest),
+         :ok <- maybe_increment_maintenance(conn, Map.get(effect, :increment_maintenance?, false)) do
+      put_last_result(conn, Map.get(effect, :result_stats, %{}))
+    end
+  end
+
+  @doc "Updates a peer ledger wire value without compare-and-swap."
+  @spec update_peer_wire(Connection.handle(), binary(), map()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def update_peer_wire(conn, peer_uuid, wire)
+      when is_binary(peer_uuid) and is_map(wire) do
+    case Canonical.encode(wire) do
+      {:ok, json} ->
+        case Connection.execute(
+               conn,
+               "INSERT INTO local_records(namespace, record_key, record_version, value_json) VALUES (?, ?, 1, ?) ON CONFLICT(namespace, record_key) DO UPDATE SET value_json = excluded.value_json",
+               [@peer_ledger, peer_uuid, json]
+             ) do
+          :ok -> :ok
+          {:error, reason} -> {:error, normalize_error(reason)}
+        end
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
   @spec peer_ledger_namespace() :: binary()
   def peer_ledger_namespace, do: @peer_ledger
 
   @spec retention_boundaries_namespace() :: binary()
   def retention_boundaries_namespace, do: @retention_boundaries
+
+  defp persist_expired_peers(_conn, []), do: :ok
+
+  defp persist_expired_peers(conn, peers) do
+    Enum.reduce_while(peers, :ok, fn peer, :ok ->
+      case update_peer_wire(conn, peer.peer_database_uuid, peer_wire(peer)) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp peer_wire(peer) do
+    %{
+      "peer_database_uuid" => peer.peer_database_uuid,
+      "peer_history_epoch" => peer.peer_history_epoch,
+      "source_database_uuid" => peer.source_database_uuid,
+      "source_history_epoch" => peer.source_history_epoch,
+      "safe_source_sequence" => peer.safe_source_sequence,
+      "installed_source_compaction_epoch" => peer.installed_source_compaction_epoch,
+      "last_seen_at" => peer.last_seen_at,
+      "lease_expires_at" => peer.lease_expires_at,
+      "status" => Atom.to_string(peer.status)
+    }
+  end
+
+  defp upsert_boundaries(_conn, [], _source_uuid, _source_epoch, _epoch), do: :ok
+
+  defp upsert_boundaries(conn, boundaries, source_uuid, source_epoch, epoch) do
+    Enum.reduce_while(boundaries, :ok, fn boundary, :ok ->
+      upsert_boundary(conn, boundary, source_uuid, source_epoch, epoch)
+    end)
+  end
+
+  defp upsert_boundary(conn, boundary, source_uuid, source_epoch, epoch) do
+    key = boundary_key(source_uuid, boundary.document_id, boundary.history_id)
+    value = encode_boundary(boundary, source_uuid, source_epoch, epoch)
+
+    case Canonical.encode(value) do
+      {:ok, json} -> execute_boundary_upsert(conn, key, json)
+      {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
+    end
+  end
+
+  defp execute_boundary_upsert(conn, key, json) do
+    case Connection.execute(
+           conn,
+           "INSERT INTO local_records(namespace, record_key, record_version, value_json) VALUES (?, ?, 1, ?) ON CONFLICT(namespace, record_key) DO UPDATE SET record_version = record_version + 1, value_json = excluded.value_json",
+           [@retention_boundaries, key, json]
+         ) do
+      :ok -> {:cont, :ok}
+      {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
+    end
+  end
+
+  defp remove_boundaries(_conn, [], _source_uuid), do: :ok
+
+  defp remove_boundaries(conn, boundaries, source_uuid) do
+    Enum.reduce_while(boundaries, :ok, fn boundary, :ok ->
+      key = boundary_key(source_uuid, boundary.document_id, boundary.history_id)
+
+      case Connection.execute(
+             conn,
+             "DELETE FROM local_records WHERE namespace = ? AND record_key = ?",
+             [@retention_boundaries, key]
+           ) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
+      end
+    end)
+  end
+
+  defp delete_revisions(_conn, removals) when map_size(removals) == 0, do: :ok
+
+  defp delete_revisions(conn, removals) do
+    Enum.reduce_while(removals, :ok, fn {document_id, revision_ids}, :ok ->
+      delete_document_revisions(conn, document_id, revision_ids)
+    end)
+    |> normalize_delete_result()
+  end
+
+  defp delete_document_revisions(conn, document_id, revision_ids) do
+    case doc_key_for(conn, document_id) do
+      {:ok, doc_key} -> delete_revision_ids(conn, doc_key, revision_ids)
+      {:error, %ElixirDB.Error{code: :document_not_found}} -> {:cont, :ok}
+      {:error, error} -> {:halt, {:error, error}}
+    end
+  end
+
+  defp delete_revision_ids(conn, doc_key, revision_ids) do
+    Enum.reduce_while(revision_ids, :ok, fn revision_id, :ok ->
+      delete_single_revision(conn, doc_key, revision_id)
+    end)
+    |> case do
+      :ok -> {:cont, :ok}
+      {:error, error} -> {:halt, {:error, error}}
+    end
+  end
+
+  defp delete_single_revision(conn, doc_key, revision_id) do
+    case Connection.execute(
+           conn,
+           "DELETE FROM revisions WHERE doc_key = ? AND revision_id = ?",
+           [doc_key, revision_id]
+         ) do
+      :ok -> {:cont, :ok}
+      {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
+    end
+  end
+
+  defp empty_documents(_conn, []), do: :ok
+
+  defp empty_documents(conn, document_ids) do
+    Enum.reduce_while(document_ids, :ok, fn document_id, :ok ->
+      case Connection.execute(
+             conn,
+             "UPDATE documents SET winning_revision = NULL, winning_body_json = NULL, winning_body_term = NULL, winning_deleted = 1, update_sequence = 0 WHERE document_id = ?",
+             [document_id]
+           ) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
+      end
+    end)
+  end
+
+  defp normalize_delete_result(:ok), do: :ok
+  defp normalize_delete_result({:error, error}), do: {:error, error}
+
+  defp delete_changes(_conn, 0), do: :ok
+
+  defp delete_changes(conn, through) when is_integer(through) and through > 0 do
+    case Connection.execute(conn, "DELETE FROM changes WHERE sequence <= ?", [through]) do
+      :ok -> :ok
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  defp update_meta(conn, floor, compaction_epoch, digest) do
+    Connection.execute(
+      conn,
+      "UPDATE db_meta SET retention_floor_sequence = ?, compaction_epoch = ?, retention_boundary_digest = ? WHERE id = 1",
+      [floor, compaction_epoch, digest]
+    )
+    |> case do
+      :ok -> :ok
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  defp conn_digest(conn, source_database_uuid) do
+    case list_boundaries(conn, source_database_uuid: source_database_uuid) do
+      {:ok, boundaries} ->
+        BoundaryPage.digest_for(Enum.map(boundaries, & &1.boundary))
+
+      _ ->
+        nil
+    end
+  end
+
+  defp maybe_increment_maintenance(_conn, false), do: :ok
+
+  defp maybe_increment_maintenance(conn, true) do
+    with {:ok, counter} <- maintenance_counter(conn) do
+      put_maintenance_counter(conn, counter + 1)
+    end
+  end
+
+  defp doc_key_for(conn, document_id) do
+    case Connection.query(conn, "SELECT doc_key FROM documents WHERE document_id = ?", [
+           document_id
+         ]) do
+      {:ok, [[doc_key]]} -> {:ok, doc_key}
+      {:ok, []} -> {:error, ElixirDB.Error.document_not_found("document not found")}
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
 
   defp fetch_maintenance(conn, key),
     do: fetch_local_record(conn, @retention_maintenance, key)

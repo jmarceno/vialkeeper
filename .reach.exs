@@ -55,7 +55,9 @@
     core: [
       "ElixirDB.Domain.*",
       "ElixirDB.Revisions.*",
+      "ElixirDB.Integrity.*",
       "ElixirDB.JSON.*",
+      "ElixirDB.Retention.*",
       "ElixirDB.Commands",
       "ElixirDB.Query.*",
       "ElixirDB.Error",
@@ -64,6 +66,7 @@
       "ElixirDB.PathSafety",
       "ElixirDB.DatabaseBundle",
       "ElixirDB.Attachments.Manifest",
+      "ElixirDB.Attachments.MetadataRequest",
       "ElixirDB.Attachments.Ticket",
       "ElixirDB.Attachments.Store",
       "ElixirDB.Replication.BlobStream"

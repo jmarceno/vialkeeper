@@ -1,6 +1,6 @@
 defmodule ElixirDB.Storage.Services.Facts do
   @moduledoc """
-  Port-facing helpers for shared mutation, import, and chain services.
+  Port-facing helpers for shared mutation, import, chain, and retention services.
 
   Resolves document/revision/change/attachment/retention/index ports from an
   opaque `BackendContext` so services never unwrap backend handles.
@@ -88,6 +88,18 @@ defmodule ElixirDB.Storage.Services.Facts do
   def delete_history(%BackendContext{} = ctx, document_id, history_id),
     do: Access.port(ctx, :document_facts).delete_history(ctx, document_id, history_id)
 
+  @doc "Lists documents and revisions eligible for compaction at a floor."
+  @spec list_compaction_documents(BackendContext.t(), non_neg_integer()) ::
+          {:ok, [map()]} | {:error, ElixirDB.Error.t()}
+  def list_compaction_documents(%BackendContext{} = ctx, candidate_floor),
+    do: Access.port(ctx, :document_facts).list_compaction_documents(ctx, candidate_floor)
+
+  @doc "Deletes specific revisions for a document."
+  @spec delete_revisions(BackendContext.t(), binary(), [binary()]) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def delete_revisions(%BackendContext{} = ctx, document_id, revision_ids),
+    do: Access.port(ctx, :document_facts).delete_revisions(ctx, document_id, revision_ids)
+
   @doc "Allocates one change sequence."
   @spec allocate_sequence(BackendContext.t()) ::
           {:ok, integer()} | {:error, ElixirDB.Error.t()}
@@ -133,6 +145,66 @@ defmodule ElixirDB.Storage.Services.Facts do
           {:ok, [map()]} | {:error, ElixirDB.Error.t()}
   def list_boundaries(%BackendContext{} = ctx, opts \\ []),
     do: Access.port(ctx, :retention_records).list_boundaries(ctx, opts)
+
+  @doc "Lists peer ledger positions."
+  @spec list_peer_positions(BackendContext.t()) ::
+          {:ok, [map()]} | {:error, ElixirDB.Error.t()}
+  def list_peer_positions(%BackendContext{} = ctx),
+    do: Access.port(ctx, :retention_records).list_peer_positions(ctx)
+
+  @doc "Applies a compaction effect atomically."
+  @spec apply_compaction_effect(BackendContext.t(), map()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def apply_compaction_effect(%BackendContext{} = ctx, effect),
+    do: Access.port(ctx, :retention_records).apply_compaction_effect(ctx, effect)
+
+  @doc "Loads boundary install state for a source database."
+  @spec boundary_install_state(BackendContext.t(), binary()) ::
+          {:ok, map() | nil} | {:error, ElixirDB.Error.t()}
+  def boundary_install_state(%BackendContext{} = ctx, source_uuid),
+    do: Access.port(ctx, :retention_records).boundary_install_state(ctx, source_uuid)
+
+  @doc "Begins a staged boundary install."
+  @spec begin_boundary_install(BackendContext.t(), binary(), map()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def begin_boundary_install(%BackendContext{} = ctx, install_id, state),
+    do: Access.port(ctx, :retention_records).begin_boundary_install(ctx, install_id, state)
+
+  @doc "Stages one boundary page into an install."
+  @spec stage_boundary_page(BackendContext.t(), binary(), map()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def stage_boundary_page(%BackendContext{} = ctx, install_id, page),
+    do: Access.port(ctx, :retention_records).stage_boundary_page(ctx, install_id, page)
+
+  @doc "Completes a staged boundary install."
+  @spec complete_boundary_install(BackendContext.t(), binary()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def complete_boundary_install(%BackendContext{} = ctx, install_id),
+    do: Access.port(ctx, :retention_records).complete_boundary_install(ctx, install_id)
+
+  @doc "Replaces the authoritative boundary set for a source."
+  @spec replace_boundary_set(BackendContext.t(), map(), [term()]) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def replace_boundary_set(%BackendContext{} = ctx, state, boundaries),
+    do: Access.port(ctx, :retention_records).replace_boundary_set(ctx, state, boundaries)
+
+  @doc "Reads the retention maintenance counter."
+  @spec maintenance_counter(BackendContext.t()) ::
+          {:ok, non_neg_integer()} | {:error, ElixirDB.Error.t()}
+  def maintenance_counter(%BackendContext{} = ctx),
+    do: Access.port(ctx, :retention_records).maintenance_counter(ctx)
+
+  @doc "Updates a peer ledger wire value without CAS."
+  @spec update_peer_wire(BackendContext.t(), binary(), map()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def update_peer_wire(%BackendContext{} = ctx, peer_uuid, wire),
+    do: Access.port(ctx, :retention_records).update_peer_wire(ctx, peer_uuid, wire)
+
+  @doc "Compare-and-swaps a peer ledger record."
+  @spec put_peer_position_record(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def put_peer_position_record(%BackendContext{} = ctx, request),
+    do: Access.port(ctx, :retention_records).put_peer_position_record(ctx, request)
 
   @doc "Installs imported purged boundaries."
   @spec install_imported_boundaries(BackendContext.t(), [map()]) ::

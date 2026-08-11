@@ -9,13 +9,13 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   """
 
   alias ElixirDB.Attachments.Manifest
+  alias ElixirDB.Attachments.MetadataRequest
   alias ElixirDB.Attachments.Ticket
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.SQLite.Connection
 
   @pending_ttl_seconds 86_400
   @live_digest_page_size 4096
-  @digest_pattern ~r/^[0-9a-f]{64}$/
 
   @doc """
   Inserts the complete immutable attachment manifest for one revision.
@@ -79,7 +79,7 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
 
     with {:ok, name} <- Manifest.validate_name(name),
          {:ok, doc} <- find_document(adapter.conn, document_id),
-         {:ok, resolved_revision} <- resolve_revision_id(doc, revision_id),
+         {:ok, resolved_revision} <- MetadataRequest.resolve_revision_id(doc, revision_id),
          {:ok, row} <-
            load_attachment_row(adapter.conn, doc.doc_key, resolved_revision, name) do
       Ticket.build(
@@ -105,7 +105,7 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   @spec resolve_blob_metadata(Connection.handle(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def resolve_blob_metadata(conn, request) when is_map(request) do
-    with {:ok, digest} <- request_digest(request),
+    with {:ok, digest} <- MetadataRequest.request_digest(request),
          {:ok, logical_size} <- lookup_reachable_size(conn, digest) do
       {:ok, %{digest: digest, logical_size: logical_size, length: logical_size}}
     end
@@ -120,8 +120,8 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   @spec protect_pending_blob(Connection.handle(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def protect_pending_blob(conn, request) when is_map(request) do
-    with {:ok, digest} <- request_digest(request),
-         {:ok, logical_size} <- request_logical_size(request) do
+    with {:ok, digest} <- MetadataRequest.request_digest(request),
+         {:ok, logical_size} <- MetadataRequest.request_logical_size(request) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
       expires_at = DateTime.add(now, @pending_ttl_seconds, :second)
       now_iso = DateTime.to_iso8601(now)
@@ -164,19 +164,9 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   @spec remove_pending_blob_protection(Connection.handle(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def remove_pending_blob_protection(conn, request) when is_map(request) do
-    digests =
-      case MapAccess.get(request, :digests) do
-        list when is_list(list) ->
-          list
+    digests = MetadataRequest.pending_digests_from_request(request)
 
-        _ ->
-          case request_digest(request) do
-            {:ok, digest} -> [digest]
-            {:error, _} -> []
-          end
-      end
-
-    with :ok <- validate_digest_list(digests),
+    with :ok <- MetadataRequest.validate_digest_list(digests),
          :ok <- delete_pending_digests(conn, digests) do
       {:ok, %{removed: length(digests), digests: digests}}
     end
@@ -214,10 +204,10 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def list_live_attachment_digests(conn, request) when is_map(request) do
     after_digest = MapAccess.get(request, :after_digest)
-    limit = page_limit(MapAccess.get(request, :limit))
+    limit = MetadataRequest.page_limit(MapAccess.get(request, :limit), @live_digest_page_size)
     now_iso = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
-    with :ok <- validate_after_digest(after_digest),
+    with :ok <- MetadataRequest.validate_after_digest(after_digest),
          {:ok, rows} <- query_live_digests(conn, after_digest, limit + 1, now_iso) do
       digests = Enum.map(rows, &List.first/1)
       page = Enum.take(digests, limit)
@@ -242,7 +232,8 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   @spec cleanup_expired_pending_blobs(Connection.handle(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def cleanup_expired_pending_blobs(conn, request) when is_map(request) do
-    with {:ok, now_iso} <- cleanup_now(request),
+    with {:ok, now} <- MetadataRequest.cleanup_now(request),
+         now_iso = DateTime.to_iso8601(now),
          {:ok, [[count]]} <-
            Connection.query(
              conn,
@@ -314,18 +305,6 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
 
   defp find_document(_conn, _document_id),
     do: {:error, ElixirDB.Error.invalid_request("document id must be a non-empty UTF-8 string")}
-
-  defp resolve_revision_id(%{winning_revision: nil}, nil),
-    do: {:error, ElixirDB.Error.document_not_found("document has no winning revision")}
-
-  defp resolve_revision_id(%{winning_revision: winning}, nil) when is_binary(winning),
-    do: {:ok, winning}
-
-  defp resolve_revision_id(_doc, revision_id) when is_binary(revision_id) and revision_id != "",
-    do: {:ok, revision_id}
-
-  defp resolve_revision_id(_doc, _revision_id),
-    do: {:error, ElixirDB.Error.invalid_request("revision must be a string or null")}
 
   defp load_attachment_row(conn, doc_key, revision_id, name) do
     case Connection.query(
@@ -409,28 +388,6 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
     end
   end
 
-  defp request_digest(request) do
-    digest = MapAccess.get(request, :digest) || MapAccess.get(request, :blob)
-    Manifest.validate_digest(digest)
-  end
-
-  defp request_logical_size(request) do
-    size = MapAccess.get_first(request, [:logical_size, :length])
-
-    if is_integer(size) and size >= 0,
-      do: {:ok, size},
-      else: {:error, ElixirDB.Error.invalid_request("logical_size must be a non-negative integer")}
-  end
-
-  defp validate_digest_list(digests) when is_list(digests) do
-    Enum.reduce_while(digests, :ok, fn digest, :ok ->
-      case Manifest.validate_digest(digest) do
-        {:ok, _} -> {:cont, :ok}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
-
   defp delete_pending_digests(_conn, []), do: :ok
 
   defp delete_pending_digests(conn, digests) do
@@ -441,24 +398,6 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
       end
     end)
   end
-
-  defp page_limit(nil), do: @live_digest_page_size
-
-  defp page_limit(limit) when is_integer(limit) and limit > 0,
-    do: min(limit, @live_digest_page_size)
-
-  defp page_limit(_), do: @live_digest_page_size
-
-  defp validate_after_digest(nil), do: :ok
-
-  defp validate_after_digest(digest) when is_binary(digest) do
-    if Regex.match?(@digest_pattern, digest),
-      do: :ok,
-      else: {:error, ElixirDB.Error.invalid_request("after_digest must be lowercase SHA-256 hex")}
-  end
-
-  defp validate_after_digest(_),
-    do: {:error, ElixirDB.Error.invalid_request("after_digest must be lowercase SHA-256 hex")}
 
   defp query_live_digests(conn, nil, limit, now_iso) do
     Connection.query(
@@ -491,25 +430,6 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
       """,
       [now_iso, after_digest, limit]
     )
-  end
-
-  defp cleanup_now(request) do
-    case MapAccess.get(request, :now) do
-      nil ->
-        {:ok, DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()}
-
-      %DateTime{} = dt ->
-        {:ok, DateTime.to_iso8601(DateTime.truncate(dt, :second))}
-
-      value when is_binary(value) ->
-        case DateTime.from_iso8601(value) do
-          {:ok, dt, _} -> {:ok, DateTime.to_iso8601(DateTime.truncate(dt, :second))}
-          _ -> {:error, ElixirDB.Error.invalid_request("now must be an RFC3339 timestamp")}
-        end
-
-      _ ->
-        {:error, ElixirDB.Error.invalid_request("now must be an RFC3339 timestamp")}
-    end
   end
 
   defp bundle_root(sqlite_path) when is_binary(sqlite_path),

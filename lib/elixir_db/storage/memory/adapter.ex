@@ -18,6 +18,8 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     ChangeLog,
     DocumentFacts,
     IndexCandidates,
+    Inspection,
+    Lifecycle,
     RetentionRecords,
     Store,
     Transaction
@@ -36,16 +38,8 @@ defmodule ElixirDB.Storage.Memory.Adapter do
         }
 
   @unsupported [
-    {:update_config, 2},
-    {:integrity_check, 2},
     {:get_local_record, 3},
     {:put_local_record_cas, 2},
-    {:retention_state, 1},
-    {:list_peer_positions, 1},
-    {:put_peer_position_cas, 2},
-    {:read_boundary_pages, 2},
-    {:install_boundary_pages, 2},
-    {:compact_retention, 2},
     {:list_replication_jobs, 1},
     {:put_replication_job, 2},
     {:delete_replication_job, 2},
@@ -57,10 +51,6 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     {:execute_subscription_snapshot, 2},
     {:get_revisions_batch, 2},
     {:explain_query, 2},
-    {:resolve_attachment_ticket, 2},
-    {:resolve_blob_metadata, 2},
-    {:list_live_attachment_digests, 2},
-    {:cleanup_expired_pending_blobs, 2},
     {:list_views, 1},
     {:create_view, 2},
     {:delete_view, 2},
@@ -127,6 +117,24 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   @impl true
   def identity(%__MODULE__{store: store}) do
     {:ok, Store.identity(store)}
+  end
+
+  @impl true
+  def update_config(%__MODULE__{store: store}, config) when is_map(config) do
+    with {:ok, bounded} <- ElixirDB.Config.merge_and_bound(config) do
+      Store.update(store, fn state ->
+        identity = Map.put(state.identity, :config, bounded)
+        {:ok, %{state | identity: identity}, bounded}
+      end)
+    end
+  end
+
+  def update_config(_adapter, _config),
+    do: {:error, ElixirDB.Error.invalid_request("config must be an object")}
+
+  @impl true
+  def integrity_check(%__MODULE__{} = adapter, options \\ %{}) when is_map(options) do
+    Services.Integrity.check(to_context(adapter), options)
   end
 
   @impl true
@@ -235,6 +243,39 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   def clear_pending_local_causal(%__MODULE__{} = adapter, peer),
     do: ChangeLog.clear_pending_local_causal(to_context(adapter), peer)
 
+  @impl true
+  def retention_state(%__MODULE__{} = adapter),
+    do: Services.retention_state(to_context(adapter))
+
+  @impl true
+  def list_peer_positions(%__MODULE__{} = adapter),
+    do: Services.list_peer_positions(to_context(adapter))
+
+  @impl true
+  def put_peer_position_cas(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.put_peer_position_cas(to_context(adapter), request)
+
+  def put_peer_position_cas(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("peer position request must be an object")}
+
+  @impl true
+  def read_boundary_pages(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.read_boundary_pages(to_context(adapter), request)
+
+  def read_boundary_pages(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("boundary page request must be an object")}
+
+  @impl true
+  def install_boundary_pages(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.install_boundary_pages(to_context(adapter), request)
+
+  def install_boundary_pages(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("boundary page request must be an object")}
+
+  @impl true
+  def compact_retention(%__MODULE__{} = adapter, request \\ %{}) when is_map(request),
+    do: Services.compact_retention(to_context(adapter), request)
+
   @doc "Diffs revision leaves via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def diff_revisions(%__MODULE__{} = adapter, request) when is_map(request),
     do: Services.diff_revisions(to_context(adapter), request)
@@ -258,11 +299,38 @@ defmodule ElixirDB.Storage.Memory.Adapter do
 
   @impl true
   def protect_pending_blob(%__MODULE__{} = adapter, request) when is_map(request),
-    do: AttachmentMetadata.protect_pending_blob(to_context(adapter), request)
+    do: Services.protect_pending_blob(to_context(adapter), request)
 
   @impl true
   def remove_pending_blob_protection(%__MODULE__{} = adapter, request) when is_map(request),
-    do: AttachmentMetadata.remove_pending_blob_protection(to_context(adapter), request)
+    do: Services.remove_pending_blob_protection(to_context(adapter), request)
+
+  @impl true
+  def resolve_attachment_ticket(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.resolve_attachment_ticket(to_context(adapter), request)
+
+  def resolve_attachment_ticket(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("attachment ticket request must be an object")}
+
+  @impl true
+  def resolve_blob_metadata(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.resolve_blob_metadata(to_context(adapter), request)
+
+  def resolve_blob_metadata(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("blob metadata request must be an object")}
+
+  @impl true
+  def list_live_attachment_digests(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.list_live_attachment_digests(to_context(adapter), request)
+
+  def list_live_attachment_digests(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("live attachment digest request must be an object")}
+
+  @impl true
+  def cleanup_expired_pending_blobs(%__MODULE__{} = adapter, request \\ %{})
+      when is_map(request) do
+    Services.cleanup_expired_pending_blobs(to_context(adapter), request)
+  end
 
   @doc "Wraps an open Memory adapter in an opaque backend context."
   @spec to_context(t()) :: BackendContext.t()
@@ -284,12 +352,14 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   @spec port_modules() :: %{atom() => module()}
   def port_modules do
     %{
+      lifecycle: Lifecycle,
       transaction: Transaction,
       document_facts: DocumentFacts,
       change_log: ChangeLog,
       retention_records: RetentionRecords,
       index_candidates: IndexCandidates,
-      attachment_metadata: AttachmentMetadata
+      attachment_metadata: AttachmentMetadata,
+      inspection: Inspection
     }
   end
 
