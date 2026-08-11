@@ -347,7 +347,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   def get_revision(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("revision request must be an object")}
 
-  @impl true
+  @doc "Applies a local put/delete via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def apply_local_mutation(adapter, request) when is_map(request) do
     with :ok <- ensure_writable(adapter) do
       Services.apply_local_mutation(to_context(adapter), request)
@@ -357,7 +357,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   def apply_local_mutation(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("mutation request must be an object")}
 
-  @impl true
+  @doc "Applies a bulk mutation batch via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def apply_bulk_mutation(adapter, request) when is_map(request) do
     with :ok <- ensure_writable(adapter) do
       Services.apply_bulk_mutation(to_context(adapter), request)
@@ -367,7 +367,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   def apply_bulk_mutation(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("bulk mutation request must be an object")}
 
-  @impl true
+  @doc "Resolves a conflict via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def resolve_conflict(adapter, request) when is_map(request) do
     with :ok <- ensure_writable(adapter) do
       Services.resolve_conflict(to_context(adapter), request)
@@ -438,21 +438,21 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     end
   end
 
-  @impl true
+  @doc "Diffs revision leaves via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def diff_revisions(%__MODULE__{} = adapter, request) when is_map(request),
     do: Services.diff_revisions(to_context(adapter), request)
 
   def diff_revisions(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("revision diff request must be an object")}
 
-  @impl true
+  @doc "Loads revision chains via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def get_revision_chains(%__MODULE__{} = adapter, request) when is_map(request),
     do: Services.get_revision_chains(to_context(adapter), request)
 
   def get_revision_chains(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("revision chain request must be an object")}
 
-  @impl true
+  @doc "Imports revision chains via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def import_revision_chains(adapter, request) when is_map(request) do
     with :ok <- ensure_writable(adapter) do
       Services.import_revision_chains(to_context(adapter), request)

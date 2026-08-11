@@ -64,6 +64,31 @@ defmodule ElixirDB.Storage.AdapterCase do
   end
 
   @doc """
+  Closes `adapter` and reopens it from `path` (SQLite file or Memory `memory.backend`).
+  """
+  @spec reopen!(module(), term(), binary()) :: term()
+  def reopen!(adapter_mod, adapter, path) when is_atom(adapter_mod) and is_binary(path) do
+    case adapter_mod.close(adapter) do
+      :ok -> :ok
+      {:error, reason} -> raise "close failed: #{inspect(reason)}"
+    end
+
+    case adapter_mod.open(path) do
+      {:ok, reopened} -> reopened
+      {:error, reason} -> raise "open failed: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Absolute artifact path for a temporary adapter under `bundle_path`.
+  """
+  @spec adapter_path(module(), binary()) :: binary()
+  def adapter_path(ElixirDB.Storage.SQLite.Adapter, bundle_path),
+    do: ElixirDB.TempDatabase.sqlite_path(bundle_path)
+
+  def adapter_path(_adapter_mod, bundle_path), do: bundle_path
+
+  @doc """
   Builds a wire revision map for import/replication chain fixtures.
   """
   @spec wire_revision(binary(), binary(), binary() | nil, boolean(), map() | nil, binary() | nil) ::
@@ -74,11 +99,6 @@ defmodule ElixirDB.Storage.AdapterCase do
 
     Wire.new(document_id, history_id, revision_id, generation, parent, deleted, body)
   end
-
-  defp adapter_path(ElixirDB.Storage.SQLite.Adapter, bundle_path),
-    do: ElixirDB.TempDatabase.sqlite_path(bundle_path)
-
-  defp adapter_path(_adapter_mod, bundle_path), do: bundle_path
 
   defp safe_close(adapter_mod, adapter) do
     adapter_mod.close(adapter)

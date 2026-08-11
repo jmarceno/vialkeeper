@@ -46,8 +46,7 @@ defmodule ElixirDB.Storage.Memory.ChangeLog do
   @impl true
   def has_local_origin_changes?(%BackendContext{} = context, _peer) do
     with {:ok, adapter} <- Context.unwrap(context) do
-      changes = Store.get(adapter.store).changes
-      {:ok, Enum.any?(changes, &(&1.origin == "local"))}
+      {:ok, Store.get(adapter.store).pending_local_causal}
     end
   end
 

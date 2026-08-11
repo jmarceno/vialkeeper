@@ -9,9 +9,6 @@ defmodule ElixirDB.Storage.Adapter do
   @callback integrity_check(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback get_document(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback get_revision(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  @callback apply_local_mutation(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  @callback apply_bulk_mutation(term(), map()) :: {:ok, list()} | {:error, ElixirDB.Error.t()}
-  @callback resolve_conflict(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback read_changes(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback has_local_origin_changes?(term()) ::
               {:ok, boolean()} | {:error, ElixirDB.Error.t()}
@@ -20,9 +17,6 @@ defmodule ElixirDB.Storage.Adapter do
   @callback clear_pending_local_causal(term()) :: {:ok, :cleared} | {:error, ElixirDB.Error.t()}
   @callback clear_pending_local_causal(term(), binary() | nil) ::
               {:ok, :cleared} | {:error, ElixirDB.Error.t()}
-  @callback diff_revisions(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  @callback get_revision_chains(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  @callback import_revision_chains(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback get_local_record(term(), binary(), binary()) ::
               {:ok, map() | nil} | {:error, ElixirDB.Error.t()}
   @callback put_local_record_cas(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}

@@ -121,6 +121,38 @@ for {name, adapter_module} <- [
       assert change.sequence == 2
     end
 
+    test "ordered changes and sequences survive close/reopen", %{adapter: adapter, path: path} do
+      assert {:ok, %{revision: v1}} =
+               @adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: "doc",
+                 body: %{"n" => 1}
+               })
+
+      assert {:ok, %{revision: v2}} =
+               @adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: "doc",
+                 if_revision: v1,
+                 body: %{"n" => 2}
+               })
+
+      assert {:ok, %{results: before, last_sequence: 2}} =
+               @adapter.read_changes(adapter, %{since: 0, limit: 10})
+
+      assert Enum.map(before, & &1.winning_revision) == [v1, v2]
+
+      reopened = AdapterCaseModule.reopen!(@adapter, adapter, path)
+
+      assert {:ok, %{current_sequence: 2}} = @adapter.identity(reopened)
+
+      assert {:ok, %{results: after_reload, last_sequence: 2, has_more: false}} =
+               @adapter.read_changes(reopened, %{since: 0, limit: 10})
+
+      assert Enum.map(after_reload, &{&1.sequence, &1.winning_revision, &1.document_id}) ==
+               Enum.map(before, &{&1.sequence, &1.winning_revision, &1.document_id})
+    end
+
     test "deleted document change carries a tombstone leaf", %{adapter: adapter} do
       assert {:ok, %{revision: base}} =
                @adapter.apply_local_mutation(adapter, %{

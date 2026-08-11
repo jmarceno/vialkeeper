@@ -10,6 +10,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Registry, as: StorageRegistry
   alias ElixirDB.Storage.Results
+  alias ElixirDB.Storage.Services
 
   def start_link({uuid, %DatabaseBundle{} = bundle}),
     do: start_link({uuid, bundle, nil})
@@ -148,7 +149,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
       writable_mutation(state, fn ->
         mutate(
           wrap_put(
-            backend(state).apply_local_mutation(handle(state), Map.put(request, :operation, :put))
+            Services.apply_local_mutation(state.context, Map.put(request, :operation, :put))
           ),
           state
         )
@@ -159,10 +160,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
       writable_mutation(state, fn ->
         mutate(
           wrap_put(
-            backend(state).apply_local_mutation(
-              handle(state),
-              Map.put(request, :operation, :delete)
-            )
+            Services.apply_local_mutation(state.context, Map.put(request, :operation, :delete))
           ),
           state
         )
@@ -171,23 +169,23 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp handle_command(%Commands.BulkWrite{request: request}, _from, state),
     do:
       writable_mutation(state, fn ->
-        mutate(backend(state).apply_bulk_mutation(handle(state), request), state)
+        mutate(Services.apply_bulk_mutation(state.context, request), state)
       end)
 
   defp handle_command(%Commands.ResolveConflict{request: request}, _from, state),
     do:
       writable_mutation(state, fn ->
-        mutate(backend(state).resolve_conflict(handle(state), request), state)
+        mutate(Services.resolve_conflict(state.context, request), state)
       end)
 
   defp handle_command(%Commands.ReadChanges{request: request}, _from, state),
     do: reply(wrap_changes(backend(state).read_changes(handle(state), request)), state)
 
   defp handle_command(%Commands.DiffRevisions{request: request}, _from, state),
-    do: reply(backend(state).diff_revisions(handle(state), request), state)
+    do: reply(Services.diff_revisions(state.context, request), state)
 
   defp handle_command(%Commands.GetRevisionChains{request: request}, _from, state),
-    do: reply(backend(state).get_revision_chains(handle(state), request), state)
+    do: reply(Services.get_revision_chains(state.context, request), state)
 
   defp handle_command(
          %Commands.ImportRevisionChains{request: request},
@@ -196,7 +194,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
        ),
        do:
          writable_mutation(state, fn ->
-           mutate(backend(state).import_revision_chains(handle(state), request), state)
+           mutate(Services.import_revision_chains(state.context, request), state)
          end)
 
   defp handle_command(

@@ -2,7 +2,7 @@ defmodule ElixirDB.RevisionHistoryModel do
   @moduledoc """
   Pure in-memory revision history applicator for adapter and model tests.
 
-  Mirrors SQLite adapter semantics for local put/delete, sibling chain import,
+  Models shared revision semantics for local put/delete, sibling chain import,
   conflict resolution (surviving-body and delete-all), and exact replay using
   `Winner`, `ConflictResolution`, `Tree`, and `Id`.
   """

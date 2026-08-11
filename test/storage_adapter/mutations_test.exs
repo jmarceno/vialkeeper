@@ -229,6 +229,77 @@ for {name, adapter_module} <- [
       assert {:ok, %{current_sequence: 2}} = @adapter.identity(adapter)
     end
 
+    test "replay, stale fencing, sequence, and causal markers survive close/reopen", %{
+      adapter: adapter,
+      path: path
+    } do
+      assert {:ok, %{revision: rev1, sequence: seq1, replayed: false}} =
+               @adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: "doc",
+                 body: %{"value" => 1}
+               })
+
+      assert {:ok, true} = @adapter.has_local_origin_changes?(adapter)
+
+      assert {:ok, %{revision: rev2, sequence: seq2, replayed: false}} =
+               @adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: "doc",
+                 if_revision: rev1,
+                 body: %{"value" => 2}
+               })
+
+      assert seq2 == seq1 + 1
+
+      reopened = AdapterCaseModule.reopen!(@adapter, adapter, path)
+
+      assert {:ok, %{current_sequence: ^seq2}} = @adapter.identity(reopened)
+      assert {:ok, true} = @adapter.has_local_origin_changes?(reopened)
+
+      assert {:ok, %{revision: ^rev2, sequence: ^seq2, replayed: true}} =
+               @adapter.apply_local_mutation(reopened, %{
+                 operation: :put,
+                 document_id: "doc",
+                 if_revision: rev1,
+                 body: %{"value" => 2}
+               })
+
+      assert {:ok, %{revision: rev3, replayed: false}} =
+               @adapter.apply_local_mutation(reopened, %{
+                 operation: :put,
+                 document_id: "doc",
+                 if_revision: rev2,
+                 body: %{"value" => 3}
+               })
+
+      # Stale fencing of a superseded identical revision after reopen.
+      assert {:error,
+              %ElixirDB.Error{
+                code: :revision_conflict,
+                details: %{operation_already_committed: true}
+              }} =
+               @adapter.apply_local_mutation(reopened, %{
+                 operation: :put,
+                 document_id: "doc",
+                 if_revision: rev1,
+                 body: %{"value" => 2}
+               })
+
+      assert {:ok, %{revision: ^rev3, body: %{"value" => 3}}} =
+               @adapter.get_document(reopened, %{document_id: "doc"})
+
+      assert {:ok, :cleared} = @adapter.clear_pending_local_causal(reopened)
+      assert {:ok, false} = @adapter.has_local_origin_changes?(reopened)
+
+      reopened2 = AdapterCaseModule.reopen!(@adapter, reopened, path)
+
+      assert {:ok, false} = @adapter.has_local_origin_changes?(reopened2)
+
+      assert {:ok, %{revision: ^rev3, body: %{"value" => 3}}} =
+               @adapter.get_document(reopened2, %{document_id: "doc"})
+    end
+
     test "stale-parent retry of a superseded revision returns revision_conflict with operation_already_committed",
          %{adapter: adapter} do
       # 1. Put doc A -> rev1.

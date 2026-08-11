@@ -2,8 +2,9 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   @moduledoc """
   In-memory storage backend for shared mutation, import, and chain semantic tests.
 
-  Implements lifecycle and service entry points against Memory ports.
-  Unsupported callbacks return typed errors.
+  Implements lifecycle and fact ports. High-level mutation/import entry points
+  are thin wrappers over `ElixirDB.Storage.Services`, not Adapter behaviour
+  callbacks. Unsupported Adapter callbacks return typed errors.
   """
   @behaviour ElixirDB.Storage.Adapter
 
@@ -173,7 +174,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   def get_revision(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("revision request must be an object")}
 
-  @impl true
+  @doc "Applies a local put/delete via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def apply_local_mutation(%__MODULE__{} = adapter, request) when is_map(request) do
     Services.apply_local_mutation(to_context(adapter), request)
   end
@@ -181,7 +182,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   def apply_local_mutation(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("mutation request must be an object")}
 
-  @impl true
+  @doc "Applies a bulk mutation batch via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def apply_bulk_mutation(%__MODULE__{} = adapter, request) when is_map(request) do
     Services.apply_bulk_mutation(to_context(adapter), request)
   end
@@ -189,7 +190,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   def apply_bulk_mutation(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("bulk mutation request must be an object")}
 
-  @impl true
+  @doc "Resolves a conflict via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def resolve_conflict(%__MODULE__{} = adapter, request) when is_map(request) do
     Services.resolve_conflict(to_context(adapter), request)
   end
@@ -234,21 +235,21 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   def clear_pending_local_causal(%__MODULE__{} = adapter, peer),
     do: ChangeLog.clear_pending_local_causal(to_context(adapter), peer)
 
-  @impl true
+  @doc "Diffs revision leaves via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def diff_revisions(%__MODULE__{} = adapter, request) when is_map(request),
     do: Services.diff_revisions(to_context(adapter), request)
 
   def diff_revisions(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("revision diff request must be an object")}
 
-  @impl true
+  @doc "Loads revision chains via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def get_revision_chains(%__MODULE__{} = adapter, request) when is_map(request),
     do: Services.get_revision_chains(to_context(adapter), request)
 
   def get_revision_chains(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("revision chain request must be an object")}
 
-  @impl true
+  @doc "Imports revision chains via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def import_revision_chains(%__MODULE__{} = adapter, request) when is_map(request),
     do: Services.import_revision_chains(to_context(adapter), request)
 

@@ -46,15 +46,12 @@ defmodule ElixirDB.Storage.FaultAdapter do
   def get_revision(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).get_revision(inner, request)
 
-  @impl true
   def apply_local_mutation(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).apply_local_mutation(inner, request)
 
-  @impl true
   def apply_bulk_mutation(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).apply_bulk_mutation(inner, request)
 
-  @impl true
   def resolve_conflict(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).resolve_conflict(inner, request)
 
@@ -78,15 +75,12 @@ defmodule ElixirDB.Storage.FaultAdapter do
   def clear_pending_local_causal(%__MODULE__{inner: inner}, peer_database_uuid),
     do: inner_module(inner).clear_pending_local_causal(inner, peer_database_uuid)
 
-  @impl true
   def diff_revisions(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).diff_revisions(inner, request)
 
-  @impl true
   def get_revision_chains(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).get_revision_chains(inner, request)
 
-  @impl true
   def import_revision_chains(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).import_revision_chains(inner, request)
 

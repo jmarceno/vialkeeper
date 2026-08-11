@@ -249,6 +249,84 @@ for {name, adapter_module} <- [
       end
     end
 
+    test "parent-ordered chains, identity, and attachment guards survive close/reopen", %{
+      adapter: source,
+      adapter_module: adapter_module,
+      bundle_path: source_bundle,
+      path: source_path
+    } do
+      payload = "persist-attachment"
+      {:ok, digest, length} = install_blob(source_bundle, payload)
+
+      attachments = %{
+        "file.bin" => Manifest.entry(digest, length, "application/octet-stream")
+      }
+
+      assert {:ok, _} =
+               @adapter.protect_pending_blob(source, %{digest: digest, logical_size: length})
+
+      assert {:ok, %{revision: root}} =
+               @adapter.apply_local_mutation(source, %{
+                 operation: :put,
+                 document_id: "doc",
+                 body: %{"n" => 0}
+               })
+
+      assert {:ok, %{revision: leaf}} =
+               @adapter.apply_local_mutation(source, %{
+                 operation: :put,
+                 document_id: "doc",
+                 if_revision: root,
+                 body: %{"n" => 1},
+                 attachments: attachments
+               })
+
+      assert {:ok, %{chains: [chain]}} =
+               @adapter.get_revision_chains(source, %{
+                 documents: [%{document_id: "doc", leaf_revisions: [leaf]}]
+               })
+
+      assert Enum.map(chain.revisions, & &1.revision_id) == [root, leaf]
+
+      source = AdapterCaseModule.reopen!(@adapter, source, source_path)
+
+      assert {:ok, %{chains: [reloaded_chain]}} =
+               @adapter.get_revision_chains(source, %{
+                 documents: [%{document_id: "doc", leaf_revisions: [leaf]}]
+               })
+
+      assert Enum.map(reloaded_chain.revisions, & &1.revision_id) == [root, leaf]
+      assert Enum.map(reloaded_chain.revisions, & &1.parent_revision) == [nil, root]
+
+      {:ok, dest_bundle} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-reopen-dest")
+      dest_path = AdapterCaseModule.adapter_path(adapter_module, dest_bundle)
+      assert {:ok, dest} = @adapter.create(dest_path, %{})
+
+      on_exit(fn ->
+        _ = @adapter.close(dest)
+        ElixirDB.TempDatabase.cleanup(dest_bundle)
+      end)
+
+      # Attachment guard: dest without blob rejects import.
+      assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+               @adapter.import_revision_chains(dest, %{chains: [reloaded_chain]})
+
+      assert {:ok, ^digest, ^length} = install_blob(dest_bundle, payload)
+
+      assert {:ok, %{revisions_inserted: 2, documents_changed: 1}} =
+               @adapter.import_revision_chains(dest, %{chains: [reloaded_chain]})
+
+      dest = AdapterCaseModule.reopen!(@adapter, dest, dest_path)
+
+      assert {:ok, %{revision: ^leaf, body: %{"n" => 1}, attachments: imported}} =
+               @adapter.get_document(dest, %{document_id: "doc"})
+
+      assert Map.fetch!(imported, "file.bin").digest == digest
+
+      assert {:ok, %{current_sequence: seq}} = @adapter.identity(dest)
+      assert seq >= 1
+    end
+
     defp install_blob(bundle_path, payload) when is_binary(bundle_path) and is_binary(payload) do
       assert {:ok, writer} = FilesystemStore.begin_put(bundle_path, byte_size(payload) + 1, %{})
       assert :ok = FilesystemStore.write_chunk(writer, payload)
