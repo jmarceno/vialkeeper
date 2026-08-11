@@ -3,8 +3,7 @@ defmodule ElixirDB.Storage.Registry do
   Backend selection boundary for the storage port layer.
 
   Runtime code resolves a configured backend module through this registry
-  instead of aliasing a physical engine. Wave 0 freezes the selection API;
-  later waves move catalog/owner open paths onto it.
+  instead of aliasing a physical engine.
 
   Configure `:storage_backend` under the `:elixir_db` application environment.
   """

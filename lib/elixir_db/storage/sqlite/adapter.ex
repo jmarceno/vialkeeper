@@ -14,6 +14,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.{Query, SQLite}
   alias ElixirDB.Query.{Normalizer, Prepared, SubscriptionRequest}
+  alias ElixirDB.Storage.BackendContext
 
   alias ElixirDB.Storage.SQLite.{
     Attachments,
@@ -134,6 +135,24 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @doc "Returns opaque SQLite capability metadata."
   @spec capabilities_report() :: map()
   def capabilities_report, do: Capabilities.report()
+
+  @doc "Wraps an open SQLite adapter in an opaque backend context."
+  @spec to_context(t()) :: BackendContext.t()
+  def to_context(%__MODULE__{} = adapter) do
+    bundle_root =
+      case adapter.path do
+        ":memory:" -> ":memory:"
+        path when is_binary(path) -> Path.dirname(path)
+      end
+
+    BackendContext.new(
+      backend: __MODULE__,
+      backend_ref: adapter,
+      bundle_root: bundle_root,
+      capabilities: capabilities_report(),
+      identity: adapter.identity
+    )
+  end
 
   @impl true
   def open(path, _options \\ %{}) do
