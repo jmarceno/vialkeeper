@@ -39,6 +39,6 @@ defmodule ElixirDB.DerivedView.SessionSupervisor do
       Worker.child_spec(uuid)
     ]
 
-    Supervisor.init(children, strategy: :one_for_one)
+    Supervisor.init(children, strategy: :one_for_all)
   end
 end

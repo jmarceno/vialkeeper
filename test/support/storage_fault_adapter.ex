@@ -287,6 +287,10 @@ defmodule ElixirDB.Storage.FaultAdapter do
     do: inner_module(inner).list_derived_sources(inner)
 
   @impl true
+  def set_derived_source_error(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).set_derived_source_error(inner, request)
+
+  @impl true
   def apply_derived_source_batch(%__MODULE__{inner: inner, fault: fault}, request) do
     inner_with_fault = %{inner | derived_fault: derived_fault_fn(fault)}
     inner_module(inner).apply_derived_source_batch(inner_with_fault, request)

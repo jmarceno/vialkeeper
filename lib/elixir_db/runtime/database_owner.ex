@@ -289,6 +289,9 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp handle_command(%Commands.ListDerivedSources{}, _from, state),
     do: reply(Adapter.list_derived_sources(state.adapter), state)
 
+  defp handle_command(%Commands.SetDerivedSourceError{request: request}, _from, state),
+    do: reply(Adapter.set_derived_source_error(state.adapter, request), state)
+
   defp handle_command(%Commands.ApplyDerivedSourceBatch{request: request}, _from, state),
     do: mutate(Adapter.apply_derived_source_batch(state.adapter, request), state)
 
@@ -318,8 +321,18 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     result = Adapter.set_derived_enabled(state.adapter, request)
 
     case result do
-      {:ok, _} ->
-        _ = DerivedViewManager.refresh(state.uuid)
+      {:ok, %{enabled: true}} ->
+        sources =
+          case Adapter.get_derived_view(state.adapter) do
+            {:ok, %{definition: %{sources: source_uuids}}} -> source_uuids
+            _ -> nil
+          end
+
+        _ = DerivedViewManager.start(state.uuid, sources)
+        reply(result, state)
+
+      {:ok, %{enabled: false}} ->
+        _ = DerivedViewManager.close(state.uuid)
         reply(result, state)
 
       _ ->

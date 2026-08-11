@@ -22,7 +22,8 @@ defmodule ElixirDB.Observability.Attributes do
   `max_blob_concurrency_observed`, `peak_reserved_transfer_bytes`, and
   `logical_blob_bytes`, and
   `finch.duration` (the telemetry bridge only: a
-  bounded numeric duration from the Finch stop event, never customer data).
+  bounded numeric duration from the Finch stop event, never customer data),
+  `derived.source_count`, `derived.document_count`, and `derived.group_count`.
 
   ## Forbidden (enforced by absence)
 
@@ -48,6 +49,9 @@ defmodule ElixirDB.Observability.Attributes do
     union_branch_count: :union_branch_count,
     replication_id: :"replication.id",
     endpoint: :endpoint,
+    derived_source_count: :"derived.source_count",
+    derived_document_count: :"derived.document_count",
+    derived_group_count: :"derived.group_count",
     entries: :entries,
     examined: :examined,
     revisions_written: :revisions_written,

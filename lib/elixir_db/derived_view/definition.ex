@@ -46,7 +46,8 @@ defmodule ElixirDB.DerivedView.Definition do
          {:ok, reducer} <- normalize_reducer(Map.get(definition, "reduce")),
          {:ok, group_level} <-
            normalize_group_level(definition, reducer, length(map_definition.key)),
-         {:ok, options} <- normalize_options(Map.get(definition, "options", %{}), length(sources)),
+         {:ok, options} <-
+           normalize_options(Map.get(definition, "options", %{}), length(sources), opts),
          {:ok, enabled} <- normalize_enabled(Map.get(definition, "enabled", true)),
          canonical <-
            canonical_definition(name, sources, map_definition, reducer, group_level, options),
@@ -102,6 +103,18 @@ defmodule ElixirDB.DerivedView.Definition do
     }
   end
 
+  @doc "Checks the persisted source count against the current host ceiling."
+  @spec validate_runtime_limits(t()) :: :ok | {:error, ElixirDB.Error.t()}
+  def validate_runtime_limits(%{sources: sources}) when is_list(sources) do
+    validate_source_count(
+      sources,
+      ElixirDB.Config.host_limits()[:max_materialized_view_sources] || 32
+    )
+  end
+
+  def validate_runtime_limits(_definition),
+    do: {:error, ElixirDB.Error.integrity_violation("materialized view definition is invalid")}
+
   defp known_fields(definition) do
     if Enum.all?(Map.keys(definition), &(&1 in @known_fields)),
       do: :ok,
@@ -125,11 +138,16 @@ defmodule ElixirDB.DerivedView.Definition do
     do: {:error, ElixirDB.Error.invalid_request("materialized view name is required")}
 
   defp normalize_sources(sources, opts) when is_list(sources) and sources != [] do
+    enforce_host_limits = Keyword.get(opts, :enforce_host_limits, true)
+
     max_sources =
       Keyword.get(
         opts,
         :max_sources,
-        ElixirDB.Config.host_limits()[:max_materialized_view_sources] || 32
+        if(enforce_host_limits,
+          do: ElixirDB.Config.host_limits()[:max_materialized_view_sources] || 32,
+          else: length(sources)
+        )
       )
 
     with :ok <- validate_source_count(sources, max_sources),
@@ -197,8 +215,9 @@ defmodule ElixirDB.DerivedView.Definition do
     end
   end
 
-  defp normalize_options(options, source_count) when is_map(options) do
+  defp normalize_options(options, source_count, opts) when is_map(options) do
     options = stringify_keys(options)
+    enforce_host_limits = Keyword.get(opts, :enforce_host_limits, true)
 
     if Enum.all?(Map.keys(options), &(&1 in @option_fields)) do
       defaults =
@@ -221,14 +240,33 @@ defmodule ElixirDB.DerivedView.Definition do
            :ok <-
              at_most(normalized["max_concurrent_sources"], source_count, "max_concurrent_sources"),
            :ok <-
-             at_most(
+             host_at_most(
                normalized["max_concurrent_sources"],
                max_concurrent_limit,
-               "max_concurrent_sources"
+               "max_concurrent_sources",
+               enforce_host_limits
              ),
-           :ok <- at_most(normalized["batch_documents"], batch_limit, "batch_documents"),
-           :ok <- at_most(normalized["retry_base_delay_ms"], retry_limit, "retry_base_delay_ms"),
-           :ok <- at_most(normalized["retry_max_delay_ms"], retry_limit, "retry_max_delay_ms"),
+           :ok <-
+             host_at_most(
+               normalized["batch_documents"],
+               batch_limit,
+               "batch_documents",
+               enforce_host_limits
+             ),
+           :ok <-
+             host_at_most(
+               normalized["retry_base_delay_ms"],
+               retry_limit,
+               "retry_base_delay_ms",
+               enforce_host_limits
+             ),
+           :ok <-
+             host_at_most(
+               normalized["retry_max_delay_ms"],
+               retry_limit,
+               "retry_max_delay_ms",
+               enforce_host_limits
+             ),
            :ok <- validate_retry_order(normalized) do
         {:ok, normalized}
       end
@@ -237,7 +275,7 @@ defmodule ElixirDB.DerivedView.Definition do
     end
   end
 
-  defp normalize_options(_, _),
+  defp normalize_options(_, _, _),
     do: {:error, ElixirDB.Error.invalid_request("materialized view options must be an object")}
 
   defp validate_source_count(sources, max_sources) when length(sources) <= max_sources, do: :ok
@@ -305,6 +343,9 @@ defmodule ElixirDB.DerivedView.Definition do
 
   defp at_most(_value, _maximum, field),
     do: {:error, ElixirDB.Error.resource_limit("materialized view #{field} exceeds the host limit")}
+
+  defp host_at_most(value, maximum, field, true), do: at_most(value, maximum, field)
+  defp host_at_most(_value, _maximum, _field, false), do: :ok
 
   defp canonical_definition(name, sources, map_definition, reducer, group_level, options) do
     %{

@@ -78,11 +78,11 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
                       derived.database_uuid,
                       {:command, :get_derived_view, %{}}
                     ) do
-                 {:ok, %{status: :ready}} -> true
+                 {:ok, %{status: :current}} -> true
                  _ -> false
                end
              end,
-             message: "derived view did not become ready"
+             message: "derived view did not become current"
            )
   end
 
@@ -105,9 +105,23 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
              message: "materializer did not process the first change"
            )
 
+    assert {:ok, %{enabled: false}} =
+             DatabaseCatalog.command(
+               derived.database_uuid,
+               {:command, :set_derived_enabled,
+                %{materialization_id: derived.materialization_id, enabled: false}}
+             )
+
     assert :ok = DatabaseCatalog.close(derived.database_uuid)
     assert :error = Worker.pid(derived.database_uuid)
     assert {:ok, _} = DatabaseCatalog.open(derived.database_uuid)
+
+    assert {:ok, %{enabled: true}} =
+             DatabaseCatalog.command(
+               derived.database_uuid,
+               {:command, :set_derived_enabled,
+                %{materialization_id: derived.materialization_id, enabled: true}}
+             )
 
     assert {:ok, _second} =
              ElixirDB.Documents.put(source_uuid, %{
@@ -124,6 +138,42 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
                end
              end,
              message: "materializer did not recover after reopening"
+           )
+  end
+
+  test "restarting a worker also replaces its source-task supervisor", %{source_uuid: source_uuid} do
+    {:ok, derived, derived_bundle} = create_derived(source_uuid)
+    on_exit(fn -> cleanup(derived.database_uuid, derived_bundle) end)
+
+    assert Eventual.eventually(
+             fn -> match?({:ok, _pid}, Worker.pid(derived.database_uuid)) end,
+             message: "derived worker did not start"
+           )
+
+    {:ok, old_worker} = Worker.pid(derived.database_uuid)
+
+    [{old_tasks, _}] =
+      Registry.lookup(
+        ElixirDB.Runtime.DatabaseRegistry,
+        {:derived_task_supervisor, derived.database_uuid}
+      )
+
+    Process.exit(old_worker, :kill)
+
+    assert Eventual.eventually(
+             fn ->
+               with {:ok, worker} <- Worker.pid(derived.database_uuid),
+                    [{tasks, _}] <-
+                      Registry.lookup(
+                        ElixirDB.Runtime.DatabaseRegistry,
+                        {:derived_task_supervisor, derived.database_uuid}
+                      ) do
+                 worker != old_worker and tasks != old_tasks
+               else
+                 _ -> false
+               end
+             end,
+             message: "derived worker restart did not replace its task supervisor"
            )
   end
 
@@ -280,8 +330,25 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
     do: :crypto.hash(:sha256, Canonical.encode!(value)) |> Base.encode16(case: :lower)
 
   defp cleanup(uuid, bundle) do
+    disable_derived(uuid)
     _ = DatabaseCatalog.close(uuid)
     _ = DatabaseCatalog.unregister(uuid)
     TempDatabase.cleanup(bundle)
+  end
+
+  defp disable_derived(uuid) do
+    case DatabaseCatalog.info(uuid) do
+      {:ok, %{database_kind: :derived}} ->
+        _ =
+          DatabaseCatalog.command(
+            uuid,
+            {:command, :set_derived_enabled, %{enabled: false}}
+          )
+
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 end

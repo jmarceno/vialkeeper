@@ -11,6 +11,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     AttachmentCoordinator,
     ChangeNotifier,
     DatabaseAdmission,
+    DatabaseOwner,
     DatabaseRuntimeSupervisor,
     Deadline,
     RegistrationManifest
@@ -764,7 +765,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp close_runtime(uuid) do
     # Prefer checking external close blockers before begin_close. Active
     # replication remains a hard blocker; callers must disable jobs first.
-    with false <- JobManager.active?(uuid),
+    with :ok <- DerivedViewManager.ensure_closable(uuid),
+         false <- JobManager.active?(uuid),
          :ok <- drain_admission(uuid) do
       close_runtime_after_admission_drain(uuid)
     else
@@ -816,8 +818,21 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
-  defp ensure_derived_manager(uuid, %{database_kind: :derived}),
-    do: DerivedViewManager.start(uuid)
+  defp ensure_derived_manager(uuid, %{database_kind: :derived}) do
+    case DatabaseOwner.command(uuid, {:command, :get_derived_view, %{}}) do
+      {:ok, %{enabled: true, definition: %{sources: sources}}} ->
+        DerivedViewManager.start(uuid, sources)
+
+      {:ok, %{enabled: false}} ->
+        DerivedViewManager.close(uuid)
+
+      {:ok, _metadata} ->
+        {:error, ElixirDB.Error.integrity_violation("derived enabled state is invalid")}
+
+      {:error, _} = error ->
+        error
+    end
+  end
 
   defp ensure_derived_manager(_uuid, _entry), do: :ok
 

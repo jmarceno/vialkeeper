@@ -56,6 +56,41 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     end
   end
 
+  @spec set_source_error_tx(Connection.handle(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def set_source_error_tx(conn, request) when is_map(request) do
+    with {:ok, metadata} <- fetch_metadata(conn),
+         :ok <- validate_materialization(metadata, request),
+         {:ok, source_uuid} <- required_uuid(request, :source_database_uuid),
+         {:ok, _source} <- fetch_source(conn, source_uuid),
+         {:ok, error_code} <- required_string(request, :error_code),
+         :ok <-
+           Connection.execute(
+             conn,
+             "UPDATE derived_sources SET last_error_code = ? WHERE source_database_uuid = ?",
+             [error_code, source_uuid]
+           ),
+         :ok <-
+           Connection.execute(
+             conn,
+             "UPDATE derived_view SET status = CASE WHEN enabled = 1 THEN 'stale' ELSE 'disabled' END, last_error_code = ? WHERE id = 1",
+             [error_code]
+           ) do
+      {:ok,
+       %{
+         materialization_id: metadata.materialization_id,
+         source_database_uuid: source_uuid,
+         last_error_code: error_code,
+         status: if(metadata.enabled, do: :stale, else: :disabled)
+       }}
+    else
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  def set_source_error_tx(_conn, _request),
+    do: {:error, ElixirDB.Error.invalid_request("derived source error must be an object")}
+
   @spec apply_source_batch_tx(map(), map(), keyword()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def apply_source_batch_tx(adapter, request, opts \\ [])
@@ -218,7 +253,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
                generation
              ]
            ),
-         :ok <- maybe_mark_ready(conn) do
+         :ok <- maybe_mark_current(conn) do
       {:ok,
        %{
          materialization_id: metadata.materialization_id,
@@ -235,17 +270,20 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   def finish_source_rebuild_tx(_conn, _request),
     do: {:error, ElixirDB.Error.invalid_request("derived rebuild finish must be an object")}
 
-  defp apply_batch_mode(_adapter, context, source, source_uuid, _batch, :idempotent, _opts) do
-    {:ok,
-     %{
-       materialization_id: context.metadata.materialization_id,
-       source_database_uuid: source_uuid,
-       checkpoint_sequence: source.checkpoint_sequence,
-       history_epoch: source.history_epoch,
-       applied: false,
-       last_sequence: 0,
-       changed_rows: 0
-     }}
+  defp apply_batch_mode(adapter, context, source, source_uuid, _batch, :idempotent, _opts) do
+    with :ok <- clear_source_error(adapter.conn, source_uuid),
+         :ok <- maybe_mark_current(adapter.conn) do
+      {:ok,
+       %{
+         materialization_id: context.metadata.materialization_id,
+         source_database_uuid: source_uuid,
+         checkpoint_sequence: source.checkpoint_sequence,
+         history_epoch: source.history_epoch,
+         applied: false,
+         last_sequence: 0,
+         changed_rows: 0
+       }}
+    end
   end
 
   defp apply_batch_mode(adapter, context, source, source_uuid, batch, :apply, opts) do
@@ -266,7 +304,8 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
              source_uuid,
              batch.history_epoch,
              batch.through
-           ) do
+           ),
+         :ok <- maybe_mark_current(adapter.conn) do
       {:ok,
        %{
          materialization_id: context.metadata.materialization_id,
@@ -1038,6 +1077,14 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     )
   end
 
+  defp clear_source_error(conn, source_uuid) do
+    Connection.execute(
+      conn,
+      "UPDATE derived_sources SET last_error_code = NULL WHERE source_database_uuid = ?",
+      [source_uuid]
+    )
+  end
+
   defp validate_rebuild_source(%{state: :rebuilding, rebuild_generation: generation}, generation),
     do: :ok
 
@@ -1065,10 +1112,13 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     end
   end
 
-  defp maybe_mark_ready(conn) do
-    case Connection.query(conn, "SELECT count(*) FROM derived_sources WHERE state != 'active'") do
+  defp maybe_mark_current(conn) do
+    case Connection.query(
+           conn,
+           "SELECT count(*) FROM derived_sources WHERE state != 'active' OR last_error_code IS NOT NULL"
+         ) do
       {:ok, [[0]]} ->
-        Connection.execute(conn, "UPDATE derived_view SET status = 'ready' WHERE id = 1")
+        Connection.execute(conn, "UPDATE derived_view SET status = 'current' WHERE id = 1")
 
       {:ok, [[_count]]} ->
         :ok
@@ -1126,7 +1176,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
 
   defp decode_definition(json) when is_binary(json) do
     with {:ok, decoded} <- StrictDecoder.decode(json),
-         {:ok, normalized} <- Definition.normalize(decoded) do
+         {:ok, normalized} <- Definition.normalize(decoded, enforce_host_limits: false) do
       {:ok, normalized}
     else
       {:error, _} ->
@@ -1198,7 +1248,9 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
 
   defp status_atom("disabled"), do: :disabled
   defp status_atom("rebuilding"), do: :rebuilding
-  defp status_atom("ready"), do: :ready
+  defp status_atom("current"), do: :current
+  defp status_atom("stale"), do: :stale
+  defp status_atom("resource_limit"), do: :resource_limit
   defp status_atom(_), do: :unknown
 
   defp enabled_status(_metadata, false), do: "disabled"

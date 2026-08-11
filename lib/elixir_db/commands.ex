@@ -335,6 +335,12 @@ defmodule ElixirDB.Commands do
     defstruct request: %{}
   end
 
+  defmodule SetDerivedSourceError do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
   defmodule ApplyDerivedSourceBatch do
     @moduledoc false
     @enforce_keys [:request]
@@ -501,6 +507,9 @@ defmodule ElixirDB.Commands do
 
   def normalize({:command, :list_derived_sources, request}),
     do: %ListDerivedSources{request: request || %{}}
+
+  def normalize({:command, :set_derived_source_error, request}),
+    do: %SetDerivedSourceError{request: request}
 
   def normalize({:command, :apply_derived_source_batch, request}),
     do: %ApplyDerivedSourceBatch{request: request}

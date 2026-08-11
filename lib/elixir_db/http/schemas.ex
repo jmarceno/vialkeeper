@@ -102,6 +102,17 @@ defmodule ElixirDB.HTTP.Schemas do
     "bookmark"
   ]
   @view_rebuild []
+  @materialized_view_create [
+    "version",
+    "name",
+    "sources",
+    "map",
+    "reduce",
+    "group_level",
+    "options",
+    "enabled"
+  ]
+  @materialized_view_action []
 
   def allowed(:document_get), do: @document_get
   def allowed(:document_put), do: @document_put
@@ -131,6 +142,8 @@ defmodule ElixirDB.HTTP.Schemas do
   def allowed(:view_create), do: @view_create
   def allowed(:view_query), do: @view_query
   def allowed(:view_rebuild), do: @view_rebuild
+  def allowed(:materialized_view_create), do: @materialized_view_create
+  def allowed(:materialized_view_action), do: @materialized_view_action
 
   def opts(schema, message) when is_atom(schema) and is_binary(message) do
     [allowed_fields: allowed(schema), unknown_message: message]

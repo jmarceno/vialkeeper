@@ -11,6 +11,7 @@ defmodule ElixirDB.HTTP.Router do
     Documents,
     Federation,
     Indexes,
+    MaterializedViews,
     QueryStream,
     Replications,
     ReplicationWire,
@@ -45,6 +46,7 @@ defmodule ElixirDB.HTTP.Router do
   forward("/v1/databases/:uuid/replication", to: ReplicationWire)
   forward("/v1/databases/:uuid/views", to: Views)
   forward("/v1/federation", to: Federation)
+  forward("/v1/materialized-views", to: MaterializedViews)
 
   # Query shares the indexes route module (match+delegate).
   # Stream must be registered before the ordinary query POST.

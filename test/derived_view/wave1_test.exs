@@ -81,6 +81,12 @@ defmodule ElixirDB.DerivedView.Wave1Test do
     assert Enum.any?(entries, &(&1.database_uuid == uuid and &1.database_kind == :derived))
     assert File.exists?(Path.join(original, "database.sqlite3"))
 
+    assert {:ok, %{enabled: false}} =
+             DatabaseCatalog.command(
+               uuid,
+               {:command, :set_derived_enabled, %{materialization_id: uuid, enabled: false}}
+             )
+
     assert :ok = DatabaseCatalog.close(uuid)
     assert :ok = DatabaseCatalog.unregister(uuid)
     assert :ok = File.rename(original, moved)
@@ -108,6 +114,7 @@ defmodule ElixirDB.DerivedView.Wave1Test do
     bundle = Path.join(ElixirDB.Config.database_root(), identity.database_path)
 
     on_exit(fn ->
+      _ = DatabaseCatalog.command(uuid, {:command, :set_derived_enabled, %{enabled: false}})
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
       ElixirDB.TempDatabase.cleanup(bundle)

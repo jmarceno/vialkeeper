@@ -545,6 +545,11 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   def list_derived_sources(%__MODULE__{conn: conn}), do: DerivedViews.list_sources(conn)
 
   @impl true
+  def set_derived_source_error(%__MODULE__{conn: conn}, request) do
+    transaction(%__MODULE__{conn: conn}, fn -> DerivedViews.set_source_error_tx(conn, request) end)
+  end
+
+  @impl true
   def apply_derived_source_batch(%__MODULE__{derived_fault: derived_fault} = adapter, request) do
     transaction(adapter, fn ->
       DerivedViews.apply_source_batch_tx(adapter, request, derived_fault: derived_fault)

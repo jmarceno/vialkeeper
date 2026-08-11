@@ -199,7 +199,7 @@ defmodule ElixirDB.DerivedView.Wave2Test do
              ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
   end
 
-  test "rebuild generations prune stale contributions before becoming ready", %{source: source} do
+  test "rebuild generations prune stale contributions before becoming current", %{source: source} do
     {:ok, derived, bundle} =
       create_derived(source.database_uuid, %{
         map: %{key: [%{"path" => "/kind"}]}
@@ -273,7 +273,7 @@ defmodule ElixirDB.DerivedView.Wave2Test do
                 }}
              )
 
-    assert {:ok, %{status: :ready}} =
+    assert {:ok, %{status: :current}} =
              DatabaseCatalog.command(derived.database_uuid, {:command, :get_derived_view, %{}})
 
     assert {:error, %ElixirDB.Error{code: :document_not_found}} =
@@ -290,6 +290,14 @@ defmodule ElixirDB.DerivedView.Wave2Test do
       })
 
     on_exit(fn -> cleanup(derived.database_uuid, bundle) end)
+
+    assert {:ok, %{enabled: false}} =
+             DatabaseCatalog.command(
+               derived.database_uuid,
+               {:command, :set_derived_enabled,
+                %{materialization_id: derived.materialization_id, enabled: false}}
+             )
+
     assert :ok = DatabaseCatalog.close(derived.database_uuid)
     assert :ok = DatabaseCatalog.unregister(derived.database_uuid)
 
@@ -368,8 +376,20 @@ defmodule ElixirDB.DerivedView.Wave2Test do
   end
 
   defp cleanup(uuid, bundle) do
+    disable_derived(uuid)
     _ = DatabaseCatalog.close(uuid)
     _ = DatabaseCatalog.unregister(uuid)
     TempDatabase.cleanup(bundle)
+  end
+
+  defp disable_derived(uuid) do
+    case DatabaseCatalog.info(uuid) do
+      {:ok, %{database_kind: :derived}} ->
+        _ = DatabaseCatalog.command(uuid, {:command, :set_derived_enabled, %{enabled: false}})
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 end

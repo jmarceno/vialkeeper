@@ -196,6 +196,15 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
   defp template_for(["v1", "federation", "saved-queries", "execute"]),
     do: "/v1/federation/saved-queries/execute"
 
+  defp template_for(["v1", "materialized-views"]), do: "/v1/materialized-views"
+
+  defp template_for(["v1", "materialized-views", _uuid]),
+    do: "/v1/materialized-views/:derived_uuid"
+
+  defp template_for(["v1", "materialized-views", _uuid, action])
+       when action in ~w(refresh rebuild enable disable),
+       do: "/v1/materialized-views/:derived_uuid/" <> action
+
   defp template_for(["v1", "databases"]), do: "/v1/databases"
   defp template_for(["v1", "databases", _uuid]), do: "/v1/databases/:uuid"
   defp template_for(["v1", "databases", _uuid, "config"]), do: "/v1/databases/:uuid/config"
@@ -263,6 +272,7 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
   defp database_uuid(conn) do
     case conn.path_info do
       ["v1", "databases", uuid | _] -> uuid
+      ["v1", "materialized-views", uuid | _] -> uuid
       _ -> nil
     end
   end

@@ -4,8 +4,10 @@ defmodule ElixirDB.DerivedView.Worker do
   require Logger
 
   alias ElixirDB.Changes
+  alias ElixirDB.DerivedView.Definition
   alias ElixirDB.DerivedView.Supervisor
   alias ElixirDB.Error
+  alias ElixirDB.Observability.Instrumentation.DerivedView, as: DerivedViewInstrumentation
   alias ElixirDB.Runtime.{ChangeNotifier, ChildSpec, DatabaseCatalog}
   alias ElixirDB.Storage.Results.ReadChanges
   alias ElixirDB.View.Program
@@ -35,6 +37,16 @@ defmodule ElixirDB.DerivedView.Worker do
   def refresh(uuid) when is_binary(uuid) do
     case pid(uuid) do
       {:ok, worker} -> GenServer.cast(worker, :refresh)
+      :error -> :ok
+    end
+
+    :ok
+  end
+
+  @spec rebuild(binary()) :: :ok
+  def rebuild(uuid) when is_binary(uuid) do
+    case pid(uuid) do
+      {:ok, worker} -> GenServer.cast(worker, :rebuild)
       :error -> :ok
     end
 
@@ -72,6 +84,7 @@ defmodule ElixirDB.DerivedView.Worker do
        retry_attempt: 0,
        retry_timer: nil,
        needs_rebuild: MapSet.new(),
+       force_rebuild: false,
        status: :starting
      }}
   end
@@ -118,18 +131,33 @@ defmodule ElixirDB.DerivedView.Worker do
   end
 
   @impl true
+  def handle_cast(:rebuild, state) do
+    if state.metadata == nil or state.status == :resource_limit do
+      send(self(), :bootstrap)
+      {:noreply, %{state | force_rebuild: true, status: :starting}}
+    else
+      state =
+        state
+        |> cancel_tasks()
+        |> cancel_retry_timer()
+        |> Map.put(:needs_rebuild, MapSet.new(Map.keys(state.sources)))
+        |> Map.merge(%{
+          operation: nil,
+          work_queued: false,
+          work_requested: false,
+          retry_attempt: 0,
+          status: :rebuilding
+        })
+
+      {:noreply, request_work(state)}
+    end
+  end
+
+  @impl true
   def handle_info(:bootstrap, state) do
     case load_context(state.uuid) do
       {:ok, metadata, sources} ->
-        state = put_context(state, metadata, sources)
-
-        case configure_subscriptions(state) do
-          {:ok, state} ->
-            {:noreply, request_work(reset_retry(state))}
-
-          {:error, source_uuid, error, state} ->
-            {:noreply, handle_failure(state, source_uuid, error)}
-        end
+        bootstrap_context(state, metadata, sources)
 
       {:error, error} ->
         {:noreply, handle_failure(state, nil, error)}
@@ -147,6 +175,9 @@ defmodule ElixirDB.DerivedView.Worker do
 
     cond do
       state.metadata == nil ->
+        {:noreply, state}
+
+      state.status == :resource_limit ->
         {:noreply, state}
 
       not enabled?(state) ->
@@ -205,6 +236,23 @@ defmodule ElixirDB.DerivedView.Worker do
     end
   end
 
+  defp bootstrap_context(state, metadata, sources) do
+    state = put_context(state, metadata, sources)
+
+    case Definition.validate_runtime_limits(metadata.definition) do
+      :ok -> bootstrap_subscriptions(force_rebuild_sources(state))
+      {:error, %Error{code: :resource_limit} = error} -> {:noreply, resource_limited(state, error)}
+      {:error, error} -> {:noreply, handle_failure(state, nil, error)}
+    end
+  end
+
+  defp bootstrap_subscriptions(state) do
+    case configure_subscriptions(state) do
+      {:ok, state} -> {:noreply, request_work(reset_retry(state))}
+      {:error, source_uuid, error, state} -> {:noreply, handle_failure(state, source_uuid, error)}
+    end
+  end
+
   defp load_context(uuid) do
     with {:ok, metadata} <-
            DatabaseCatalog.command_as(uuid, :maintenance, {:command, :get_derived_view, %{}}),
@@ -223,6 +271,12 @@ defmodule ElixirDB.DerivedView.Worker do
         status: if(metadata.enabled, do: metadata.status, else: :disabled)
     }
   end
+
+  defp force_rebuild_sources(%{force_rebuild: true} = state) do
+    %{state | force_rebuild: false, needs_rebuild: MapSet.new(Map.keys(state.sources))}
+  end
+
+  defp force_rebuild_sources(state), do: state
 
   defp configure_subscriptions(state) do
     if enabled?(state) do
@@ -488,7 +542,7 @@ defmodule ElixirDB.DerivedView.Worker do
       catchup_sequence: identity.current_sequence
     }
 
-    case destination_command(state.uuid, :begin_derived_source_rebuild, request) do
+    case instrumented_destination_command(state, :begin_derived_source_rebuild, request) do
       {:ok, %{generation: generation}} ->
         source = Map.fetch!(state.sources, source_uuid)
 
@@ -522,8 +576,8 @@ defmodule ElixirDB.DerivedView.Worker do
   defp apply_snapshot_page(state, operation, page) do
     with {:ok, rows, removals} <- documents_to_rows(state.definition, Map.get(page, :documents, [])),
          {:ok, _result} <-
-           destination_command(
-             state.uuid,
+           instrumented_destination_command(
+             state,
              :apply_derived_rebuild_page,
              rebuild_page_request(state, operation, rows, removals, page.next_after)
            ) do
@@ -568,7 +622,7 @@ defmodule ElixirDB.DerivedView.Worker do
       limit: batch_limit(state.definition)
     }
 
-    case destination_command(state.uuid, :prune_derived_rebuild_stale_page, request) do
+    case instrumented_destination_command(state, :prune_derived_rebuild_stale_page, request) do
       {:ok, %{has_more: true, next_after_document_id: next_after}} ->
         request_work(%{state | operation: %{operation | prune_cursor: next_after}})
 
@@ -606,7 +660,7 @@ defmodule ElixirDB.DerivedView.Worker do
       source_history_epoch: operation.history_epoch
     }
 
-    case destination_command(state.uuid, :finish_derived_source_rebuild, request) do
+    case instrumented_destination_command(state, :finish_derived_source_rebuild, request) do
       {:ok, _result} ->
         complete_rebuild(state)
 
@@ -692,7 +746,8 @@ defmodule ElixirDB.DerivedView.Worker do
     request = rebuild_page_request(state, operation, rows, removals, nil)
     request = Map.put(request, :catchup_sequence, next_cursor)
 
-    with {:ok, _result} <- destination_command(state.uuid, :apply_derived_rebuild_page, request) do
+    with {:ok, _result} <-
+           instrumented_destination_command(state, :apply_derived_rebuild_page, request) do
       source = Map.fetch!(state.sources, operation.source_uuid)
       source = %{source | rebuild_catchup_sequence: next_cursor}
       operation = next_replay_operation(operation, next_cursor, has_more?, history_epoch)
@@ -742,7 +797,7 @@ defmodule ElixirDB.DerivedView.Worker do
 
     case Enum.reduce_while(ordered_sources, {:ok, state}, &reduce_active_source/2) do
       {:ok, state} ->
-        state = %{state | status: :ready, retry_attempt: 0}
+        state = %{state | status: :current, retry_attempt: 0}
 
         if state.work_requested,
           do: request_work(%{state | work_requested: false}),
@@ -768,8 +823,8 @@ defmodule ElixirDB.DerivedView.Worker do
        }) do
     with {:ok, rows, removals} <- changes_to_rows(state.definition, changes, envelopes),
          {:ok, applied} <-
-           destination_command(
-             state.uuid,
+           instrumented_destination_command(
+             state,
              :apply_derived_source_batch,
              %{
                materialization_id: state.metadata.materialization_id,
@@ -800,7 +855,8 @@ defmodule ElixirDB.DerivedView.Worker do
       Map.merge(source, %{
         state: :active,
         checkpoint_sequence: result.checkpoint_sequence,
-        history_epoch: result.history_epoch
+        history_epoch: result.history_epoch,
+        last_error_code: nil
       })
 
     {:ok, %{state | sources: Map.put(state.sources, source.source_database_uuid, source)}}
@@ -1001,8 +1057,11 @@ defmodule ElixirDB.DerivedView.Worker do
     }
   end
 
-  defp destination_command(uuid, command, request),
-    do: DatabaseCatalog.command_as(uuid, :maintenance, {:command, command, request})
+  defp instrumented_destination_command(state, command, request) do
+    DerivedViewInstrumentation.batch(state.uuid, map_size(state.sources), fn ->
+      DatabaseCatalog.command_as(state.uuid, :maintenance, {:command, command, request})
+    end)
+  end
 
   defp start_task(state, token, fun) do
     with {:ok, supervisor} <- Supervisor.task_supervisor_pid(state.uuid) do
@@ -1032,6 +1091,7 @@ defmodule ElixirDB.DerivedView.Worker do
 
   defp handle_failure(state, source_uuid, %Error{} = error) do
     state = cancel_tasks(%{state | operation: nil})
+    state = record_source_error(state, source_uuid, error)
 
     cond do
       error.code in [:history_truncated, :source_history_reset] and is_binary(source_uuid) ->
@@ -1050,6 +1110,7 @@ defmodule ElixirDB.DerivedView.Worker do
 
         state
         |> maybe_remove_subscription(source_uuid)
+        |> Map.put(:status, :stale)
         |> schedule_retry()
     end
   end
@@ -1084,6 +1145,52 @@ defmodule ElixirDB.DerivedView.Worker do
     )
   end
 
+  defp record_source_error(
+         %{metadata: %{materialization_id: materialization_id}} = state,
+         source_uuid,
+         %Error{code: code}
+       )
+       when is_binary(source_uuid) do
+    request = %{
+      materialization_id: materialization_id,
+      source_database_uuid: source_uuid,
+      error_code: Atom.to_string(code)
+    }
+
+    case DatabaseCatalog.command_as(
+           state.uuid,
+           :maintenance,
+           {:command, :set_derived_source_error, request}
+         ) do
+      {:ok, _} ->
+        %{state | status: :stale}
+
+      {:error, persist_error} ->
+        Logger.warning(
+          "derived materializer could not persist source error database=#{state.uuid} source=#{source_uuid} error=#{inspect(persist_error)}"
+        )
+
+        %{state | status: :stale}
+    end
+  end
+
+  defp record_source_error(state, _source_uuid, _error), do: state
+
+  defp resource_limited(state, error) do
+    log_failure(state, nil, error)
+
+    state
+    |> cancel_tasks()
+    |> cancel_retry_timer()
+    |> unsubscribe_all()
+    |> Map.merge(%{
+      operation: nil,
+      work_queued: false,
+      work_requested: false,
+      status: :resource_limit
+    })
+  end
+
   defp schedule_retry(state) do
     if is_reference(state.retry_timer) do
       state
@@ -1096,8 +1203,9 @@ defmodule ElixirDB.DerivedView.Worker do
 
   defp retry_delay(state, attempt) do
     options = if is_map(state.definition), do: state.definition.options, else: %{}
-    base = Map.get(options, "retry_base_delay_ms", 500)
-    maximum = Map.get(options, "retry_max_delay_ms", 30_000)
+    ceiling = ElixirDB.Config.host_limits()[:max_materialized_view_retry_delay_ms] || 300_000
+    base = min(Map.get(options, "retry_base_delay_ms", 500), ceiling)
+    maximum = min(Map.get(options, "retry_max_delay_ms", 30_000), ceiling)
     min(maximum, base * Integer.pow(2, min(attempt - 1, 16)))
   end
 
@@ -1149,15 +1257,20 @@ defmodule ElixirDB.DerivedView.Worker do
 
   defp source_since(%{checkpoint_sequence: checkpoint}), do: checkpoint
 
-  defp batch_limit(definition), do: Map.get(definition.options, "batch_documents", 100)
+  defp batch_limit(definition) do
+    ceiling = ElixirDB.Config.host_limits()[:max_materialized_view_batch_documents] || 500
+    min(Map.get(definition.options, "batch_documents", 100), ceiling)
+  end
 
   defp source_batch_limit(definition, identity) do
     source_limit = get_in(identity, [:config, "changes", "max_batch"])
     min(batch_limit(definition), source_limit || batch_limit(definition))
   end
 
-  defp max_concurrent_sources(state),
-    do: Map.get(state.definition.options, "max_concurrent_sources", 1)
+  defp max_concurrent_sources(state) do
+    ceiling = ElixirDB.Config.host_limits()[:max_materialized_view_concurrent_sources] || 16
+    min(Map.get(state.definition.options, "max_concurrent_sources", 1), ceiling)
+  end
 
   defp operation_name(nil), do: nil
   defp operation_name(%{kind: :active}), do: :active

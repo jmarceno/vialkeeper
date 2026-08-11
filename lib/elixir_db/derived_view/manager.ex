@@ -11,16 +11,39 @@ defmodule ElixirDB.DerivedView.Manager do
   def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
   @spec start(binary()) :: :ok | {:error, term()}
-  def start(uuid) when is_binary(uuid),
-    do: GenServer.call(__MODULE__, {:start, uuid}, @call_timeout)
+  def start(uuid) when is_binary(uuid), do: start(uuid, nil)
+
+  @spec start(binary(), [binary()] | nil) :: :ok | {:error, term()}
+  def start(uuid, source_uuids) when is_binary(uuid) do
+    GenServer.call(__MODULE__, {:start, uuid, source_uuids}, @call_timeout)
+  end
 
   @spec close(binary()) :: :ok | {:error, term()}
   def close(uuid) when is_binary(uuid),
     do: GenServer.call(__MODULE__, {:close, uuid}, @call_timeout)
 
+  @spec ensure_closable(binary()) :: :ok | {:error, ElixirDB.Error.t()}
+  def ensure_closable(uuid) when is_binary(uuid) do
+    GenServer.call(__MODULE__, {:ensure_closable, uuid}, @call_timeout)
+  catch
+    :exit, reason ->
+      {:error,
+       ElixirDB.Error.database_unavailable("derived materializer lifecycle is unavailable", %{
+         cause: inspect(reason)
+       })}
+  end
+
   @spec refresh(binary()) :: :ok
   def refresh(uuid) when is_binary(uuid) do
     GenServer.cast(__MODULE__, {:refresh, uuid})
+    :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  @spec rebuild(binary()) :: :ok
+  def rebuild(uuid) when is_binary(uuid) do
+    GenServer.cast(__MODULE__, {:rebuild, uuid})
     :ok
   catch
     :exit, _ -> :ok
@@ -32,11 +55,16 @@ defmodule ElixirDB.DerivedView.Manager do
   @impl true
   def init(_args) do
     send(self(), :reconcile)
-    {:ok, %{sessions: %{}, desired: MapSet.new()}}
+    {:ok, %{sessions: %{}, desired: MapSet.new(), dependencies: %{}, enabled: %{}}}
   end
 
   @impl true
-  def handle_call({:start, uuid}, _from, state) do
+  def handle_call({:start, uuid, source_uuids}, _from, state) do
+    state =
+      state
+      |> put_enabled(uuid, true)
+      |> put_dependencies(uuid, source_uuids)
+
     case ensure_session(uuid, %{state | desired: MapSet.put(state.desired, uuid)}) do
       {:ok, next} -> {:reply, :ok, next}
       {:error, reason, next} -> {:reply, {:error, reason}, next}
@@ -48,14 +76,52 @@ defmodule ElixirDB.DerivedView.Manager do
     state = %{state | desired: MapSet.delete(state.desired, uuid)}
 
     case Supervisor.stop_session(uuid) do
-      :ok -> {:reply, :ok, %{state | sessions: Map.delete(state.sessions, uuid)}}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      :ok ->
+        state =
+          state
+          |> Map.update!(:sessions, &Map.delete(&1, uuid))
+          |> Map.update!(:enabled, &Map.delete(&1, uuid))
+          |> remove_dependencies(uuid)
+
+        {:reply, :ok, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:ensure_closable, uuid}, _from, state) do
+    cond do
+      Map.get(state.enabled, uuid, false) ->
+        {:reply,
+         {:error,
+          ElixirDB.Error.database_not_closable(
+            "enabled derived materializer must be disabled before close"
+          )}, state}
+
+      (dependents = Map.get(state.dependencies, uuid, MapSet.new())) |> MapSet.size() > 0 ->
+        {:reply,
+         {:error,
+          ElixirDB.Error.database_not_closable(
+            "database has active derived materializer dependencies",
+            %{dependent_count: MapSet.size(dependents)}
+          )}, state}
+
+      true ->
+        {:reply, :ok, state}
     end
   end
 
   @impl true
   def handle_cast({:refresh, uuid}, state) do
     _ = Worker.refresh(uuid)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:rebuild, uuid}, state) do
+    _ = Worker.rebuild(uuid)
     {:noreply, state}
   end
 
@@ -121,6 +187,33 @@ defmodule ElixirDB.DerivedView.Manager do
       {:error, reason} ->
         {:error, reason, state}
     end
+  end
+
+  defp put_enabled(state, uuid, enabled),
+    do: %{state | enabled: Map.put(state.enabled, uuid, enabled)}
+
+  defp put_dependencies(state, _uuid, nil), do: state
+
+  defp put_dependencies(state, uuid, source_uuids) when is_list(source_uuids) do
+    state = remove_dependencies(state, uuid)
+
+    dependencies =
+      Enum.reduce(source_uuids, state.dependencies, fn source_uuid, acc ->
+        Map.update(acc, source_uuid, MapSet.new([uuid]), &MapSet.put(&1, uuid))
+      end)
+
+    %{state | dependencies: dependencies}
+  end
+
+  defp remove_dependencies(state, uuid) do
+    dependencies =
+      state.dependencies
+      |> Enum.reduce(%{}, fn {source_uuid, derived_uuids}, acc ->
+        remaining = MapSet.delete(derived_uuids, uuid)
+        if MapSet.size(remaining) == 0, do: acc, else: Map.put(acc, source_uuid, remaining)
+      end)
+
+    %{state | dependencies: dependencies}
   end
 
   defp track_session(sessions, uuid, pid) do
