@@ -120,6 +120,8 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
     home = request("GET", "/ui/fragments/home")
     assert home.status == 200
     assert home.resp_body =~ "Console"
+    assert get_header(home, "x-elixirdb-auth") == "off"
+    refute get_header(shell, "x-elixirdb-auth")
   end
 
   test "auth enabled: shell and assets are anonymous; fragments require bearer" do
@@ -146,6 +148,7 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
     assert malformed.status == 401
     assert wrong.status == 401
     assert ok.status == 200
+    refute get_header(ok, "x-elixirdb-auth")
     assert error_payload(missing) == error_payload(malformed)
     assert error_payload(missing) == error_payload(wrong)
   end

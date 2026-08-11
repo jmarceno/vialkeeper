@@ -132,8 +132,8 @@
       showAuthForm();
       return;
     }
-    // When home succeeds without an Authorization header, drop any leftover
-    // session token. Do not clear after authenticated successes.
+    // Auth-disabled fragment responses advertise x-elixirdb-auth: off so a
+    // leftover session token can be discarded without a second probe.
     if (xhr.status >= 200 && xhr.status < 300) {
       var path = "";
       try {
@@ -141,13 +141,7 @@
       } catch (_error) {
         path = "";
       }
-      if (path !== "/ui/fragments/home") {
-        return;
-      }
-      var headers =
-        (event.detail.requestConfig && event.detail.requestConfig.headers) || {};
-      var authorization = headers.Authorization || headers.authorization || "";
-      if (!authorization) {
+      if (path === "/ui/fragments/home" && xhr.getResponseHeader("x-elixirdb-auth") === "off") {
         setToken("");
       }
     }

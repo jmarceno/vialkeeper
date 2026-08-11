@@ -36,7 +36,11 @@ defmodule ElixirDB.WebUI.Response do
   Sends a successful HTML fragment for HTMX swaps.
   """
   @spec fragment(Plug.Conn.t(), iodata()) :: Plug.Conn.t()
-  def fragment(conn, body), do: html(conn, 200, body)
+  def fragment(conn, body) do
+    conn
+    |> maybe_auth_off_header()
+    |> html(200, body)
+  end
 
   @doc """
   Renders a safe HTML error fragment from an `ElixirDB.Error`.
@@ -68,5 +72,18 @@ defmodule ElixirDB.WebUI.Response do
     Enum.reduce(@security_headers, conn, fn {name, value}, acc ->
       put_resp_header(acc, name, value)
     end)
+  end
+
+  # Successful state-bearing fragments may tell the bootstrap that bearer auth
+  # is not required so a leftover session token can be discarded. The anonymous
+  # shell never includes this header.
+  defp maybe_auth_off_header(conn) do
+    auth = Application.get_env(:elixir_db, :auth, [])
+
+    if Keyword.get(auth, :enabled, false) do
+      conn
+    else
+      put_resp_header(conn, "x-elixirdb-auth", "off")
+    end
   end
 end
