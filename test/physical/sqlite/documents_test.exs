@@ -3,6 +3,8 @@ defmodule ElixirDB.StorageAdapter.DocumentsTest do
 
   use ExUnit.Case, async: true
 
+  @moduletag :sqlite_physical
+
   alias ElixirDB.Storage.SQLite.Adapter
 
   setup do

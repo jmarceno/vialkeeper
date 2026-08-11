@@ -1,35 +1,28 @@
-defmodule ElixirDB.StorageAdapter.RetentionContractTest do
+defmodule ElixirDB.Storage.Contracts.Retention do
   @moduledoc """
-  Dual-backend contract coverage for retention compaction, boundary keys,
-  integrity after trim, peer regression, and attachment metadata invariants.
+  Shared retention and attachment metadata contract tests for storage adapters.
   """
 
-  use ExUnit.Case, async: true
+  defmacro __using__(opts) do
+    # The contract tests must be injected into each adapter module.
+    # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
+    quote do
+      use ElixirDB.Storage.AdapterCase, unquote(opts)
 
-  alias ElixirDB.Domain.BoundaryPage
-  alias ElixirDB.Storage.AdapterCase
+      alias ElixirDB.Domain.BoundaryPage
 
-  @adapters [ElixirDB.Storage.SQLite.Adapter, ElixirDB.Storage.Memory.Adapter]
-  @digest_a String.duplicate("a", 64)
-  @digest_b String.duplicate("b", 64)
-  @digest_c String.duplicate("c", 64)
+      @digest_a String.duplicate("a", 64)
+      @digest_b String.duplicate("b", 64)
+      @digest_c String.duplicate("c", 64)
 
-  @retention_config %{
-    "retention" => %{
-      "mode" => "stable_frontier",
-      "history_depth" => 0,
-      "peer_expiry_ms" => 86_400_000,
-      "schedule" => "disabled"
-    }
-  }
-
-  for adapter <- @adapters do
-    @adapter adapter
-
-    describe "#{inspect(@adapter)}" do
-      setup do
-        AdapterCase.open_temp_adapter(@adapter, %{})
-      end
+      @retention_config %{
+        "retention" => %{
+          "mode" => "stable_frontier",
+          "history_depth" => 0,
+          "peer_expiry_ms" => 86_400_000,
+          "schedule" => "disabled"
+        }
+      }
 
       test "disabled retention compaction is a no-op", %{adapter: adapter} do
         assert {:ok, %{revision: _}} =

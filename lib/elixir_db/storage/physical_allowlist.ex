@@ -4,9 +4,8 @@ defmodule ElixirDB.Storage.PhysicalAllowlist do
 
   Outside this allowlist, product, runtime, domain, and documentation sources
   must not embed engine names, SQL transaction modes, PRAGMA, rowid, or the
-  `database.sqlite3` artifact name. Wave 7 moves remaining physical tests under
-  dedicated paths; until then, classified physical test and support files are
-  listed explicitly.
+  `database.sqlite3` artifact name. Classified physical test and support files
+  are listed explicitly.
   """
 
   @path_prefixes [
@@ -14,7 +13,7 @@ defmodule ElixirDB.Storage.PhysicalAllowlist do
     "priv/sqlite/",
     "test/physical/sqlite/",
     "test/elixir_db/storage/sqlite/",
-    "bench/exqlite"
+    "bench/"
   ]
 
   @path_files [
@@ -25,17 +24,19 @@ defmodule ElixirDB.Storage.PhysicalAllowlist do
     "lib/elixir_db/storage/physical_allowlist.ex",
     "lib/elixir_db/storage/ports.ex",
     "lib/elixir_db/storage/sentinel/context.ex",
-    "bench/exqlite_overhead_benchmark.exs",
+    "bench/sqlite_exqlite_overhead_benchmark.exs",
+    "bench/product_benchmark.exs",
+    "bench/README.md",
     "config/config.exs",
     "test/storage/boundary_guard_test.exs"
   ]
 
   @classified_physical_tests [
-    "test/storage_adapter/portability_test.exs",
-    "test/storage_adapter/memory_mode_test.exs",
-    "test/storage_adapter/v1_conformance_test.exs",
-    "test/storage_adapter/full_text_indexes_test.exs",
-    "test/storage_adapter/integrity_test.exs",
+    "test/physical/sqlite/portability_test.exs",
+    "test/physical/sqlite/storage_mode_test.exs",
+    "test/physical/sqlite/v1_conformance_test.exs",
+    "test/physical/sqlite/full_text_indexes_test.exs",
+    "test/physical/sqlite/integrity_test.exs",
     "test/runtime/file_lease_os_process_test.exs",
     "test/runtime/file_lease_test.exs",
     "test/end_to_end/hot_journal_recovery_test.exs",
@@ -45,8 +46,8 @@ defmodule ElixirDB.Storage.PhysicalAllowlist do
   ]
 
   @classified_physical_support [
-    "test/support/temp_database.ex",
-    "test/support/adapter_case.ex"
+    "test/support/storage/temp_database.ex",
+    "test/support/storage/adapter_case.ex"
   ]
 
   @doc "Path prefixes where physical SQLite/Exqlite details are allowed."

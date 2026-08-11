@@ -1,15 +1,18 @@
 # ElixirDB performance benchmarks
 
-`elixirdb_benchmark.exs` is a repeatable, opt-in benchmark runner for the V1
-SQLite adapter. It is deliberately separate from the normal ExUnit gate: the
+Two opt-in runners live here. They are separate from the normal ExUnit gate:
 numbers are useful for trend detection, but they are not stable enough to make
 every developer test run fail.
 
-Run it in the test environment so the existing in-memory OpenTelemetry trace
-and metric exporters are enabled:
+## Product storage benchmarks
+
+`product_benchmark.exs` measures matched product operations through the
+configured storage backend (default: SQLite adapter). Run it in the test
+environment so the existing in-memory OpenTelemetry trace and metric exporters
+are enabled:
 
 ```sh
-MIX_ENV=test mix run bench/elixirdb_benchmark.exs \
+MIX_ENV=test mix run bench/product_benchmark.exs \
   --mode both \
   --scenario all \
   --iterations 15 \
@@ -25,7 +28,7 @@ short summary. A later run can compare the median latency for every
 storage-mode/scenario pair:
 
 ```sh
-MIX_ENV=test mix run bench/elixirdb_benchmark.exs \
+MIX_ENV=test mix run bench/product_benchmark.exs \
   --mode both \
   --baseline output/benchmarks/baseline.json \
   --max-regression 20
@@ -33,10 +36,10 @@ MIX_ENV=test mix run bench/elixirdb_benchmark.exs \
 
 The comparison exits with status 1 when a matching scenario is more than the
 allowed percentage slower than its baseline. Baselines should be regenerated
-on the same machine, with the same Elixir/OTP/SQLite build and representative
+on the same machine, with the same Elixir/OTP/backend build and representative
 dataset. They are trend evidence, not portable hardware-independent promises.
 
-## Scenarios
+### Scenarios
 
 - `bulk_write`: seed a database, then measure new bulk writes. Each measured
   batch uses new document IDs, so the database grows across the run. This is
@@ -49,27 +52,29 @@ dataset. They are trend evidence, not portable hardware-independent promises.
 - `indexed_query`: measure a query using an existing structured index.
 
 Use `--scenario bulk_write,indexed_query` to select a subset. `--mode disk`
-uses a unique temporary SQLite file and cleans up its journal sidecars.
-`--mode memory` uses a fresh `:memory:` connection for each case. The memory
-numbers are an I/O-independent lower bound for adapter/SQLite work; they do
-not represent durable writes or reopen/recovery behavior.
+uses a unique temporary durable artifact and cleans up companion recovery
+files. `--mode memory` uses a fresh in-memory backend connection for each
+case. The memory numbers are an I/O-independent lower bound for adapter work;
+they do not represent durable writes or reopen/recovery behavior.
 
 Warmups are excluded from the report. Each sample times only the operation,
 not database creation, seeding, index setup, or cleanup. The report includes
 sample values, median/p95/p99, per-operation latency, throughput, VM memory
-before/after, SQLite pragmas, runtime metadata, and observability signals.
+before/after, backend pragmas where available, runtime metadata, and
+observability signals.
 
-## Measuring overhead over pure ExQLite
+## ExQLite overhead control (SQLite backend diagnostic)
 
-`exqlite_overhead_benchmark.exs` answers a different question from the runner
-above: how much time does each ElixirDB layer add over direct ExQLite calls?
-Run it in the production environment so OpenTelemetry uses its no-op provider
-and the benchmark process has no test exporter in its timed path:
+`sqlite_exqlite_overhead_benchmark.exs` is an explicit SQLite/ExQLite control,
+not a product latency claim. It answers how much time each ElixirDB layer adds
+over direct ExQLite calls. Run it in the production environment so OpenTelemetry
+uses its no-op provider and the benchmark process has no test exporter in its
+timed path:
 
 ```sh
 mix bench.overhead --mode memory --scenario all --iterations 30 --warmup 10 \
   --dataset 500 --batch 50 --reads 100 \
-  --output output/benchmarks/exqlite-overhead-memory.json
+  --output output/benchmarks/sqlite-exqlite-overhead-memory.json
 ```
 
 Use `--mode disk` for durable SQLite I/O, or `--mode both` to produce both
@@ -110,7 +115,7 @@ read count, warmup, and iteration count fixed when comparing reports.
 
 ## Observability coverage
 
-The runner uses the production instrumentation helpers around the measured
+The product runner uses production instrumentation helpers around the measured
 adapter operations and records the span names and metric datapoint signals for
 each case. This makes missing instrumentation visible alongside latency
 changes. The adapter-level boundary is intentional: an ephemeral in-memory
@@ -121,9 +126,9 @@ query, index-build, and changes spans remain exercised through their real
 instrumentation modules. Span counts are reset for each case; metric datapoint
 counts are exporter observations and can include multiple aggregation exports.
 
-The production overhead runner also emits low-cardinality SQLite child spans
-when an OTLP endpoint is configured. They are deliberately phase-level probes,
-not one span per SQL statement or document:
+The ExQLite overhead runner also emits low-cardinality SQLite child spans when
+an OTLP endpoint is configured. They are deliberately phase-level backend
+diagnostics, not one span per SQL statement or document:
 
 - Reads: `elixir_db.sqlite.document.lookup` and
   `elixir_db.sqlite.revision.lookup`.
@@ -132,8 +137,8 @@ not one span per SQL statement or document:
 - Changes: `elixir_db.sqlite.changes.identity`, `.fetch`, `.decode`, and
   `.has_more`.
 - Indexed queries: `elixir_db.sqlite.query.prepare_request`, `.identity`,
-  `.index_catalog`, `.plan`, `.candidates`, `.filter`, `.sort`, `.cursor`, and
-  `.project`.
+  `.index_catalog`, and `.candidates`, plus the product span
+  `elixir_db.query.execute` for shared filter/order/project work.
 - Transactions: `elixir_db.sqlite.transaction.begin`, `.commit`, and
   `.rollback`.
 
@@ -166,6 +171,7 @@ approach:
   also explains why uncontrolled CI hardware and unbackfilled historical data
   make regression comparisons unreliable.
 
-Consequently, normal CI proves correctness, this runner produces comparable
-local baselines, and the optional threshold is only applied when a prior run is
-provided explicitly.
+Consequently, normal CI proves correctness, the product runner produces
+comparable local baselines, and the ExQLite runner remains an explicit SQLite
+control. The optional threshold is only applied when a prior run is provided
+explicitly.

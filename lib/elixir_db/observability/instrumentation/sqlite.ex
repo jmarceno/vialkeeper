@@ -3,9 +3,10 @@ defmodule ElixirDB.Observability.Instrumentation.SQLite do
   Low-cardinality OpenTelemetry spans for SQLite implementation phases.
 
   These probes sit below the public database and query spans. They measure
-  bounded phases such as document lookup, bulk preparation, changes decoding,
-  and query candidate gathering without emitting one span per SQL statement or
-  one attribute per customer document.
+  bounded backend phases such as document lookup, bulk preparation, changes
+  decoding, index catalog reads, and candidate gathering. Shared query
+  filtering, ordering, cursors, and projection are product spans on
+  `elixir_db.query.execute`, not SQLite phase probes.
 
   The phase names are intentionally fixed so trace searches remain stable:
 

@@ -341,7 +341,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @doc "Applies a bulk mutation batch via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def apply_bulk_mutation(adapter, request) when is_map(request) do
     with :ok <- ensure_writable(adapter) do
-      Services.apply_bulk_mutation(to_context(adapter), request)
+      trace_bulk_mutation(adapter, request)
     end
   end
 
@@ -602,46 +602,16 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def execute_query(%__MODULE__{} = adapter, request) when is_map(request) do
-    # Capture the start in native units for the span (OTel uses native), and in
-    # milliseconds for the overrun guard (config is in ms). Reusing one clock
-    # keeps the span and guard measurements consistent.
-    started_native = System.monotonic_time()
-    started_ms = System.monotonic_time(:millisecond)
-
     identity =
       SQLite.trace_sqlite_phase(:query_identity, fn -> adapter_identity(adapter) end)
 
-    uuid = Map.get(identity, :database_uuid)
-    maximum = get_in(identity, [:config, "queries", "max_execution_ms"]) || 5_000
-
-    # Wrap the actual query execution in the span so its duration is real and
-    # errors flow through the error.code/status policy (§5.5, §6.5). The
-    # wrapper receives {result, examined_count} and returns the bare result
-    # after recording the examined attribute.
     prepared_request =
       SQLite.trace_sqlite_phase(:query_prepare_request, fn -> prepare_query_request(request) end)
 
-    result =
-      Query.execute(uuid, 0, started_native, fn ->
-        res =
-          case prepared_request do
-            {:ok, normalized} -> QueryRunner.execute(adapter, normalized, identity)
-            {:error, _} = error -> error
-          end
-
-        {res, examined_count(res)}
-      end)
-
-    elapsed = System.monotonic_time(:millisecond) - started_ms
-
-    if elapsed <= maximum,
-      do: result,
-      else:
-        {:error,
-         ElixirDB.Error.resource_limit("query execution exceeded the configured limit", %{
-           elapsed_ms: elapsed,
-           maximum_ms: maximum
-         })}
+    case prepared_request do
+      {:ok, normalized} -> QueryRunner.execute(adapter, normalized, identity)
+      {:error, _} = error -> error
+    end
   end
 
   def execute_query(_adapter, _request),
@@ -649,44 +619,18 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def execute_subscription_snapshot(%__MODULE__{} = adapter, request) when is_map(request) do
-    started_native = System.monotonic_time()
-    started_ms = System.monotonic_time(:millisecond)
-
     identity =
       SQLite.trace_sqlite_phase(:query_identity, fn -> adapter_identity(adapter) end)
-
-    uuid = Map.get(identity, :database_uuid)
-    maximum = get_in(identity, [:config, "queries", "max_execution_ms"]) || 5_000
 
     prepared_request =
       SQLite.trace_sqlite_phase(:query_prepare_request, fn ->
         prepare_subscription_snapshot_request(adapter, request)
       end)
 
-    result =
-      Query.execute(uuid, 0, started_native, fn ->
-        res =
-          case prepared_request do
-            {:ok, normalized} ->
-              QueryRunner.subscription_snapshot(adapter, normalized, identity)
-
-            {:error, _} = error ->
-              error
-          end
-
-        {res, examined_count(res)}
-      end)
-
-    elapsed = System.monotonic_time(:millisecond) - started_ms
-
-    if elapsed <= maximum,
-      do: result,
-      else:
-        {:error,
-         ElixirDB.Error.resource_limit("query execution exceeded the configured limit", %{
-           elapsed_ms: elapsed,
-           maximum_ms: maximum
-         })}
+    case prepared_request do
+      {:ok, normalized} -> QueryRunner.subscription_snapshot(adapter, normalized, identity)
+      {:error, _} = error -> error
+    end
   end
 
   def execute_subscription_snapshot(_adapter, _request),
@@ -887,10 +831,20 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   defp ensure_writable(_adapter), do: :ok
 
-  # The candidate count the query runner computes is bound as `examined` on the
-  # span/metric. Returns 0 when unavailable.
-  defp examined_count({:ok, %{examined: examined}}) when is_integer(examined), do: examined
-  defp examined_count(_), do: 0
+  defp trace_bulk_mutation(adapter, request) do
+    operations = MapAccess.get(request, :operations, [])
+    entries = if(is_list(operations), do: length(operations), else: 0)
+
+    SQLite.trace_sqlite_phase(:bulk_prepare, [entries: entries], fn ->
+      finalize_bulk_mutation(adapter, request, entries)
+    end)
+  end
+
+  defp finalize_bulk_mutation(adapter, request, entries) do
+    SQLite.trace_sqlite_phase(:bulk_finalize, [entries: entries], fn ->
+      Services.apply_bulk_mutation(to_context(adapter), request)
+    end)
+  end
 
   defp decode_json(json), do: StrictDecoder.decode(json)
 

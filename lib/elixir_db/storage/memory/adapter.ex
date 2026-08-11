@@ -31,13 +31,26 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   alias ElixirDB.Storage.OpaqueHandle
   alias ElixirDB.Storage.Services
 
-  defstruct [:root, :store, :identity, closed?: false]
+  defstruct [
+    :root,
+    :store,
+    :identity,
+    closed?: false,
+    retention_fault: nil,
+    view_fault: nil,
+    derived_fault: nil
+  ]
+
+  @type fault_fn :: (atom() -> :ok | {:error, ElixirDB.Error.t()}) | nil
 
   @type t :: %__MODULE__{
           root: binary(),
           store: pid(),
           identity: map(),
-          closed?: boolean()
+          closed?: boolean(),
+          retention_fault: fault_fn(),
+          view_fault: fault_fn(),
+          derived_fault: fault_fn()
         }
 
   @unsupported [
@@ -427,14 +440,24 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   @doc "Wraps an open Memory adapter in an opaque backend context."
   @spec to_context(t()) :: BackendContext.t()
   def to_context(%__MODULE__{} = adapter) do
+    identity =
+      adapter.store
+      |> Store.identity()
+      |> maybe_put_fault(:retention_fault, adapter.retention_fault)
+      |> maybe_put_fault(:view_fault, adapter.view_fault)
+      |> maybe_put_fault(:derived_fault, adapter.derived_fault)
+
     BackendContext.new(
       backend: __MODULE__,
       backend_ref: OpaqueHandle.wrap(adapter),
       bundle_root: adapter.root,
       capabilities: %{sql: false, engine: "memory"},
-      identity: Store.identity(adapter.store)
+      identity: identity
     )
   end
+
+  defp maybe_put_fault(identity, _key, nil), do: identity
+  defp maybe_put_fault(identity, key, fun) when is_function(fun, 1), do: Map.put(identity, key, fun)
 
   defp prepare_query_request(request), do: Normalizer.normalize_public_request(request)
 

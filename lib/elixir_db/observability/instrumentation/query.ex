@@ -5,9 +5,10 @@ defmodule ElixirDB.Observability.Instrumentation.Query do
     * `elixir_db.query.execute` — span + histogram
     * `elixir_db.index.build`   — span + histogram
 
-  Called from the SQLite adapter at the adapter entry, but via this service-level
-  helper so the adapter itself stays OTel-agnostic (it only knows about a
-  project callback).
+  Query execute is recorded from shared query services so every backend emits
+  the same product signal. Index build is recorded at the backend index
+  create/rebuild entry (currently the SQLite adapter) because index DDL stays
+  backend-owned.
   """
 
   alias ElixirDB.Observability.{Meters, Tracer}
@@ -17,7 +18,7 @@ defmodule ElixirDB.Observability.Instrumentation.Query do
 
   @doc """
   Records `elixir_db.query.execute` for a query. `started` is the native
-  monotonic timestamp the adapter captures for its overrun guard (reused, not a
+  monotonic timestamp the service captures for its overrun guard (reused, not a
   second clock).
 
   The `fun` may return either the raw result, or `{result, examined_count}` so

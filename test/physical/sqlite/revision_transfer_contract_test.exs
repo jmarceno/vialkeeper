@@ -1,0 +1,58 @@
+defmodule ElixirDB.Storage.SQLite.RevisionTransferContractTest do
+  use ElixirDB.Storage.Contracts.RevisionTransfer,
+    adapter: ElixirDB.Storage.SQLite.Adapter
+
+  @moduletag :sqlite_physical
+
+  alias ElixirDB.Storage.SQLite.Connection
+  alias ElixirDB.TestRevisionId, as: Id
+
+  test "different content under one revision id is rejected", %{adapter: adapter} do
+    {:ok, root} = Id.calculate("doc", nil, false, %{"n" => 0})
+    {:ok, leaf} = Id.calculate("doc", root, false, %{"n" => 1})
+
+    assert {:ok, _} =
+             @adapter.import_revision_chains(adapter, %{
+               chains: [
+                 %{
+                   document_id: "doc",
+                   leaf_revision: leaf,
+                   revisions: [
+                     wire("doc", root, nil, false, %{"n" => 0}),
+                     wire("doc", leaf, root, false, %{"n" => 1})
+                   ]
+                 }
+               ]
+             })
+
+    {:ok, [[doc_key]]} =
+      Connection.query(
+        adapter.conn,
+        "SELECT doc_key FROM documents WHERE document_id = ?",
+        ["doc"]
+      )
+
+    assert :ok =
+             Connection.execute(
+               adapter.conn,
+               "UPDATE revisions SET body_json = ? WHERE doc_key = ? AND revision_id = ?",
+               [~s({"n":99}), doc_key, leaf]
+             )
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+             @adapter.import_revision_chains(adapter, %{
+               chains: [
+                 %{
+                   document_id: "doc",
+                   leaf_revision: leaf,
+                   revisions: [
+                     wire("doc", root, nil, false, %{"n" => 0}),
+                     wire("doc", leaf, root, false, %{"n" => 1})
+                   ]
+                 }
+               ]
+             })
+
+    assert message =~ "differs" or message =~ "content"
+  end
+end

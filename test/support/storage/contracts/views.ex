@@ -1,16 +1,13 @@
-defmodule ElixirDB.StorageAdapter.ViewContractTest do
+defmodule ElixirDB.Storage.Contracts.Views do
   @moduledoc """
-  Dual-backend local-view contract: map-only queries, grouped reducers,
-  bookmarks, rebuild transitions, and winning-document pages stay identical
-  even when Memory returns disordered physical rows.
+  Shared local-view contract tests for storage adapters.
   """
 
-  for {name, adapter_module} <- [
-        {"SQLite", ElixirDB.Storage.SQLite.Adapter},
-        {"Memory", ElixirDB.Storage.Memory.Adapter}
-      ] do
-    defmodule Module.concat([ElixirDB.StorageAdapter, "#{name}ViewContractTest"]) do
-      use ElixirDB.Storage.AdapterCase, adapter: adapter_module
+  defmacro __using__(opts) do
+    # The contract tests must be injected into each adapter module.
+    # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
+    quote do
+      use ElixirDB.Storage.AdapterCase, unquote(opts)
 
       alias ElixirDB.Storage.AdapterCase
 
@@ -29,26 +26,30 @@ defmodule ElixirDB.StorageAdapter.ViewContractTest do
                    "value" => %{"path" => "/v"}
                  })
 
-        Enum.reduce([{"a", ["a", 1], 1}, {"b", ["b", 1], 2}, {"c", ["c", 1], 3}], 0, fn
-          {id, key, value}, cursor ->
-            assert {:ok, _} =
-                     @adapter.apply_view_batch(adapter, %{
-                       "view_id" => view_id,
-                       "expected_indexed_through" => cursor,
-                       "through_sequence" => cursor + 1,
-                       "rows" => [
-                         %{
-                           "document_id" => id,
-                           "revision_id" => "1-#{id}",
-                           "key" => key,
-                           "value" => value
-                         }
-                       ],
-                       "removals" => []
-                     })
+        _ =
+          Enum.reduce(
+            [{"a", ["a", 1], 1}, {"b", ["b", 1], 2}, {"c", ["c", 1], 3}],
+            0,
+            fn {id, key, value}, cursor ->
+              assert {:ok, _} =
+                       @adapter.apply_view_batch(adapter, %{
+                         "view_id" => view_id,
+                         "expected_indexed_through" => cursor,
+                         "through_sequence" => cursor + 1,
+                         "rows" => [
+                           %{
+                             "document_id" => id,
+                             "revision_id" => "1-#{id}",
+                             "key" => key,
+                             "value" => value
+                           }
+                         ],
+                         "removals" => []
+                       })
 
-            cursor + 1
-        end)
+              cursor + 1
+            end
+          )
 
         assert {:ok, %{results: [result], bookmark: bookmark}} =
                  @adapter.query_view(adapter, %{

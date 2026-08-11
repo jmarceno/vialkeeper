@@ -1,6 +1,6 @@
 defmodule ElixirDB do
   @moduledoc """
-  A portable, revisioned document database backed by SQLite.
+  A portable, revisioned document database with pluggable storage backends.
   """
 
   @protocol_major 1

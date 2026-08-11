@@ -1,6 +1,8 @@
 defmodule ElixirDB.StorageAdapter.LifecycleTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   test "create, close, reopen preserves identity and documents", %{adapter: adapter, path: path} do
     assert {:ok, %{revision: revision}} =
              @adapter.apply_local_mutation(adapter, %{

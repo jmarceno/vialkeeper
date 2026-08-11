@@ -1,5 +1,5 @@
 defmodule ElixirDB.DatabaseKind do
-  @moduledoc "Canonical database-kind values stored in SQLite metadata."
+  @moduledoc "Canonical database-kind values stored in backend metadata."
 
   @type t :: :ordinary | :derived
 

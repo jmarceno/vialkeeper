@@ -1,6 +1,8 @@
 defmodule ElixirDB.StorageAdapter.SubscriptionSnapshotTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   alias ElixirDB.Query.SubscriptionRequest
 
   @config ElixirDB.Config.defaults()

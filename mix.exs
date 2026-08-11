@@ -124,8 +124,8 @@ defmodule ElixirDB.MixProject do
         "test --warnings-as-errors",
         "dialyzer"
       ],
-      bench: ["run bench/elixirdb_benchmark.exs"],
-      "bench.overhead": ["run bench/exqlite_overhead_benchmark.exs"],
+      bench: ["run bench/product_benchmark.exs"],
+      "bench.overhead": ["run bench/sqlite_exqlite_overhead_benchmark.exs"],
       "release.build": ["deps.get", "compile", "release --overwrite"]
     ]
   end

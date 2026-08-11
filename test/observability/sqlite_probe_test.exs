@@ -94,19 +94,16 @@ defmodule ElixirDB.Observability.SQLiteProbeTest do
                limit: 10
              })
 
-    expected = [
+    expected_sqlite = [
       "elixir_db.sqlite.query.prepare_request",
       "elixir_db.sqlite.query.identity",
       "elixir_db.sqlite.query.index_catalog",
-      "elixir_db.sqlite.query.plan",
-      "elixir_db.sqlite.query.candidates",
-      "elixir_db.sqlite.query.filter",
-      "elixir_db.sqlite.query.sort",
-      "elixir_db.sqlite.query.cursor",
-      "elixir_db.sqlite.query.project"
+      "elixir_db.sqlite.query.candidates"
     ]
 
-    Enum.each(expected, fn name -> assert [_] = TestExporter.spans_named(name) end)
+    Enum.each(expected_sqlite, fn name -> assert [_] = TestExporter.spans_named(name) end)
+
+    assert [_] = TestExporter.spans_named("elixir_db.query.execute")
 
     [candidates] = TestExporter.spans_named("elixir_db.sqlite.query.candidates")
     assert TestExporter.span_attr(candidates, :plan_kind) == :single

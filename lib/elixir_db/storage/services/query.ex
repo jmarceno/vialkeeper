@@ -9,6 +9,7 @@ defmodule ElixirDB.Storage.Services.Query do
   """
 
   alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.Query, as: QueryInstrumentation
   alias ElixirDB.Query.{Executor, Plan, Planner}
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Access
@@ -20,6 +21,15 @@ defmodule ElixirDB.Storage.Services.Query do
       when is_map(request) do
     started_native = System.monotonic_time()
     identity = supplied_identity || context_identity(context)
+    uuid = Map.get(identity, :database_uuid)
+
+    QueryInstrumentation.execute(uuid, 0, started_native, fn ->
+      result = execute_uninstrumented(context, request, identity, started_native)
+      {result, examined_count(result)}
+    end)
+  end
+
+  defp execute_uninstrumented(context, request, identity, started_native) do
     deadline = Executor.deadline(identity, started_native)
 
     with {:ok, indexes} <- list_indexes(context),
@@ -50,6 +60,15 @@ defmodule ElixirDB.Storage.Services.Query do
       when is_map(request) do
     started_native = System.monotonic_time()
     identity = supplied_identity || context_identity(context)
+    uuid = Map.get(identity, :database_uuid)
+
+    QueryInstrumentation.execute(uuid, 0, started_native, fn ->
+      result = subscription_snapshot_uninstrumented(context, request, identity, started_native)
+      {result, examined_count(result)}
+    end)
+  end
+
+  defp subscription_snapshot_uninstrumented(context, request, identity, started_native) do
     deadline = Executor.deadline(identity, started_native)
 
     max_members =
@@ -306,4 +325,7 @@ defmodule ElixirDB.Storage.Services.Query do
 
   defp context_identity(%BackendContext{identity: identity}) when is_map(identity), do: identity
   defp context_identity(_), do: %{current_sequence: 0, config: ElixirDB.Config.defaults()}
+
+  defp examined_count({:ok, %{examined: examined}}) when is_integer(examined), do: examined
+  defp examined_count(_), do: 0
 end

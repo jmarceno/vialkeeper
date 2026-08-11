@@ -4,7 +4,7 @@ defmodule ElixirDB.Storage.SQLite.ViewsTest do
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.FaultAdapter
+  alias ElixirDB.Storage.PortFault
 
   @view %{
     "name" => "scores",
@@ -59,15 +59,14 @@ defmodule ElixirDB.Storage.SQLite.ViewsTest do
     assert {:ok, %{"view_id" => view_id}} = @adapter.create_view(adapter, @view)
 
     fault_adapter =
-      adapter
-      |> FaultAdapter.wrap()
-      |> FaultAdapter.inject(
+      PortFault.inject(
+        adapter,
         :view_upsert_row,
         {:once, ElixirDB.Error.internal_error("injected view upsert fault")}
       )
 
     assert {:error, %ElixirDB.Error{code: :internal_error}} =
-             FaultAdapter.apply_view_batch(fault_adapter, %{
+             PortFault.apply_view_batch(fault_adapter, %{
                "view_id" => view_id,
                "expected_indexed_through" => 0,
                "through_sequence" => 1,

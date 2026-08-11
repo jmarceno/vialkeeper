@@ -11,10 +11,10 @@ ELIXIR_DB_ROOT/
   host.toml              # listener, auth, TLS, limits, federation, …
   registrations.json     # routing only (UUID → relative path)
   notes.elixirdb/        # one bundle per logical database
-    database.sqlite3
+    <backend data>       # backend-owned durable artifact
     blobs/
     tmp/
-  notes.elixirdb.lease   # transient exclusive lock (not data)
+  notes.elixirdb.lease   # transient exclusive ownership (not data)
   _derived/…             # optional derived DBs from materialized views
 ```
 
@@ -37,8 +37,8 @@ target host (same OS/ABI as the build machine).
   'IO.inspect(ElixirDB.Diagnostics.runtime(), pretty: true)'
 ```
 
-`Diagnostics.runtime/0` reports Mix app version and runtime / SQLite identity
-from the BEAMs. It does not read git metadata.
+`Diagnostics.runtime/0` reports Mix app version and runtime / selected-backend
+identity from the BEAMs. It does not read git metadata.
 
 ---
 
@@ -66,7 +66,7 @@ address requires `[auth] enabled = true` or `[tls] enabled = true`, unless
 you set `[security] allow_insecure_remote = true` (risky).
 
 Stop with `bin/elixir_db stop` or SIGTERM. Open databases close; each runtime
-rolls back its companion `.lease` transaction.
+releases its ownership lease.
 
 ### Development only
 
@@ -168,7 +168,7 @@ paths that must not escape the root (`..`, symlinks).
 
 ```text
 notes.elixirdb/
-├── database.sqlite3   # metadata, revisions, indexes, views, jobs, …
+├── <backend data>     # metadata, revisions, indexes, views, jobs, …
 ├── blobs/             # content-addressed attachment bytes
 └── tmp/               # incomplete uploads (not authoritative)
 ```
@@ -184,7 +184,7 @@ notes.elixirdb/
 }
 ```
 
-`database_kind` is a reconstructible hint. SQLite metadata inside the bundle
+`database_kind` is a reconstructible hint. Backend metadata inside the bundle
 wins on open. Unregistered bundles under the root stay inert — ElixirDB does
 **not** auto-adopt them.
 
@@ -228,8 +228,10 @@ flowchart LR
 A copy keeps the original UUID. Two copies of the same UUID on one host are
 rejected. Copying is backup/relocation, **not** cloning.
 
-Do not copy an active crash-recoverable bundle piecemeal: keep the SQLite
-rollback journal with `database.sqlite3` until recovery finishes.
+Do not copy an active crash-recoverable bundle piecemeal: keep every
+backend-owned recovery artifact with the durable data until recovery finishes.
+SQLite-specific journal pairing is documented in
+[lib/elixir_db/storage/sqlite/BACKEND.md](lib/elixir_db/storage/sqlite/BACKEND.md).
 
 Derived bundles are often created as
 `_derived/<slug>--<short-uuid>.derived.elixirdb`. Path and suffix are
@@ -260,9 +262,9 @@ bounded HTMX polling (no second WebSocket stack).
 
 ## Lease recovery (`database_in_use`)
 
-Each open database holds an exclusive SQLite transaction on
-`<bundle-path>.lease`. A second owner fails immediately with
-`database_in_use` (HTTP 409, retryable).
+Each open database holds exclusive ownership through the selected storage
+backend. A second owner fails immediately with `database_in_use` (HTTP 409,
+retryable).
 
 Safe recovery:
 
@@ -273,7 +275,10 @@ Safe recovery:
    may still hold the lock.
 3. Prefer letting the crashed BEAM die, then retry open. Only remove a stale
    `.lease` file when you are sure nothing has the database open.
-4. Never delete or rewrite `database.sqlite3` to “clear” a lease.
+4. Never delete or rewrite backend data artifacts to “clear” a lease.
+
+SQLite implements ownership with an exclusive sidecar lease; see
+[BACKEND.md](lib/elixir_db/storage/sqlite/BACKEND.md).
 
 ---
 
@@ -284,9 +289,9 @@ curl -X POST http://127.0.0.1:4000/v1/databases/$UUID/integrity-check \
   -H 'content-type: application/json' -d '{}'
 ```
 
-Checks SQLite integrity / foreign keys, required tables, revision ancestry,
-attachment manifests vs physical blobs, winners, changes references, and
-index consistency. Failures → `integrity_violation`. Rebuild a bad logical
+Checks logical integrity (revision ancestry, attachment manifests vs physical
+blobs, winners, changes references, index consistency) plus any backend
+physical probes. Failures → `integrity_violation`. Rebuild a bad logical
 index with the index rebuild endpoint after you inspect details.
 
 Unreferenced physical blobs are reclaimable orphans, not proof that a
@@ -341,8 +346,7 @@ orphans — rerun GC after recovery.
 ## Admission and fairness
 
 Each open database has one bounded admission scheduler in front of its single
-SQLite-owning `DatabaseOwner`. At most one owner permit is active per
-database.
+owning `DatabaseOwner`. At most one owner permit is active per database.
 
 | Class | Typical work |
 | ----- | ------------ |
@@ -364,7 +368,7 @@ do **not** hold an owner permit after their short metadata step.
 
 ## Replication jobs
 
-Persistent jobs live in `database.sqlite3`. Workers are transient.
+Persistent jobs live in the owning database bundle. Workers are transient.
 
 ```sh
 # Inspect / control under:
@@ -437,7 +441,7 @@ is not restored after reopen. Database close terminates streams with
 
 ### Local views
 
-Definitions and materialization live in the owning `database.sqlite3` and do
+Definitions and materialization live in the owning database bundle and do
 not protocol-replicate. Host ceilings: `max_views_per_database`,
 `max_view_batch_changes`, `max_view_consistent_wait_ms`.
 
@@ -608,3 +612,17 @@ OTLP collection is configured via `otlp_endpoint` only.
 [ ] Point otlp_endpoint only if a collector is ready
 [ ] Prefer Diagnostics.runtime/0 + integrity-check for support dumps
 ```
+
+## Replacing the storage backend
+
+Product semantics live in shared services and storage ports. A backend
+replacement should touch only:
+
+- `lib/elixir_db/storage/ports/` contracts and the new backend tree
+- backend-owned bundle artifact / ownership / capability code
+- physical tests under `test/physical/<backend>/`
+
+Do not reimplement mutation, replication, retention, query, view, or derived
+materialization algorithms inside the backend. For the current SQLite
+implementation notes, see
+[lib/elixir_db/storage/sqlite/BACKEND.md](lib/elixir_db/storage/sqlite/BACKEND.md).

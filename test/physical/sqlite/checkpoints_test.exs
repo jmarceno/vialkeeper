@@ -1,6 +1,8 @@
 defmodule ElixirDB.StorageAdapter.CheckpointsTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   test "checkpoint local records support CAS write, replay, and conflict", %{adapter: adapter} do
     replication_id = "rep_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 

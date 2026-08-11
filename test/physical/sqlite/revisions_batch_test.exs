@@ -1,6 +1,8 @@
 defmodule ElixirDB.StorageAdapter.RevisionsBatchTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   test "rejects oversized revision batches", %{adapter: adapter} do
     requests =
       for index <- 1..501 do

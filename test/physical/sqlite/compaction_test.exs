@@ -1,7 +1,9 @@
 defmodule ElixirDB.StorageAdapter.CompactionTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
-  alias ElixirDB.Storage.FaultAdapter
+  @moduletag :sqlite_physical
+
+  alias ElixirDB.Storage.PortFault
   alias ElixirDB.Storage.SQLite.Connection
   alias ElixirDB.TestRevisionId, as: Id
 
@@ -256,15 +258,14 @@ defmodule ElixirDB.StorageAdapter.CompactionTest do
              })
 
     fault_adapter =
-      adapter
-      |> FaultAdapter.wrap()
-      |> FaultAdapter.inject(
+      PortFault.inject(
+        adapter,
         :compact_retention_mid_tx,
         {:once, ElixirDB.Error.internal_error("injected compaction fault")}
       )
 
     assert {:error, %ElixirDB.Error{code: :internal_error}} =
-             FaultAdapter.compact_retention(fault_adapter, %{})
+             PortFault.compact_retention(fault_adapter, %{})
 
     assert revision_count(path) == 2
     assert {:ok, _} = @adapter.get_revision(adapter, %{document_id: "doc", revision_id: root})

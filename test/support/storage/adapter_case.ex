@@ -4,16 +4,15 @@ defmodule ElixirDB.Storage.AdapterCase do
 
   Use with:
 
+      use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.Memory.Adapter
+
+  Or for a physical SQLite suite:
+
       use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
-  Or for dual-backend semantic suites:
-
-      use ElixirDB.Storage.AdapterCase,
-          adapters: [ElixirDB.Storage.SQLite.Adapter, ElixirDB.Storage.Memory.Adapter]
-
   Each test receives a fresh temporary database handle under `:adapter` and
-  the absolute path under `:path`. The suite owns storage-neutral expectations;
-  SQLite-only probes remain in dedicated tests.
+  the absolute path under `:path`. Shared contract suites own storage-neutral
+  expectations; SQLite-only probes remain under `test/physical/sqlite/`.
   """
 
   alias ElixirDB.RevisionFixtures

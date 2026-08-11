@@ -14,6 +14,7 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
 
   alias ElixirDB.JSON.StrictCache
   alias ElixirDB.MapAccess
+  alias ElixirDB.Observability.Instrumentation.SQLite
   alias ElixirDB.Query.{Executor, Plan}
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
@@ -34,6 +35,10 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
 
   @impl true
   def list_indexes(%BackendContext{} = context) do
+    SQLite.trace_sqlite_phase(:query_index_catalog, fn -> list_indexes_untraced(context) end)
+  end
+
+  defp list_indexes_untraced(%BackendContext{} = context) do
     with {:ok, adapter} <- Context.unwrap(context) do
       case Adapter.list_indexes(adapter) do
         {:ok, indexes} -> {:ok, Enum.map(indexes, &public_index/1)}
@@ -82,21 +87,25 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
 
   @impl true
   def lookup_candidates(%BackendContext{} = context, %{kind: :bounded_scan}) do
-    with {:ok, adapter} <- Context.unwrap(context),
-         {:ok, rows} <-
-           Connection.query(
-             adapter.conn,
-             "SELECT document_id, winning_revision, winning_body_term FROM documents WHERE winning_deleted = 0"
-           ),
-         {:ok, documents} <- decode_query_documents(rows) do
-      {:ok, Enum.map(documents, &public_candidate/1)}
-    else
-      {:error, reason} -> {:error, Errors.normalize(reason)}
-    end
+    SQLite.trace_sqlite_phase(:query_candidates, [plan_kind: :bounded_scan], fn ->
+      with {:ok, adapter} <- Context.unwrap(context),
+           {:ok, rows} <-
+             Connection.query(
+               adapter.conn,
+               "SELECT document_id, winning_revision, winning_body_term FROM documents WHERE winning_deleted = 0"
+             ),
+           {:ok, documents} <- decode_query_documents(rows) do
+        {:ok, Enum.map(documents, &public_candidate/1)}
+      else
+        {:error, reason} -> {:error, Errors.normalize(reason)}
+      end
+    end)
   end
 
   def lookup_candidates(%BackendContext{} = context, request) when is_map(request) do
-    full_text_candidates(context, request)
+    SQLite.trace_sqlite_phase(:query_candidates, candidate_attrs(request), fn ->
+      full_text_candidates(context, request)
+    end)
   end
 
   @impl true
@@ -124,18 +133,20 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
 
   @impl true
   def range_scan_candidates(%BackendContext{} = context, request) when is_map(request) do
-    with {:ok, adapter} <- Context.unwrap(context),
-         {:ok, indexes} <- Adapter.list_indexes(adapter),
-         {:ok, selected} <- resolve_index(indexes, request),
-         scan when is_map(scan) <- MapAccess.get(request, :scan) do
-      structured_candidates(adapter, selected, scan, request)
-    else
-      nil ->
-        {:error, ElixirDB.Error.invalid_request("range scan requires a scan descriptor")}
+    SQLite.trace_sqlite_phase(:query_candidates, candidate_attrs(request), fn ->
+      with {:ok, adapter} <- Context.unwrap(context),
+           {:ok, indexes} <- Adapter.list_indexes(adapter),
+           {:ok, selected} <- resolve_index(indexes, request),
+           scan when is_map(scan) <- MapAccess.get(request, :scan) do
+        structured_candidates(adapter, selected, scan, request)
+      else
+        nil ->
+          {:error, ElixirDB.Error.invalid_request("range scan requires a scan descriptor")}
 
-      {:error, reason} ->
-        {:error, Errors.normalize(reason)}
-    end
+        {:error, reason} ->
+          {:error, Errors.normalize(reason)}
+      end
+    end)
   end
 
   @impl true
@@ -302,6 +313,28 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
   end
 
   defp find_index(_, _), do: {:error, ElixirDB.Error.invalid_request("index_id is required")}
+
+  defp candidate_attrs(request) when is_map(request) do
+    plan = MapAccess.get(request, :plan)
+
+    plan_kind =
+      case plan do
+        %Plan{kind: kind} -> kind
+        _ -> MapAccess.get(request, :kind) || MapAccess.get(request, :plan_kind) || :single
+      end
+
+    selected =
+      MapAccess.get(request, :selected_indexes) ||
+        case plan do
+          %Plan{selected_indexes: bindings} when is_list(bindings) -> bindings
+          _ -> []
+        end
+
+    [
+      plan_kind: plan_kind,
+      selected_index_count: length(selected)
+    ]
+  end
 
   defp nested_metadata(metadata) when is_map(metadata) do
     case Map.fetch(metadata, "_metadata") do

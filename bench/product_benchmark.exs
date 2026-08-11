@@ -676,7 +676,7 @@ defmodule ElixirDB.Benchmarks.Runner do
   defp usage do
     """
     Usage:
-      MIX_ENV=test mix run bench/elixirdb_benchmark.exs -- [options]
+      MIX_ENV=test mix run bench/product_benchmark.exs -- [options]
 
     Options:
       --mode disk|memory|both        Storage mode (default: both)

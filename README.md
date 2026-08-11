@@ -12,8 +12,8 @@ Your app  ──HTTP /v1──►  ElixirDB host
          database root/
            host.toml
            registrations.json
-           notes.elixirdb/
-             database.sqlite3   # docs, revisions, indexes, jobs, …
+           notes.elixirdb/      # portable database bundle
+             <backend data>     # backend-owned durable artifact
              blobs/             # attachment bytes
              tmp/               # incomplete uploads (not authoritative)
 ```
@@ -46,7 +46,7 @@ Deploy, auth, TLS, copy/move, leases, and host limits: see
 
 ## What it does not do
 
-- No client SQL or raw FTS5 syntax.
+- No client SQL or raw full-text query syntax.
 - No CouchDB / PouchDB wire compatibility.
 - No automatic adoption of bundles dropped under the root (you must register).
 - No multi-database transactions or live federation streams.
@@ -95,7 +95,7 @@ const created = await postJson<{ database_uuid: string }>("/v1/databases", {
   path: "notes.elixirdb",
 });
 if (created.status !== 201 || !created.envelope.data) {
-  throw new Error(created.envelope.error?.message ?? "create failed");
+    throw new Error(created.envelope.error?.message ?? "creation failed");
 }
 const uuid = created.envelope.data.database_uuid;
 
@@ -529,8 +529,8 @@ hint; `database_kind = derived` in metadata is authoritative).
 ## Errors and limits
 
 Public errors use stable codes (`revision_conflict`, `database_overloaded`,
-`bookmark_stale`, …). Backend exception names and SQL text are **not** part of
-the contract. Prefer `error.retryable` for client retry policy.
+`bookmark_stale`, …). Backend exception names and engine diagnostics are
+**not** part of the contract. Prefer `error.retryable` for client retry policy.
 
 Host ceilings live in `host.toml` `[limits]`. Per-database config
 (`GET`/`PUT /v1/databases/:uuid/config`) can only be **more** restrictive.
@@ -582,11 +582,12 @@ one host are rejected. Full procedures:
 ```sh
 mix deps.get
 mix check.fast    # while iterating
-mix check.full    # before handoff / wave commit
+mix check.full    # before handoff / wave completion
 MIX_ENV=prod mix release.build
 ```
 
-`ElixirDB.Diagnostics.runtime/0` reports application / Elixir / OTP / SQLite /
-protocol versions from the assembled BEAMs.
+`ElixirDB.Diagnostics.runtime/0` reports application / Elixir / OTP /
+selected-backend / protocol versions from the assembled BEAMs.
 
-Operator runbook: [Operations.md](Operations.md).
+Operator runbook: [Operations.md](Operations.md). SQLite backend layout and
+controls: [lib/elixir_db/storage/sqlite/BACKEND.md](lib/elixir_db/storage/sqlite/BACKEND.md).

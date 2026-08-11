@@ -8,7 +8,7 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
     * `elixir_db.database.admission.wait` — histogram (queue wait, not owner work)
 
   Instrumentation lives at the service/owner boundary (the catalog and owner),
-  never inside the SQLite adapter.
+  never inside a physical storage adapter.
   """
 
   alias ElixirDB.Commands

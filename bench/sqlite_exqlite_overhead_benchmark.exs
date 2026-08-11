@@ -1203,7 +1203,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   defp usage do
     """
     Usage:
-      MIX_ENV=prod mix run bench/exqlite_overhead_benchmark.exs -- [options]
+      MIX_ENV=prod mix run bench/sqlite_exqlite_overhead_benchmark.exs -- [options]
 
     Options:
       --mode memory|disk|both       SQLite mode (default: memory)

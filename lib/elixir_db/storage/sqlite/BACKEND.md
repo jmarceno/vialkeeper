@@ -1,0 +1,70 @@
+# SQLite storage backend
+
+Backend-owned layout and controls for the default `ElixirDB.Storage.SQLite`
+implementation. Product contracts (bundle portability, ownership, integrity
+rules, public errors) are described in [Operations.md](../../../../Operations.md)
+and [README.md](../../../../README.md). Replacing this backend means
+implementing the storage ports under `lib/elixir_db/storage/ports/` plus a
+backend module registered like `ElixirDB.Storage.SQLite.Adapter`.
+
+## Bundle artifact
+
+Inside an `.elixirdb` directory the SQLite backend stores:
+
+```text
+notes.elixirdb/
+├── database.sqlite3   # revisions, indexes, views, jobs, metadata
+├── blobs/             # attachment bytes (product path; not SQL)
+└── tmp/               # incomplete uploads
+```
+
+The artifact filename and SQL schema are owned by this backend. Generic
+runtime code opens the selected backend with the bundle root only.
+
+## Ownership lease
+
+Single-owner admission is a storage capability. The SQLite implementation
+holds an exclusive transaction on `<bundle-path>.lease`. A second owner fails
+with `database_in_use` (HTTP 409, retryable).
+
+Safe recovery:
+
+1. Confirm no live ElixirDB process owns the database.
+2. After a crash, a leftover `.lease` file with no live exclusive lock can be
+   reopened normally. Do not delete `.lease` while another process may hold
+   the lock.
+3. Prefer letting the crashed BEAM die, then retry open.
+4. Never delete or rewrite `database.sqlite3` to “clear” a lease.
+
+## Offline copy
+
+Copy the complete closed `.elixirdb` directory. Ignore `.lease`. Do not copy
+an active crash-recoverable bundle piecemeal: keep the SQLite rollback journal
+with `database.sqlite3` until recovery finishes.
+
+## Integrity probes
+
+Product integrity rules run over normalized domain facts. The SQLite backend
+additionally reports engine probes (foreign keys, required tables, FTS
+consistency). Failures surface as `integrity_violation`.
+
+## Diagnostics
+
+`ElixirDB.Diagnostics.runtime/0` includes an opaque selected-backend
+capability map. SQLite version, compile options, FTS5, and transaction probes
+are backend diagnostics, not the product identity model.
+
+## Backend replacement checklist
+
+```text
+[ ] Implement storage port families (lifecycle, transaction, ownership,
+    document/revision facts, change log, local records, retention records,
+    index/candidate search, view state, derived state, attachment metadata,
+    inspection)
+[ ] Own bundle artifact layout under the `.elixirdb` root
+[ ] Provide ownership acquire/release with typed in-use errors
+[ ] Provide capability validation used at application startup
+[ ] Keep product algorithms in shared services; backend code only maps facts
+[ ] Add physical tests under test/physical/<backend>/
+[ ] Register the backend module for runtime selection
+```

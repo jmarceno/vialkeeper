@@ -8,7 +8,7 @@ defmodule ElixirDB.DerivedView.Wave2Test do
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.MaterializedViews
   alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Storage.FaultAdapter
+  alias ElixirDB.Storage.PortFault
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.TempDatabase
 
@@ -403,14 +403,14 @@ defmodule ElixirDB.DerivedView.Wave2Test do
     }
 
     fault =
-      FaultAdapter.wrap(adapter)
-      |> FaultAdapter.inject(
+      PortFault.inject(
+        adapter,
         :derived_generated_mutation,
         {:once, Error.internal_error("injected derived write failure")}
       )
 
     assert {:error, %Error{code: :internal_error}} =
-             FaultAdapter.apply_derived_source_batch(fault, batch)
+             PortFault.apply_derived_source_batch(fault, batch)
 
     assert {:ok, [%{checkpoint_sequence: 0}]} =
              Adapter.list_derived_sources(adapter)

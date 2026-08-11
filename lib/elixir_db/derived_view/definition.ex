@@ -88,7 +88,7 @@ defmodule ElixirDB.DerivedView.Definition do
 
   def digest(_), do: nil
 
-  @doc "Builds the durable initial state passed to a derived SQLite bundle."
+  @doc "Builds the durable initial state passed to a derived database bundle."
   @spec initial_metadata(t(), binary()) :: map()
   def initial_metadata(%{} = definition, materialization_id) when is_binary(materialization_id) do
     %{

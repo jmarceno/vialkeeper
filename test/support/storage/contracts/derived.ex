@@ -1,12 +1,13 @@
-defmodule ElixirDB.StorageAdapter.DerivedContractTest do
+defmodule ElixirDB.Storage.Contracts.Derived do
   @moduledoc """
-  Dual-backend derived materialization contract covering map outputs, grouped
-  reducers, numeric extremes, source history changes, rebuild transitions, and
-  stale page pruning.
+  Shared derived-materialization contract tests for storage adapters.
   """
 
   defmodule Support do
-    @moduledoc false
+    @moduledoc """
+    Fixtures and assertions shared by derived-materialization contract tests.
+    """
+
     import ExUnit.Assertions
 
     alias ElixirDB.DerivedView.{Definition, Engine}
@@ -178,16 +179,13 @@ defmodule ElixirDB.StorageAdapter.DerivedContractTest do
         %{source_document_id: "mid", source_revision_id: "1-mid", key: ["alpha", 4], value: 0}
       ]
 
-      # Product outcomes must be identifier/order independent.
-      shuffled = Enum.shuffle(rows)
-
       batch = %{
         materialization_id: materialization_id,
         source_database_uuid: source_uuid,
         source_history_epoch: history_epoch,
         expected_checkpoint_sequence: 0,
         through_sequence: 1,
-        rows: shuffled,
+        rows: Enum.shuffle(rows),
         removals: []
       }
 
@@ -308,69 +306,29 @@ defmodule ElixirDB.StorageAdapter.DerivedContractTest do
     end
   end
 
-  defmodule SQLiteDerivedContractTest do
-    use ExUnit.Case, async: true
+  defmacro __using__(opts) do
+    quote do
+      use ElixirDB.Storage.AdapterCase, unquote(opts)
 
-    alias ElixirDB.StorageAdapter.DerivedContractTest.Support
-    @adapter ElixirDB.Storage.SQLite.Adapter
+      alias ElixirDB.Storage.Contracts.Derived.Support
 
-    setup do
-      {:ok, Support.open_derived(@adapter)}
-    end
+      @adapter unquote(Keyword.fetch!(opts, :adapter))
 
-    test "map contributions create, replay, and remove generated documents", ctx do
-      Support.map_cases(@adapter, ctx)
-    end
+      setup do
+        {:ok, Support.open_derived(@adapter)}
+      end
 
-    test "grouped reducers and numeric extremes stay stable", ctx do
-      Support.stats_cases(@adapter, ctx.source_uuid, ctx.history_epoch)
-    end
+      test "map contributions create, replay, and remove generated documents", ctx do
+        Support.map_cases(@adapter, ctx)
+      end
 
-    test "history reset, rebuild, stale pruning, and reload", ctx do
-      Support.rebuild_cases(@adapter, ctx)
-    end
-  end
+      test "grouped reducers and numeric extremes stay stable", ctx do
+        Support.stats_cases(@adapter, ctx.source_uuid, ctx.history_epoch)
+      end
 
-  defmodule MemoryDerivedContractTest do
-    use ExUnit.Case, async: true
-
-    alias ElixirDB.StorageAdapter.DerivedContractTest.Support
-    @adapter ElixirDB.Storage.Memory.Adapter
-
-    setup do
-      {:ok, Support.open_derived(@adapter)}
-    end
-
-    test "map contributions create, replay, and remove generated documents", ctx do
-      Support.map_cases(@adapter, ctx)
-    end
-
-    test "grouped reducers and numeric extremes stay stable", ctx do
-      Support.stats_cases(@adapter, ctx.source_uuid, ctx.history_epoch)
-    end
-
-    test "history reset, rebuild, stale pruning, and reload", ctx do
-      Support.rebuild_cases(@adapter, ctx)
-    end
-  end
-
-  defmodule CrossBackendDerivedContractTest do
-    use ExUnit.Case, async: true
-
-    alias ElixirDB.StorageAdapter.DerivedContractTest.Support
-    alias ElixirDB.UUID
-
-    test "memory and sqlite produce identical reducer outcomes for shuffled contributions" do
-      source_uuid = UUID.v4()
-      history_epoch = UUID.v4()
-
-      memory_body =
-        Support.stats_cases(ElixirDB.Storage.Memory.Adapter, source_uuid, history_epoch)
-
-      sqlite_body =
-        Support.stats_cases(ElixirDB.Storage.SQLite.Adapter, source_uuid, history_epoch)
-
-      assert memory_body == sqlite_body
+      test "history reset, rebuild, stale pruning, and reload", ctx do
+        Support.rebuild_cases(@adapter, ctx)
+      end
     end
   end
 end

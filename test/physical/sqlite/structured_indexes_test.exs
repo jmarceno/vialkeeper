@@ -2,6 +2,8 @@ defmodule ElixirDB.StorageAdapter.StructuredIndexesTest do
   alias ElixirDB.Storage.SQLite.QueryCompiler
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   test "structured index creation, query selection, and delete", %{adapter: adapter} do
     assert {:ok, _} =
              @adapter.apply_local_mutation(adapter, %{

@@ -18,12 +18,19 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
     refute Ports.family?(:sqlite)
   end
 
+  test "product docs no longer present SQLite artifacts as the product model" do
+    findings = BoundaryGuard.scan()
+
+    refute "README.md" in BoundaryGuard.leaking_paths(findings)
+    refute "Operations.md" in BoundaryGuard.leaking_paths(findings)
+  end
+
   test "physical allowlist classifies sqlite implementation and physical tests" do
     assert PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/sqlite/adapter.ex")
     assert PhysicalAllowlist.allowed_path?("priv/sqlite/schema_v1.sql")
     assert PhysicalAllowlist.allowed_path?("lib/elixir_db/observability/instrumentation/sqlite.ex")
-    assert PhysicalAllowlist.allowed_path?("test/storage_adapter/portability_test.exs")
-    assert PhysicalAllowlist.allowed_path?("test/support/temp_database.ex")
+    assert PhysicalAllowlist.allowed_path?("test/physical/sqlite/portability_test.exs")
+    assert PhysicalAllowlist.allowed_path?("test/support/storage/temp_database.ex")
     refute PhysicalAllowlist.allowed_path?("lib/elixir_db/runtime/database_owner.ex")
     refute PhysicalAllowlist.allowed_path?("lib/elixir_db/database_bundle.ex")
     refute PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/registry.ex")

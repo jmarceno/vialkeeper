@@ -1,6 +1,8 @@
 defmodule ElixirDB.StorageAdapter.ReplicationJobsTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   test "replication jobs can be listed, upserted, and deleted", %{adapter: adapter} do
     assert {:ok, []} = @adapter.list_replication_jobs(adapter)
 
