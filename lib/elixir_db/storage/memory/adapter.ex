@@ -17,13 +17,15 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   alias ElixirDB.Storage.Memory.{
     AttachmentMetadata,
     ChangeLog,
+    DerivedState,
     DocumentFacts,
     IndexCandidates,
     Inspection,
     Lifecycle,
     RetentionRecords,
     Store,
-    Transaction
+    Transaction,
+    ViewState
   }
 
   alias ElixirDB.Storage.OpaqueHandle
@@ -48,26 +50,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     {:delete_index, 2},
     {:rebuild_index, 2},
     {:list_indexes, 1},
-    {:get_revisions_batch, 2},
-    {:list_views, 1},
-    {:create_view, 2},
-    {:delete_view, 2},
-    {:view_state, 2},
-    {:apply_view_batch, 2},
-    {:begin_view_rebuild, 2},
-    {:append_view_rebuild_page, 2},
-    {:finish_view_rebuild, 2},
-    {:query_view, 2},
-    {:read_winning_documents_page, 2},
-    {:get_derived_view, 1},
-    {:set_derived_enabled, 2},
-    {:list_derived_sources, 1},
-    {:set_derived_source_error, 2},
-    {:apply_derived_source_batch, 2},
-    {:begin_derived_source_rebuild, 2},
-    {:apply_derived_rebuild_page, 2},
-    {:prune_derived_rebuild_stale_page, 2},
-    {:finish_derived_source_rebuild, 2}
+    {:get_revisions_batch, 2}
   ]
 
   for {name, arity} <- @unsupported do
@@ -84,12 +67,14 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     options = if is_map(options), do: options, else: %{}
     uuid = MapAccess.get(options, :database_uuid, ElixirDB.UUID.v4())
     config = MapAccess.get(options, :config, ElixirDB.Config.defaults())
+    initial_derived = MapAccess.get(options, :initial_derived_view)
 
     with :ok <- validate_uuid(uuid),
          {:ok, bounded_config} <- ElixirDB.Config.merge_and_bound(config),
          :ok <- File.mkdir_p(path),
          identity <- build_identity(uuid, bounded_config, options),
-         {:ok, store} <- Store.start_link(root: path, identity: identity) do
+         {:ok, store} <- Store.start_link(root: path, identity: identity),
+         :ok <- maybe_seed_derived(store, identity, initial_derived) do
       {:ok, %__MODULE__{root: Path.expand(path), store: store, identity: identity}}
     end
   end
@@ -364,6 +349,81 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   def explain_query(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("query explanation must be an object")}
 
+  @impl true
+  def list_views(%__MODULE__{} = adapter), do: Services.list_views(to_context(adapter))
+
+  @impl true
+  def create_view(%__MODULE__{} = adapter, definition),
+    do: Services.create_view(to_context(adapter), definition)
+
+  @impl true
+  def delete_view(%__MODULE__{} = adapter, view_id),
+    do: Services.delete_view(to_context(adapter), view_id)
+
+  @impl true
+  def view_state(%__MODULE__{} = adapter, view_id),
+    do: Services.view_state(to_context(adapter), view_id)
+
+  @impl true
+  def apply_view_batch(%__MODULE__{} = adapter, request),
+    do: Services.apply_view_batch(to_context(adapter), request)
+
+  @impl true
+  def begin_view_rebuild(%__MODULE__{} = adapter, request),
+    do: Services.begin_view_rebuild(to_context(adapter), request)
+
+  @impl true
+  def append_view_rebuild_page(%__MODULE__{} = adapter, request),
+    do: Services.append_view_rebuild_page(to_context(adapter), request)
+
+  @impl true
+  def finish_view_rebuild(%__MODULE__{} = adapter, request),
+    do: Services.finish_view_rebuild(to_context(adapter), request)
+
+  @impl true
+  def query_view(%__MODULE__{} = adapter, request),
+    do: Services.query_view(to_context(adapter), request)
+
+  @impl true
+  def read_winning_documents_page(%__MODULE__{} = adapter, request),
+    do: Services.read_winning_documents_page(to_context(adapter), request)
+
+  @impl true
+  def get_derived_view(%__MODULE__{} = adapter),
+    do: Services.get_derived_view(to_context(adapter))
+
+  @impl true
+  def set_derived_enabled(%__MODULE__{} = adapter, request),
+    do: Services.set_derived_enabled(to_context(adapter), request)
+
+  @impl true
+  def list_derived_sources(%__MODULE__{} = adapter),
+    do: Services.list_derived_sources(to_context(adapter))
+
+  @impl true
+  def set_derived_source_error(%__MODULE__{} = adapter, request),
+    do: Services.set_derived_source_error(to_context(adapter), request)
+
+  @impl true
+  def apply_derived_source_batch(%__MODULE__{} = adapter, request),
+    do: Services.apply_derived_source_batch(to_context(adapter), request)
+
+  @impl true
+  def begin_derived_source_rebuild(%__MODULE__{} = adapter, request),
+    do: Services.begin_derived_source_rebuild(to_context(adapter), request)
+
+  @impl true
+  def apply_derived_rebuild_page(%__MODULE__{} = adapter, request),
+    do: Services.apply_derived_rebuild_page(to_context(adapter), request)
+
+  @impl true
+  def prune_derived_rebuild_stale_page(%__MODULE__{} = adapter, request),
+    do: Services.prune_derived_rebuild_stale_page(to_context(adapter), request)
+
+  @impl true
+  def finish_derived_source_rebuild(%__MODULE__{} = adapter, request),
+    do: Services.finish_derived_source_rebuild(to_context(adapter), request)
+
   @doc "Wraps an open Memory adapter in an opaque backend context."
   @spec to_context(t()) :: BackendContext.t()
   def to_context(%__MODULE__{} = adapter) do
@@ -392,6 +452,8 @@ defmodule ElixirDB.Storage.Memory.Adapter do
       change_log: ChangeLog,
       retention_records: RetentionRecords,
       index_candidates: IndexCandidates,
+      view_state: ViewState,
+      derived_state: DerivedState,
       attachment_metadata: AttachmentMetadata,
       inspection: Inspection
     }
@@ -462,5 +524,24 @@ defmodule ElixirDB.Storage.Memory.Adapter do
 
   defp unsupported(operation) do
     {:error, ElixirDB.Error.invalid_request("memory backend does not implement #{operation}")}
+  end
+
+  defp maybe_seed_derived(_store, %{database_kind: :derived}, nil),
+    do: {:error, ElixirDB.Error.invalid_request("derived metadata is required")}
+
+  defp maybe_seed_derived(store, _identity, initial) when is_map(initial) do
+    case Store.update(store, &seed_derived_state(&1, initial)) do
+      {:ok, :ok} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp maybe_seed_derived(_store, _identity, _), do: :ok
+
+  defp seed_derived_state(state, initial) do
+    case DerivedState.seed(state, initial) do
+      {:ok, seeded} -> {:ok, seeded, :ok}
+      {:error, _} = error -> error
+    end
   end
 end

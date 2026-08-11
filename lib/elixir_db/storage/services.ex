@@ -1,7 +1,7 @@
 defmodule ElixirDB.Storage.Services do
   @moduledoc """
   Shared storage services for mutation, import, replication chains, retention,
-  integrity, attachment-metadata, and query workflows.
+  integrity, attachment-metadata, query, local-view, and derived-view workflows.
 
   Callers pass an opaque `BackendContext`. Services execute against storage
   ports inside backend transactions; physical backends only load facts and
@@ -14,11 +14,13 @@ defmodule ElixirDB.Storage.Services do
   alias ElixirDB.Storage.Services.{
     Attachments,
     Chains,
+    DerivedViews,
     Import,
     Integrity,
     Mutations,
     Query,
-    Retention
+    Retention,
+    Views
   }
 
   alias ElixirDB.Storage.Transaction
@@ -186,6 +188,110 @@ defmodule ElixirDB.Storage.Services do
       when is_map(request) do
     Query.explain(context, request, identity)
   end
+
+  @doc "Lists local views."
+  @spec list_views(BackendContext.t()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
+  def list_views(%BackendContext{} = context), do: Views.list(context)
+
+  @doc "Creates a local view definition."
+  @spec create_view(BackendContext.t(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def create_view(%BackendContext{} = context, definition) when is_map(definition),
+    do: Views.create(context, definition)
+
+  @doc "Deletes a local view."
+  @spec delete_view(BackendContext.t(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def delete_view(%BackendContext{} = context, view_id) when is_binary(view_id),
+    do: Views.delete(context, view_id)
+
+  @doc "Reads local view state."
+  @spec view_state(BackendContext.t(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def view_state(%BackendContext{} = context, view_id) when is_binary(view_id),
+    do: Views.state(context, view_id)
+
+  @doc "Applies an incremental local-view batch."
+  @spec apply_view_batch(BackendContext.t(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def apply_view_batch(%BackendContext{} = context, request) when is_map(request),
+    do: Views.apply_batch(context, request)
+
+  @doc "Begins a local-view rebuild."
+  @spec begin_view_rebuild(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def begin_view_rebuild(%BackendContext{} = context, request) when is_map(request),
+    do: Views.begin_rebuild(context, request)
+
+  @doc "Appends a local-view rebuild page."
+  @spec append_view_rebuild_page(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def append_view_rebuild_page(%BackendContext{} = context, request) when is_map(request),
+    do: Views.append_rebuild_page(context, request)
+
+  @doc "Finishes a local-view rebuild."
+  @spec finish_view_rebuild(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def finish_view_rebuild(%BackendContext{} = context, request) when is_map(request),
+    do: Views.finish_rebuild(context, request)
+
+  @doc "Queries a local view."
+  @spec query_view(BackendContext.t(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def query_view(%BackendContext{} = context, request) when is_map(request),
+    do: Views.query(context, request)
+
+  @doc "Reads a page of winning documents for view rebuild scans."
+  @spec read_winning_documents_page(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def read_winning_documents_page(%BackendContext{} = context, request) when is_map(request),
+    do: Views.read_winning_documents_page(context, request)
+
+  @doc "Loads derived view metadata."
+  @spec get_derived_view(BackendContext.t()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def get_derived_view(%BackendContext{} = context), do: DerivedViews.get(context)
+
+  @doc "Enables or disables derived materialization."
+  @spec set_derived_enabled(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def set_derived_enabled(%BackendContext{} = context, request) when is_map(request),
+    do: DerivedViews.set_enabled(context, request)
+
+  @doc "Lists derived sources."
+  @spec list_derived_sources(BackendContext.t()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
+  def list_derived_sources(%BackendContext{} = context), do: DerivedViews.list_sources(context)
+
+  @doc "Records a derived source error."
+  @spec set_derived_source_error(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def set_derived_source_error(%BackendContext{} = context, request) when is_map(request),
+    do: DerivedViews.set_source_error(context, request)
+
+  @doc "Applies a derived source batch."
+  @spec apply_derived_source_batch(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def apply_derived_source_batch(%BackendContext{} = context, request) when is_map(request),
+    do: DerivedViews.apply_source_batch(context, request)
+
+  @doc "Begins a derived source rebuild."
+  @spec begin_derived_source_rebuild(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def begin_derived_source_rebuild(%BackendContext{} = context, request) when is_map(request),
+    do: DerivedViews.begin_source_rebuild(context, request)
+
+  @doc "Applies a derived rebuild page."
+  @spec apply_derived_rebuild_page(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def apply_derived_rebuild_page(%BackendContext{} = context, request) when is_map(request),
+    do: DerivedViews.apply_rebuild_page(context, request)
+
+  @doc "Prunes stale derived rebuild contributions."
+  @spec prune_derived_rebuild_stale_page(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def prune_derived_rebuild_stale_page(%BackendContext{} = context, request)
+      when is_map(request),
+      do: DerivedViews.prune_rebuild_stale_page(context, request)
+
+  @doc "Finishes a derived source rebuild."
+  @spec finish_derived_source_rebuild(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def finish_derived_source_rebuild(%BackendContext{} = context, request) when is_map(request),
+    do: DerivedViews.finish_source_rebuild(context, request)
 
   defp put_retention_fault(%BackendContext{} = context, fun) when is_function(fun, 1) do
     %{context | identity: Map.put(context.identity || %{}, :retention_fault, fun)}

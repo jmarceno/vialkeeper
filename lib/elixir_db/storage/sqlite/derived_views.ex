@@ -1,19 +1,24 @@
 defmodule ElixirDB.Storage.SQLite.DerivedViews do
-  @moduledoc "SQLite state and atomic contribution workflows for materialized views."
+  @moduledoc """
+  SQLite physical persistence for derived materialization state.
 
-  alias ElixirDB.DerivedView.Definition
+  Source-batch normalization, contribution diffs, grouping, reducers, numeric
+  extremes, generated outputs, and cursor/history checks live in
+  `ElixirDB.DerivedView.Engine`.
+  """
+
+  alias ElixirDB.DerivedView.Engine
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.SQLite.{Connection, Documents, Mutations, TermBlob}
-  alias ElixirDB.View.{KeyCodec, Number, NumericAccumulator}
 
-  @default_batch_limit 500
   @default_rebuild_page_limit 500
+  @default_batch_limit 500
 
   @spec get_view(Connection.handle()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def get_view(conn) do
     with {:ok, metadata} <- fetch_metadata(conn),
-         {:ok, definition} <- decode_definition(metadata.definition_json) do
+         {:ok, definition} <- Engine.decode_definition(metadata.definition_json) do
       {:ok, Map.put(metadata, :definition, definition)}
     end
   end
@@ -22,9 +27,9 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def set_enabled_tx(conn, request) when is_map(request) do
     with {:ok, metadata} <- fetch_metadata(conn),
-         :ok <- validate_materialization(metadata, request),
+         :ok <- Engine.validate_materialization(metadata, request),
          {:ok, enabled} <- required_boolean(request, :enabled),
-         status <- enabled_status(metadata, enabled),
+         status <- Engine.enabled_status(metadata, enabled),
          :ok <-
            Connection.execute(
              conn,
@@ -60,7 +65,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def set_source_error_tx(conn, request) when is_map(request) do
     with {:ok, metadata} <- fetch_metadata(conn),
-         :ok <- validate_materialization(metadata, request),
+         :ok <- Engine.validate_materialization(metadata, request),
          {:ok, source_uuid} <- required_uuid(request, :source_database_uuid),
          {:ok, _source} <- fetch_source(conn, source_uuid),
          {:ok, error_code} <- required_string(request, :error_code),
@@ -96,12 +101,12 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   def apply_source_batch_tx(adapter, request, opts \\ [])
 
   def apply_source_batch_tx(adapter, request, opts) when is_map(request) do
-    with {:ok, context} <- load_context(adapter.conn, request),
+    with {:ok, context} <- Engine.load_context(adapter.conn, request, &fetch_metadata/1),
          {:ok, source_uuid} <- required_uuid(request, :source_database_uuid),
          {:ok, source} <- fetch_source(adapter.conn, source_uuid),
-         {:ok, batch} <- normalize_batch(request, context.definition, source),
-         :ok <- validate_history_epoch(source, batch.history_epoch),
-         {:ok, mode} <- validate_batch_cursor(source, batch.expected, batch.through) do
+         {:ok, batch} <- Engine.normalize_batch(request, context.definition, source),
+         :ok <- Engine.validate_history_epoch(source, batch.history_epoch),
+         {:ok, mode} <- Engine.validate_batch_cursor(source, batch.expected, batch.through) do
       apply_batch_mode(adapter, context, source, source_uuid, batch, mode, opts)
     end
   end
@@ -113,7 +118,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def begin_source_rebuild_tx(conn, request) when is_map(request) do
     with {:ok, metadata} <- fetch_metadata(conn),
-         :ok <- validate_materialization(metadata, request),
+         :ok <- Engine.validate_materialization(metadata, request),
          {:ok, source_uuid} <- required_uuid(request, :source_database_uuid),
          {:ok, source} <- fetch_source(conn, source_uuid),
          {:ok, start_sequence} <- required_non_negative(request, :start_sequence),
@@ -153,12 +158,12 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   def apply_rebuild_page_tx(adapter, request, opts \\ [])
 
   def apply_rebuild_page_tx(adapter, request, opts) when is_map(request) do
-    with {:ok, context} <- load_context(adapter.conn, request),
+    with {:ok, context} <- Engine.load_context(adapter.conn, request, &fetch_metadata/1),
          {:ok, source_uuid} <- required_uuid(request, :source_database_uuid),
          {:ok, source} <- fetch_source(adapter.conn, source_uuid),
          {:ok, generation} <- required_positive(request, :generation),
-         :ok <- validate_rebuild_source(source, generation),
-         {:ok, batch} <- normalize_rebuild_batch(request, context.definition, source),
+         :ok <- Engine.validate_rebuild_source(source, generation),
+         {:ok, batch} <- Engine.normalize_rebuild_batch(request, context.definition, source),
          {:ok, effect} <-
            apply_contribution_changes(
              adapter,
@@ -194,11 +199,11 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   def prune_rebuild_stale_page_tx(adapter, request, opts \\ [])
 
   def prune_rebuild_stale_page_tx(adapter, request, opts) when is_map(request) do
-    with {:ok, context} <- load_context(adapter.conn, request),
+    with {:ok, context} <- Engine.load_context(adapter.conn, request, &fetch_metadata/1),
          {:ok, source_uuid} <- required_uuid(request, :source_database_uuid),
          {:ok, source} <- fetch_source(adapter.conn, source_uuid),
          {:ok, generation} <- required_positive(request, :generation),
-         :ok <- validate_rebuild_source(source, generation),
+         :ok <- Engine.validate_rebuild_source(source, generation),
          {:ok, after_id} <- optional_string(request, :after_document_id),
          {:ok, limit} <- rebuild_limit(request),
          {:ok, stale_ids} <-
@@ -233,15 +238,15 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def finish_source_rebuild_tx(conn, request) when is_map(request) do
     with {:ok, metadata} <- fetch_metadata(conn),
-         :ok <- validate_materialization(metadata, request),
+         :ok <- Engine.validate_materialization(metadata, request),
          {:ok, source_uuid} <- required_uuid(request, :source_database_uuid),
          {:ok, source} <- fetch_source(conn, source_uuid),
          {:ok, generation} <- required_positive(request, :generation),
-         :ok <- validate_rebuild_source(source, generation),
+         :ok <- Engine.validate_rebuild_source(source, generation),
          {:ok, catchup_sequence} <-
            required_non_negative(request, :catchup_sequence),
          {:ok, history_epoch} <- required_string(request, :source_history_epoch),
-         :ok <- validate_history_epoch(source, history_epoch),
+         :ok <- Engine.validate_history_epoch(source, history_epoch),
          :ok <-
            Connection.execute(
              conn,
@@ -358,7 +363,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
          removals,
          opts
        ) do
-    changes = map_output_changes(source_uuid, old_rows, row_map, removals)
+    changes = Engine.map_output_changes(source_uuid, old_rows, row_map, removals)
 
     with {:ok, last_sequence} <- apply_generated_changes(adapter, changes, opts) do
       {:ok, %{last_sequence: last_sequence, changed_rows: length(changes)}}
@@ -376,10 +381,12 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
          opts
        )
        when reducer in [:_count, :_sum, :_min, :_max, :_stats] do
-    affected_groups = affected_groups(old_rows, row_map, removals)
+    affected_groups = Engine.affected_groups(old_rows, row_map, removals)
 
-    Enum.reduce_while(sorted_groups(affected_groups), {:ok, 0, 0}, fn {group_sort, group_json},
-                                                                      {:ok, last_sequence, changed} ->
+    Enum.reduce_while(Engine.sorted_groups(affected_groups), {:ok, 0, 0}, fn {group_sort,
+                                                                              group_json},
+                                                                             {:ok, last_sequence,
+                                                                              changed} ->
       case refresh_group(
              adapter,
              reducer,
@@ -403,76 +410,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     end
   end
 
-  defp map_output_changes(source_uuid, old_rows, row_map, removals) do
-    removed =
-      removals
-      |> Enum.filter(&Map.has_key?(old_rows, &1))
-      |> Enum.map(&{:delete, map_document_id(source_uuid, &1)})
-
-    updated =
-      row_map
-      |> Map.values()
-      |> Enum.flat_map(fn row ->
-        old = Map.get(old_rows, row.source_document_id)
-
-        if contribution_equal?(old, row),
-          do: [],
-          else: [
-            {:put, map_document_id(source_uuid, row.source_document_id), map_body(row, source_uuid)}
-          ]
-      end)
-
-    Enum.sort_by(removed ++ updated, &output_change_sort_key/1)
-  end
-
-  defp output_change_sort_key({:delete, document_id}), do: {document_id, :delete}
-  defp output_change_sort_key({:put, document_id, _body}), do: {document_id, :put}
-
-  defp affected_groups(old_rows, row_map, removals) do
-    old_groups =
-      old_rows
-      |> Map.values()
-      |> Enum.reduce(%{}, &put_group/2)
-
-    new_groups =
-      row_map
-      |> Map.values()
-      |> Enum.reduce(%{}, &put_group/2)
-
-    removals
-    |> Enum.reduce(old_groups, fn document_id, groups ->
-      case Map.get(old_rows, document_id) do
-        nil -> groups
-        row -> put_group(row, groups)
-      end
-    end)
-    |> Map.merge(new_groups)
-  end
-
-  defp put_group(%{group_key_sort: nil}, groups), do: groups
-
-  defp put_group(%{group_key_sort: sort, group_key_json: json}, groups),
-    do: Map.put(groups, sort, json)
-
-  defp sorted_groups(groups), do: Enum.sort_by(groups, fn {sort, _json} -> sort end)
-
-  defp contribution_equal?(nil, _row), do: false
-
-  defp contribution_equal?(old, row) do
-    old.source_revision_id == row.source_revision_id and old.key_json == row.key_json and
-      old.group_key_sort == row.group_key_sort and old.value_json == row.value_json
-  end
-
-  defp map_body(row, source_uuid) do
-    body = %{
-      "key" => row.key,
-      "source_database_uuid" => source_uuid,
-      "source_document_id" => row.source_document_id
-    }
-
-    if row.value_present, do: Map.put(body, "value", row.value), else: body
-  end
-
   defp refresh_group(
          adapter,
          reducer,
@@ -486,8 +423,8 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     with {:ok, group_key} <- decode_group_key(group_json),
          {:ok, aggregate} <- fetch_group(adapter.conn, group_sort, group_json),
          {:ok, aggregate} <-
-           update_group(aggregate, group_sort, old_rows, row_map, removals),
-         {:ok, group_id} <- group_document_id(group_key) do
+           Engine.update_group(aggregate, group_sort, old_rows, row_map, removals),
+         {:ok, group_id} <- Engine.group_document_id(group_key) do
       persist_group_result(
         adapter,
         reducer,
@@ -505,7 +442,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
 
   defp group_result(adapter, reducer, group_sort, aggregate) do
     with {:ok, aggregate} <- enrich_group(adapter.conn, reducer, group_sort, aggregate),
-         {:ok, output} <- reducer_output(reducer, aggregate) do
+         {:ok, output} <- Engine.reducer_output(reducer, aggregate) do
       {:ok, Map.put(aggregate, :output, output)}
     end
   end
@@ -540,7 +477,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
          {:ok, sequence} <-
            apply_generated_change(
              adapter,
-             {:put, group_id, group_body(group_key, aggregate.output)},
+             {:put, group_id, Engine.group_body(group_key, aggregate.output)},
              opts
            ) do
       {:ok, sequence, sequence > 0}
@@ -561,19 +498,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
 
   defp decode_group_key(json), do: decode_json_array(json)
 
-  defp empty_group(group_json) do
-    %{
-      group_key_json: group_json,
-      count: 0,
-      sum_units: 0,
-      sumsqr_units: 0,
-      min_value_json: nil,
-      min_value_sort: nil,
-      max_value_json: nil,
-      max_value_sort: nil
-    }
-  end
-
   defp fetch_group(conn, group_sort, group_json) do
     case Connection.query(
            conn,
@@ -581,7 +505,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
            [TermBlob.bind(group_sort)]
          ) do
       {:ok, []} ->
-        {:ok, empty_group(group_json)}
+        {:ok, Engine.empty_group(group_json)}
 
       {:ok, [[stored_json, count, sum_units, sumsqr_units, min_json, min_sort, max_json, max_sort]]} ->
         with :ok <- validate_group_json(stored_json, group_json),
@@ -641,169 +565,44 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   defp parse_group_integer(_value, field, _predicate),
     do: {:error, ElixirDB.Error.integrity_violation("derived group #{field} is invalid")}
 
-  defp update_group(aggregate, group_sort, old_rows, row_map, removals) do
-    group_changes = group_changes(group_sort, old_rows, row_map, removals)
-
-    Enum.reduce_while(group_changes, {:ok, aggregate}, fn {operation, row}, {:ok, aggregate} ->
-      case apply_group_change(operation, row, aggregate) do
-        {:ok, next} -> {:cont, {:ok, next}}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp group_changes(group_sort, old_rows, row_map, removals) do
-    removed =
-      removals
-      |> Enum.flat_map(&removed_group_changes(old_rows, group_sort, &1))
-
-    replaced_or_added =
-      row_map
-      |> Enum.sort_by(fn {document_id, _row} -> document_id end)
-      |> Enum.flat_map(&replacement_group_changes(old_rows, group_sort, &1))
-
-    removed ++ replaced_or_added
-  end
-
-  defp removed_group_changes(old_rows, group_sort, document_id) do
-    case Map.get(old_rows, document_id) do
-      nil -> []
-      row -> group_change(group_sort, :remove, row)
-    end
-  end
-
-  defp replacement_group_changes(old_rows, group_sort, {document_id, row}) do
-    case Map.get(old_rows, document_id) do
-      old when is_map(old) -> changed_group_changes(old, row, group_sort)
-      nil -> group_change(group_sort, :add, row)
-    end
-  end
-
-  defp changed_group_changes(old, row, group_sort) do
-    if contribution_equal?(old, row),
-      do: [],
-      else: group_change(group_sort, :remove, old) ++ group_change(group_sort, :add, row)
-  end
-
-  defp group_change(group_sort, operation, %{group_key_sort: row_group_sort} = row) do
-    if row_group_sort == group_sort, do: [{operation, row}], else: []
-  end
-
-  defp group_change(_group_sort, _operation, _row), do: []
-
-  defp apply_group_change(:remove, row, %{count: count} = aggregate) when count > 0 do
-    with {:ok, accumulator} <- remove_numeric(aggregate_accumulator(aggregate), row.value) do
-      {:ok,
-       aggregate
-       |> Map.put(:count, count - 1)
-       |> put_accumulator(accumulator)}
-    end
-  end
-
-  defp apply_group_change(:remove, _row, _aggregate),
-    do: {:error, ElixirDB.Error.integrity_violation("derived group count underflow")}
-
-  defp apply_group_change(:add, row, aggregate) do
-    with {:ok, accumulator} <- add_numeric(aggregate_accumulator(aggregate), row.value) do
-      {:ok,
-       aggregate
-       |> Map.update!(:count, &(&1 + 1))
-       |> put_accumulator(accumulator)}
-    end
-  end
-
-  defp aggregate_accumulator(aggregate),
-    do: %NumericAccumulator{sum_units: aggregate.sum_units, sumsqr_units: aggregate.sumsqr_units}
-
-  defp put_accumulator(aggregate, accumulator),
-    do:
-      Map.merge(aggregate, %{
-        sum_units: accumulator.sum_units,
-        sumsqr_units: accumulator.sumsqr_units
-      })
-
-  defp add_numeric(accumulator, value) when is_number(value),
-    do: NumericAccumulator.add(accumulator, value)
-
-  defp add_numeric(accumulator, _value), do: {:ok, accumulator}
-
-  defp remove_numeric(accumulator, value) when is_number(value),
-    do: NumericAccumulator.remove(accumulator, value)
-
-  defp remove_numeric(accumulator, _value), do: {:ok, accumulator}
-
   defp enrich_group(conn, reducer, group_sort, aggregate)
        when reducer in [:_min, :_max, :_stats] do
-    with {:ok, extrema} <- group_extrema(conn, group_sort),
-         {:ok, numeric_count} <- numeric_count(conn, group_sort, reducer) do
-      {:ok, Map.merge(aggregate, Map.put(extrema, :numeric_count, numeric_count))}
+    with {:ok, values} <- group_numeric_values(conn, group_sort),
+         {:ok, extrema} <- Engine.extrema_from_values(values) do
+      {:ok, Map.merge(aggregate, extrema)}
     end
   end
 
   defp enrich_group(_conn, reducer, _group_sort, aggregate) when reducer in [:_count, :_sum],
     do: {:ok, aggregate}
 
-  defp numeric_count(_conn, _group_sort, reducer) when reducer != :_stats, do: {:ok, nil}
-
-  defp numeric_count(conn, group_sort, :_stats) do
+  defp group_numeric_values(conn, group_sort) do
     case Connection.query(
            conn,
-           "SELECT COUNT(*) FROM derived_rows WHERE group_key_sort = ? AND value_sort IS NOT NULL",
+           "SELECT value_json, value_sort, source_database_uuid, source_document_id FROM derived_rows WHERE group_key_sort = ? AND value_sort IS NOT NULL",
            [TermBlob.bind(group_sort)]
          ) do
-      {:ok, [[count]]} when is_integer(count) ->
-        {:ok, count}
-
-      {:ok, _rows} ->
-        {:error, ElixirDB.Error.integrity_violation("derived numeric count is invalid")}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
+      {:ok, rows} -> collect_numeric_values(rows)
+      {:error, reason} -> {:error, normalize_error(reason)}
     end
   end
 
-  defp group_extrema(conn, group_sort) do
-    with {:ok, min} <- group_extremum(conn, group_sort, "ASC"),
-         {:ok, max} <- group_extremum(conn, group_sort, "DESC") do
-      {:ok,
-       %{
-         min_value_json: min.json,
-         min_value_sort: min.sort,
-         max_value_json: max.json,
-         max_value_sort: max.sort,
-         min_value: min.value,
-         max_value: max.value
-       }}
+  defp collect_numeric_values(rows) do
+    Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
+      case decode_numeric_row(row) do
+        {:ok, value} -> {:cont, {:ok, [value | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
     end
   end
 
-  defp group_extremum(conn, group_sort, direction) when direction in ["ASC", "DESC"] do
-    case Connection.query(
-           conn,
-           "SELECT value_json, value_sort FROM derived_rows WHERE group_key_sort = ? AND value_sort IS NOT NULL ORDER BY value_sort #{direction}, source_database_uuid, source_document_id LIMIT 1",
-           [TermBlob.bind(group_sort)]
-         ) do
-      {:ok, []} ->
-        {:ok, %{json: nil, sort: nil, value: nil}}
-
-      {:ok, [[json, sort]]} when is_binary(json) and is_binary(sort) ->
-        validate_group_extremum(json, sort)
-
-      {:ok, _rows} ->
-        {:error, ElixirDB.Error.integrity_violation("derived numeric extremum is invalid")}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
-
-  defp validate_group_extremum(json, sort) do
-    with {:ok, decoded} <- decode_numeric_value(json),
-         {:ok, value} <- numeric_value(decoded),
-         {:ok, encoded_json, encoded_sort} <- encoded_numeric(value) do
-      if encoded_sort == sort,
-        do: {:ok, %{json: encoded_json, sort: encoded_sort, value: value}},
-        else: {:error, ElixirDB.Error.integrity_violation("derived numeric sort is inconsistent")}
+  defp decode_numeric_row([json, sort, source, doc]) do
+    with {:ok, value} <- decode_numeric_value(json) do
+      {:ok, {value, sort, source, doc}}
     end
   end
 
@@ -811,42 +610,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     case StrictDecoder.decode(json) do
       {:ok, value} -> {:ok, value}
       _ -> {:error, ElixirDB.Error.integrity_violation("derived contribution value is invalid")}
-    end
-  end
-
-  defp reducer_output(:_count, aggregate), do: {:ok, aggregate.count}
-
-  defp reducer_output(:_sum, aggregate),
-    do: NumericAccumulator.sum(aggregate_accumulator(aggregate))
-
-  defp reducer_output(:_min, %{min_value: value}), do: {:ok, value}
-  defp reducer_output(:_max, %{max_value: value}), do: {:ok, value}
-
-  defp reducer_output(:_stats, aggregate) do
-    with {:ok, sum} <- NumericAccumulator.sum(aggregate_accumulator(aggregate)),
-         {:ok, sumsqr} <- NumericAccumulator.sumsqr(aggregate_accumulator(aggregate)) do
-      {:ok,
-       %{
-         "count" => aggregate.numeric_count,
-         "sum" => sum,
-         "min" => aggregate.min_value,
-         "max" => aggregate.max_value,
-         "sumsqr" => sumsqr
-       }}
-    end
-  end
-
-  defp numeric_value(value) do
-    case Number.to_binary64(value) do
-      {:ok, float} -> {:ok, float}
-      :overflow -> {:error, ElixirDB.Error.resource_limit("numeric value is not representable")}
-    end
-  end
-
-  defp encoded_numeric(value) do
-    with {:ok, json} <- Canonical.encode(value),
-         {:ok, sort} <- KeyCodec.encode([value]) do
-      {:ok, json, sort}
     end
   end
 
@@ -927,21 +690,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
 
   defp current_revision(nil), do: nil
   defp current_revision(%{winning_revision: revision}), do: revision
-
-  defp group_body(group_key, output), do: %{"key" => group_key, "value" => output}
-
-  defp map_document_id(source_uuid, source_document_id) do
-    "m-" <> digest_json([source_uuid, source_document_id])
-  end
-
-  defp group_document_id(group_key), do: {:ok, "g-" <> digest_json(group_key)}
-
-  defp digest_json(value) do
-    value
-    |> Canonical.encode!()
-    |> then(fn canonical -> :crypto.hash(:sha256, canonical) end)
-    |> Base.encode16(case: :lower)
-  end
 
   defp fetch_contributions(_conn, _source_uuid, []), do: {:ok, %{}}
 
@@ -1080,211 +828,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     end)
   end
 
-  defp normalize_batch(request, definition, source) do
-    rows = MapAccess.get(request, :rows, [])
-    removals = MapAccess.get(request, :removals, [])
-
-    with {:ok, expected} <- required_non_negative(request, :expected_checkpoint_sequence),
-         {:ok, through} <- required_non_negative(request, :through_sequence),
-         {:ok, history_epoch} <- required_string(request, :source_history_epoch),
-         {:ok, normalized_rows} <- normalize_rows(rows, definition),
-         {:ok, normalized_removals} <- normalize_removals(removals),
-         :ok <- validate_batch_size(normalized_rows, normalized_removals),
-         :ok <- validate_disjoint(normalized_rows, normalized_removals) do
-      {:ok,
-       %{
-         expected: expected,
-         through: through,
-         history_epoch: history_epoch,
-         rows: normalized_rows,
-         removals: normalized_removals,
-         rebuild_generation: source.rebuild_generation
-       }}
-    end
-  end
-
-  defp normalize_rebuild_batch(request, definition, source) do
-    rows = MapAccess.get(request, :rows, [])
-    removals = MapAccess.get(request, :removals, [])
-
-    with {:ok, normalized_rows} <- normalize_rows(rows, definition),
-         {:ok, normalized_removals} <- normalize_removals(removals),
-         :ok <- validate_batch_size(normalized_rows, normalized_removals),
-         :ok <- validate_disjoint(normalized_rows, normalized_removals) do
-      {:ok,
-       %{
-         rows: normalized_rows,
-         removals: normalized_removals,
-         rebuild_generation: source.rebuild_generation
-       }}
-    end
-  end
-
-  defp normalize_rows(rows, definition) when is_list(rows) do
-    Enum.reduce_while(rows, {:ok, MapSet.new(), []}, fn row, {:ok, seen, acc} ->
-      with {:ok, normalized} <- normalize_row(row, definition),
-           false <- MapSet.member?(seen, normalized.source_document_id) do
-        {:cont, {:ok, MapSet.put(seen, normalized.source_document_id), [normalized | acc]}}
-      else
-        true ->
-          {:halt,
-           {:error,
-            ElixirDB.Error.invalid_request("derived source batch contains duplicate documents")}}
-
-        {:error, _} = error ->
-          {:halt, error}
-      end
-    end)
-    |> reverse_normalized_rows()
-  end
-
-  defp normalize_rows(_rows, _definition),
-    do: {:error, ElixirDB.Error.invalid_request("derived source rows must be an array")}
-
-  defp reverse_normalized_rows({:ok, _seen, rows}), do: {:ok, Enum.reverse(rows)}
-  defp reverse_normalized_rows({:error, _} = error), do: error
-
-  defp normalize_row(row, definition) when is_map(row) do
-    with {:ok, document_id} <- required_string(row, :source_document_id),
-         {:ok, revision_id} <- required_string(row, :source_revision_id),
-         {:ok, key} <- required_list(row, :key),
-         {:ok, key_json} <- Canonical.encode(key),
-         {:ok, key_sort} <- KeyCodec.encode(key),
-         {:ok, {group_key, group_json, group_sort}} <- group_fields(definition, key),
-         {:ok, {value, value_json, value_sort, value_present}} <- value_fields(row) do
-      {:ok,
-       %{
-         source_document_id: document_id,
-         source_revision_id: revision_id,
-         key: key,
-         key_json: key_json,
-         key_sort: key_sort,
-         group_key: group_key,
-         group_key_json: group_json,
-         group_key_sort: group_sort,
-         value: value,
-         value_json: value_json,
-         value_sort: value_sort,
-         value_present: value_present
-       }}
-    end
-  end
-
-  defp normalize_row(_row, _definition),
-    do: {:error, ElixirDB.Error.invalid_request("derived source row must be an object")}
-
-  defp group_fields(%{reducer: nil}, _key), do: {:ok, {nil, nil, nil}}
-
-  defp group_fields(%{group_level: level}, key) do
-    group_key = Enum.take(key, level)
-
-    with {:ok, group_sort} <- KeyCodec.encode(group_key),
-         {:ok, group_json} <- Canonical.encode(group_key) do
-      {:ok, {group_key, group_json, group_sort}}
-    end
-  end
-
-  defp value_fields(row) do
-    if value_present?(row) do
-      value = MapAccess.get(row, :value)
-
-      with {:ok, value_json} <- Canonical.encode(value),
-           {:ok, value_sort} <- numeric_value_sort(value) do
-        {:ok, {value, value_json, value_sort, true}}
-      end
-    else
-      {:ok, {nil, nil, nil, false}}
-    end
-  end
-
-  defp value_present?(row), do: Map.has_key?(row, :value) or Map.has_key?(row, "value")
-
-  defp numeric_value_sort(value) when is_number(value) do
-    case KeyCodec.encode([value]) do
-      {:ok, sort} -> {:ok, sort}
-      {:error, _} -> {:error, ElixirDB.Error.resource_limit("numeric value is not representable")}
-    end
-  end
-
-  defp numeric_value_sort(_value), do: {:ok, nil}
-
-  defp normalize_removals(removals) when is_list(removals) do
-    Enum.reduce_while(removals, {:ok, MapSet.new(), []}, fn document_id, {:ok, seen, acc} ->
-      with {:ok, normalized} <- validate_string(document_id, "source document id"),
-           false <- MapSet.member?(seen, normalized) do
-        {:cont, {:ok, MapSet.put(seen, normalized), [normalized | acc]}}
-      else
-        true ->
-          {:halt,
-           {:error,
-            ElixirDB.Error.invalid_request("derived source batch contains duplicate removals")}}
-
-        {:error, _} = error ->
-          {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, _seen, values} -> {:ok, Enum.reverse(values)}
-      {:error, _} = error -> error
-    end
-  end
-
-  defp normalize_removals(_removals),
-    do: {:error, ElixirDB.Error.invalid_request("derived source removals must be an array")}
-
-  defp validate_batch_size(rows, removals) do
-    maximum =
-      ElixirDB.Config.host_limits()[:max_materialized_view_batch_documents] || @default_batch_limit
-
-    if length(rows) + length(removals) <= maximum,
-      do: :ok,
-      else: {:error, ElixirDB.Error.resource_limit("derived source batch exceeds the host limit")}
-  end
-
-  defp validate_disjoint(rows, removals) do
-    row_ids = MapSet.new(rows, & &1.source_document_id)
-    removal_ids = MapSet.new(removals)
-
-    if MapSet.disjoint?(row_ids, removal_ids),
-      do: :ok,
-      else: {:error, ElixirDB.Error.invalid_request("derived source rows and removals overlap")}
-  end
-
-  defp validate_batch_cursor(source, expected, through) do
-    cond do
-      through < expected ->
-        {:error, ElixirDB.Error.invalid_request("derived source checkpoint regressed")}
-
-      source.checkpoint_sequence > through ->
-        {:ok, :idempotent}
-
-      source.checkpoint_sequence == through and
-          not (through == 0 and is_nil(source.history_epoch)) ->
-        {:ok, :idempotent}
-
-      source.checkpoint_sequence != expected ->
-        {:error, ElixirDB.Error.revision_conflict("derived source checkpoint mismatch")}
-
-      true ->
-        {:ok, :apply}
-    end
-  end
-
-  defp validate_history_epoch(%{history_epoch: nil}, _requested), do: :ok
-
-  defp validate_history_epoch(%{history_epoch: current}, requested)
-       when current == requested,
-       do: :ok
-
-  defp validate_history_epoch(%{checkpoint_sequence: 0}, _requested), do: :ok
-
-  defp validate_history_epoch(_source, requested),
-    do:
-      {:error,
-       ElixirDB.Error.source_history_reset("source history epoch changed", %{
-         source_history_epoch: requested
-       })}
-
   defp update_source_checkpoint(conn, source, source_uuid, history_epoch, through) do
     state = if source.state == :rebuilding, do: "rebuilding", else: "active"
 
@@ -1310,12 +853,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
       [source_uuid]
     )
   end
-
-  defp validate_rebuild_source(%{state: :rebuilding, rebuild_generation: generation}, generation),
-    do: :ok
-
-  defp validate_rebuild_source(_source, _generation),
-    do: {:error, ElixirDB.Error.revision_conflict("derived rebuild generation is not active")}
 
   defp stale_document_ids(conn, source_uuid, generation, after_id, limit) do
     {filter, params} =
@@ -1354,14 +891,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     end
   end
 
-  defp load_context(conn, request) do
-    with {:ok, metadata} <- fetch_metadata(conn),
-         :ok <- validate_materialization(metadata, request),
-         {:ok, definition} <- decode_definition(metadata.definition_json) do
-      {:ok, %{metadata: metadata, definition: definition}}
-    end
-  end
-
   defp fetch_metadata(conn) do
     case Connection.query(
            conn,
@@ -1397,27 +926,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
-    end
-  end
-
-  defp decode_definition(json) when is_binary(json) do
-    with {:ok, decoded} <- StrictDecoder.decode(json),
-         {:ok, normalized} <- Definition.normalize(decoded, enforce_host_limits: false) do
-      {:ok, normalized}
-    else
-      {:error, _} ->
-        {:error, ElixirDB.Error.integrity_violation("derived view definition is invalid")}
-    end
-  end
-
-  defp decode_definition(_),
-    do: {:error, ElixirDB.Error.integrity_violation("derived view definition is missing")}
-
-  defp validate_materialization(metadata, request) when is_map(request) do
-    case MapAccess.get(request, :materialization_id) do
-      nil -> :ok
-      value when value == metadata.materialization_id -> :ok
-      _ -> {:error, ElixirDB.Error.revision_conflict("derived materialization id mismatch")}
     end
   end
 
@@ -1476,10 +984,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   defp status_atom("resource_limit"), do: :resource_limit
   defp status_atom(_), do: :unknown
 
-  defp enabled_status(_metadata, false), do: "disabled"
-  defp enabled_status(%{enabled: true, status: status}, true), do: Atom.to_string(status)
-  defp enabled_status(_metadata, true), do: "rebuilding"
-
   defp rebuild_limit(request) do
     limit = MapAccess.get(request, :limit, @default_rebuild_page_limit)
 
@@ -1499,34 +1003,22 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   end
 
   defp required_uuid(map, key) do
-    with {:ok, value} <- required_string(map, key) do
+    with {:ok, value} <- Engine.required_string(map, key) do
       if uuid?(value), do: {:ok, String.downcase(value)}, else: invalid_field(key)
     end
-  end
-
-  defp required_string(map, key) do
-    value = MapAccess.get(map, key)
-    validate_string(value, Atom.to_string(key))
   end
 
   defp optional_string(map, key) do
     case MapAccess.get(map, key) do
       nil -> {:ok, nil}
-      value -> validate_string(value, Atom.to_string(key))
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> invalid_field(key)
     end
   end
 
-  defp validate_string(value, field) do
-    if is_binary(value) and value != "" and String.valid?(value),
-      do: {:ok, value},
-      else: invalid_field(field)
-  end
+  defp required_string(map, key), do: Engine.required_string(map, key)
 
-  defp required_non_negative(map, key) do
-    value = MapAccess.get(map, key)
-
-    if is_integer(value) and value >= 0, do: {:ok, value}, else: invalid_field(key)
-  end
+  defp required_non_negative(map, key), do: Engine.required_non_negative(map, key)
 
   defp required_positive(map, key) do
     value = MapAccess.get(map, key)
@@ -1545,11 +1037,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   defp required_boolean(map, key) do
     value = MapAccess.get(map, key)
     if is_boolean(value), do: {:ok, value}, else: invalid_field(key)
-  end
-
-  defp required_list(map, key) do
-    value = MapAccess.get(map, key)
-    if is_list(value), do: {:ok, value}, else: invalid_field(key)
   end
 
   defp invalid_field(key) when is_atom(key), do: invalid_field(Atom.to_string(key))

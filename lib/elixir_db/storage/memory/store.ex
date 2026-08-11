@@ -34,6 +34,12 @@ defmodule ElixirDB.Storage.Memory.Store do
           checkpoints: %{optional(binary()) => %{version: non_neg_integer(), value: map()}},
           pending_local_causal: boolean(),
           pending_blobs: %{optional(binary()) => map()},
+          views: %{optional(binary()) => map()},
+          view_rows: %{optional({binary(), integer(), binary()}) => map()},
+          derived_view: map() | nil,
+          derived_sources: %{optional(binary()) => map()},
+          derived_rows: %{optional({binary(), binary()}) => map()},
+          derived_groups: %{optional(binary()) => map()},
           closed?: boolean()
         }
 
@@ -401,6 +407,12 @@ defmodule ElixirDB.Storage.Memory.Store do
       checkpoints: %{},
       pending_local_causal: false,
       pending_blobs: %{},
+      views: %{},
+      view_rows: %{},
+      derived_view: nil,
+      derived_sources: %{},
+      derived_rows: %{},
+      derived_groups: %{},
       closed?: false
     }
   end

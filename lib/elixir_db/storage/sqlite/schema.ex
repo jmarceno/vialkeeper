@@ -1,5 +1,6 @@
 defmodule ElixirDB.Storage.SQLite.Schema do
   @moduledoc "Creates and validates the fixed Version 1 SQLite schema and metadata."
+  alias ElixirDB.DerivedView.Engine
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.SQLite.Connection
   alias ElixirDB.UUID
@@ -410,7 +411,7 @@ defmodule ElixirDB.Storage.SQLite.Schema do
   end
 
   defp insert_derived_source(conn, source, ordinal) do
-    case source_uuid(source) do
+    case Engine.source_uuid(source) do
       uuid when is_binary(uuid) ->
         Connection.execute(
           conn,
@@ -422,11 +423,6 @@ defmodule ElixirDB.Storage.SQLite.Schema do
         {:error, ElixirDB.Error.invalid_request("derived source metadata is invalid")}
     end
   end
-
-  defp source_uuid(source) when is_binary(source), do: source
-  defp source_uuid(%{database_uuid: uuid}), do: uuid
-  defp source_uuid(%{"database_uuid" => uuid}), do: uuid
-  defp source_uuid(_), do: nil
 
   defp fetch_binary(map, key) do
     value = Map.get(map, key, Map.get(map, Atom.to_string(key)))

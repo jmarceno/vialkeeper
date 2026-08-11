@@ -29,7 +29,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     Capabilities,
     Changes,
     Connection,
-    DerivedViews,
     Documents,
     IndexCatalog,
     LocalRecords,
@@ -527,105 +526,79 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   def list_indexes(%__MODULE__{conn: conn}), do: IndexCatalog.list(conn)
 
   @impl true
-  def list_views(%__MODULE__{conn: conn}), do: Views.list(conn)
+  def list_views(%__MODULE__{} = adapter), do: Services.list_views(to_context(adapter))
 
   @impl true
-  def create_view(%__MODULE__{conn: conn} = adapter, definition) do
-    config = adapter_config(adapter)
-
-    transaction(%__MODULE__{conn: conn}, fn ->
-      Views.create_tx(conn, definition, config)
-    end)
-  end
+  def create_view(%__MODULE__{} = adapter, definition),
+    do: Services.create_view(to_context(adapter), definition)
 
   @impl true
-  def delete_view(%__MODULE__{conn: conn}, view_id) do
-    transaction(%__MODULE__{conn: conn}, fn -> Views.delete_tx(conn, view_id) end)
-  end
+  def delete_view(%__MODULE__{} = adapter, view_id),
+    do: Services.delete_view(to_context(adapter), view_id)
 
   @impl true
-  def view_state(%__MODULE__{conn: conn}, view_id), do: Views.state(conn, view_id)
+  def view_state(%__MODULE__{} = adapter, view_id),
+    do: Services.view_state(to_context(adapter), view_id)
 
   @impl true
-  def apply_view_batch(%__MODULE__{conn: conn, view_fault: view_fault}, request) do
-    transaction(%__MODULE__{conn: conn}, fn ->
-      Views.apply_batch_tx(conn, request, view_fault: view_fault)
-    end)
-  end
+  def apply_view_batch(%__MODULE__{} = adapter, request),
+    do: Services.apply_view_batch(to_context(adapter), request)
 
   @impl true
-  def begin_view_rebuild(%__MODULE__{conn: conn}, request) do
-    transaction(%__MODULE__{conn: conn}, fn -> Views.begin_rebuild_tx(conn, request) end)
-  end
+  def begin_view_rebuild(%__MODULE__{} = adapter, request),
+    do: Services.begin_view_rebuild(to_context(adapter), request)
 
   @impl true
-  def append_view_rebuild_page(%__MODULE__{conn: conn}, request) do
-    transaction(%__MODULE__{conn: conn}, fn -> Views.append_rebuild_page_tx(conn, request) end)
-  end
+  def append_view_rebuild_page(%__MODULE__{} = adapter, request),
+    do: Services.append_view_rebuild_page(to_context(adapter), request)
 
   @impl true
-  def finish_view_rebuild(%__MODULE__{conn: conn}, request) do
-    transaction(%__MODULE__{conn: conn}, fn -> Views.finish_rebuild_tx(conn, request) end)
-  end
+  def finish_view_rebuild(%__MODULE__{} = adapter, request),
+    do: Services.finish_view_rebuild(to_context(adapter), request)
 
   @impl true
-  def query_view(%__MODULE__{conn: conn} = adapter, request),
-    do: Views.query_tx(conn, request, adapter_config(adapter))
+  def query_view(%__MODULE__{} = adapter, request),
+    do: Services.query_view(to_context(adapter), request)
 
   @impl true
-  def read_winning_documents_page(%__MODULE__{conn: conn}, request),
-    do: Views.read_winning_documents_page(conn, request)
+  def read_winning_documents_page(%__MODULE__{} = adapter, request),
+    do: Services.read_winning_documents_page(to_context(adapter), request)
 
   @impl true
-  def get_derived_view(%__MODULE__{conn: conn}), do: DerivedViews.get_view(conn)
+  def get_derived_view(%__MODULE__{} = adapter),
+    do: Services.get_derived_view(to_context(adapter))
 
   @impl true
-  def set_derived_enabled(%__MODULE__{conn: conn}, request) do
-    transaction(%__MODULE__{conn: conn}, fn -> DerivedViews.set_enabled_tx(conn, request) end)
-  end
+  def set_derived_enabled(%__MODULE__{} = adapter, request),
+    do: Services.set_derived_enabled(to_context(adapter), request)
 
   @impl true
-  def list_derived_sources(%__MODULE__{conn: conn}), do: DerivedViews.list_sources(conn)
+  def list_derived_sources(%__MODULE__{} = adapter),
+    do: Services.list_derived_sources(to_context(adapter))
 
   @impl true
-  def set_derived_source_error(%__MODULE__{conn: conn}, request) do
-    transaction(%__MODULE__{conn: conn}, fn -> DerivedViews.set_source_error_tx(conn, request) end)
-  end
+  def set_derived_source_error(%__MODULE__{} = adapter, request),
+    do: Services.set_derived_source_error(to_context(adapter), request)
 
   @impl true
-  def apply_derived_source_batch(%__MODULE__{derived_fault: derived_fault} = adapter, request) do
-    transaction(adapter, fn ->
-      DerivedViews.apply_source_batch_tx(adapter, request, derived_fault: derived_fault)
-    end)
-  end
+  def apply_derived_source_batch(%__MODULE__{} = adapter, request),
+    do: Services.apply_derived_source_batch(to_context(adapter), request)
 
   @impl true
-  def begin_derived_source_rebuild(%__MODULE__{conn: conn}, request) do
-    transaction(%__MODULE__{conn: conn}, fn ->
-      DerivedViews.begin_source_rebuild_tx(conn, request)
-    end)
-  end
+  def begin_derived_source_rebuild(%__MODULE__{} = adapter, request),
+    do: Services.begin_derived_source_rebuild(to_context(adapter), request)
 
   @impl true
-  def apply_derived_rebuild_page(%__MODULE__{derived_fault: derived_fault} = adapter, request) do
-    transaction(adapter, fn ->
-      DerivedViews.apply_rebuild_page_tx(adapter, request, derived_fault: derived_fault)
-    end)
-  end
+  def apply_derived_rebuild_page(%__MODULE__{} = adapter, request),
+    do: Services.apply_derived_rebuild_page(to_context(adapter), request)
 
   @impl true
-  def prune_derived_rebuild_stale_page(%__MODULE__{derived_fault: derived_fault} = adapter, request) do
-    transaction(adapter, fn ->
-      DerivedViews.prune_rebuild_stale_page_tx(adapter, request, derived_fault: derived_fault)
-    end)
-  end
+  def prune_derived_rebuild_stale_page(%__MODULE__{} = adapter, request),
+    do: Services.prune_derived_rebuild_stale_page(to_context(adapter), request)
 
   @impl true
-  def finish_derived_source_rebuild(%__MODULE__{conn: conn}, request) do
-    transaction(%__MODULE__{conn: conn}, fn ->
-      DerivedViews.finish_source_rebuild_tx(conn, request)
-    end)
-  end
+  def finish_derived_source_rebuild(%__MODULE__{} = adapter, request),
+    do: Services.finish_derived_source_rebuild(to_context(adapter), request)
 
   @impl true
   def execute_query(%__MODULE__{} = adapter, request) when is_map(request) do
@@ -903,12 +876,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       {:ok, %{database_uuid: uuid}} when is_binary(uuid) -> uuid
       _ -> nil
     end
-  end
-
-  defp adapter_config(adapter) do
-    adapter
-    |> adapter_identity()
-    |> Map.get(:config, ElixirDB.Config.defaults())
   end
 
   defp ensure_writable(%__MODULE__{identity: %{database_kind: :derived}}),
