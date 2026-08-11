@@ -30,4 +30,13 @@ defmodule ElixirDB.Storage.Registry do
   end
 
   def adapter_module?(_), do: false
+
+  @doc "Returns true when `module` exposes a port composition map."
+  @spec port_backend?(module()) :: boolean()
+  def port_backend?(module) when is_atom(module) do
+    Code.ensure_loaded?(module) and function_exported?(module, :port_modules, 0) and
+      function_exported?(module, :run_transaction, 2)
+  end
+
+  def port_backend?(_), do: false
 end

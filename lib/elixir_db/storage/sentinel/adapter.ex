@@ -10,7 +10,7 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
 
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.BackendContext
-  alias ElixirDB.Storage.Sentinel.Ownership
+  alias ElixirDB.Storage.Sentinel.{Ownership, Transaction}
 
   defstruct [:root, :identity, :closed?]
 
@@ -149,6 +149,33 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
       identity: adapter.identity
     )
   end
+
+  @doc "Returns the sentinel module that implements `family`."
+  @spec port(atom()) :: module()
+  def port(family) when is_atom(family) do
+    Map.fetch!(port_modules(), family)
+  end
+
+  @doc "Returns the sentinel port composition map for implemented families."
+  @spec port_modules() :: %{atom() => module()}
+  def port_modules do
+    %{
+      lifecycle: ElixirDB.Storage.Sentinel.Lifecycle,
+      transaction: ElixirDB.Storage.Sentinel.Transaction,
+      ownership: ElixirDB.Storage.Sentinel.OwnershipPort
+    }
+  end
+
+  @doc "Transaction port entry used by `ElixirDB.Storage.Transaction.run/2`."
+  @spec run_transaction(BackendContext.t(), (BackendContext.t() -> term())) ::
+          {:ok, term()} | {:error, ElixirDB.Error.t()}
+  def run_transaction(%BackendContext{} = context, fun) when is_function(fun, 1) do
+    Transaction.run(context, fun)
+  end
+
+  @doc "Returns the sentinel transaction port module."
+  @spec transaction_port() :: module()
+  def transaction_port, do: Transaction
 
   defp build(path, uuid) do
     %__MODULE__{

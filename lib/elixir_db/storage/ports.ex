@@ -52,4 +52,29 @@ defmodule ElixirDB.Storage.Ports do
   @spec family?(term()) :: boolean()
   def family?(family) when is_atom(family), do: family in @port_families
   def family?(_), do: false
+
+  @behaviour_modules %{
+    lifecycle: ElixirDB.Storage.Ports.Lifecycle,
+    transaction: ElixirDB.Storage.Ports.Transaction,
+    ownership: ElixirDB.Storage.Ports.Ownership,
+    document_facts: ElixirDB.Storage.Ports.DocumentFacts,
+    change_log: ElixirDB.Storage.Ports.ChangeLog,
+    local_records: ElixirDB.Storage.Ports.LocalRecords,
+    retention_records: ElixirDB.Storage.Ports.RetentionRecords,
+    index_candidates: ElixirDB.Storage.Ports.IndexCandidates,
+    view_state: ElixirDB.Storage.Ports.ViewState,
+    derived_state: ElixirDB.Storage.Ports.DerivedState,
+    attachment_metadata: ElixirDB.Storage.Ports.AttachmentMetadata,
+    inspection: ElixirDB.Storage.Ports.Inspection
+  }
+
+  @doc "Returns the behaviour module for an approved port family."
+  @spec behaviour(atom()) :: module()
+  def behaviour(family) when is_atom(family) do
+    Map.fetch!(@behaviour_modules, family)
+  end
+
+  @doc "Returns the map of port family atoms to behaviour modules."
+  @spec behaviours() :: %{atom() => module()}
+  def behaviours, do: @behaviour_modules
 end

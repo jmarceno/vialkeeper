@@ -1,12 +1,17 @@
 defmodule ElixirDB.Storage.SQLite.Adapter do
   @moduledoc """
-  Version 1 SQLite storage adapter.
+  Version 1 SQLite storage adapter and port composition facade.
 
-  Orchestrates transactions and the Storage.Adapter behaviour. Per-concern SQL
-  lives in `Documents`, `Revisions`, `Attachments`, `Changes`, `LocalRecords`,
-  `ReplicationJobs`, `Integrity`, `QueryRunner`, `IndexCatalog`, `Chains`,
-  `Mutations`, and `Import`. Physical index DDL remains in `Indexes`, with thin
-  facades in `StructuredIndexes` / `FullTextIndexes`.
+  Satisfies `ElixirDB.Storage.Adapter` for Waves 3–6 compatibility while
+  composing storage ports:
+
+  * `Lifecycle` / `Transaction` / `OwnershipPort`
+  * `DocumentFacts` / `ChangeLog` / `LocalRecordsPort` / `RetentionRecordsPort`
+  * `IndexCandidates` / `ViewStatePort` / `DerivedStatePort`
+  * `AttachmentMetadataPort` / `InspectionPort`
+
+  Per-concern SQL lives in sibling SQLite modules. Engine handles, SQL, and
+  transaction text stay inside `ElixirDB.Storage.SQLite.*`.
   """
   @behaviour ElixirDB.Storage.Adapter
 
@@ -15,6 +20,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   alias ElixirDB.Observability.Instrumentation.{Query, SQLite}
   alias ElixirDB.Query.{Normalizer, Prepared, SubscriptionRequest}
   alias ElixirDB.Storage.BackendContext
+  alias ElixirDB.Storage.Ports.Errors
 
   alias ElixirDB.Storage.SQLite.{
     Attachments,
@@ -35,6 +41,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     Retention,
     Revisions,
     Schema,
+    Transaction,
     Views
   }
 
@@ -153,6 +160,46 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       identity: adapter.identity
     )
   end
+
+  @doc "Returns the SQLite module that implements `family`."
+  @spec port(atom()) :: module()
+  def port(family) when is_atom(family) do
+    Map.fetch!(port_modules(), family)
+  end
+
+  @doc "Returns the SQLite port composition map."
+  @spec port_modules() :: %{atom() => module()}
+  def port_modules do
+    %{
+      lifecycle: ElixirDB.Storage.SQLite.Lifecycle,
+      transaction: ElixirDB.Storage.SQLite.Transaction,
+      ownership: ElixirDB.Storage.SQLite.OwnershipPort,
+      document_facts: ElixirDB.Storage.SQLite.DocumentFacts,
+      change_log: ElixirDB.Storage.SQLite.ChangeLog,
+      local_records: ElixirDB.Storage.SQLite.LocalRecordsPort,
+      retention_records: ElixirDB.Storage.SQLite.RetentionRecordsPort,
+      index_candidates: ElixirDB.Storage.SQLite.IndexCandidates,
+      view_state: ElixirDB.Storage.SQLite.ViewStatePort,
+      derived_state: ElixirDB.Storage.SQLite.DerivedStatePort,
+      attachment_metadata: ElixirDB.Storage.SQLite.AttachmentMetadataPort,
+      inspection: ElixirDB.Storage.SQLite.InspectionPort
+    }
+  end
+
+  @doc "Transaction port entry used by `ElixirDB.Storage.Transaction.run/2`."
+  @spec run_transaction(BackendContext.t(), (BackendContext.t() -> term())) ::
+          {:ok, term()} | {:error, ElixirDB.Error.t()}
+  def run_transaction(%BackendContext{} = context, fun) when is_function(fun, 1) do
+    Transaction.run(context, fun)
+  end
+
+  @doc "Returns the SQLite transaction port module."
+  @spec transaction_port() :: module()
+  def transaction_port, do: Transaction
+
+  @doc false
+  @spec invalidate_identity_cache(Connection.handle()) :: term()
+  def invalidate_identity_cache(conn), do: Process.delete({@identity_cache_key, conn})
 
   @impl true
   def open(path, _options \\ %{}) do
@@ -888,68 +935,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     cleanup_expired_pending_blobs(adapter, %{})
   end
 
-  defp transaction(%__MODULE__{conn: conn}, fun) do
-    case SQLite.trace_sqlite_phase(:transaction_begin, fn ->
-           Connection.execute(conn, "BEGIN IMMEDIATE")
-         end) do
-      :ok ->
-        transaction_body(conn, fun)
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  rescue
-    exception in [
-      ArgumentError,
-      ArithmeticError,
-      BadMapError,
-      CaseClauseError,
-      ErlangError,
-      FunctionClauseError,
-      KeyError,
-      MatchError,
-      Protocol.UndefinedError,
-      RuntimeError,
-      UndefinedFunctionError,
-      WithClauseError
-    ] ->
-      _ =
-        SQLite.trace_sqlite_phase(:transaction_rollback, fn ->
-          Connection.execute(conn, "ROLLBACK")
-        end)
-
-      invalidate_identity_cache(conn)
-      reraise exception, __STACKTRACE__
-  end
-
-  defp transaction_body(conn, fun) do
-    case fun.() do
-      {:ok, value} ->
-        commit_transaction(conn, value)
-
-      {:error, error} ->
-        _ =
-          SQLite.trace_sqlite_phase(:transaction_rollback, fn ->
-            Connection.execute(conn, "ROLLBACK")
-          end)
-
-        invalidate_identity_cache(conn)
-        {:error, error}
-    end
-  end
-
-  defp commit_transaction(conn, value) do
-    case SQLite.trace_sqlite_phase(:transaction_commit, fn ->
-           Connection.execute(conn, "COMMIT")
-         end) do
-      :ok ->
-        invalidate_identity_cache(conn)
-        {:ok, value}
-
-      {:error, reason} ->
-        invalidate_identity_cache(conn)
-        {:error, normalize_error(reason)}
-    end
+  defp transaction(%__MODULE__{} = adapter, fun) when is_function(fun, 0) do
+    Transaction.run_on_adapter(adapter, fn _tx_adapter -> fun.() end)
   end
 
   defp choose_revision(_adapter, nil, _revision),
@@ -1070,15 +1057,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     |> Map.put(:retention_mode, get_in(config, ["retention", "mode"]) || "disabled")
   end
 
-  # Clears the process-local metadata snapshot after any operation that may
-  # have changed sequence, retention, configuration, or other database state.
-  defp invalidate_identity_cache(conn),
-    do: Process.delete({@identity_cache_key, conn})
-
-  defp normalize_error(%ElixirDB.Error{} = error), do: error
-
-  defp normalize_error(reason),
-    do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
+  defp normalize_error(reason), do: Errors.normalize(reason)
 
   defp storage_mode(path, options) do
     requested =
