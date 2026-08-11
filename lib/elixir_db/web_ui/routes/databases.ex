@@ -310,6 +310,8 @@ defmodule ElixirDB.WebUI.Routes.Databases do
       fragment_link("Documents", "/ui/fragments/databases/#{uuid}/documents"),
       fragment_link("Queries", "/ui/fragments/databases/#{uuid}/queries"),
       fragment_link("Views", "/ui/fragments/databases/#{uuid}/views"),
+      fragment_link("Replications", "/ui/fragments/databases/#{uuid}/replications"),
+      fragment_link("Maintenance", "/ui/fragments/databases/#{uuid}/maintenance"),
       "  </div>\n"
     ]
   end
@@ -335,23 +337,10 @@ defmodule ElixirDB.WebUI.Routes.Databases do
     definition =
       job
       |> MapAccess.get(:definition, %{})
-      |> redact_secrets()
+      |> HTML.redact_secrets()
 
     Map.put(job, :definition, definition)
   end
-
-  defp redact_secrets(term) when is_map(term) do
-    Map.new(term, fn
-      {key, _value} when key in ["auth_token", :auth_token] ->
-        {key, "[redacted]"}
-
-      {key, value} ->
-        {key, redact_secrets(value)}
-    end)
-  end
-
-  defp redact_secrets(list) when is_list(list), do: Enum.map(list, &redact_secrets/1)
-  defp redact_secrets(other), do: other
 
   defp create_path(nil), do: {:ok, "#{ElixirDB.UUID.v4()}.elixirdb"}
   defp create_path(""), do: {:ok, "#{ElixirDB.UUID.v4()}.elixirdb"}

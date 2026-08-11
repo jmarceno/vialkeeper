@@ -16,8 +16,13 @@ defmodule ElixirDB.WebUI.Router do
   alias ElixirDB.WebUI.Routes.{
     Databases,
     Documents,
+    Federation,
     Home,
+    Maintenance,
+    MaterializedViews,
+    Observability,
     Queries,
+    Replications,
     Shell,
     Views
   }
@@ -89,8 +94,40 @@ defmodule ElixirDB.WebUI.Router do
     serve_when_enabled(conn, fn conn -> Views.list(conn) end)
   end
 
+  get "/fragments/databases/:uuid/replications/:job_id/status" do
+    serve_when_enabled(conn, fn conn -> Replications.status(conn) end)
+  end
+
+  get "/fragments/databases/:uuid/replications" do
+    serve_when_enabled(conn, fn conn -> Replications.list(conn) end)
+  end
+
+  get "/fragments/databases/:uuid/maintenance" do
+    serve_when_enabled(conn, fn conn -> Maintenance.show(conn) end)
+  end
+
   get "/fragments/databases/:uuid" do
     serve_when_enabled(conn, fn conn -> Databases.show(conn) end)
+  end
+
+  get "/fragments/federation" do
+    serve_when_enabled(conn, fn conn -> Federation.show(conn) end)
+  end
+
+  get "/fragments/materialized-views/:uuid/status" do
+    serve_when_enabled(conn, fn conn -> MaterializedViews.status(conn) end)
+  end
+
+  get "/fragments/materialized-views/:uuid" do
+    serve_when_enabled(conn, fn conn -> MaterializedViews.show(conn) end)
+  end
+
+  get "/fragments/materialized-views" do
+    serve_when_enabled(conn, fn conn -> MaterializedViews.list(conn) end)
+  end
+
+  get "/fragments/observability" do
+    serve_when_enabled(conn, fn conn -> Observability.show(conn) end)
   end
 
   post "/actions/databases" do
@@ -155,6 +192,70 @@ defmodule ElixirDB.WebUI.Router do
 
   post "/actions/databases/:uuid/views/:view_id/delete" do
     serve_when_enabled(conn, fn conn -> Views.delete(conn) end)
+  end
+
+  post "/actions/databases/:uuid/replications" do
+    serve_when_enabled(conn, fn conn -> Replications.create(conn) end)
+  end
+
+  post "/actions/databases/:uuid/replications/:job_id/start" do
+    serve_when_enabled(conn, fn conn -> Replications.start(conn) end)
+  end
+
+  post "/actions/databases/:uuid/replications/:job_id/cancel" do
+    serve_when_enabled(conn, fn conn -> Replications.cancel(conn) end)
+  end
+
+  post "/actions/databases/:uuid/replications/:job_id/enable" do
+    serve_when_enabled(conn, fn conn -> Replications.enable(conn) end)
+  end
+
+  post "/actions/databases/:uuid/replications/:job_id/disable" do
+    serve_when_enabled(conn, fn conn -> Replications.disable(conn) end)
+  end
+
+  post "/actions/databases/:uuid/replications/:job_id/delete" do
+    serve_when_enabled(conn, fn conn -> Replications.delete(conn) end)
+  end
+
+  post "/actions/databases/:uuid/integrity-check" do
+    serve_when_enabled(conn, fn conn -> Maintenance.integrity_check(conn) end)
+  end
+
+  post "/actions/databases/:uuid/compact" do
+    serve_when_enabled(conn, fn conn -> Maintenance.compact(conn) end)
+  end
+
+  post "/actions/databases/:uuid/attachments/gc" do
+    serve_when_enabled(conn, fn conn -> Maintenance.attachment_gc(conn) end)
+  end
+
+  post "/actions/federation/query" do
+    serve_when_enabled(conn, fn conn -> Federation.query(conn) end)
+  end
+
+  post "/actions/federation/saved-queries/execute" do
+    serve_when_enabled(conn, fn conn -> Federation.execute_saved(conn) end)
+  end
+
+  post "/actions/materialized-views" do
+    serve_when_enabled(conn, fn conn -> MaterializedViews.create(conn) end)
+  end
+
+  post "/actions/materialized-views/:uuid/enable" do
+    serve_when_enabled(conn, fn conn -> MaterializedViews.enable(conn) end)
+  end
+
+  post "/actions/materialized-views/:uuid/disable" do
+    serve_when_enabled(conn, fn conn -> MaterializedViews.disable(conn) end)
+  end
+
+  post "/actions/materialized-views/:uuid/refresh" do
+    serve_when_enabled(conn, fn conn -> MaterializedViews.refresh(conn) end)
+  end
+
+  post "/actions/materialized-views/:uuid/rebuild" do
+    serve_when_enabled(conn, fn conn -> MaterializedViews.rebuild(conn) end)
   end
 
   match _ do

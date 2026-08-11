@@ -46,4 +46,43 @@ defmodule ElixirDB.WebUI.HTML do
   """
   @spec encode_json(term()) :: String.t()
   def encode_json(value), do: JSON.encode!(value)
+
+  @doc """
+  Recursively converts map keys to strings for JSON/HTML presentation.
+
+  Booleans and `nil` are preserved so values can be round-tripped into facades
+  when needed.
+  """
+  @spec stringify_keys(map()) :: map()
+  def stringify_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {key, value} when is_atom(key) -> {Atom.to_string(key), stringify_value(value)}
+      {key, value} when is_binary(key) -> {key, stringify_value(value)}
+      {key, value} -> {to_string(key), stringify_value(value)}
+    end)
+  end
+
+  @doc """
+  Recursively redacts known secret keys such as `auth_token`.
+  """
+  @spec redact_secrets(term()) :: term()
+  def redact_secrets(term) when is_map(term) do
+    Map.new(term, fn
+      {key, _value} when key in ["auth_token", :auth_token] ->
+        {key, "[redacted]"}
+
+      {key, value} ->
+        {key, redact_secrets(value)}
+    end)
+  end
+
+  def redact_secrets(list) when is_list(list), do: Enum.map(list, &redact_secrets/1)
+  def redact_secrets(other), do: other
+
+  defp stringify_value(map) when is_map(map) and not is_struct(map), do: stringify_keys(map)
+  defp stringify_value(list) when is_list(list), do: Enum.map(list, &stringify_value/1)
+  defp stringify_value(value) when is_boolean(value), do: value
+  defp stringify_value(nil), do: nil
+  defp stringify_value(atom) when is_atom(atom), do: Atom.to_string(atom)
+  defp stringify_value(other), do: other
 end

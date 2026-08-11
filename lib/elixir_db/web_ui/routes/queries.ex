@@ -352,28 +352,15 @@ defmodule ElixirDB.WebUI.Routes.Queries do
 
   defp public_explain(explanation) when is_map(explanation) do
     explanation
-    |> stringify_keys()
+    |> HTML.stringify_keys()
     |> Map.take(@explain_keys)
   end
 
   defp public_index(index) when is_map(index) do
     index
-    |> stringify_keys()
+    |> HTML.stringify_keys()
     |> Map.take(@index_keys)
   end
-
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn
-      {key, value} when is_atom(key) -> {Atom.to_string(key), stringify_value(value)}
-      {key, value} when is_binary(key) -> {key, stringify_value(value)}
-      {key, value} -> {to_string(key), stringify_value(value)}
-    end)
-  end
-
-  defp stringify_value(map) when is_map(map) and not is_struct(map), do: stringify_keys(map)
-  defp stringify_value(list) when is_list(list), do: Enum.map(list, &stringify_value/1)
-  defp stringify_value(atom) when is_atom(atom), do: Atom.to_string(atom)
-  defp stringify_value(other), do: other
 
   defp fragment_link(label, path) do
     [
