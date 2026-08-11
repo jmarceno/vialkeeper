@@ -11,6 +11,7 @@
       "ElixirDB.Federation.BookmarkCodec",
       "ElixirDB.Federation.Ordering",
       "ElixirDB.Federation.SourceCursor",
+      "ElixirDB.Federation.SourceDocument",
       "ElixirDB.Federation.SavedQueries",
       "ElixirDB.Replication",
       "ElixirDB.Attachments",

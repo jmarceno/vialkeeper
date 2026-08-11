@@ -2,7 +2,15 @@ defmodule ElixirDB.Federation.Executor do
   @moduledoc "Executes bounded, stateless federation queries over registered sources."
 
   alias ElixirDB.Error
-  alias ElixirDB.Federation.{BookmarkCodec, Normalizer, Ordering, SourceCursor}
+
+  alias ElixirDB.Federation.{
+    BookmarkCodec,
+    Normalizer,
+    Ordering,
+    SourceCursor,
+    SourceDocument
+  }
+
   alias ElixirDB.MapAccess
   alias ElixirDB.Query
   alias ElixirDB.Query.Projection
@@ -279,8 +287,6 @@ defmodule ElixirDB.Federation.Executor do
     :ok
   end
 
-  defp cancel_tasks(_tasks, _reason), do: :ok
-
   defp fetch_source(source_uuid, request, deadline, fetcher) do
     fetcher
     |> invoke_fetcher(source_uuid, request, deadline)
@@ -365,7 +371,7 @@ defmodule ElixirDB.Federation.Executor do
     body = MapAccess.get(document, :body)
 
     if is_binary(id) and id != "" and is_binary(revision) and (is_map(body) or is_nil(body)) do
-      {:ok, %{id: id, revision: revision, body: body}}
+      {:ok, SourceDocument.new(id, revision, body)}
     else
       {:error, invalid_page(:invalid_document)}
     end
@@ -395,7 +401,10 @@ defmodule ElixirDB.Federation.Executor do
           page.has_more
         )
 
-      {:cont, {:ok, cursors ++ [cursor], candidate_count + length(page.documents)}}
+      {:cont, {:ok, [cursor | cursors], candidate_count + length(page.documents)}}
+    end)
+    |> then(fn {:ok, cursors, candidate_count} ->
+      {:ok, Enum.reverse(cursors), candidate_count}
     end)
   end
 
@@ -559,15 +568,18 @@ defmodule ElixirDB.Federation.Executor do
     do: {:error, Error.bookmark_stale("federation source sequence changed")}
 
   defp best_head(cursors, sort) do
-    cursors
-    |> Enum.with_index()
-    |> Enum.reduce(nil, fn {cursor, index}, best ->
-      case SourceCursor.head(cursor) do
-        :empty -> best
-        {:ok, document} -> choose_head(best, {index, cursor.source_uuid, document}, sort)
-      end
-    end)
-    |> case do
+    {best, _next_index} =
+      Enum.reduce(cursors, {nil, 0}, fn cursor, {best, index} ->
+        best =
+          case SourceCursor.head(cursor) do
+            :empty -> best
+            {:ok, document} -> choose_head(best, {index, cursor.source_uuid, document}, sort)
+          end
+
+        {best, index + 1}
+      end)
+
+    case best do
       nil -> :empty
       {index, _source_uuid, document} -> {:ok, index, document}
     end
@@ -676,7 +688,7 @@ defmodule ElixirDB.Federation.Executor do
 
   defp runtime_settings(opts) do
     configured = Application.get_env(:elixir_db, :federation, []) || []
-    host_limits = ElixirDB.Config.host_limits() || []
+    host_limits = ElixirDB.Config.host_limits()
 
     max_sources = positive_setting(opts, configured, :max_sources, @default_max_sources)
 

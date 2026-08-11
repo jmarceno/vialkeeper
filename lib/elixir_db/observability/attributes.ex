@@ -10,6 +10,7 @@ defmodule ElixirDB.Observability.Attributes do
   ## Allowed fields
 
   `db.uuid`, `command.type` (atom), `error.code` (atom), `outcome` (atom),
+  `federation.source_count`,
   `http.method`, `http.route` (route template, never the raw path),
   `http.status_code`, `index_id`, `index_type`, `plan_kind`,
   `selected_index_count`, `union_branch_count`, `replication.id`, `endpoint`
@@ -35,6 +36,7 @@ defmodule ElixirDB.Observability.Attributes do
     command_type: :"command.type",
     error_code: :"error.code",
     outcome: :outcome,
+    federation_source_count: :"federation.source_count",
     trigger: :trigger,
     http_method: :"http.method",
     http_route: :"http.route",

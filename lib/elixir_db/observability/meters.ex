@@ -20,6 +20,7 @@ defmodule ElixirDB.Observability.Meters do
   | `elixir_db.changes.read.duration` | histogram |
   | `elixir_db.changes.history_truncated.count` | counter |
   | `elixir_db.query.execute.duration` | histogram |
+  | `elixir_db.federation.query.duration` | histogram |
   | `elixir_db.index.build.duration` | histogram |
   | `elixir_db.replication.batch.duration` | histogram |
   | `elixir_db.replication.transfer.count` | counter |
@@ -51,6 +52,7 @@ defmodule ElixirDB.Observability.Meters do
     {:"elixir_db.changes.read.duration", :histogram},
     {:"elixir_db.changes.history_truncated.count", :counter},
     {:"elixir_db.query.execute.duration", :histogram},
+    {:"elixir_db.federation.query.duration", :histogram},
     {:"elixir_db.index.build.duration", :histogram},
     {:"elixir_db.replication.batch.duration", :histogram},
     {:"elixir_db.replication.transfer.count", :counter},

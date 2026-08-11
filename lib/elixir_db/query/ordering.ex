@@ -128,5 +128,4 @@ defmodule ElixirDB.Query.Ordering do
   defp compare_values({:ok, left}, {:ok, right}) when left == right, do: :eq
   defp compare_values({:ok, left}, {:ok, right}) when left < right, do: :lt
   defp compare_values({:ok, _}, {:ok, _}), do: :gt
-  defp compare_values(_, _), do: :eq
 end

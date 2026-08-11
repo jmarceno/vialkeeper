@@ -188,6 +188,14 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
     template_for(conn.path_info || [])
   end
 
+  defp template_for(["v1", "federation", "query"]), do: "/v1/federation/query"
+
+  defp template_for(["v1", "federation", "saved-queries"]),
+    do: "/v1/federation/saved-queries"
+
+  defp template_for(["v1", "federation", "saved-queries", "execute"]),
+    do: "/v1/federation/saved-queries/execute"
+
   defp template_for(["v1", "databases"]), do: "/v1/databases"
   defp template_for(["v1", "databases", _uuid]), do: "/v1/databases/:uuid"
   defp template_for(["v1", "databases", _uuid, "config"]), do: "/v1/databases/:uuid/config"

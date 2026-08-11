@@ -42,6 +42,8 @@ defmodule ElixirDB.HTTP.Schemas do
   @changes ["since", "limit", "wait_ms"]
   @changes_stream ["since", "limit", "heartbeat_ms"]
   @query_stream ["query", "heartbeat_ms"]
+  @federation_query ["databases", "query"]
+  @federation_saved_query_execute ["name", "limit", "bookmark"]
 
   @replication_job [
     "persist",
@@ -114,6 +116,8 @@ defmodule ElixirDB.HTTP.Schemas do
   def allowed(:changes), do: @changes
   def allowed(:changes_stream), do: @changes_stream
   def allowed(:query_stream), do: @query_stream
+  def allowed(:federation_query), do: @federation_query
+  def allowed(:federation_saved_query_execute), do: @federation_saved_query_execute
   def allowed(:replication_job), do: @replication_job
   def allowed(:wire_changes), do: @wire_changes
   def allowed(:wire_diff), do: @wire_diff
