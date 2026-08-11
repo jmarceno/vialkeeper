@@ -4,6 +4,7 @@ defmodule ElixirDB.WebUI.Router do
 
   Asset and shell routes are fixed allow-lists. When `[web_ui] enabled = false`,
   every path under `/ui` returns the ordinary route-not-found response.
+  Fragment and action routes remain behind the same bearer authentication as `/v1`.
   """
 
   use Plug.Router
@@ -11,7 +12,15 @@ defmodule ElixirDB.WebUI.Router do
   alias ElixirDB.HTTP.Response, as: JSONResponse
   alias ElixirDB.WebUI
   alias ElixirDB.WebUI.Assets
-  alias ElixirDB.WebUI.Routes.{Home, Shell}
+
+  alias ElixirDB.WebUI.Routes.{
+    Databases,
+    Documents,
+    Home,
+    Queries,
+    Shell,
+    Views
+  }
 
   plug(:match)
   plug(:dispatch)
@@ -50,6 +59,102 @@ defmodule ElixirDB.WebUI.Router do
       |> Home.call()
       |> Map.put(:resp_body, "")
     end)
+  end
+
+  get "/fragments/databases" do
+    serve_when_enabled(conn, fn conn -> Databases.list(conn) end)
+  end
+
+  get "/fragments/databases/:uuid/documents/new" do
+    serve_when_enabled(conn, fn conn -> Documents.new(conn) end)
+  end
+
+  get "/fragments/databases/:uuid/documents/show" do
+    serve_when_enabled(conn, fn conn -> Documents.show(conn) end)
+  end
+
+  get "/fragments/databases/:uuid/documents" do
+    serve_when_enabled(conn, fn conn -> Documents.browse(conn) end)
+  end
+
+  get "/fragments/databases/:uuid/queries" do
+    serve_when_enabled(conn, fn conn -> Queries.show(conn) end)
+  end
+
+  get "/fragments/databases/:uuid/views/:view_id/status" do
+    serve_when_enabled(conn, fn conn -> Views.status(conn) end)
+  end
+
+  get "/fragments/databases/:uuid/views" do
+    serve_when_enabled(conn, fn conn -> Views.list(conn) end)
+  end
+
+  get "/fragments/databases/:uuid" do
+    serve_when_enabled(conn, fn conn -> Databases.show(conn) end)
+  end
+
+  post "/actions/databases" do
+    serve_when_enabled(conn, fn conn -> Databases.create(conn) end)
+  end
+
+  post "/actions/databases/register" do
+    serve_when_enabled(conn, fn conn -> Databases.register(conn) end)
+  end
+
+  post "/actions/databases/:uuid/config" do
+    serve_when_enabled(conn, fn conn -> Databases.update_config(conn) end)
+  end
+
+  post "/actions/databases/:uuid/close" do
+    serve_when_enabled(conn, fn conn -> Databases.close(conn) end)
+  end
+
+  post "/actions/databases/:uuid/unregister" do
+    serve_when_enabled(conn, fn conn -> Databases.unregister(conn) end)
+  end
+
+  post "/actions/databases/:uuid/documents/put" do
+    serve_when_enabled(conn, fn conn -> Documents.put(conn) end)
+  end
+
+  post "/actions/databases/:uuid/documents/delete" do
+    serve_when_enabled(conn, fn conn -> Documents.delete(conn) end)
+  end
+
+  post "/actions/databases/:uuid/queries/execute" do
+    serve_when_enabled(conn, fn conn -> Queries.execute(conn) end)
+  end
+
+  post "/actions/databases/:uuid/queries/explain" do
+    serve_when_enabled(conn, fn conn -> Queries.explain(conn) end)
+  end
+
+  post "/actions/databases/:uuid/indexes" do
+    serve_when_enabled(conn, fn conn -> Queries.create_index(conn) end)
+  end
+
+  post "/actions/databases/:uuid/indexes/:index_id/delete" do
+    serve_when_enabled(conn, fn conn -> Queries.delete_index(conn) end)
+  end
+
+  post "/actions/databases/:uuid/indexes/:index_id/rebuild" do
+    serve_when_enabled(conn, fn conn -> Queries.rebuild_index(conn) end)
+  end
+
+  post "/actions/databases/:uuid/views" do
+    serve_when_enabled(conn, fn conn -> Views.create(conn) end)
+  end
+
+  post "/actions/databases/:uuid/views/:view_id/query" do
+    serve_when_enabled(conn, fn conn -> Views.query(conn) end)
+  end
+
+  post "/actions/databases/:uuid/views/:view_id/rebuild" do
+    serve_when_enabled(conn, fn conn -> Views.rebuild(conn) end)
+  end
+
+  post "/actions/databases/:uuid/views/:view_id/delete" do
+    serve_when_enabled(conn, fn conn -> Views.delete(conn) end)
   end
 
   match _ do

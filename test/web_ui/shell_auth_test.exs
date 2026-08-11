@@ -1,4 +1,4 @@
-defmodule ElixirDB.WebUI.Wave1Test do
+defmodule ElixirDB.WebUI.ShellAuthTest do
   @moduledoc """
   Host config, embedded assets, anonymous shell, and auth-boundary proofs for
   the embedded administration console.
