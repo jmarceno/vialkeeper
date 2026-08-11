@@ -945,9 +945,12 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
 
   defp deadline_error do
     {:error,
-     Error.internal_error("database command timed out", %{
-       reason: :deadline_exhausted
-     })}
+     Error.new(
+       :internal_error,
+       "database command timed out",
+       %{reason: :deadline_exhausted},
+       retryable: true
+     )}
   end
 
   defp sync_owner_before_accepting(uuid) do

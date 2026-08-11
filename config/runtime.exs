@@ -28,6 +28,11 @@ host_config =
   end
 
 config :elixir_db, host_config
+config :elixir_db, :federation, Keyword.get(host_config, :federation, [])
+
+config :elixir_db,
+       :federation_saved_queries,
+       Keyword.get(host_config, :federation, [])[:saved_queries] || []
 
 # OpenTelemetry opt-in gate (OBSV-004). The OTLP exporter and metric reader
 # are wired ONLY when an otlp_endpoint is configured in host.toml. Otherwise no

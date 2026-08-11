@@ -21,15 +21,32 @@ defmodule ElixirDB.Query do
     do: DatabaseCatalog.command(uuid, {:command, :rebuild_index, index_id})
 
   def execute(uuid, request) do
+    execute_internal(uuid, request, :ordinary)
+  end
+
+  @doc "Executes a query using a caller-provided shared deadline."
+  def execute_with_deadline(uuid, request, deadline_ms)
+      when is_integer(deadline_ms) do
+    execute_internal(uuid, request, {:deadline, deadline_ms})
+  end
+
+  defp execute_internal(uuid, request, timeout_mode) do
     with {:ok, normalized} <- Normalizer.normalize(request),
          :ok <- validate_query(normalized),
-         {:ok, identity} <- DatabaseCatalog.command(uuid, {:command, :identity, %{}}),
+         {:ok, identity} <-
+           command(uuid, {:command, :identity, %{}}, timeout_mode),
          :ok <- validate_database_query(normalized, identity),
          {:ok, prepared} <- prepare_bookmark(normalized, identity),
-         {:ok, result} <- DatabaseCatalog.command(uuid, {:command, :query, Prepared.wrap(prepared)}) do
+         {:ok, result} <-
+           command(uuid, {:command, :query, Prepared.wrap(prepared)}, timeout_mode) do
       add_bookmark(result, prepared, identity)
     end
   end
+
+  defp command(uuid, request, :ordinary), do: DatabaseCatalog.command(uuid, request)
+
+  defp command(uuid, request, {:deadline, deadline}),
+    do: DatabaseCatalog.command_with_deadline(uuid, request, deadline)
 
   def explain(uuid, request) do
     with {:ok, normalized} <- Normalizer.normalize(request),

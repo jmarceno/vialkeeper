@@ -94,6 +94,17 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     command_as(uuid, :foreground, command, timeout)
   end
 
+  @doc "Routes a command using an already-created absolute deadline."
+  @spec command_with_deadline(binary(), term(), Deadline.t()) ::
+          term() | {:error, ElixirDB.Error.t()}
+  def command_with_deadline(uuid, command, deadline) when is_binary(uuid) do
+    with :ok <- ensure_command_target(uuid, deadline) do
+      Database.command(uuid, command, fn ->
+        DatabaseAdmission.execute_with_deadline(uuid, :foreground, command, deadline)
+      end)
+    end
+  end
+
   @doc "Trusted internal command routing with an explicit admission service class."
   @spec command_as(binary(), DatabaseAdmission.service_class(), term(), timeout()) ::
           term() | {:error, ElixirDB.Error.t()}
@@ -352,9 +363,12 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   defp command_deadline_error do
-    ElixirDB.Error.internal_error("database command timed out", %{
-      reason: :deadline_exhausted
-    })
+    ElixirDB.Error.new(
+      :internal_error,
+      "database command timed out",
+      %{reason: :deadline_exhausted},
+      retryable: true
+    )
   end
 
   # SAFETY: final catch-all net for handle_call clauses that touch the adapter. An

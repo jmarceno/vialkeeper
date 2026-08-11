@@ -47,6 +47,13 @@ max_views_per_database = 256
 max_view_batch_changes = 500
 max_view_consistent_wait_ms = 30000
 
+# Bounds for stateless cross-database queries.
+[federation]
+max_sources = 16
+max_concurrent_sources = 8
+max_candidates = 10000
+max_execution_ms = 10000
+
 # Per-database admission scheduling policy. Weights control deterministic
 # weighted round-robin grant order across service classes; reserved slots
 # guarantee each class can enqueue under saturation.

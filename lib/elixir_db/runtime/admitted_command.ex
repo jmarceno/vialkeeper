@@ -117,9 +117,12 @@ defmodule ElixirDB.Runtime.AdmittedCommand do
   defp run_owner_fun(uuid, owner_fun, deadline_ms, trace_context, probe_op) do
     if Deadline.exhausted?(deadline_ms) do
       {:error,
-       Error.internal_error("database command timed out", %{
-         reason: :deadline_exhausted
-       })}
+       Error.new(
+         :internal_error,
+         "database command timed out",
+         %{reason: :deadline_exhausted},
+         retryable: true
+       )}
     else
       with_trace_context(trace_context, fn ->
         try do

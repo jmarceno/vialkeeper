@@ -570,7 +570,8 @@ defmodule ElixirDB.Query.Normalizer do
   defp value_or_default(nil, default), do: default
   defp value_or_default(value, _default), do: value
 
-  defp validate_key_collisions(value) when is_map(value) do
+  @doc "Validates that nested object keys remain unique after stringification."
+  def validate_key_collisions(value) when is_map(value) do
     Enum.reduce_while(value, {:ok, MapSet.new()}, fn {key, child}, {:ok, seen} ->
       with {:ok, string_key} <- key_as_string(key),
            false <- MapSet.member?(seen, string_key),
@@ -592,7 +593,7 @@ defmodule ElixirDB.Query.Normalizer do
     end)
   end
 
-  defp validate_key_collisions(value) when is_list(value) do
+  def validate_key_collisions(value) when is_list(value) do
     Enum.reduce_while(value, :ok, fn child, :ok ->
       case validate_key_collisions(child) do
         :ok -> {:cont, :ok}
@@ -601,7 +602,7 @@ defmodule ElixirDB.Query.Normalizer do
     end)
   end
 
-  defp validate_key_collisions(_value), do: :ok
+  def validate_key_collisions(_value), do: :ok
 
   defp key_as_string(key) when is_binary(key), do: {:ok, key}
   defp key_as_string(key) when is_atom(key), do: {:ok, Atom.to_string(key)}

@@ -7,10 +7,10 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
   remains storage-neutral in `ElixirDB.Query.Planner`.
   """
 
-  alias ElixirDB.JSON.{Pointer, StrictCache}
+  alias ElixirDB.JSON.StrictCache
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.SQLite
-  alias ElixirDB.Query.{Plan, Planner, Predicate, Projection}
+  alias ElixirDB.Query.{Ordering, Plan, Planner, Predicate, Projection}
   alias ElixirDB.Query.Selector
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, IndexCatalog, QueryCompiler, TermBlob}
@@ -103,7 +103,8 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
          plan_digest: plan.digest,
          index_bindings: Plan.index_bindings(plan),
          selected_indexes: Enum.map(Plan.index_bindings(plan), & &1.index_id),
-         last_ordering_key: ordering_key(List.last(values), request)
+         last_ordering_key:
+           Ordering.ordering_key(List.last(values), MapAccess.get(request, :sort, []))
        }}
     else
       {:error, %ElixirDB.Error{} = error} -> {:error, error}
@@ -708,7 +709,9 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
       if sqlite_default_order?(sort, plan, request) do
         documents
       else
-        Enum.sort(documents, fn left, right -> compare_documents(left, right, sort) end)
+        Enum.sort(documents, fn left, right ->
+          Ordering.compare_documents(left, right, sort) == :lt
+        end)
       end
 
     case check_deadline(deadline) do
@@ -741,7 +744,7 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
         sort = MapAccess.get(request, :sort, [])
 
         Enum.drop_while(documents, fn document ->
-          compare_ordering_keys(ordering_key(document, request), after_ordering, sort) != :gt
+          Ordering.compare_cursor(document, after_ordering, sort) != :gt
         end)
 
       _ ->
@@ -751,103 +754,6 @@ defmodule ElixirDB.Storage.SQLite.QueryRunner do
         end
     end
   end
-
-  defp compare_ordering_keys(left, right, []) do
-    case {Map.get(left, "rank"), Map.get(right, "rank")} do
-      {left_rank, right_rank} when is_number(left_rank) and is_number(right_rank) ->
-        case compare_values({:ok, left_rank}, {:ok, right_rank}) do
-          :eq -> compare_ids(left["id"], right["id"])
-          comparison -> comparison
-        end
-
-      _ ->
-        compare_ids(left["id"], right["id"])
-    end
-  end
-
-  defp compare_ordering_keys(left, right, [sort | rest]) do
-    left_value = ordering_value(first_ordering_value(left))
-    right_value = ordering_value(first_ordering_value(right))
-
-    case compare_values(left_value, right_value) do
-      :eq ->
-        compare_ordering_keys(drop_ordering_key(left), drop_ordering_key(right), rest)
-
-      comparison ->
-        apply_ordering_direction(comparison, sort)
-    end
-  end
-
-  defp first_ordering_value(%{"sort" => [value | _]}), do: value
-  defp first_ordering_value(_), do: nil
-
-  defp drop_ordering_key(value),
-    do:
-      %{"sort" => Enum.drop(value["sort"] || [], 1), "id" => value["id"]}
-      |> maybe_put_rank(Map.get(value, "rank"))
-
-  defp maybe_put_rank(value, rank) when is_number(rank), do: Map.put(value, "rank", rank)
-  defp maybe_put_rank(value, _rank), do: value
-
-  defp apply_ordering_direction(:lt, sort),
-    do: if(MapAccess.get(sort, :direction, "asc") == "asc", do: :lt, else: :gt)
-
-  defp apply_ordering_direction(:gt, sort),
-    do: if(MapAccess.get(sort, :direction, "asc") == "asc", do: :gt, else: :lt)
-
-  defp compare_ids(left, right) when left == right, do: :eq
-  defp compare_ids(left, right) when left < right, do: :lt
-  defp compare_ids(_left, _right), do: :gt
-
-  defp ordering_value(%{"present" => true, "value" => value}), do: {:ok, value}
-  defp ordering_value(_), do: :missing
-
-  defp ordering_key(nil, _request), do: nil
-
-  defp ordering_key(document, request) do
-    sort = MapAccess.get(request, :sort, [])
-
-    values =
-      Enum.map(sort, fn sort_field ->
-        path = MapAccess.get(sort_field, :path)
-
-        case Pointer.get(document.body, path) do
-          {:ok, value} -> %{"present" => true, "value" => value}
-          :missing -> %{"present" => false}
-        end
-      end)
-
-    %{"sort" => values, "id" => document.id}
-    |> maybe_put_search_rank(document, sort)
-  end
-
-  defp maybe_put_search_rank(ordering_key, %{rank: rank}, []) when is_number(rank),
-    do: Map.put(ordering_key, "rank", rank)
-
-  defp maybe_put_search_rank(ordering_key, _document, _sort), do: ordering_key
-
-  defp compare_documents(left, right, []), do: left.id <= right.id
-
-  defp compare_documents(left, right, [sort | rest]) do
-    path = MapAccess.get(sort, :path)
-    direction = MapAccess.get(sort, :direction, "asc")
-    left_value = Pointer.get(left.body, path)
-    right_value = Pointer.get(right.body, path)
-
-    case compare_values(left_value, right_value) do
-      :eq -> compare_documents(left, right, rest)
-      :lt -> direction == "asc"
-      :gt -> direction == "desc"
-    end
-  end
-
-  defp compare_values(:missing, :missing), do: :eq
-  defp compare_values(:missing, _), do: :gt
-  defp compare_values(_, :missing), do: :lt
-  defp compare_values({:ok, left}, {:ok, right}) when left == right, do: :eq
-  defp compare_values({:ok, left}, {:ok, right}) when left < right, do: :lt
-  defp compare_values({:ok, _}, {:ok, _}), do: :gt
-  defp compare_values(_, _), do: :eq
 
   defp adapter_identity(adapter) do
     case Adapter.identity(adapter) do

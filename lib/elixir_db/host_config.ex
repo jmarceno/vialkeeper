@@ -8,6 +8,8 @@ defmodule ElixirDB.HostConfig do
   root relocates a complete, working configuration.
   """
 
+  alias ElixirDB.Federation.Normalizer
+  alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Runtime.{AdmissionPolicy, AtomicWrite}
 
   @filename "host.toml"
@@ -89,12 +91,13 @@ defmodule ElixirDB.HostConfig do
 
   @default_admission AdmissionPolicy.default_toml_map()
 
-  @known_sections ~w(listener limits admission auth tls security observability)
+  @known_sections ~w(listener limits admission auth tls security observability federation)
   @allowed_listener ~w(ip port)
   @allowed_auth ~w(enabled tokens)
   @allowed_tls ~w(enabled certfile keyfile)
   @allowed_security ~w(allow_insecure_remote)
   @allowed_observability ~w(otlp_endpoint)
+  @allowed_federation ~w(max_sources max_concurrent_sources max_candidates max_execution_ms saved_query)
   @allowed_admission Map.keys(@default_admission)
 
   @admission_key_atoms %{
@@ -119,7 +122,13 @@ defmodule ElixirDB.HostConfig do
       "auth" => @default_auth,
       "tls" => @default_tls,
       "security" => @default_security,
-      "observability" => @default_observability
+      "observability" => @default_observability,
+      "federation" => %{
+        "max_sources" => 16,
+        "max_concurrent_sources" => 8,
+        "max_candidates" => 10_000,
+        "max_execution_ms" => 10_000
+      }
     }
   end
 
@@ -221,7 +230,8 @@ defmodule ElixirDB.HostConfig do
          {:ok, auth} <- validate_auth(raw["auth"]),
          {:ok, tls} <- validate_tls(raw["tls"], root),
          {:ok, security} <- validate_security(raw["security"]),
-         {:ok, obs} <- validate_observability(raw["observability"]) do
+         {:ok, obs} <- validate_observability(raw["observability"]),
+         {:ok, federation} <- validate_federation(raw["federation"], limits) do
       # host_limits consumers (`ElixirDB.Config.host_limits/0`) expect atom keys,
       # matching the original `config/config.exs` keyword form. The keys are
       # bounded by `validate_limits` to the fixed allow-list in @default_limits,
@@ -239,6 +249,7 @@ defmodule ElixirDB.HostConfig do
         |> Keyword.put(:tls, tls)
         |> Keyword.put(:security, security)
         |> Keyword.put(:otlp_endpoint, obs)
+        |> Keyword.put(:federation, federation)
 
       {:ok, config}
     end
@@ -434,6 +445,105 @@ defmodule ElixirDB.HostConfig do
   end
 
   defp validate_observability(_), do: {:error, "host.toml: [observability] must be a table"}
+
+  defp validate_federation(nil, _limits),
+    do:
+      {:ok,
+       [
+         max_sources: 16,
+         max_concurrent_sources: 8,
+         max_candidates: 10_000,
+         max_execution_ms: 10_000,
+         saved_queries: []
+       ]}
+
+  defp validate_federation(%{} = federation, limits) do
+    with :ok <- allow_only(federation, @allowed_federation, "federation"),
+         {:ok, sources} <- positive_default(federation["max_sources"], 16, "max_sources", 256),
+         {:ok, concurrent} <-
+           positive_default(federation["max_concurrent_sources"], 8, "max_concurrent_sources", 64),
+         {:ok, candidates} <-
+           positive_default(federation["max_candidates"], 10_000, "max_candidates", 1_000_000),
+         {:ok, execution} <-
+           positive_default(federation["max_execution_ms"], 10_000, "max_execution_ms", 300_000),
+         {:ok, saved_queries} <-
+           validate_saved_queries(
+             federation["saved_query"],
+             limits["max_query_results"],
+             sources
+           ),
+         :ok <-
+           if(concurrent <= sources,
+             do: :ok,
+             else:
+               {:error, "host.toml: federation.max_concurrent_sources must not exceed max_sources"}
+           ),
+         :ok <-
+           if(candidates >= sources,
+             do: :ok,
+             else: {:error, "host.toml: federation.max_candidates must be at least max_sources"}
+           ) do
+      {:ok,
+       [
+         max_sources: sources,
+         max_concurrent_sources: concurrent,
+         max_candidates: candidates,
+         max_execution_ms: execution,
+         saved_queries: saved_queries
+       ]}
+    end
+  end
+
+  defp validate_federation(_, _limits), do: {:error, "host.toml: [federation] must be a table"}
+
+  defp validate_saved_queries(nil, _max_query_results, _max_sources), do: {:ok, []}
+
+  defp validate_saved_queries(values, max_query_results, max_sources) when is_list(values) do
+    Enum.reduce_while(values, {:ok, {MapSet.new(), []}}, fn definition, {:ok, {names, acc}} ->
+      with true <- is_map(definition),
+           :ok <- allow_only(definition, ~w(name sources query_json), "federation.saved_query"),
+           name when is_binary(name) and name != "" <- definition["name"],
+           false <- MapSet.member?(names, name),
+           sources when is_list(sources) <- definition["sources"],
+           query_json when is_binary(query_json) <- definition["query_json"],
+           {:ok, query} when is_map(query) <- StrictDecoder.decode(query_json),
+           false <- Map.has_key?(query, "bookmark"),
+           {:ok, normalized} <-
+             Normalizer.normalize(%{"databases" => sources, "query" => query},
+               max_query_results: max_query_results,
+               max_sources: max_sources
+             ) do
+        saved = %{
+          name: name,
+          databases: normalized.databases,
+          query: normalized.query,
+          fingerprint: normalized.fingerprint
+        }
+
+        {:cont, {:ok, {MapSet.put(names, name), [saved | acc]}}}
+      else
+        true -> {:halt, {:error, "host.toml: federation.saved_query names must be unique"}}
+        false -> {:halt, {:error, "host.toml: federation.saved_query bookmarks are not allowed"}}
+        _ -> {:halt, {:error, "host.toml: invalid federation.saved_query definition"}}
+      end
+    end)
+    |> case do
+      {:ok, {_names, values}} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
+  end
+
+  defp validate_saved_queries(_, _max_query_results, _max_sources),
+    do: {:error, "host.toml: federation.saved_query must be an array"}
+
+  defp positive(value, _key, max) when is_integer(value) and value > 0 and value <= max,
+    do: {:ok, value}
+
+  defp positive(_value, key, max),
+    do: {:error, "host.toml: federation.#{key} must be a positive integer <= #{max}"}
+
+  defp positive_default(nil, default, key, max), do: positive(default, key, max)
+  defp positive_default(value, _default, key, max), do: positive(value, key, max)
 
   defp allow_only(%{} = map, allowed, section) do
     case Map.keys(map) -- allowed do

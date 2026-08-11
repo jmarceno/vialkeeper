@@ -83,13 +83,13 @@ defmodule ElixirDB.Runtime.AdmissionTest do
   test "execute_with_deadline fails when absolute deadline is already past", %{uuid: uuid} do
     deadline_ms = System.monotonic_time(:millisecond) - 1
 
-    assert {:error, %ElixirDB.Error{}} =
-             DatabaseAdmission.execute_with_deadline(
-               uuid,
-               :foreground,
-               {:command, :identity, %{}},
-               deadline_ms
-             )
+    assert {:error,
+            %ElixirDB.Error{
+              code: :internal_error,
+              retryable: true,
+              details: %{reason: :deadline_exhausted}
+            }} =
+             ElixirDB.Query.execute_with_deadline(uuid, %{selector: %{}, limit: 1}, deadline_ms)
   end
 
   test "execute_owner completes with :infinity timeout", %{uuid: uuid} do

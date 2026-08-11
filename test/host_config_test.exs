@@ -6,6 +6,7 @@ defmodule ElixirDB.HostConfigTest do
   """
   use ExUnit.Case, async: true
 
+  alias ElixirDB.Federation.SavedQueries
   alias ElixirDB.HostConfig
 
   # SHA-256 digest of a known token, used by auth round-trip cases.
@@ -267,5 +268,75 @@ defmodule ElixirDB.HostConfigTest do
 
     assert {:error, msg} = HostConfig.load_from(dir)
     assert String.contains?(msg, "unknown_weight")
+  end
+
+  test "federation bounds and relationships are validated", %{dir: dir} do
+    write_config(dir, "[federation]\nmax_sources = 2\nmax_concurrent_sources = 3\n")
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "max_concurrent_sources")
+
+    write_config(
+      dir,
+      "[federation]\nmax_sources = 2\nmax_concurrent_sources = 2\nmax_candidates = 1\n"
+    )
+
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "max_candidates")
+
+    write_config(dir, "[federation]\nmax_sources = 257\n")
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "max_sources")
+  end
+
+  test "saved query JSON is normalized and registration is deferred", %{dir: dir} do
+    write_config(
+      dir,
+      """
+      [federation]
+
+      [[federation.saved_query]]
+      name = "open"
+      sources = ["123e4567-e89b-12d3-a456-426614174000"]
+      query_json = '{"selector":{"/state":"open"}}'
+      """
+    )
+
+    assert {:ok, config} = HostConfig.load_from(dir)
+    [saved] = config[:federation][:saved_queries]
+    assert saved.name == "open"
+    assert saved.databases == ["123e4567-e89b-12d3-a456-426614174000"]
+    assert saved.query.selector == %{"/state" => "open"}
+    assert is_binary(saved.fingerprint)
+    assert SavedQueries.list() == []
+  end
+
+  test "saved query names and bookmarks are rejected", %{dir: dir} do
+    duplicate = """
+    [federation]
+    [[federation.saved_query]]
+    name = "same"
+    sources = ["123e4567-e89b-12d3-a456-426614174000"]
+    query_json = '{}'
+    [[federation.saved_query]]
+    name = "same"
+    sources = ["123e4567-e89b-12d3-a456-426614174001"]
+    query_json = '{}'
+    """
+
+    write_config(dir, duplicate)
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "names must be unique")
+  end
+
+  test "saved query bookmarks are rejected", %{dir: dir} do
+    write_config(
+      dir,
+      """
+      [federation]
+      saved_query = [{name = "bookmark", sources = ["123e4567-e89b-12d3-a456-426614174000"], query_json = '{"bookmark":"x"}'}]
+      """
+    )
+
+    assert {:error, _msg} = HostConfig.load_from(dir)
   end
 end
