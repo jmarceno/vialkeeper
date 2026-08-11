@@ -10,6 +10,7 @@ defmodule ElixirDB.Storage.Services.Facts do
   alias ElixirDB.Revisions.Compare
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Access
+  alias ElixirDB.Storage.Services.Attachments
 
   @doc "Loads one document fact or `nil`."
   @spec find_document(BackendContext.t(), binary()) ::
@@ -126,19 +127,19 @@ defmodule ElixirDB.Storage.Services.Facts do
   @spec ensure_manifest_reachable(BackendContext.t(), map()) ::
           :ok | {:error, ElixirDB.Error.t()}
   def ensure_manifest_reachable(%BackendContext{} = ctx, manifest),
-    do: Access.port(ctx, :attachment_metadata).ensure_manifest_reachable(ctx, manifest)
+    do: Attachments.ensure_manifest_reachable(ctx, manifest)
 
   @doc "Clears pending protection for digests in a manifest."
   @spec clear_pending_for_manifest(BackendContext.t(), map()) ::
           :ok | {:error, ElixirDB.Error.t()}
   def clear_pending_for_manifest(%BackendContext{} = ctx, manifest),
-    do: Access.port(ctx, :attachment_metadata).clear_pending_for_manifest(ctx, manifest)
+    do: Attachments.clear_pending_for_manifest(ctx, manifest)
 
   @doc "Verifies physical attachment digests before import."
   @spec verify_physical_digests(BackendContext.t(), [{binary(), non_neg_integer()}]) ::
           :ok | {:error, ElixirDB.Error.t()}
   def verify_physical_digests(%BackendContext{} = ctx, digests),
-    do: Access.port(ctx, :attachment_metadata).verify_physical_digests(ctx, digests)
+    do: Attachments.verify_physical_digests(ctx, digests)
 
   @doc "Lists retention boundaries."
   @spec list_boundaries(BackendContext.t(), keyword()) ::

@@ -32,7 +32,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     DerivedViews,
     Documents,
     IndexCatalog,
-    Integrity,
     LocalRecords,
     Ownership,
     QueryRunner,
@@ -300,14 +299,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   @impl true
-  def integrity_check(%__MODULE__{} = adapter, _options) do
-    with {:ok, indexes} <- list_indexes(adapter),
-         {:ok, report} <- Integrity.run(adapter.conn, indexes, attachment_bundle_root(adapter)) do
-      {:ok, Map.merge(%{ok: true, indexes: length(indexes)}, report)}
-    else
-      {:error, %ElixirDB.Error{} = error} ->
-        {:error, error}
-    end
+  def integrity_check(%__MODULE__{} = adapter, options \\ %{}) when is_map(options) do
+    Services.Integrity.check(to_context(adapter), options)
   end
 
   @impl true
@@ -966,10 +959,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
        )}
 
   defp ensure_writable(_adapter), do: :ok
-
-  defp attachment_bundle_root(%__MODULE__{storage_mode: :memory}), do: nil
-
-  defp attachment_bundle_root(%__MODULE__{path: path}), do: Path.dirname(Path.expand(path))
 
   # The candidate count the query runner computes is bound as `examined` on the
   # span/metric. Returns 0 when unavailable.

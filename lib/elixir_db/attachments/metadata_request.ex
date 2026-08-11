@@ -9,7 +9,7 @@ defmodule ElixirDB.Attachments.MetadataRequest do
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.MapAccess
 
-  @default_live_digest_page_size 256
+  @default_live_digest_page_size 4096
   @digest_pattern ~r/^[0-9a-f]{64}$/
 
   @doc "Validates `digest` or `blob` from a metadata request."

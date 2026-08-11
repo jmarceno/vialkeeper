@@ -67,6 +67,7 @@
       "ElixirDB.DatabaseBundle",
       "ElixirDB.Attachments.Manifest",
       "ElixirDB.Attachments.MetadataRequest",
+      "ElixirDB.Attachments.Orchestration",
       "ElixirDB.Attachments.Ticket",
       "ElixirDB.Attachments.Store",
       "ElixirDB.Replication.BlobStream"

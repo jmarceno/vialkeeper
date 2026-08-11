@@ -2,8 +2,9 @@ defmodule ElixirDB.Storage.SQLite.AttachmentMetadataPort do
   @moduledoc """
   SQLite attachment-metadata fact port.
 
-  Calls `ElixirDB.Storage.SQLite.Attachments` SQL helpers directly so adapter
-  facades can route through `ElixirDB.Storage.Services` without recursion.
+  Calls `ElixirDB.Storage.SQLite.Attachments` SQL helpers for pending rows and
+  retained digests. Live-digest union, pending TTL, and reachability policy are
+  owned by `ElixirDB.Storage.Services.Attachments`.
   """
   @behaviour ElixirDB.Storage.Ports.AttachmentMetadata
 
@@ -19,47 +20,33 @@ defmodule ElixirDB.Storage.SQLite.AttachmentMetadataPort do
   end
 
   @impl true
-  def resolve_blob_metadata(%BackendContext{} = context, request) when is_map(request) do
+  def lookup_reachable_size(%BackendContext{} = context, digest) when is_binary(digest) do
     with {:ok, adapter} <- Context.unwrap(context),
-         do: Errors.wrap(Attachments.resolve_blob_metadata(adapter.conn, request))
+         do: Errors.wrap(Attachments.lookup_reachable_size(adapter.conn, digest))
   end
 
   @impl true
-  def protect_pending_blob(%BackendContext{} = context, request) when is_map(request) do
+  def put_pending_blob(%BackendContext{} = context, row) when is_map(row) do
     with {:ok, adapter} <- Context.unwrap(context),
-         do: Errors.wrap(Attachments.protect_pending_blob(adapter.conn, request))
+         do: Errors.wrap(Attachments.put_pending_blob(adapter.conn, row))
   end
 
   @impl true
-  def remove_pending_blob_protection(%BackendContext{} = context, request) when is_map(request) do
+  def delete_pending_digests(%BackendContext{} = context, digests) when is_list(digests) do
     with {:ok, adapter} <- Context.unwrap(context),
-         do: Errors.wrap(Attachments.remove_pending_blob_protection(adapter.conn, request))
+         do: Errors.wrap(Attachments.delete_pending_digests(adapter.conn, digests))
   end
 
   @impl true
-  def list_live_attachment_digests(%BackendContext{} = context, request) when is_map(request) do
+  def list_retained_digests(%BackendContext{} = context) do
     with {:ok, adapter} <- Context.unwrap(context),
-         do: Errors.wrap(Attachments.list_live_attachment_digests(adapter.conn, request))
+         do: Errors.wrap(Attachments.list_retained_digests(adapter.conn))
   end
 
   @impl true
-  def cleanup_expired_pending_blobs(%BackendContext{} = context, request) when is_map(request) do
+  def list_pending_blobs(%BackendContext{} = context) do
     with {:ok, adapter} <- Context.unwrap(context),
-         do: Errors.wrap(Attachments.cleanup_expired_pending_blobs(adapter.conn, request))
-  end
-
-  @impl true
-  def ensure_manifest_reachable(%BackendContext{} = context, manifest) when is_map(manifest) do
-    with {:ok, adapter} <- Context.unwrap(context) do
-      Errors.wrap(Attachments.ensure_reachable(adapter.conn, manifest))
-    end
-  end
-
-  @impl true
-  def clear_pending_for_manifest(%BackendContext{} = context, manifest) when is_map(manifest) do
-    with {:ok, adapter} <- Context.unwrap(context) do
-      Errors.wrap(Attachments.remove_pending_for_manifest(adapter.conn, manifest))
-    end
+         do: Errors.wrap(Attachments.list_pending_blobs(adapter.conn))
   end
 
   @impl true

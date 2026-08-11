@@ -2,10 +2,12 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   @moduledoc """
   SQLite attachment-metadata SQL for Version 1.
 
-  Owns `revision_attachments` and `pending_blobs` access: manifest row
-  insert/load, ticket and blob-metadata resolution, pending protection, live
-  digest paging, and expired-pending cleanup. Mutation orchestration stays in
-  `Mutations`; revision-row SQL stays in `Revisions`.
+  Owns `revision_attachments` and `pending_blobs` fact access: manifest row
+  insert/load, ticket resolution, pending row upsert/delete, retained/pending
+  digest listing, and reachable-size lookup. Shared live-digest union, pending
+  TTL, and reachability policy live in `ElixirDB.Storage.Services.Attachments`.
+  Mutation orchestration stays in `Mutations`; revision-row SQL stays in
+  `Revisions`.
   """
 
   alias ElixirDB.Attachments.Manifest
@@ -13,9 +15,6 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   alias ElixirDB.Attachments.Ticket
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.SQLite.Connection
-
-  @pending_ttl_seconds 86_400
-  @live_digest_page_size 4096
 
   @doc """
   Inserts the complete immutable attachment manifest for one revision.
@@ -102,31 +101,59 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   Returns authoritative logical size when the digest is reachable via unexpired
   pending protection or any retained revision attachment row.
   """
-  @spec resolve_blob_metadata(Connection.handle(), map()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def resolve_blob_metadata(conn, request) when is_map(request) do
-    with {:ok, digest} <- MetadataRequest.request_digest(request),
-         {:ok, logical_size} <- lookup_reachable_size(conn, digest) do
-      {:ok, %{digest: digest, logical_size: logical_size, length: logical_size}}
+  @spec lookup_reachable_size(Connection.handle(), binary()) ::
+          {:ok, non_neg_integer()} | {:error, ElixirDB.Error.t()}
+  def lookup_reachable_size(conn, digest) when is_binary(digest) do
+    now_iso = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+    case Connection.query(
+           conn,
+           """
+           SELECT logical_size FROM pending_blobs
+           WHERE blob_digest = ? AND expires_at > ?
+           """,
+           [digest, now_iso]
+         ) do
+      {:ok, [[size]]} ->
+        {:ok, size}
+
+      {:ok, []} ->
+        case Connection.query(
+               conn,
+               """
+               SELECT logical_size FROM revision_attachments
+               WHERE blob_digest = ?
+               LIMIT 1
+               """,
+               [digest]
+             ) do
+          {:ok, [[size]]} ->
+            {:ok, size}
+
+          {:ok, []} ->
+            {:error, ElixirDB.Error.attachment_blob_not_found("attachment blob not found")}
+
+          {:error, reason} ->
+            {:error, normalize_error(reason)}
+        end
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
     end
   end
 
-  def resolve_blob_metadata(_conn, _request),
-    do: {:error, ElixirDB.Error.invalid_request("blob metadata request must be an object")}
-
-  @doc """
-  Inserts or renews a local pending-blob protection row for 24 hours.
-  """
-  @spec protect_pending_blob(Connection.handle(), map()) ::
+  @doc "Inserts or renews a pending-blob row from a shared orchestration payload."
+  @spec put_pending_blob(Connection.handle(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def protect_pending_blob(conn, request) when is_map(request) do
-    with {:ok, digest} <- MetadataRequest.request_digest(request),
-         {:ok, logical_size} <- MetadataRequest.request_logical_size(request) do
-      now = DateTime.utc_now() |> DateTime.truncate(:second)
-      expires_at = DateTime.add(now, @pending_ttl_seconds, :second)
-      now_iso = DateTime.to_iso8601(now)
-      expires_iso = DateTime.to_iso8601(expires_at)
+  def put_pending_blob(conn, row) when is_map(row) do
+    digest = MapAccess.get(row, :digest)
+    logical_size = MapAccess.get(row, :logical_size) || MapAccess.get(row, :length)
+    expires_at = MapAccess.get(row, :expires_at)
+    updated_at = MapAccess.get(row, :updated_at)
 
+    with {:ok, digest} <- Manifest.validate_digest(digest),
+         true <- is_integer(logical_size) and logical_size >= 0,
+         true <- is_binary(expires_at) and is_binary(updated_at) do
       case Connection.execute(
              conn,
              """
@@ -137,7 +164,7 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
                expires_at = excluded.expires_at,
                updated_at = excluded.updated_at
              """,
-             [digest, logical_size, expires_iso, now_iso]
+             [digest, logical_size, expires_at, updated_at]
            ) do
         :ok ->
           {:ok,
@@ -145,128 +172,70 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
              digest: digest,
              logical_size: logical_size,
              length: logical_size,
-             expires_at: expires_iso
+             expires_at: expires_at
            }}
 
         {:error, reason} ->
           {:error, normalize_error(reason)}
       end
-    end
-  end
-
-  def protect_pending_blob(_conn, _request),
-    do:
-      {:error, ElixirDB.Error.invalid_request("pending blob protection request must be an object")}
-
-  @doc """
-  Removes pending protection for one digest or a list of digests.
-  """
-  @spec remove_pending_blob_protection(Connection.handle(), map()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def remove_pending_blob_protection(conn, request) when is_map(request) do
-    digests = MetadataRequest.pending_digests_from_request(request)
-
-    with :ok <- MetadataRequest.validate_digest_list(digests),
-         :ok <- delete_pending_digests(conn, digests) do
-      {:ok, %{removed: length(digests), digests: digests}}
-    end
-  end
-
-  def remove_pending_blob_protection(_conn, _request),
-    do:
-      {:error,
-       ElixirDB.Error.invalid_request("remove pending blob protection request must be an object")}
-
-  @doc """
-  Removes pending protection for digests newly referenced by a revision manifest.
-
-  Safe after the revision_attachments rows for those digests are visible in the
-  same transaction.
-  """
-  @spec remove_pending_for_manifest(Connection.handle(), Manifest.t()) ::
-          :ok | {:error, ElixirDB.Error.t()}
-  def remove_pending_for_manifest(_conn, attachments) when map_size(attachments) == 0, do: :ok
-
-  def remove_pending_for_manifest(conn, attachments) when is_map(attachments) do
-    digests =
-      attachments
-      |> Map.values()
-      |> Enum.map(& &1.digest)
-      |> Enum.uniq()
-
-    delete_pending_digests(conn, digests)
-  end
-
-  @doc """
-  Pages the distinct union of retained revision digests and unexpired pending digests.
-  """
-  @spec list_live_attachment_digests(Connection.handle(), map()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def list_live_attachment_digests(conn, request) when is_map(request) do
-    after_digest = MapAccess.get(request, :after_digest)
-    limit = MetadataRequest.page_limit(MapAccess.get(request, :limit), @live_digest_page_size)
-    now_iso = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-
-    with :ok <- MetadataRequest.validate_after_digest(after_digest),
-         {:ok, rows} <- query_live_digests(conn, after_digest, limit + 1, now_iso) do
-      digests = Enum.map(rows, &List.first/1)
-      page = Enum.take(digests, limit)
-
-      next_after =
-        if length(digests) > limit do
-          List.last(page)
-        else
-          nil
-        end
-
-      {:ok, %{digests: page, next_after_digest: next_after}}
-    end
-  end
-
-  def list_live_attachment_digests(_conn, _request),
-    do: {:error, ElixirDB.Error.invalid_request("live attachment digest request must be an object")}
-
-  @doc """
-  Deletes expired pending_blobs rows. Optional `now` overrides the cutoff clock.
-  """
-  @spec cleanup_expired_pending_blobs(Connection.handle(), map()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def cleanup_expired_pending_blobs(conn, request) when is_map(request) do
-    with {:ok, now} <- MetadataRequest.cleanup_now(request),
-         now_iso = DateTime.to_iso8601(now),
-         {:ok, [[count]]} <-
-           Connection.query(
-             conn,
-             "SELECT COUNT(*) FROM pending_blobs WHERE expires_at <= ?",
-             [now_iso]
-           ),
-         :ok <-
-           Connection.execute(conn, "DELETE FROM pending_blobs WHERE expires_at <= ?", [now_iso]) do
-      {:ok, %{removed: count}}
     else
+      false ->
+        {:error, ElixirDB.Error.invalid_request("pending blob row is incomplete")}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  @doc "Deletes pending protection for digests."
+  @spec delete_pending_digests(Connection.handle(), [binary()]) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def delete_pending_digests(_conn, []), do: :ok
+
+  def delete_pending_digests(conn, digests) when is_list(digests) do
+    with :ok <- MetadataRequest.validate_digest_list(digests) do
+      delete_each_pending(conn, digests)
+    end
+  end
+
+  @doc "Lists digests retained by any revision attachment row."
+  @spec list_retained_digests(Connection.handle()) ::
+          {:ok, [binary()]} | {:error, ElixirDB.Error.t()}
+  def list_retained_digests(conn) do
+    case Connection.query(conn, "SELECT DISTINCT blob_digest FROM revision_attachments") do
+      {:ok, rows} -> {:ok, Enum.map(rows, &List.first/1)}
       {:error, reason} -> {:error, normalize_error(reason)}
     end
   end
 
-  def cleanup_expired_pending_blobs(_conn, _request),
-    do: {:error, ElixirDB.Error.invalid_request("cleanup request must be an object")}
+  @doc "Lists pending-blob rows as maps."
+  @spec list_pending_blobs(Connection.handle()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
+  def list_pending_blobs(conn) do
+    case Connection.query(
+           conn,
+           "SELECT blob_digest, logical_size, expires_at, updated_at FROM pending_blobs"
+         ) do
+      {:ok, rows} ->
+        {:ok,
+         Enum.map(rows, fn [digest, logical_size, expires_at, updated_at] ->
+           %{
+             digest: digest,
+             logical_size: logical_size,
+             expires_at: expires_at,
+             updated_at: updated_at
+           }
+         end)}
 
-  @doc """
-  Ensures every digest in a manifest is reachable via pending or retained rows.
-  """
-  @spec ensure_reachable(Connection.handle(), Manifest.t()) ::
-          :ok | {:error, ElixirDB.Error.t()}
-  def ensure_reachable(_conn, attachments) when map_size(attachments) == 0, do: :ok
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
 
-  def ensure_reachable(conn, attachments) when is_map(attachments) do
-    attachments
-    |> Map.values()
-    |> Enum.map(& &1.digest)
-    |> Enum.uniq()
-    |> Enum.reduce_while(:ok, fn digest, :ok ->
-      case lookup_reachable_size(conn, digest) do
-        {:ok, _size} -> {:cont, :ok}
-        {:error, error} -> {:halt, {:error, error}}
+  defp delete_each_pending(conn, digests) do
+    Enum.reduce_while(digests, :ok, fn digest, :ok ->
+      case Connection.execute(conn, "DELETE FROM pending_blobs WHERE blob_digest = ?", [digest]) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
       end
     end)
   end
@@ -347,89 +316,6 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
       {:ok, []} -> false
       {:error, reason} -> {:error, normalize_error(reason)}
     end
-  end
-
-  defp lookup_reachable_size(conn, digest) do
-    now_iso = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-
-    case Connection.query(
-           conn,
-           """
-           SELECT logical_size FROM pending_blobs
-           WHERE blob_digest = ? AND expires_at > ?
-           """,
-           [digest, now_iso]
-         ) do
-      {:ok, [[size]]} ->
-        {:ok, size}
-
-      {:ok, []} ->
-        case Connection.query(
-               conn,
-               """
-               SELECT logical_size FROM revision_attachments
-               WHERE blob_digest = ?
-               LIMIT 1
-               """,
-               [digest]
-             ) do
-          {:ok, [[size]]} ->
-            {:ok, size}
-
-          {:ok, []} ->
-            {:error, ElixirDB.Error.attachment_blob_not_found("attachment blob not found")}
-
-          {:error, reason} ->
-            {:error, normalize_error(reason)}
-        end
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
-
-  defp delete_pending_digests(_conn, []), do: :ok
-
-  defp delete_pending_digests(conn, digests) do
-    Enum.reduce_while(digests, :ok, fn digest, :ok ->
-      case Connection.execute(conn, "DELETE FROM pending_blobs WHERE blob_digest = ?", [digest]) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
-      end
-    end)
-  end
-
-  defp query_live_digests(conn, nil, limit, now_iso) do
-    Connection.query(
-      conn,
-      """
-      SELECT digest FROM (
-        SELECT blob_digest AS digest FROM revision_attachments
-        UNION
-        SELECT blob_digest AS digest FROM pending_blobs WHERE expires_at > ?
-      )
-      ORDER BY digest
-      LIMIT ?
-      """,
-      [now_iso, limit]
-    )
-  end
-
-  defp query_live_digests(conn, after_digest, limit, now_iso) do
-    Connection.query(
-      conn,
-      """
-      SELECT digest FROM (
-        SELECT blob_digest AS digest FROM revision_attachments
-        UNION
-        SELECT blob_digest AS digest FROM pending_blobs WHERE expires_at > ?
-      )
-      WHERE digest > ?
-      ORDER BY digest
-      LIMIT ?
-      """,
-      [now_iso, after_digest, limit]
-    )
   end
 
   defp bundle_root(sqlite_path) when is_binary(sqlite_path),

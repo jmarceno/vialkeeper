@@ -786,7 +786,6 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
     source_uuid = Map.fetch!(effect, :source_database_uuid)
     source_epoch = Map.fetch!(effect, :source_history_epoch)
     new_epoch = Map.fetch!(effect, :new_compaction_epoch)
-    digest = Map.get(effect, :boundary_digest) || conn_digest(conn, source_uuid)
 
     with :ok <- persist_expired_peers(conn, Map.get(effect, :peers_to_expire, [])),
          :ok <-
@@ -802,6 +801,7 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
          :ok <- delete_revisions(conn, Map.get(effect, :removals, %{})),
          :ok <- empty_documents(conn, Map.get(effect, :documents_to_empty, [])),
          :ok <- delete_changes(conn, Map.get(effect, :delete_changes_through, 0)),
+         digest = Map.get(effect, :boundary_digest) || conn_digest(conn, source_uuid),
          :ok <- update_meta(conn, Map.fetch!(effect, :new_floor), new_epoch, digest),
          :ok <- maybe_increment_maintenance(conn, Map.get(effect, :increment_maintenance?, false)) do
       put_last_result(conn, Map.get(effect, :result_stats, %{}))
@@ -839,25 +839,11 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
 
   defp persist_expired_peers(conn, peers) do
     Enum.reduce_while(peers, :ok, fn peer, :ok ->
-      case update_peer_wire(conn, peer.peer_database_uuid, peer_wire(peer)) do
+      case update_peer_wire(conn, peer.peer_database_uuid, RetentionService.peer_wire(peer)) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
-  end
-
-  defp peer_wire(peer) do
-    %{
-      "peer_database_uuid" => peer.peer_database_uuid,
-      "peer_history_epoch" => peer.peer_history_epoch,
-      "source_database_uuid" => peer.source_database_uuid,
-      "source_history_epoch" => peer.source_history_epoch,
-      "safe_source_sequence" => peer.safe_source_sequence,
-      "installed_source_compaction_epoch" => peer.installed_source_compaction_epoch,
-      "last_seen_at" => peer.last_seen_at,
-      "lease_expires_at" => peer.lease_expires_at,
-      "status" => Atom.to_string(peer.status)
-    }
   end
 
   defp upsert_boundaries(_conn, [], _source_uuid, _source_epoch, _epoch), do: :ok

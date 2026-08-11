@@ -10,9 +10,7 @@ defmodule ElixirDB.Storage.SQLite.InspectionPort do
 
   @impl true
   def integrity_check(%BackendContext{} = context, options \\ %{}) when is_map(options) do
-    with {:ok, adapter} <- Context.unwrap(context) do
-      Errors.wrap(Adapter.integrity_check(adapter, options))
-    end
+    ElixirDB.Storage.Services.Integrity.check(context, options)
   end
 
   @impl true

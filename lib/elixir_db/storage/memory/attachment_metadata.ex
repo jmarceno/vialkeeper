@@ -1,22 +1,19 @@
 defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
   @moduledoc """
-  Memory attachment-metadata port for pending protection, live digests, and
-  attachment tickets.
+  Memory attachment-metadata fact port.
 
-  Byte storage remains on the filesystem under the bundle root; this port only
-  tracks reachability metadata in the in-memory store.
+  Tracks pending protection and revision attachment reachability in the
+  in-memory store. Live-digest union, pending TTL, and reachability policy are
+  owned by `ElixirDB.Storage.Services.Attachments`.
   """
   @behaviour ElixirDB.Storage.Ports.AttachmentMetadata
 
-  alias ElixirDB.Attachments.{Manifest, MetadataRequest, Ticket}
+  alias ElixirDB.Attachments.{Manifest, MetadataRequest, Orchestration, Ticket}
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Memory.{Context, Store}
   alias ElixirDB.Storage.Ports.Errors
   alias ElixirDB.Storage.RequestValidation
-
-  @pending_ttl_seconds 86_400
-  @live_digest_page_size 256
 
   @impl true
   def resolve_attachment_ticket(%BackendContext{} = context, request) when is_map(request) do
@@ -50,33 +47,23 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
     do: {:error, ElixirDB.Error.invalid_request("attachment ticket request must be an object")}
 
   @impl true
-  def resolve_blob_metadata(%BackendContext{} = context, request) when is_map(request) do
-    with {:ok, adapter} <- Context.unwrap(context),
-         {:ok, digest} <- MetadataRequest.request_digest(request),
-         {:ok, logical_size} <- lookup_reachable_size(Store.get(adapter.store), digest) do
-      {:ok, %{digest: digest, logical_size: logical_size, length: logical_size}}
+  def lookup_reachable_size(%BackendContext{} = context, digest) when is_binary(digest) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      size_for_digest(Store.get(adapter.store), digest)
     end
   end
 
-  def resolve_blob_metadata(_context, _request),
-    do: {:error, ElixirDB.Error.invalid_request("blob metadata request must be an object")}
-
   @impl true
-  def protect_pending_blob(%BackendContext{} = context, request) when is_map(request) do
+  def put_pending_blob(%BackendContext{} = context, row) when is_map(row) do
     with {:ok, adapter} <- Context.unwrap(context),
-         {:ok, digest} <- MetadataRequest.request_digest(request),
-         {:ok, logical_size} <- MetadataRequest.request_logical_size(request) do
-      now = DateTime.utc_now() |> DateTime.truncate(:second)
-      expires_at = DateTime.add(now, @pending_ttl_seconds, :second)
-      now_iso = DateTime.to_iso8601(now)
-      expires_iso = DateTime.to_iso8601(expires_at)
-
+         {:ok, digest} <- require_digest(row),
+         {:ok, logical_size} <- require_logical_size(row) do
       meta = %{
         digest: digest,
         logical_size: logical_size,
         length: logical_size,
-        expires_at: expires_iso,
-        updated_at: now_iso
+        expires_at: MapAccess.get(row, :expires_at),
+        updated_at: MapAccess.get(row, :updated_at)
       }
 
       update_pending(adapter.store, fn pending ->
@@ -85,87 +72,36 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
     end
   end
 
-  def protect_pending_blob(_context, _request),
-    do:
-      {:error, ElixirDB.Error.invalid_request("pending blob protection request must be an object")}
-
   @impl true
-  def remove_pending_blob_protection(%BackendContext{} = context, request) when is_map(request) do
-    digests = MetadataRequest.pending_digests_from_request(request)
-
+  def delete_pending_digests(%BackendContext{} = context, digests) when is_list(digests) do
     with {:ok, adapter} <- Context.unwrap(context),
          :ok <- MetadataRequest.validate_digest_list(digests) do
-      update_pending(adapter.store, fn pending ->
-        {Map.drop(pending, digests), %{removed: length(digests), digests: digests}}
-      end)
+      drop_pending(adapter.store, digests)
     end
   end
 
-  def remove_pending_blob_protection(_context, _request),
-    do:
-      {:error,
-       ElixirDB.Error.invalid_request("remove pending blob protection request must be an object")}
-
   @impl true
-  def list_live_attachment_digests(%BackendContext{} = context, request) when is_map(request) do
-    after_digest = MapAccess.get(request, :after_digest)
-    limit = MetadataRequest.page_limit(MapAccess.get(request, :limit), @live_digest_page_size)
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-    with {:ok, adapter} <- Context.unwrap(context),
-         :ok <- MetadataRequest.validate_after_digest(after_digest) do
-      digests =
-        Store.get(adapter.store)
-        |> live_digests(now)
-        |> Enum.sort()
-        |> drop_after(after_digest)
-
-      page = Enum.take(digests, limit)
-
-      next_after =
-        if length(digests) > limit do
-          List.last(page)
-        else
-          nil
-        end
-
-      {:ok, %{digests: page, next_after_digest: next_after}}
-    end
-  end
-
-  def list_live_attachment_digests(_context, _request),
-    do: {:error, ElixirDB.Error.invalid_request("live attachment digest request must be an object")}
-
-  @impl true
-  def cleanup_expired_pending_blobs(%BackendContext{} = context, request) when is_map(request) do
-    with {:ok, adapter} <- Context.unwrap(context),
-         {:ok, now} <- MetadataRequest.cleanup_now(request) do
-      update_pending(adapter.store, &split_expired_pending(&1, now))
-    end
-  end
-
-  def cleanup_expired_pending_blobs(context, _request),
-    do: cleanup_expired_pending_blobs(context, %{})
-
-  @impl true
-  def ensure_manifest_reachable(%BackendContext{} = context, manifest) when is_map(manifest) do
+  def list_retained_digests(%BackendContext{} = context) do
     with {:ok, adapter} <- Context.unwrap(context) do
-      check_manifest_reachable(Store.get(adapter.store), manifest)
+      {:ok, retained_digests(Store.get(adapter.store))}
     end
   end
 
   @impl true
-  def clear_pending_for_manifest(%BackendContext{} = context, manifest) when is_map(manifest) do
+  def list_pending_blobs(%BackendContext{} = context) do
     with {:ok, adapter} <- Context.unwrap(context) do
-      digests =
-        manifest
-        |> Map.values()
-        |> Enum.map(&(MapAccess.get(&1, :digest) || MapAccess.get(&1, "digest")))
-        |> Enum.filter(&is_binary/1)
+      pending =
+        Store.get(adapter.store).pending_blobs
+        |> Enum.map(fn {digest, meta} ->
+          %{
+            digest: digest,
+            logical_size: MapAccess.get(meta, :logical_size),
+            expires_at: MapAccess.get(meta, :expires_at),
+            updated_at: MapAccess.get(meta, :updated_at)
+          }
+        end)
 
-      adapter.store
-      |> update_pending(fn pending -> {Map.drop(pending, digests), :ok} end)
-      |> normalize_ok()
+      {:ok, pending}
     end
   end
 
@@ -176,12 +112,27 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
     end
   end
 
-  defp split_expired_pending(pending, now) do
-    {kept, removed} = Enum.split_with(pending, &pending_entry_unexpired?(&1, now))
-    {Map.new(kept), %{removed: length(removed)}}
+  defp drop_pending(store, digests) do
+    case update_pending(store, fn pending -> {Map.drop(pending, digests), :ok} end) do
+      {:ok, :ok} -> :ok
+      {:error, _} = error -> error
+    end
   end
 
-  defp pending_entry_unexpired?({_digest, meta}, now), do: pending_unexpired?(meta, now)
+  defp require_digest(row) do
+    case MapAccess.get(row, :digest) do
+      digest when is_binary(digest) -> Manifest.validate_digest(digest)
+      _ -> {:error, ElixirDB.Error.invalid_request("pending blob digest is required")}
+    end
+  end
+
+  defp require_logical_size(row) do
+    size = MapAccess.get(row, :logical_size) || MapAccess.get(row, :length)
+
+    if is_integer(size) and size >= 0,
+      do: {:ok, size},
+      else: {:error, ElixirDB.Error.invalid_request("logical_size must be a non-negative integer")}
+  end
 
   defp update_pending(store, fun) when is_function(fun, 1) do
     Store.update(store, fn state ->
@@ -221,12 +172,12 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
     end
   end
 
-  defp lookup_reachable_size(state, digest) do
+  defp size_for_digest(state, digest) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     case Map.get(state.pending_blobs, digest) do
       meta when is_map(meta) ->
-        if pending_unexpired?(meta, now) do
+        if Orchestration.pending_unexpired?(meta, now) do
           {:ok, MapAccess.get(meta, :logical_size)}
         else
           lookup_revision_digest_size(state, digest)
@@ -266,65 +217,14 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
     end
   end
 
-  defp live_digests(state, now) do
-    retained =
-      Enum.flat_map(state.revisions, fn {_doc, by_rev} ->
-        Enum.flat_map(by_rev, fn {_id, %{revision: revision}} ->
-          (revision.attachments || %{})
-          |> Map.values()
-          |> Enum.map(&(MapAccess.get(&1, :digest) || MapAccess.get(&1, "digest")))
-          |> Enum.filter(&is_binary/1)
-        end)
+  defp retained_digests(state) do
+    Enum.flat_map(state.revisions, fn {_doc, by_rev} ->
+      Enum.flat_map(by_rev, fn {_id, %{revision: revision}} ->
+        (revision.attachments || %{})
+        |> Map.values()
+        |> Enum.map(&(MapAccess.get(&1, :digest) || MapAccess.get(&1, "digest")))
+        |> Enum.filter(&is_binary/1)
       end)
-
-    pending =
-      state.pending_blobs
-      |> Enum.filter(fn {_digest, meta} -> pending_unexpired?(meta, now) end)
-      |> Enum.map(fn {digest, _} -> digest end)
-
-    Enum.uniq(retained ++ pending)
-  end
-
-  defp pending_unexpired?(meta, now) do
-    case MapAccess.get(meta, :expires_at) do
-      expires when is_binary(expires) ->
-        case DateTime.from_iso8601(expires) do
-          {:ok, expires_dt, _} -> DateTime.compare(expires_dt, now) == :gt
-          _ -> false
-        end
-
-      _ ->
-        false
-    end
-  end
-
-  defp drop_after(digests, nil), do: digests
-
-  defp drop_after(digests, after_digest) when is_binary(after_digest) do
-    Enum.drop_while(digests, &(&1 <= after_digest))
-  end
-
-  defp check_manifest_reachable(state, manifest) do
-    Enum.reduce_while(manifest, :ok, fn {_name, entry}, :ok ->
-      digest = MapAccess.get(entry, :digest) || MapAccess.get(entry, "digest")
-
-      cond do
-        not is_binary(digest) ->
-          {:halt, {:error, ElixirDB.Error.invalid_request("attachment digest is required")}}
-
-        Map.has_key?(state.pending_blobs, digest) ->
-          {:cont, :ok}
-
-        digest_in_revisions?(state, digest) ->
-          {:cont, :ok}
-
-        true ->
-          {:halt,
-           {:error,
-            ElixirDB.Error.attachment_blob_not_found("attachment blob is not reachable", %{
-              digest: digest
-            })}}
-      end
     end)
   end
 
@@ -371,7 +271,4 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
       (MapAccess.get(entry, :digest) || MapAccess.get(entry, "digest")) == digest
     end)
   end
-
-  defp normalize_ok({:ok, :ok}), do: :ok
-  defp normalize_ok({:error, reason}), do: {:error, Errors.normalize(reason)}
 end

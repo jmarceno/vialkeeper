@@ -12,7 +12,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
   alias ElixirDB.Integrity.Rules
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.{Connection, Indexes, Meta, RetentionRecords, TermBlob}
+  alias ElixirDB.Storage.SQLite.{Attachments, Connection, Indexes, Meta, RetentionRecords, TermBlob}
 
   @doc false
   def check(adapter), do: Adapter.integrity_check(adapter, %{})
@@ -88,6 +88,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
          {:ok, view_report} <- view_metadata(conn) do
       {:ok,
        Map.merge(attachment_report, %{
+         indexes: length(indexes),
          views: view_report,
          backend_details: %{
            engine: "sqlite",
@@ -322,26 +323,7 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
   defp validate_change_terms(_leaves, _term_leaves),
     do: {:error, ElixirDB.Error.integrity_violation("change JSON and term differ")}
 
-  defp load_pending_blobs(conn) do
-    case Connection.query(
-           conn,
-           "SELECT blob_digest, logical_size, expires_at, updated_at FROM pending_blobs"
-         ) do
-      {:ok, rows} ->
-        {:ok,
-         Enum.map(rows, fn [digest, size, expires_at, updated_at] ->
-           %{
-             digest: digest,
-             logical_size: size,
-             expires_at: expires_at,
-             updated_at: updated_at
-           }
-         end)}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
+  defp load_pending_blobs(conn), do: Attachments.list_pending_blobs(conn)
 
   defp load_checkpoints(conn) do
     with {:ok, rows} <- RetentionRecords.list_by_namespace(conn, "checkpoints") do
