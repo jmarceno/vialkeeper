@@ -35,4 +35,8 @@ config :opentelemetry_experimental, readers: []
 # so Reach layers stay acyclic (runtime must not depend on the application facade).
 config :elixir_db, :attachment_gc_module, ElixirDB.Attachments
 
+# Default physical backend. Runtime selects through ElixirDB.Storage.Registry;
+# tests may swap this for ElixirDB.Storage.Sentinel.Adapter.
+config :elixir_db, :storage_backend, ElixirDB.Storage.SQLite.Adapter
+
 import_config "#{config_env()}.exs"

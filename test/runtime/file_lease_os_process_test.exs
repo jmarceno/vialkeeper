@@ -10,6 +10,7 @@ defmodule ElixirDB.Runtime.FileLeaseOsProcessTest do
   alias ElixirDB.Runtime.FileLease
   alias ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
   @moduletag :os_process
   @moduletag :slow
 

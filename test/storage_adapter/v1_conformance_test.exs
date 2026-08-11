@@ -1,6 +1,8 @@
 defmodule ElixirDB.StorageAdapter.V1ConformanceTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   alias ElixirDB.Storage.SQLite.Connection
   alias ElixirDB.TestRevisionId, as: Id
 

@@ -1,6 +1,8 @@
 defmodule ElixirDB.StorageAdapter.PortabilityTest do
   use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  @moduletag :sqlite_physical
+
   test "closed-file OS copy without lease reopens with integrity", %{
     adapter: adapter,
     path: path

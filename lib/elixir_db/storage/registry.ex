@@ -1,0 +1,34 @@
+defmodule ElixirDB.Storage.Registry do
+  @moduledoc """
+  Backend selection boundary for the storage port layer.
+
+  Runtime code resolves a configured backend module through this registry
+  instead of aliasing a physical engine. Wave 0 freezes the selection API;
+  later waves move catalog/owner open paths onto it.
+
+  Configure `:storage_backend` under the `:elixir_db` application environment.
+  """
+
+  @doc "Returns the configured storage backend module."
+  @spec backend() :: module()
+  def backend do
+    case Application.get_env(:elixir_db, :storage_backend) do
+      module when is_atom(module) and not is_nil(module) ->
+        module
+
+      other ->
+        raise ArgumentError,
+              "elixir_db :storage_backend must be a backend module, got: #{inspect(other)}"
+    end
+  end
+
+  @doc "Returns true when `module` exports the Storage.Adapter lifecycle callbacks."
+  @spec adapter_module?(module()) :: boolean()
+  def adapter_module?(module) when is_atom(module) do
+    Code.ensure_loaded?(module) and function_exported?(module, :create, 2) and
+      function_exported?(module, :open, 2) and function_exported?(module, :close, 1) and
+      function_exported?(module, :identity, 1)
+  end
+
+  def adapter_module?(_), do: false
+end

@@ -12,6 +12,7 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :sqlite_physical
   @moduletag :integration
 
   alias ElixirDB.Runtime.DatabaseCatalog

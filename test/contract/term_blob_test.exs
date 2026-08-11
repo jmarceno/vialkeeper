@@ -1,6 +1,8 @@
 defmodule ElixirDB.Contract.TermBlobTest do
   use ExUnit.Case, async: true
 
+  @moduletag :sqlite_physical
+
   alias ElixirDB.Storage.SQLite.TermBlob
 
   test "round trips a JSON term and binds it as SQLite BLOB" do

@@ -3,6 +3,8 @@ defmodule ElixirDB.StorageAdapter.MemoryModeTest do
 
   use ExUnit.Case, async: true
 
+  @moduletag :sqlite_physical
+
   alias ElixirDB.Storage.SQLite.{Adapter, Connection}
 
   test "creates an isolated in-memory database with the V1 schema" do

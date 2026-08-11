@@ -3,6 +3,7 @@ defmodule ElixirDB.Observability.SQLiteProbeTest do
 
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :sqlite_physical
   @moduletag :integration
 
   alias ElixirDB.Observability.TestExporter
