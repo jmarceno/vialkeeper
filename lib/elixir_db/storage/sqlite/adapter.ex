@@ -134,10 +134,10 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       end
 
     identity =
-      case adapter.retention_fault do
-        fun when is_function(fun, 1) -> Map.put(adapter.identity || %{}, :retention_fault, fun)
-        _ -> adapter.identity || %{}
-      end
+      (adapter.identity || %{})
+      |> maybe_put_fault(:retention_fault, adapter.retention_fault)
+      |> maybe_put_fault(:view_fault, adapter.view_fault)
+      |> maybe_put_fault(:derived_fault, adapter.derived_fault)
 
     BackendContext.new(
       backend: __MODULE__,
@@ -955,4 +955,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   defp valid_uuid?(_), do: false
+
+  defp maybe_put_fault(identity, key, fun) when is_function(fun, 1),
+    do: Map.put(identity, key, fun)
+
+  defp maybe_put_fault(identity, _key, _), do: identity
 end

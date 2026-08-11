@@ -166,22 +166,28 @@ defmodule ElixirDB.StorageAdapter.DerivedContractTest do
     def stats_cases(adapter_mod, source_uuid, history_epoch) do
       {adapter, materialization_id} = open_stats_derived(adapter_mod, source_uuid)
 
+      rows = [
+        %{source_document_id: "low", source_revision_id: "1-low", key: ["alpha", 1], value: -1},
+        %{source_document_id: "high", source_revision_id: "1-high", key: ["alpha", 2], value: 3},
+        %{
+          source_document_id: "text",
+          source_revision_id: "1-text",
+          key: ["alpha", 3],
+          value: "skip"
+        },
+        %{source_document_id: "mid", source_revision_id: "1-mid", key: ["alpha", 4], value: 0}
+      ]
+
+      # Product outcomes must be identifier/order independent.
+      shuffled = Enum.shuffle(rows)
+
       batch = %{
         materialization_id: materialization_id,
         source_database_uuid: source_uuid,
         source_history_epoch: history_epoch,
         expected_checkpoint_sequence: 0,
         through_sequence: 1,
-        rows: [
-          %{source_document_id: "low", source_revision_id: "1-low", key: ["alpha", 1], value: -1},
-          %{source_document_id: "high", source_revision_id: "1-high", key: ["alpha", 2], value: 3},
-          %{
-            source_document_id: "text",
-            source_revision_id: "1-text",
-            key: ["alpha", 3],
-            value: "skip"
-          }
-        ],
+        rows: shuffled,
         removals: []
       }
 
@@ -193,13 +199,15 @@ defmodule ElixirDB.StorageAdapter.DerivedContractTest do
       assert body == %{
                "key" => ["alpha"],
                "value" => %{
-                 "count" => 2,
+                 "count" => 3,
                  "max" => 3.0,
                  "min" => -1.0,
                  "sum" => 2.0,
                  "sumsqr" => 10.0
                }
              }
+
+      body
     end
 
     def rebuild_cases(adapter_mod, ctx) do
@@ -343,6 +351,26 @@ defmodule ElixirDB.StorageAdapter.DerivedContractTest do
 
     test "history reset, rebuild, stale pruning, and reload", ctx do
       Support.rebuild_cases(@adapter, ctx)
+    end
+  end
+
+  defmodule CrossBackendDerivedContractTest do
+    use ExUnit.Case, async: true
+
+    alias ElixirDB.StorageAdapter.DerivedContractTest.Support
+    alias ElixirDB.UUID
+
+    test "memory and sqlite produce identical reducer outcomes for shuffled contributions" do
+      source_uuid = UUID.v4()
+      history_epoch = UUID.v4()
+
+      memory_body =
+        Support.stats_cases(ElixirDB.Storage.Memory.Adapter, source_uuid, history_epoch)
+
+      sqlite_body =
+        Support.stats_cases(ElixirDB.Storage.SQLite.Adapter, source_uuid, history_epoch)
+
+      assert memory_body == sqlite_body
     end
   end
 end

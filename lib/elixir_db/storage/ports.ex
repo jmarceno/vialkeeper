@@ -19,14 +19,15 @@ defmodule ElixirDB.Storage.Ports do
   * `:local_records` — versioned get/put-CAS/list/delete over typed namespaces
   * `:retention_records` — peer positions, boundary pages, retention state
   * `:index_candidates` — logical index definitions and candidate retrieval
-  * `:view_state` — view definition/state/row persistence
-  * `:derived_state` — derived metadata, cursors, contributions, aggregates
+  * `:view_state` — view definition/state/row fact persistence and range scans
+  * `:derived_state` — derived metadata, cursors, contribution/group fact maps
   * `:attachment_metadata` — manifests, pending protection, reachability
   * `:inspection` — normalized integrity snapshots and capability probes
 
   Every port return value is a normalized domain value or a typed storage
   error. Engine handles, SQL, row identifiers, prepared statements, and
-  physical path fields must not appear in port types.
+  physical path fields must not appear in port types. Product workflows for
+  views and derived materialization live in `ElixirDB.Storage.Services`.
   """
 
   @port_families [

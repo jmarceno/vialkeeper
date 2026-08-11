@@ -622,6 +622,107 @@ defmodule ElixirDB.DerivedView.Engine do
     end
   end
 
+  @doc "Requires a positive integer field."
+  @spec required_positive(map(), atom()) :: {:ok, pos_integer()} | {:error, ElixirDB.Error.t()}
+  def required_positive(map, key) when is_map(map) and is_atom(key) do
+    case MapAccess.get(map, key) do
+      value when is_integer(value) and value > 0 -> {:ok, value}
+      _ -> {:error, ElixirDB.Error.invalid_request("#{key} must be a positive integer")}
+    end
+  end
+
+  @doc "Requires a boolean field."
+  @spec required_boolean(map(), atom()) :: {:ok, boolean()} | {:error, ElixirDB.Error.t()}
+  def required_boolean(map, key) when is_map(map) and is_atom(key) do
+    case MapAccess.get(map, key) do
+      value when is_boolean(value) -> {:ok, value}
+      _ -> {:error, ElixirDB.Error.invalid_request("#{key} must be a boolean")}
+    end
+  end
+
+  @doc "Requires a UUID string field."
+  @spec required_uuid(map(), atom()) :: {:ok, binary()} | {:error, ElixirDB.Error.t()}
+  def required_uuid(map, key) when is_map(map) and is_atom(key) do
+    with {:ok, value} <- required_string(map, key) do
+      if uuid?(value),
+        do: {:ok, String.downcase(value)},
+        else: {:error, ElixirDB.Error.invalid_request("#{key} must be a UUID")}
+    end
+  end
+
+  @doc "Reads an optional non-empty string field."
+  @spec optional_string(map(), atom()) :: {:ok, binary() | nil} | {:error, ElixirDB.Error.t()}
+  def optional_string(map, key) when is_map(map) and is_atom(key) do
+    case MapAccess.get(map, key) do
+      nil -> {:ok, nil}
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, ElixirDB.Error.invalid_request("#{key} must be a non-empty string")}
+    end
+  end
+
+  @doc "Reads an optional non-negative integer, falling back to `default`."
+  @spec optional_non_negative(map(), atom(), non_neg_integer()) ::
+          {:ok, non_neg_integer()} | {:error, ElixirDB.Error.t()}
+  def optional_non_negative(map, key, default)
+      when is_map(map) and is_atom(key) and is_integer(default) and default >= 0 do
+    case MapAccess.get(map, key) do
+      nil -> {:ok, default}
+      value when is_integer(value) and value >= 0 -> {:ok, value}
+      _ -> {:error, ElixirDB.Error.invalid_request("#{key} must be a non-negative integer")}
+    end
+  end
+
+  @doc "Normalizes a rebuild page limit against host batch ceilings."
+  @spec rebuild_page_limit(map()) :: {:ok, pos_integer()} | {:error, ElixirDB.Error.t()}
+  def rebuild_page_limit(request) when is_map(request) do
+    limit = MapAccess.get(request, :limit, @default_batch_limit)
+
+    maximum =
+      ElixirDB.Config.host_limits()[:max_materialized_view_batch_documents] || @default_batch_limit
+
+    cond do
+      not is_integer(limit) or limit <= 0 ->
+        {:error, ElixirDB.Error.invalid_request("derived rebuild page limit must be positive")}
+
+      limit > maximum ->
+        {:error, ElixirDB.Error.resource_limit("derived rebuild page limit exceeds the host limit")}
+
+      true ->
+        {:ok, limit}
+    end
+  end
+
+  @doc "Maps a stored derived status string to a public atom."
+  @spec status_atom(term()) :: atom()
+  def status_atom("disabled"), do: :disabled
+  def status_atom("rebuilding"), do: :rebuilding
+  def status_atom("current"), do: :current
+  def status_atom("stale"), do: :stale
+  def status_atom("resource_limit"), do: :resource_limit
+  def status_atom(atom) when is_atom(atom), do: atom
+  def status_atom(_), do: :unknown
+
+  @doc "Optional derived fault-injection hook used by storage contract tests."
+  @spec derived_fault_check(term(), atom()) :: :ok | {:error, ElixirDB.Error.t()}
+  def derived_fault_check(nil, _point), do: :ok
+
+  def derived_fault_check(fun, point) when is_function(fun, 1) do
+    case fun.(point) do
+      :ok -> :ok
+      {:error, %ElixirDB.Error{}} = error -> error
+      other -> {:error, ElixirDB.Error.internal_error("derived fault returned #{inspect(other)}")}
+    end
+  end
+
+  def derived_fault_check(_fun, _point), do: :ok
+
+  defp uuid?(value) do
+    Regex.match?(
+      ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      value
+    )
+  end
+
   defp required_list(map, key) do
     case MapAccess.get(map, key) do
       value when is_list(value) -> {:ok, value}

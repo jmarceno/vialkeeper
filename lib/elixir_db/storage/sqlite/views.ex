@@ -2,15 +2,16 @@ defmodule ElixirDB.Storage.SQLite.Views do
   @moduledoc """
   SQLite physical persistence for view definitions, state, and rows.
 
-  Query planning, CAS, bookmarks, grouping, and result shaping live in
-  `ElixirDB.View.Engine`.
+  Catalog rows, generation metadata, row upserts, and range scans live here.
+  Product orchestration — definition CAS, rebuild transitions, query planning,
+  bookmarks, and result shaping — lives in `ElixirDB.Storage.Services.Views`.
   """
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.SQLite.{Connection, TermBlob}
   alias ElixirDB.UUID
-  alias ElixirDB.View.{Definition, Engine, KeyCodec}
+  alias ElixirDB.View.KeyCodec
 
   @list_cache_key :elixir_db_sqlite_view_catalog
 
@@ -44,34 +45,105 @@ defmodule ElixirDB.Storage.SQLite.Views do
     end
   end
 
-  @doc false
   @spec clear_cache(Connection.handle()) :: :ok
   def clear_cache(conn) do
     Process.delete({@list_cache_key, conn})
     :ok
   end
 
-  @spec create_tx(Connection.handle(), map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def create_tx(conn, definition, config) do
-    clear_cache(conn)
-
-    with {:ok, normalized} <- Definition.normalize(definition),
-         :ok <- enforce_definition_limit(conn, config),
-         {:ok, existing} <- find_by_name(conn, normalized.name),
-         :ok <- Engine.ensure_no_conflict(existing, normalized),
-         {:ok, result} <- insert_definition(conn, normalized) do
-      {:ok, result}
-    else
+  @spec find_by_name(Connection.handle(), binary()) ::
+          {:ok, map() | nil} | {:error, ElixirDB.Error.t()}
+  def find_by_name(conn, name) when is_binary(name) do
+    case Connection.query(
+           conn,
+           "SELECT view_id, definition_digest FROM view_definitions WHERE name = ?",
+           [name]
+         ) do
+      {:ok, []} -> {:ok, nil}
+      {:ok, [[view_id, digest]]} -> {:ok, %{view_id: view_id, definition_digest: digest}}
       {:error, reason} -> {:error, normalize_error(reason)}
     end
   end
 
-  @spec delete_tx(Connection.handle(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def delete_tx(conn, view_id) do
+  @spec count(Connection.handle()) :: {:ok, non_neg_integer()} | {:error, ElixirDB.Error.t()}
+  def count(conn) do
+    case Connection.query(conn, "SELECT count(*) FROM view_definitions") do
+      {:ok, [[count]]} -> {:ok, count}
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  @spec get_definition(Connection.handle(), binary()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def get_definition(conn, view_id) when is_binary(view_id) do
+    case Connection.query(
+           conn,
+           "SELECT view_id, name, definition_json, definition_digest, created_at FROM view_definitions WHERE view_id = ?",
+           [view_id]
+         ) do
+      {:ok, [row]} ->
+        {:ok, definition_row(row)}
+
+      {:ok, []} ->
+        {:error, ElixirDB.Error.view_not_found("view was not found", %{view_id: view_id})}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  @spec get_state(Connection.handle(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def get_state(conn, view_id) when is_binary(view_id) do
+    with {:ok, row} <- fetch_state_row(conn, view_id) do
+      {:ok, state_result(row)}
+    end
+  end
+
+  @spec insert_definition(Connection.handle(), map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def insert_definition(conn, normalized) when is_map(normalized) do
     clear_cache(conn)
 
-    with {:ok, _row} <- fetch_definition(conn, view_id),
-         :ok <- Connection.execute(conn, "DELETE FROM view_rows WHERE view_id = ?", [view_id]),
+    view_id = UUID.v4()
+    created_at = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    with :ok <-
+           Connection.execute(
+             conn,
+             "INSERT INTO view_definitions(view_id, name, definition_json, definition_digest, created_at) VALUES (?, ?, ?, ?, ?)",
+             [
+               view_id,
+               normalized.name,
+               normalized.definition_json,
+               normalized.definition_digest,
+               created_at
+             ]
+           ),
+         :ok <-
+           Connection.execute(
+             conn,
+             "INSERT INTO view_state(view_id, active_generation, building_generation, indexed_through, status, last_error_code) VALUES (?, 1, NULL, 0, 'building', NULL)",
+             [view_id]
+           ) do
+      {:ok,
+       %{
+         "view_id" => view_id,
+         "name" => normalized.name,
+         "definition_digest" => normalized.definition_digest,
+         "definition_json" => normalized.definition_json,
+         "created_at" => created_at,
+         "status" => "building",
+         "indexed_through" => 0,
+         "active_generation" => 1
+       }}
+    end
+  end
+
+  @spec delete(Connection.handle(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def delete(conn, view_id) when is_binary(view_id) do
+    clear_cache(conn)
+
+    with :ok <- Connection.execute(conn, "DELETE FROM view_rows WHERE view_id = ?", [view_id]),
          :ok <- Connection.execute(conn, "DELETE FROM view_state WHERE view_id = ?", [view_id]),
          :ok <-
            Connection.execute(conn, "DELETE FROM view_definitions WHERE view_id = ?", [view_id]) do
@@ -79,148 +151,119 @@ defmodule ElixirDB.Storage.SQLite.Views do
     end
   end
 
-  @spec state(Connection.handle(), binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def state(conn, view_id) do
-    with {:ok, row} <- fetch_state(conn, view_id) do
-      {:ok, state_result(row)}
-    end
+  @spec upsert_rows(Connection.handle(), binary(), integer(), [map()]) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def upsert_rows(conn, view_id, generation, rows) when is_binary(view_id) and is_list(rows) do
+    Enum.reduce_while(rows, :ok, fn row, :ok ->
+      with {:ok, encoded} <- encode_row(view_id, generation, row),
+           :ok <-
+             Connection.execute(
+               conn,
+               """
+               INSERT INTO view_rows(view_id, generation, document_id, revision_id, key_json, key_sort, value_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(view_id, generation, document_id) DO UPDATE SET
+                 revision_id = excluded.revision_id,
+                 key_json = excluded.key_json,
+                 key_sort = excluded.key_sort,
+                 value_json = excluded.value_json
+               """,
+               encoded
+             ) do
+        {:cont, :ok}
+      else
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
-  @spec apply_batch_tx(Connection.handle(), map(), keyword()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def apply_batch_tx(conn, request, opts \\ []) do
-    clear_cache(conn)
-    view_id = required_string(request, "view_id")
-    expected = required_integer(request, "expected_indexed_through")
-    through = required_integer(request, "through_sequence")
-    rows = Map.get(request, "rows", [])
-    removals = Map.get(request, "removals", [])
-
-    with {:ok, state} <- fetch_state(conn, view_id),
-         {:ok, mode} <- Engine.validate_batch_cas(state, expected, through),
-         generation <- state.active_generation,
-         :ok <- maybe_apply_batch(conn, mode, view_id, generation, rows, removals, through, opts) do
-      {:ok, %{view_id: view_id, indexed_through: through, applied: mode == :apply}}
-    end
-  end
-
-  defp maybe_apply_batch(
-         _conn,
-         :idempotent,
-         _view_id,
-         _generation,
-         _rows,
-         _removals,
-         _through,
-         _opts
-       ),
-       do: :ok
-
-  defp maybe_apply_batch(conn, :apply, view_id, generation, rows, removals, through, opts) do
-    with :ok <- delete_removals(conn, view_id, generation, removals),
-         :ok <- upsert_rows(conn, view_id, generation, rows, opts) do
-      Connection.execute(
-        conn,
-        "UPDATE view_state SET indexed_through = ? WHERE view_id = ?",
-        [through, view_id]
-      )
-    end
-  end
-
-  @spec begin_rebuild_tx(Connection.handle(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def begin_rebuild_tx(conn, request) do
-    clear_cache(conn)
-    view_id = required_string(request, "view_id")
-    start_sequence = required_integer(request, "start_sequence")
-
-    with {:ok, state} <- fetch_state(conn, view_id),
-         building_generation = state.active_generation + 1,
-         :ok <-
-           Connection.execute(conn, "DELETE FROM view_rows WHERE view_id = ? AND generation = ?", [
-             view_id,
-             building_generation
-           ]),
-         :ok <-
-           Connection.execute(
+  @spec delete_removals(Connection.handle(), binary(), integer(), [binary()]) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def delete_removals(conn, view_id, generation, removals)
+      when is_binary(view_id) and is_list(removals) do
+    Enum.reduce_while(removals, :ok, fn document_id, :ok ->
+      case Connection.execute(
              conn,
-             "UPDATE view_state SET building_generation = ?, status = 'building', last_error_code = NULL WHERE view_id = ?",
-             [building_generation, view_id]
+             "DELETE FROM view_rows WHERE view_id = ? AND generation = ? AND document_id = ?",
+             [view_id, generation, document_id]
            ) do
-      {:ok,
-       %{
-         view_id: view_id,
-         building_generation: building_generation,
-         start_sequence: start_sequence,
-         active_generation: state.active_generation
-       }}
-    end
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
+      end
+    end)
   end
 
-  @spec append_rebuild_page_tx(Connection.handle(), map()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def append_rebuild_page_tx(conn, request) do
-    view_id = required_string(request, "view_id")
-    generation = required_integer(request, "generation")
-    rows = Map.get(request, "rows", [])
-
-    removals = Map.get(request, "removals", [])
-
-    with {:ok, state} <- fetch_state(conn, view_id),
-         :ok <- Engine.ensure_building_generation(state, generation),
-         :ok <- delete_removals(conn, view_id, generation, removals),
-         :ok <- upsert_rows(conn, view_id, generation, rows) do
-      {:ok, %{view_id: view_id, generation: generation, appended: length(rows)}}
-    end
-  end
-
-  @spec finish_rebuild_tx(Connection.handle(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def finish_rebuild_tx(conn, request) do
+  @spec put_indexed_through(Connection.handle(), binary(), integer()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def put_indexed_through(conn, view_id, through)
+      when is_binary(view_id) and is_integer(through) do
     clear_cache(conn)
-    view_id = required_string(request, "view_id")
-    generation = required_integer(request, "generation")
-    indexed_through = required_integer(request, "indexed_through")
 
-    with {:ok, state} <- fetch_state(conn, view_id),
-         :ok <- Engine.ensure_building_generation(state, generation),
-         :ok <-
-           Connection.execute(
-             conn,
-             """
-             UPDATE view_state
-             SET active_generation = ?, building_generation = NULL, indexed_through = ?, status = 'ready', last_error_code = NULL
-             WHERE view_id = ?
-             """,
-             [generation, indexed_through, view_id]
-           ) do
-      {:ok, %{view_id: view_id, active_generation: generation, indexed_through: indexed_through}}
-    end
+    Connection.execute(
+      conn,
+      "UPDATE view_state SET indexed_through = ? WHERE view_id = ?",
+      [through, view_id]
+    )
   end
 
-  @spec query_tx(Connection.handle(), map(), map()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def query_tx(conn, request, config \\ %{})
-
-  def query_tx(conn, request, config) when is_map(request) and is_map(config) do
-    with :ok <- Engine.validate_query_fields(request),
-         {:ok, view_id} <- Engine.query_view_id(request),
-         {:ok, limit} <- Engine.normalize_query_limit(request, config),
-         :ok <- Engine.validate_query_options(request),
-         {:ok, definition_row} <- fetch_definition(conn, view_id),
-         {:ok, state} <- fetch_state(conn, view_id),
-         {:ok, definition} <- Engine.decode_definition(definition_row.definition_json),
-         {:ok, query_plan} <- Engine.build_query_plan(request, definition, state),
-         {:ok, {rows, fetch_has_more}} <-
-           fetch_query_rows(conn, view_id, state.active_generation, query_plan, limit, definition) do
-      Engine.format_query_result(rows, fetch_has_more, definition, state, query_plan, limit)
-    end
+  @spec clear_generation_rows(Connection.handle(), binary(), integer()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def clear_generation_rows(conn, view_id, generation)
+      when is_binary(view_id) and is_integer(generation) do
+    Connection.execute(conn, "DELETE FROM view_rows WHERE view_id = ? AND generation = ?", [
+      view_id,
+      generation
+    ])
   end
 
-  def query_tx(_conn, _request, _config),
-    do: {:error, ElixirDB.Error.invalid_request("view query must be an object")}
+  @spec begin_rebuild_effect(Connection.handle(), binary(), integer()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def begin_rebuild_effect(conn, view_id, building_generation)
+      when is_binary(view_id) and is_integer(building_generation) do
+    clear_cache(conn)
+
+    Connection.execute(
+      conn,
+      "UPDATE view_state SET building_generation = ?, status = 'building', last_error_code = NULL WHERE view_id = ?",
+      [building_generation, view_id]
+    )
+  end
+
+  @spec finish_rebuild_effect(Connection.handle(), binary(), integer(), integer()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def finish_rebuild_effect(conn, view_id, generation, indexed_through)
+      when is_binary(view_id) and is_integer(generation) and is_integer(indexed_through) do
+    clear_cache(conn)
+
+    Connection.execute(
+      conn,
+      """
+      UPDATE view_state
+      SET active_generation = ?, building_generation = NULL, indexed_through = ?, status = 'ready', last_error_code = NULL
+      WHERE view_id = ?
+      """,
+      [generation, indexed_through, view_id]
+    )
+  end
+
+  @spec scan_rows(Connection.handle(), binary(), integer(), map(), non_neg_integer() | nil) ::
+          {:ok, [map()]} | {:error, ElixirDB.Error.t()}
+  def scan_rows(conn, view_id, generation, plan, fetch_limit)
+      when is_binary(view_id) and is_integer(generation) and is_map(plan) do
+    {sql, params} = query_sql(view_id, generation, plan, fetch_limit)
+
+    case Connection.query(conn, sql, params) do
+      {:ok, rows} ->
+        {:ok, Enum.map(rows, &decode_row/1)}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
 
   @spec read_winning_documents_page(Connection.handle(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
-  def read_winning_documents_page(conn, request) do
+  def read_winning_documents_page(conn, request) when is_map(request) do
     after_id = Map.get(request, "after_document_id")
     limit = page_limit(request)
 
@@ -306,21 +349,6 @@ defmodule ElixirDB.Storage.SQLite.Views do
   defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
   defp positive_integer(_value, default), do: default
 
-  defp fetch_query_rows(conn, view_id, generation, plan, limit, definition) do
-    fetch_limit = Engine.fetch_limit(definition, limit)
-    {sql, params} = query_sql(view_id, generation, plan, fetch_limit)
-
-    case Connection.query(conn, sql, params) do
-      {:ok, rows} ->
-        decoded = Enum.map(rows, &decode_row/1)
-        {page, has_more} = Engine.split_fetch(decoded, fetch_limit, limit)
-        {:ok, {page, has_more}}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
-
   defp query_sql(view_id, generation, plan, fetch_limit) do
     filters = ["view_id = ?", "generation = ?"]
     params = [view_id, generation]
@@ -385,33 +413,6 @@ defmodule ElixirDB.Storage.SQLite.Views do
     StrictDecoder.decode_or_nil(json)
   end
 
-  defp upsert_rows(conn, view_id, generation, rows, opts \\ []) when is_list(rows) do
-    view_fault = Keyword.get(opts, :view_fault)
-
-    Enum.reduce_while(rows, :ok, fn row, :ok ->
-      with :ok <- Engine.view_fault_check(view_fault, :view_upsert_row),
-           {:ok, encoded} <- encode_row(view_id, generation, row),
-           :ok <-
-             Connection.execute(
-               conn,
-               """
-               INSERT INTO view_rows(view_id, generation, document_id, revision_id, key_json, key_sort, value_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(view_id, generation, document_id) DO UPDATE SET
-                 revision_id = excluded.revision_id,
-                 key_json = excluded.key_json,
-                 key_sort = excluded.key_sort,
-                 value_json = excluded.value_json
-               """,
-               encoded
-             ) do
-        {:cont, :ok}
-      else
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-  end
-
   defp encode_row(view_id, generation, row) do
     document_id = required_string(row, "document_id")
     revision_id = required_string(row, "revision_id")
@@ -442,95 +443,7 @@ defmodule ElixirDB.Storage.SQLite.Views do
     end
   end
 
-  defp delete_removals(conn, view_id, generation, removals) when is_list(removals) do
-    Enum.reduce_while(removals, :ok, fn document_id, :ok ->
-      case Connection.execute(
-             conn,
-             "DELETE FROM view_rows WHERE view_id = ? AND generation = ? AND document_id = ?",
-             [view_id, generation, document_id]
-           ) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
-      end
-    end)
-  end
-
-  defp insert_definition(conn, normalized) do
-    view_id = UUID.v4()
-    created_at = DateTime.utc_now() |> DateTime.to_iso8601()
-
-    with :ok <-
-           Connection.execute(
-             conn,
-             "INSERT INTO view_definitions(view_id, name, definition_json, definition_digest, created_at) VALUES (?, ?, ?, ?, ?)",
-             [
-               view_id,
-               normalized.name,
-               normalized.definition_json,
-               normalized.definition_digest,
-               created_at
-             ]
-           ),
-         :ok <-
-           Connection.execute(
-             conn,
-             "INSERT INTO view_state(view_id, active_generation, building_generation, indexed_through, status, last_error_code) VALUES (?, 1, NULL, 0, 'building', NULL)",
-             [view_id]
-           ) do
-      {:ok,
-       %{
-         "view_id" => view_id,
-         "name" => normalized.name,
-         "definition_digest" => normalized.definition_digest,
-         "definition_json" => normalized.definition_json,
-         "created_at" => created_at,
-         "status" => "building",
-         "indexed_through" => 0,
-         "active_generation" => 1
-       }}
-    end
-  end
-
-  defp enforce_definition_limit(conn, config) do
-    maximum = get_in(config, ["views", "max_definitions"]) || 32
-
-    case Connection.query(conn, "SELECT count(*) FROM view_definitions") do
-      {:ok, [[count]]} when count < maximum -> :ok
-      {:ok, [[_count]]} -> {:error, ElixirDB.Error.resource_limit("view definition limit reached")}
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
-
-  defp find_by_name(conn, name) do
-    case Connection.query(
-           conn,
-           "SELECT view_id, definition_digest FROM view_definitions WHERE name = ?",
-           [name]
-         ) do
-      {:ok, []} -> {:ok, nil}
-      {:ok, [[view_id, digest]]} -> {:ok, %{view_id: view_id, definition_digest: digest}}
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
-
-  defp fetch_definition(conn, view_id) do
-    case Connection.query(
-           conn,
-           "SELECT view_id, name, definition_json, definition_digest, created_at FROM view_definitions WHERE view_id = ?",
-           [view_id]
-         ) do
-      {:ok, [row]} ->
-        {:ok, definition_row(row)}
-
-      {:ok, []} ->
-        {:error, ElixirDB.Error.view_not_found("view was not found", %{view_id: view_id})}
-
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
-    end
-  end
-
-  defp fetch_state(conn, view_id) do
+  defp fetch_state_row(conn, view_id) do
     case Connection.query(
            conn,
            "SELECT view_id, active_generation, building_generation, indexed_through, status, last_error_code FROM view_state WHERE view_id = ?",
@@ -623,22 +536,8 @@ defmodule ElixirDB.Storage.SQLite.Views do
       else: raise(ArgumentError, "missing #{key}")
   end
 
-  defp required_integer(map, key) when is_binary(key) do
-    value = map_get(map, key)
-
-    if is_integer(value) and value >= 0,
-      do: value,
-      else: raise(ArgumentError, "missing #{key}")
-  end
-
-  defp map_get(map, "view_id"), do: MapAccess.get(map, :view_id)
   defp map_get(map, "document_id"), do: MapAccess.get(map, :document_id)
   defp map_get(map, "revision_id"), do: MapAccess.get(map, :revision_id)
-  defp map_get(map, "expected_indexed_through"), do: MapAccess.get(map, :expected_indexed_through)
-  defp map_get(map, "through_sequence"), do: MapAccess.get(map, :through_sequence)
-  defp map_get(map, "start_sequence"), do: MapAccess.get(map, :start_sequence)
-  defp map_get(map, "generation"), do: MapAccess.get(map, :generation)
-  defp map_get(map, "indexed_through"), do: MapAccess.get(map, :indexed_through)
   defp map_get(map, key) when is_binary(key), do: Map.get(map, key)
 
   defp normalize_error(%ElixirDB.Error{} = error), do: error
