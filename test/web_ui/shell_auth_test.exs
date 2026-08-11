@@ -103,8 +103,10 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
     assert shell.resp_body =~
              ~s(content='{"allowEval":false,"allowScriptTags":false,"historyCacheSize":0,"includeIndicatorStyles":false,"selfRequestsOnly":true}')
 
-    assert shell.resp_body =~ ~s(hx-disinherit="hx-target hx-swap")
+    assert shell.resp_body =~ ~s(hx-disinherit="*")
     assert shell.resp_body =~ ~s(id="app")
+    assert shell.resp_body =~ ~s(hx-trigger="elixirdb:start from:body")
+    refute shell.resp_body =~ ~s(hx-trigger="load)
 
     refute shell.resp_body =~ "database_uuid"
     refute shell.resp_body =~ "token_digests"

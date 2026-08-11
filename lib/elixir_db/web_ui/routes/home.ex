@@ -3,13 +3,14 @@ defmodule ElixirDB.WebUI.Routes.Home do
   Authenticated home fragment for the embedded administration console.
 
   The landing surface calls only bounded application facades for registration
-  metadata and optional observability. It does not open every database or query
-  per-database job managers.
+  metadata, in-memory replication worker summary, and optional observability. It
+  does not open every database solely to render the overview.
   """
 
   alias ElixirDB.MapAccess
   alias ElixirDB.MaterializedViews
   alias ElixirDB.Observability.Dashboard
+  alias ElixirDB.Replication.JobManager
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.WebUI.{Components, HTML, Response}
 
@@ -20,6 +21,7 @@ defmodule ElixirDB.WebUI.Routes.Home do
   def call(conn) do
     databases = list_databases()
     materialized = list_materialized()
+    replication = JobManager.runtime_summary()
     observability = maybe_observability()
 
     Response.fragment(conn, [
@@ -33,6 +35,7 @@ defmodule ElixirDB.WebUI.Routes.Home do
       "  </div>\n",
       databases_panel(databases),
       materialized_panel(materialized),
+      replication_panel(replication),
       observability_panel(observability),
       "</section>\n"
     ])
@@ -132,6 +135,26 @@ defmodule ElixirDB.WebUI.Routes.Home do
   end
 
   defp materialized_panel({:error, error}), do: Components.error_block(error)
+
+  defp replication_panel(%{tracked: tracked, active: active, by_state: by_state})
+       when is_map(by_state) do
+    state_rows =
+      by_state
+      |> Enum.sort_by(fn {state, _count} -> to_string(state) end)
+      |> Enum.map(fn {state, count} ->
+        [HTML.escape(to_string(state)), HTML.escape(to_string(count))]
+      end)
+
+    [
+      "  <div class=\"panel\">\n",
+      "    <h2>Replication</h2>\n",
+      "    <p class=\"muted\">",
+      HTML.escape("Tracked workers: #{tracked}; active: #{active}"),
+      "</p>\n",
+      Components.table("Replication worker states", ["State", "Count"], state_rows),
+      "  </div>\n"
+    ]
+  end
 
   defp observability_panel(:disabled), do: []
 

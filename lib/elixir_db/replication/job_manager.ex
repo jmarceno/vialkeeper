@@ -81,6 +81,35 @@ defmodule ElixirDB.Replication.JobManager do
     end)
   end
 
+  @doc """
+  Returns a bounded in-memory summary of tracked replication workers.
+
+  Reads only the JobManager ETS table; it does not open databases or load
+  persisted job definitions.
+  """
+  @spec runtime_summary() :: %{
+          tracked: non_neg_integer(),
+          active: non_neg_integer(),
+          by_state: %{optional(atom()) => non_neg_integer()}
+        }
+  def runtime_summary do
+    entries = ensure_table() |> :ets.tab2list()
+
+    Enum.reduce(entries, %{tracked: 0, active: 0, by_state: %{}}, fn entry, acc ->
+      state =
+        case entry do
+          {_job_id, state, _pid, _uuid, _replication_id, _details} -> state
+          {_job_id, state, _pid, _uuid, _replication_id} -> state
+          _ -> :unknown
+        end
+
+      by_state = Map.update(acc.by_state, state, 1, &(&1 + 1))
+      active = if active_state?(state), do: acc.active + 1, else: acc.active
+
+      %{tracked: acc.tracked + 1, active: active, by_state: by_state}
+    end)
+  end
+
   def put(uuid, definition) do
     with {:ok, normalized} <- normalize_definition(definition),
          persist <- option(normalized, :persist, true),
@@ -481,6 +510,7 @@ defmodule ElixirDB.Replication.JobManager do
 
   defp normalize_definition(definition) when is_map(definition) do
     allowed = [
+      "job_id",
       "persist",
       "mode",
       "direction",
@@ -493,6 +523,7 @@ defmodule ElixirDB.Replication.JobManager do
       "max_concurrent_blob_transfers",
       "max_transfer_bytes_in_flight",
       "batch_documents",
+      :job_id,
       :persist,
       :mode,
       :direction,

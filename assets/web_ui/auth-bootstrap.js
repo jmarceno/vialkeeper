@@ -124,11 +124,33 @@
 
   document.addEventListener("htmx:afterRequest", function (event) {
     var xhr = event.detail && event.detail.xhr;
-    if (!xhr || xhr.status !== 401) {
+    if (!xhr) {
       return;
     }
-    setToken("");
-    showAuthForm();
+    if (xhr.status === 401) {
+      setToken("");
+      showAuthForm();
+      return;
+    }
+    // When home succeeds without an Authorization header, drop any leftover
+    // session token. Do not clear after authenticated successes.
+    if (xhr.status >= 200 && xhr.status < 300) {
+      var path = "";
+      try {
+        path = new URL(xhr.responseURL || "", window.location.origin).pathname;
+      } catch (_error) {
+        path = "";
+      }
+      if (path !== "/ui/fragments/home") {
+        return;
+      }
+      var headers =
+        (event.detail.requestConfig && event.detail.requestConfig.headers) || {};
+      var authorization = headers.Authorization || headers.authorization || "";
+      if (!authorization) {
+        setToken("");
+      }
+    }
   });
 
   if (document.readyState === "loading") {

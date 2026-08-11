@@ -77,6 +77,7 @@ defmodule ElixirDB.WebUI.Routes.Replications do
     with {:ok, uuid} <- Request.require_uuid(conn.path_params["uuid"]),
          {:ok, params, conn} <- Request.fetch_params(conn),
          {:ok, definition} <- decode_definition(params),
+         {:ok, definition} <- preserve_stored_auth_token(uuid, definition),
          {:ok, _created} <- JobManager.put(uuid, definition) do
       list(%{conn | path_params: %{"uuid" => uuid}})
     else
@@ -149,6 +150,63 @@ defmodule ElixirDB.WebUI.Routes.Replications do
   end
 
   defp maybe_merge_auth_token(definition, _token), do: definition
+
+  defp preserve_stored_auth_token(uuid, definition) when is_map(definition) do
+    endpoint = MapAccess.get(definition, :endpoint, %{})
+    kind = MapAccess.get(endpoint, :kind)
+    job_id = MapAccess.get(definition, :job_id)
+    presented = MapAccess.get(endpoint, :auth_token)
+
+    cond do
+      kind not in ["remote", :remote] ->
+        {:ok, definition}
+
+      is_binary(presented) and presented != "" ->
+        {:ok, definition}
+
+      not is_binary(job_id) or job_id == "" ->
+        {:ok, definition}
+
+      true ->
+        merge_stored_remote_auth(uuid, job_id, definition, endpoint)
+    end
+  end
+
+  defp preserve_stored_auth_token(_uuid, definition), do: {:ok, definition}
+
+  defp merge_stored_remote_auth(uuid, job_id, definition, endpoint) do
+    case JobManager.get(uuid, job_id) do
+      {:ok, job} ->
+        case stored_remote_auth_token(job) do
+          token when is_binary(token) and token != "" ->
+            {:ok, put_endpoint_auth_token(definition, endpoint, token)}
+
+          _ ->
+            {:ok, definition}
+        end
+
+      {:error, _} ->
+        {:ok, definition}
+    end
+  end
+
+  defp stored_remote_auth_token(job) do
+    job
+    |> MapAccess.get(:definition, %{})
+    |> MapAccess.get(:endpoint, %{})
+    |> MapAccess.get(:auth_token)
+  end
+
+  defp put_endpoint_auth_token(definition, endpoint, token) do
+    endpoint =
+      endpoint
+      |> HTML.stringify_keys()
+      |> Map.put("auth_token", token)
+
+    definition
+    |> HTML.stringify_keys()
+    |> Map.put("endpoint", endpoint)
+  end
 
   defp render_list(uuid, jobs) do
     safe_jobs = Enum.map(jobs, &redact_job/1)

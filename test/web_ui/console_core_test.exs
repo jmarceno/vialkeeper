@@ -101,6 +101,8 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
     assert home.resp_body =~ uuid
     assert home.resp_body =~ path
     assert home.resp_body =~ "/ui/fragments/databases/" <> uuid
+    assert home.resp_body =~ "Replication"
+    assert home.resp_body =~ "Tracked workers"
     refute home.resp_body =~ @token
   end
 

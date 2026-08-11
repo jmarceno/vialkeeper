@@ -379,6 +379,35 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
     assert status.status == 200
     refute status.resp_body =~ secret
     refute status.resp_body =~ "every 2s"
+
+    edit_definition =
+      JSON.encode!(%{
+        "job_id" => job.job_id,
+        "persist" => true,
+        "mode" => "one_shot",
+        "direction" => "push",
+        "enabled" => false,
+        "endpoint" => %{
+          "kind" => "remote",
+          "database_uuid" => second_uuid,
+          "base_url" => "http://127.0.0.1:9"
+        }
+      })
+
+    saved =
+      form_post("/ui/actions/databases/#{first_uuid}/replications", %{
+        "definition" => edit_definition,
+        "auth_token" => ""
+      })
+
+    assert saved.status == 200
+    refute saved.resp_body =~ secret
+    assert saved.resp_body =~ job.job_id
+    refute saved.resp_body =~ "error-block"
+
+    assert {:ok, updated} = JobManager.get(first_uuid, job.job_id)
+    stored = get_in(updated.definition, ["endpoint", "auth_token"])
+    assert stored == secret
   end
 
   test "maintenance preserves domain errors and runs integrity through facades", %{
