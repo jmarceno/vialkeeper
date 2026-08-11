@@ -94,13 +94,18 @@ defmodule ElixirDB.Federation.ExecutorTest do
     assert is_binary(first.bookmark)
 
     first_requests =
-      for _ <- 1..2 do
+      for _ <- 1..3 do
         assert_receive {:page_request, source_uuid, source_request}, 1_000
         {source_uuid, source_request}
       end
 
-    {_, first_request} =
-      Enum.find(first_requests, fn {source_uuid, _source_request} -> source_uuid == @source end)
+    assert Enum.sort(Enum.map(first_requests, &elem(&1, 0))) ==
+             Enum.sort([@source, @other_source, @source])
+
+    assert Enum.sort(Enum.map(first_requests, fn {_source_uuid, request} -> request.bookmark end)) ==
+             Enum.sort([nil, nil, "next-" <> @source])
+
+    {_, first_request} = Enum.find(first_requests, fn {_, request} -> is_nil(request.bookmark) end)
 
     assert first_request.selector == %{"/type" => "note"}
     assert first_request.sort == [%{path: "/score", direction: "asc"}]

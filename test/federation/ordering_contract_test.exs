@@ -79,6 +79,50 @@ defmodule ElixirDB.Federation.OrderingContractTest do
            ]
   end
 
+  test "fetches an exhausted page buffer before choosing another source head" do
+    parent = self()
+
+    fetcher = fn source_uuid, request, _deadline ->
+      send(parent, {:page_request, source_uuid, request.bookmark})
+
+      case {source_uuid, request.bookmark} do
+        {@source, nil} ->
+          {:ok, page([document("a-1", 1)], 1, true, "source-next")}
+
+        {@source, "source-next"} ->
+          {:ok, page([document("a-2", 2)], 1)}
+
+        {@other_source, nil} ->
+          {:ok, page([document("b-1", 3)], 1)}
+      end
+    end
+
+    assert {:ok, result} =
+             Executor.run(
+               %{
+                 databases: [@source, @other_source],
+                 query: %{sort: [%{path: "/score", direction: "asc"}], limit: 2}
+               },
+               source_fetcher: fetcher,
+               max_candidates: 4
+             )
+
+    assert Enum.map(result.documents, & &1.id) == ["a-1", "a-2"]
+
+    initial_requests =
+      for _ <- 1..2 do
+        assert_receive {:page_request, source_uuid, nil}
+        source_uuid
+      end
+
+    assert Enum.sort(initial_requests) == Enum.sort([@source, @other_source])
+    assert_receive {:page_request, @source, "source-next"}
+  end
+
   defp page(documents, sequence), do: %{documents: documents, sequence: sequence, has_more: false}
+
+  defp page(documents, sequence, has_more, bookmark),
+    do: %{documents: documents, sequence: sequence, has_more: has_more, bookmark: bookmark}
+
   defp document(id, score), do: %{id: id, revision: "revision-" <> id, body: %{"score" => score}}
 end

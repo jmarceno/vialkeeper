@@ -494,29 +494,31 @@ defmodule ElixirDB.Federation.Executor do
   end
 
   defp next_entry(state, query, page_size, settings, supervisor, deadline) do
-    case best_head(state.cursors, query.sort) do
-      {:ok, index, _document} ->
-        cursor = Enum.at(state.cursors, index)
-        {{:ok, document}, cursor} = SourceCursor.pop(cursor)
-        cursors = List.replace_at(state.cursors, index, cursor)
-        {:ok, {cursor.source_uuid, document}, %{state | cursors: cursors}}
-
-      :empty ->
-        next_empty_entry(state, query, page_size, settings, supervisor, deadline)
-    end
-  end
-
-  defp next_empty_entry(state, query, page_size, settings, supervisor, deadline) do
-    case Enum.find_index(state.cursors, fn cursor -> not cursor.exhausted? end) do
-      nil -> :done
-      index -> fetch_empty_entry(state, index, query, page_size, settings, supervisor, deadline)
-    end
-  end
-
-  defp fetch_empty_entry(state, index, query, page_size, settings, supervisor, deadline) do
-    case fetch_next_page(state, index, query, page_size, settings, supervisor, deadline) do
-      {:ok, state} -> next_entry(state, query, page_size, settings, supervisor, deadline)
+    with {:ok, state} <-
+           ensure_heads(state, query, page_size, settings, supervisor, deadline),
+         {:ok, index, _document} <- best_head(state.cursors, query.sort) do
+      cursor = Enum.at(state.cursors, index)
+      {{:ok, document}, cursor} = SourceCursor.pop(cursor)
+      cursors = List.replace_at(state.cursors, index, cursor)
+      {:ok, {cursor.source_uuid, document}, %{state | cursors: cursors}}
+    else
+      :empty -> :done
       {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp ensure_heads(state, query, page_size, settings, supervisor, deadline) do
+    case Enum.find_index(state.cursors, fn cursor ->
+           SourceCursor.empty?(cursor) and not cursor.exhausted?
+         end) do
+      nil ->
+        {:ok, state}
+
+      index ->
+        case fetch_next_page(state, index, query, page_size, settings, supervisor, deadline) do
+          {:ok, state} -> ensure_heads(state, query, page_size, settings, supervisor, deadline)
+          {:error, %Error{} = error} -> {:error, error}
+        end
     end
   end
 
