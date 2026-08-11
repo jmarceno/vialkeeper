@@ -239,6 +239,8 @@ defmodule ElixirDB.MaterializedViews do
   end
 
   defp cleanup_failed_creation(uuid, relative_path) do
+    _ = DatabaseCatalog.command(uuid, {:command, :set_derived_enabled, %{enabled: false}})
+
     with :ok <- Manager.close(uuid),
          :ok <- DatabaseCatalog.close(uuid),
          :ok <- DatabaseCatalog.unregister(uuid) do

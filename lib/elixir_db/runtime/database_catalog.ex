@@ -494,8 +494,15 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp open_registered_entry(state, uuid, entry) do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
       [{_pid, _}] ->
-        _ = ensure_derived_manager(uuid, entry)
-        {:ok, %{database_uuid: uuid, runtime_state: :open}, mark_status(state, uuid, :registered)}
+        case ensure_derived_manager(uuid, entry) do
+          :ok ->
+            {:ok, %{database_uuid: uuid, runtime_state: :open},
+             mark_status(state, uuid, :registered)}
+
+          {:error, reason} ->
+            error = open_failure_error(reason, entry)
+            {:error, error, maybe_mark_unavailable(state, uuid, error)}
+        end
 
       [] ->
         start_registered_entry(state, uuid, entry)

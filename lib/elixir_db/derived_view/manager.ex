@@ -4,6 +4,7 @@ defmodule ElixirDB.DerivedView.Manager do
   require Logger
 
   alias ElixirDB.DerivedView.{Supervisor, Worker}
+  alias ElixirDB.Runtime.DatabaseOwner
 
   @call_timeout 30_000
 
@@ -16,11 +17,24 @@ defmodule ElixirDB.DerivedView.Manager do
   @spec start(binary(), [binary()] | nil) :: :ok | {:error, term()}
   def start(uuid, source_uuids) when is_binary(uuid) do
     GenServer.call(__MODULE__, {:start, uuid, source_uuids}, @call_timeout)
+  catch
+    :exit, reason ->
+      {:error,
+       ElixirDB.Error.database_unavailable("derived materializer lifecycle is unavailable", %{
+         cause: inspect(reason)
+       })}
   end
 
   @spec close(binary()) :: :ok | {:error, term()}
-  def close(uuid) when is_binary(uuid),
-    do: GenServer.call(__MODULE__, {:close, uuid}, @call_timeout)
+  def close(uuid) when is_binary(uuid) do
+    GenServer.call(__MODULE__, {:close, uuid}, @call_timeout)
+  catch
+    :exit, reason ->
+      {:error,
+       ElixirDB.Error.database_unavailable("derived materializer lifecycle is unavailable", %{
+         cause: inspect(reason)
+       })}
+  end
 
   @spec ensure_closable(binary()) :: :ok | {:error, ElixirDB.Error.t()}
   def ensure_closable(uuid) when is_binary(uuid) do
@@ -92,24 +106,19 @@ defmodule ElixirDB.DerivedView.Manager do
 
   @impl true
   def handle_call({:ensure_closable, uuid}, _from, state) do
-    cond do
-      Map.get(state.enabled, uuid, false) ->
-        {:reply,
-         {:error,
-          ElixirDB.Error.database_not_closable(
-            "enabled derived materializer must be disabled before close"
-          )}, state}
+    state = reconcile_open_derived(state)
 
-      (dependents = Map.get(state.dependencies, uuid, MapSet.new())) |> MapSet.size() > 0 ->
-        {:reply,
-         {:error,
-          ElixirDB.Error.database_not_closable(
-            "database has active derived materializer dependencies",
-            %{dependent_count: MapSet.size(dependents)}
-          )}, state}
+    case durable_derived_enabled?(uuid) do
+      {:ok, true} ->
+        {:reply, derived_enabled_close_error(), state}
 
-      true ->
-        {:reply, :ok, state}
+      {:ok, false} ->
+        if Map.get(state.enabled, uuid, false),
+          do: {:reply, derived_enabled_close_error(), state},
+          else: dependency_close_reply(state, uuid)
+
+      {:error, _} = error ->
+        {:reply, error, state}
     end
   end
 
@@ -137,8 +146,13 @@ defmodule ElixirDB.DerivedView.Manager do
           acc
       end)
 
-    desired = MapSet.union(state.desired, MapSet.new(Map.keys(sessions)))
-    {:noreply, %{state | sessions: sessions, desired: desired}}
+    state = %{
+      state
+      | sessions: sessions,
+        desired: MapSet.union(state.desired, MapSet.new(Map.keys(sessions)))
+    }
+
+    {:noreply, reconcile_open_derived(state)}
   end
 
   @impl true
@@ -186,6 +200,146 @@ defmodule ElixirDB.DerivedView.Manager do
 
       {:error, reason} ->
         {:error, reason, state}
+    end
+  end
+
+  defp reconcile_open_derived(state) do
+    open_derived = MapSet.new(open_derived_uuids())
+
+    state =
+      Enum.reduce(state.sessions, state, fn {uuid, _session}, state ->
+        if MapSet.member?(open_derived, uuid),
+          do: state,
+          else: stop_reconciled_session(state, uuid)
+      end)
+
+    Enum.reduce(open_derived, state, &reconcile_open_derived_entry(&2, &1))
+  end
+
+  defp open_derived_uuids do
+    Registry.select(ElixirDB.Runtime.DatabaseRegistry, [
+      {{{:owner, :"$1"}, :"$2", :"$3"}, [], [:"$1"]}
+    ])
+    |> Enum.filter(&derived_owner?/1)
+  end
+
+  defp derived_owner?(uuid) do
+    case DatabaseOwner.command(uuid, {:command, :identity, %{}}) do
+      {:ok, %{database_kind: :derived}} -> true
+      {:ok, %{"database_kind" => "derived"}} -> true
+      _ -> false
+    end
+  end
+
+  defp reconcile_open_derived_entry(state, uuid) do
+    case DatabaseOwner.command(uuid, {:command, :get_derived_view, %{}}) do
+      {:ok, %{enabled: true, definition: %{sources: sources}}} when is_list(sources) ->
+        state =
+          state
+          |> put_enabled(uuid, true)
+          |> put_dependencies(uuid, sources)
+          |> Map.update!(:desired, &MapSet.put(&1, uuid))
+
+        case ensure_session(uuid, state) do
+          {:ok, next} ->
+            next
+
+          {:error, error, next} ->
+            Logger.warning(
+              "derived materializer reconciliation could not start database=#{uuid} error=#{inspect(error)}"
+            )
+
+            next
+        end
+
+      {:ok, %{enabled: false}} ->
+        stop_reconciled_session(state, uuid)
+
+      {:ok, _metadata} ->
+        Logger.warning(
+          "derived materializer reconciliation found invalid metadata database=#{uuid}"
+        )
+
+        state
+
+      {:error, error} ->
+        Logger.warning(
+          "derived materializer reconciliation could not read database=#{uuid} error=#{inspect(error)}"
+        )
+
+        state
+    end
+  end
+
+  defp stop_reconciled_session(state, uuid) do
+    case Supervisor.stop_session(uuid) do
+      :ok ->
+        state
+        |> Map.update!(:sessions, &Map.delete(&1, uuid))
+        |> Map.update!(:desired, &MapSet.delete(&1, uuid))
+        |> Map.update!(:enabled, &Map.delete(&1, uuid))
+        |> remove_dependencies(uuid)
+
+      {:error, error} ->
+        Logger.warning(
+          "derived materializer reconciliation could not stop disabled database=#{uuid} error=#{inspect(error)}"
+        )
+
+        state
+    end
+  end
+
+  defp durable_derived_enabled?(uuid) do
+    case DatabaseOwner.command(uuid, {:command, :identity, %{}}) do
+      {:ok, %{database_kind: :derived}} ->
+        durable_derived_view_enabled?(uuid)
+
+      {:ok, %{"database_kind" => "derived"}} ->
+        durable_derived_view_enabled?(uuid)
+
+      {:ok, _identity} ->
+        {:ok, false}
+
+      {:error, %ElixirDB.Error{code: :database_closed}} ->
+        {:ok, false}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp durable_derived_view_enabled?(uuid) do
+    case DatabaseOwner.command(uuid, {:command, :get_derived_view, %{}}) do
+      {:ok, %{enabled: enabled}} when is_boolean(enabled) ->
+        {:ok, enabled}
+
+      {:ok, _metadata} ->
+        {:error, ElixirDB.Error.integrity_violation("derived enabled state is invalid")}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp derived_enabled_close_error do
+    {:error,
+     ElixirDB.Error.database_not_closable(
+       "enabled derived materializer must be disabled before close"
+     )}
+  end
+
+  defp dependency_close_reply(state, uuid) do
+    dependents = Map.get(state.dependencies, uuid, MapSet.new())
+
+    if MapSet.size(dependents) > 0 do
+      {:reply,
+       {:error,
+        ElixirDB.Error.database_not_closable(
+          "database has active derived materializer dependencies",
+          %{dependent_count: MapSet.size(dependents)}
+        )}, state}
+    else
+      {:reply, :ok, state}
     end
   end
 

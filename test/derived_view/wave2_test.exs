@@ -199,6 +199,90 @@ defmodule ElixirDB.DerivedView.Wave2Test do
              ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
   end
 
+  test "grouped stats update extrema and ignore nonnumeric values", %{source: source} do
+    {:ok, derived, bundle} =
+      create_derived(source.database_uuid, %{
+        map: %{key: [%{"path" => "/kind"}, %{"path" => "/slot"}], value: %{"path" => "/amount"}},
+        reduce: "_stats",
+        group_level: 1
+      })
+
+    on_exit(fn -> cleanup(derived.database_uuid, bundle) end)
+
+    batch = %{
+      materialization_id: derived.materialization_id,
+      source_database_uuid: source.database_uuid,
+      source_history_epoch: source.history_epoch,
+      expected_checkpoint_sequence: 0,
+      through_sequence: 1,
+      rows: [
+        %{source_document_id: "low", source_revision_id: "1-low", key: ["alpha", 1], value: -1},
+        %{source_document_id: "high", source_revision_id: "1-high", key: ["alpha", 2], value: 3},
+        %{
+          source_document_id: "text",
+          source_revision_id: "1-text",
+          key: ["alpha", 3],
+          value: "skip"
+        }
+      ],
+      removals: []
+    }
+
+    assert {:ok, %{applied: true}} = apply_batch(derived, batch)
+
+    assert {:ok, %{body: body}} =
+             ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
+
+    assert body == %{
+             "key" => ["alpha"],
+             "value" => %{"count" => 2, "max" => 3.0, "min" => -1.0, "sum" => 2.0, "sumsqr" => 10.0}
+           }
+
+    update = %{
+      batch
+      | expected_checkpoint_sequence: 1,
+        through_sequence: 2,
+        rows: [
+          %{source_document_id: "low", source_revision_id: "2-low", key: ["alpha", 1], value: 5}
+        ],
+        removals: []
+    }
+
+    assert {:ok, %{applied: true}} = apply_batch(derived, update)
+
+    assert {:ok,
+            %{
+              body: %{
+                "value" => %{
+                  "count" => 2,
+                  "max" => 5.0,
+                  "min" => 3.0,
+                  "sum" => 8.0,
+                  "sumsqr" => 34.0
+                }
+              }
+            }} =
+             ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
+
+    remove_numbers = %{
+      batch
+      | expected_checkpoint_sequence: 2,
+        through_sequence: 3,
+        rows: [],
+        removals: ["low", "high"]
+    }
+
+    assert {:ok, %{applied: true}} = apply_batch(derived, remove_numbers)
+
+    assert {:ok, %{body: body}} =
+             ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
+
+    assert body == %{
+             "key" => ["alpha"],
+             "value" => %{"count" => 0, "max" => nil, "min" => nil, "sum" => 0.0, "sumsqr" => 0.0}
+           }
+  end
+
   test "rebuild generations prune stale contributions before becoming current", %{source: source} do
     {:ok, derived, bundle} =
       create_derived(source.database_uuid, %{

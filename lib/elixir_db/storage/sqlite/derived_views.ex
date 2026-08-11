@@ -380,7 +380,16 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
 
     Enum.reduce_while(sorted_groups(affected_groups), {:ok, 0, 0}, fn {group_sort, group_json},
                                                                       {:ok, last_sequence, changed} ->
-      case refresh_group(adapter, reducer, group_sort, group_json, opts) do
+      case refresh_group(
+             adapter,
+             reducer,
+             group_sort,
+             group_json,
+             old_rows,
+             row_map,
+             removals,
+             opts
+           ) do
         {:ok, sequence, did_change} ->
           {:cont, {:ok, max(last_sequence, sequence), changed + if(did_change, do: 1, else: 0)}}
 
@@ -464,11 +473,21 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     if row.value_present, do: Map.put(body, "value", row.value), else: body
   end
 
-  defp refresh_group(adapter, reducer, group_sort, group_json, opts) do
+  defp refresh_group(
+         adapter,
+         reducer,
+         group_sort,
+         group_json,
+         old_rows,
+         row_map,
+         removals,
+         opts
+       ) do
     with {:ok, group_key} <- decode_group_key(group_json),
-         {:ok, values} <- group_values(adapter.conn, group_sort),
-         {:ok, group_id} <- group_document_id(group_key),
-         result <- aggregate_group(values, reducer) do
+         {:ok, aggregate} <- fetch_group(adapter.conn, group_sort, group_json),
+         {:ok, aggregate} <-
+           update_group(aggregate, group_sort, old_rows, row_map, removals),
+         {:ok, group_id} <- group_document_id(group_key) do
       persist_group_result(
         adapter,
         reducer,
@@ -476,9 +495,18 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
         group_json,
         group_key,
         group_id,
-        result,
+        group_result(adapter, reducer, group_sort, aggregate),
         opts
       )
+    end
+  end
+
+  defp group_result(_adapter, _reducer, _group_sort, %{count: 0}), do: {:ok, []}
+
+  defp group_result(adapter, reducer, group_sort, aggregate) do
+    with {:ok, aggregate} <- enrich_group(adapter.conn, reducer, group_sort, aggregate),
+         {:ok, output} <- reducer_output(reducer, aggregate) do
+      {:ok, Map.put(aggregate, :output, output)}
     end
   end
 
@@ -531,96 +559,278 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
        ),
        do: error
 
-  defp group_values(conn, group_sort) do
-    case Connection.query(
-           conn,
-           "SELECT value_json FROM derived_rows WHERE group_key_sort = ? ORDER BY source_database_uuid, source_document_id",
-           [TermBlob.bind(group_sort)]
-         ) do
-      {:ok, rows} -> decode_group_values(rows, [])
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
-
   defp decode_group_key(json), do: decode_json_array(json)
 
-  defp decode_group_values([], values), do: {:ok, Enum.reverse(values)}
+  defp empty_group(group_json) do
+    %{
+      group_key_json: group_json,
+      count: 0,
+      sum_units: 0,
+      sumsqr_units: 0,
+      min_value_json: nil,
+      min_value_sort: nil,
+      max_value_json: nil,
+      max_value_sort: nil
+    }
+  end
 
-  defp decode_group_values([[nil] | rest], values),
-    do: decode_group_values(rest, [nil | values])
+  defp fetch_group(conn, group_sort, group_json) do
+    case Connection.query(
+           conn,
+           "SELECT group_key_json, count, sum_units, sumsqr_units, min_value_json, min_value_sort, max_value_json, max_value_sort FROM derived_groups WHERE group_key_sort = ?",
+           [TermBlob.bind(group_sort)]
+         ) do
+      {:ok, []} ->
+        {:ok, empty_group(group_json)}
 
-  defp decode_group_values([[json] | rest], values) when is_binary(json) do
-    case StrictDecoder.decode(json) do
-      {:ok, value} ->
-        decode_group_values(rest, [value | values])
+      {:ok, [[stored_json, count, sum_units, sumsqr_units, min_json, min_sort, max_json, max_sort]]} ->
+        with :ok <- validate_group_json(stored_json, group_json),
+             {:ok, count} <- parse_group_integer(count, "count", &(&1 >= 0)),
+             {:ok, sum_units} <- parse_group_integer(sum_units, "sum_units"),
+             {:ok, sumsqr_units} <- parse_group_integer(sumsqr_units, "sumsqr_units") do
+          {:ok,
+           %{
+             group_key_json: stored_json,
+             count: count,
+             sum_units: sum_units,
+             sumsqr_units: sumsqr_units,
+             min_value_json: min_json,
+             min_value_sort: min_sort,
+             max_value_json: max_json,
+             max_value_sort: max_sort
+           }}
+        end
 
-      {:error, _} ->
-        {:error, ElixirDB.Error.integrity_violation("derived contribution value is invalid")}
+      {:ok, _rows} ->
+        {:error, ElixirDB.Error.integrity_violation("derived group state is invalid")}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
     end
   end
 
-  defp decode_group_values(_rows, _values),
-    do: {:error, ElixirDB.Error.integrity_violation("derived contribution row is invalid")}
+  defp validate_group_json(stored_json, expected_json)
+       when is_binary(stored_json) and stored_json == expected_json,
+       do: :ok
 
-  defp aggregate_group([], _reducer), do: {:ok, []}
+  defp validate_group_json(_stored_json, _expected_json),
+    do: {:error, ElixirDB.Error.integrity_violation("derived group key is inconsistent")}
 
-  defp aggregate_group(values, reducer) do
-    with {:ok, accumulator, numeric_values} <- accumulate_group_values(values),
-         {:ok, output} <- reducer_output(reducer, values, accumulator, numeric_values),
-         {:ok, min_json, min_sort} <- encoded_numeric(List.first(Enum.sort(numeric_values))),
-         {:ok, max_json, max_sort} <- encoded_numeric(List.last(Enum.sort(numeric_values))) do
+  defp parse_group_integer(value, field, predicate \\ fn _value -> true end)
+
+  defp parse_group_integer(value, field, predicate)
+       when is_binary(value) and is_function(predicate, 1) do
+    case Integer.parse(value) do
+      {integer, ""} ->
+        if predicate.(integer),
+          do: {:ok, integer},
+          else: {:error, ElixirDB.Error.integrity_violation("derived group #{field} is invalid")}
+
+      _ ->
+        {:error, ElixirDB.Error.integrity_violation("derived group #{field} is invalid")}
+    end
+  end
+
+  defp parse_group_integer(value, _field, predicate)
+       when is_integer(value) and is_function(predicate, 1) do
+    if predicate.(value),
+      do: {:ok, value},
+      else: {:error, ElixirDB.Error.integrity_violation("derived group count is invalid")}
+  end
+
+  defp parse_group_integer(_value, field, _predicate),
+    do: {:error, ElixirDB.Error.integrity_violation("derived group #{field} is invalid")}
+
+  defp update_group(aggregate, group_sort, old_rows, row_map, removals) do
+    group_changes = group_changes(group_sort, old_rows, row_map, removals)
+
+    Enum.reduce_while(group_changes, {:ok, aggregate}, fn {operation, row}, {:ok, aggregate} ->
+      case apply_group_change(operation, row, aggregate) do
+        {:ok, next} -> {:cont, {:ok, next}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp group_changes(group_sort, old_rows, row_map, removals) do
+    removed =
+      removals
+      |> Enum.flat_map(&removed_group_changes(old_rows, group_sort, &1))
+
+    replaced_or_added =
+      row_map
+      |> Enum.sort_by(fn {document_id, _row} -> document_id end)
+      |> Enum.flat_map(&replacement_group_changes(old_rows, group_sort, &1))
+
+    removed ++ replaced_or_added
+  end
+
+  defp removed_group_changes(old_rows, group_sort, document_id) do
+    case Map.get(old_rows, document_id) do
+      nil -> []
+      row -> group_change(group_sort, :remove, row)
+    end
+  end
+
+  defp replacement_group_changes(old_rows, group_sort, {document_id, row}) do
+    case Map.get(old_rows, document_id) do
+      old when is_map(old) -> changed_group_changes(old, row, group_sort)
+      nil -> group_change(group_sort, :add, row)
+    end
+  end
+
+  defp changed_group_changes(old, row, group_sort) do
+    if contribution_equal?(old, row),
+      do: [],
+      else: group_change(group_sort, :remove, old) ++ group_change(group_sort, :add, row)
+  end
+
+  defp group_change(group_sort, operation, %{group_key_sort: row_group_sort} = row) do
+    if row_group_sort == group_sort, do: [{operation, row}], else: []
+  end
+
+  defp group_change(_group_sort, _operation, _row), do: []
+
+  defp apply_group_change(:remove, row, %{count: count} = aggregate) when count > 0 do
+    with {:ok, accumulator} <- remove_numeric(aggregate_accumulator(aggregate), row.value) do
+      {:ok,
+       aggregate
+       |> Map.put(:count, count - 1)
+       |> put_accumulator(accumulator)}
+    end
+  end
+
+  defp apply_group_change(:remove, _row, _aggregate),
+    do: {:error, ElixirDB.Error.integrity_violation("derived group count underflow")}
+
+  defp apply_group_change(:add, row, aggregate) do
+    with {:ok, accumulator} <- add_numeric(aggregate_accumulator(aggregate), row.value) do
+      {:ok,
+       aggregate
+       |> Map.update!(:count, &(&1 + 1))
+       |> put_accumulator(accumulator)}
+    end
+  end
+
+  defp aggregate_accumulator(aggregate),
+    do: %NumericAccumulator{sum_units: aggregate.sum_units, sumsqr_units: aggregate.sumsqr_units}
+
+  defp put_accumulator(aggregate, accumulator),
+    do:
+      Map.merge(aggregate, %{
+        sum_units: accumulator.sum_units,
+        sumsqr_units: accumulator.sumsqr_units
+      })
+
+  defp add_numeric(accumulator, value) when is_number(value),
+    do: NumericAccumulator.add(accumulator, value)
+
+  defp add_numeric(accumulator, _value), do: {:ok, accumulator}
+
+  defp remove_numeric(accumulator, value) when is_number(value),
+    do: NumericAccumulator.remove(accumulator, value)
+
+  defp remove_numeric(accumulator, _value), do: {:ok, accumulator}
+
+  defp enrich_group(conn, reducer, group_sort, aggregate)
+       when reducer in [:_min, :_max, :_stats] do
+    with {:ok, extrema} <- group_extrema(conn, group_sort),
+         {:ok, numeric_count} <- numeric_count(conn, group_sort, reducer) do
+      {:ok, Map.merge(aggregate, Map.put(extrema, :numeric_count, numeric_count))}
+    end
+  end
+
+  defp enrich_group(_conn, reducer, _group_sort, aggregate) when reducer in [:_count, :_sum],
+    do: {:ok, aggregate}
+
+  defp numeric_count(_conn, _group_sort, reducer) when reducer != :_stats, do: {:ok, nil}
+
+  defp numeric_count(conn, group_sort, :_stats) do
+    case Connection.query(
+           conn,
+           "SELECT COUNT(*) FROM derived_rows WHERE group_key_sort = ? AND value_sort IS NOT NULL",
+           [TermBlob.bind(group_sort)]
+         ) do
+      {:ok, [[count]]} when is_integer(count) ->
+        {:ok, count}
+
+      {:ok, _rows} ->
+        {:error, ElixirDB.Error.integrity_violation("derived numeric count is invalid")}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp group_extrema(conn, group_sort) do
+    with {:ok, min} <- group_extremum(conn, group_sort, "ASC"),
+         {:ok, max} <- group_extremum(conn, group_sort, "DESC") do
       {:ok,
        %{
-         count: length(values),
-         sum_units: Integer.to_string(accumulator.sum_units),
-         sumsqr_units: Integer.to_string(accumulator.sumsqr_units),
-         min_value_json: min_json,
-         min_value_sort: min_sort,
-         max_value_json: max_json,
-         max_value_sort: max_sort,
-         output: output
+         min_value_json: min.json,
+         min_value_sort: min.sort,
+         max_value_json: max.json,
+         max_value_sort: max.sort,
+         min_value: min.value,
+         max_value: max.value
        }}
     end
   end
 
-  defp accumulate_group_values(values),
-    do: Enum.reduce_while(values, {:ok, NumericAccumulator.new(), []}, &accumulate_group_value/2)
+  defp group_extremum(conn, group_sort, direction) when direction in ["ASC", "DESC"] do
+    case Connection.query(
+           conn,
+           "SELECT value_json, value_sort FROM derived_rows WHERE group_key_sort = ? AND value_sort IS NOT NULL ORDER BY value_sort #{direction}, source_database_uuid, source_document_id LIMIT 1",
+           [TermBlob.bind(group_sort)]
+         ) do
+      {:ok, []} ->
+        {:ok, %{json: nil, sort: nil, value: nil}}
 
-  defp accumulate_group_value(number, {:ok, accumulator, numeric_values})
-       when is_number(number) do
-    with {:ok, next} <- NumericAccumulator.add(accumulator, number),
-         {:ok, float} <- numeric_value(number) do
-      {:cont, {:ok, next, [float | numeric_values]}}
-    else
-      {:error, _} = error -> {:halt, error}
+      {:ok, [[json, sort]]} when is_binary(json) and is_binary(sort) ->
+        validate_group_extremum(json, sort)
+
+      {:ok, _rows} ->
+        {:error, ElixirDB.Error.integrity_violation("derived numeric extremum is invalid")}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
     end
   end
 
-  defp accumulate_group_value(_value, {:ok, accumulator, numeric_values}),
-    do: {:cont, {:ok, accumulator, numeric_values}}
+  defp validate_group_extremum(json, sort) do
+    with {:ok, decoded} <- decode_numeric_value(json),
+         {:ok, value} <- numeric_value(decoded),
+         {:ok, encoded_json, encoded_sort} <- encoded_numeric(value) do
+      if encoded_sort == sort,
+        do: {:ok, %{json: encoded_json, sort: encoded_sort, value: value}},
+        else: {:error, ElixirDB.Error.integrity_violation("derived numeric sort is inconsistent")}
+    end
+  end
 
-  defp reducer_output(:_count, values, _accumulator, _numeric_values), do: {:ok, length(values)}
+  defp decode_numeric_value(json) do
+    case StrictDecoder.decode(json) do
+      {:ok, value} -> {:ok, value}
+      _ -> {:error, ElixirDB.Error.integrity_violation("derived contribution value is invalid")}
+    end
+  end
 
-  defp reducer_output(:_sum, _values, accumulator, _numeric_values),
-    do: NumericAccumulator.sum(accumulator)
+  defp reducer_output(:_count, aggregate), do: {:ok, aggregate.count}
 
-  defp reducer_output(:_min, _values, _accumulator, []), do: {:ok, nil}
-  defp reducer_output(:_min, _values, _accumulator, values), do: {:ok, Enum.min(values)}
+  defp reducer_output(:_sum, aggregate),
+    do: NumericAccumulator.sum(aggregate_accumulator(aggregate))
 
-  defp reducer_output(:_max, _values, _accumulator, []), do: {:ok, nil}
-  defp reducer_output(:_max, _values, _accumulator, values), do: {:ok, Enum.max(values)}
+  defp reducer_output(:_min, %{min_value: value}), do: {:ok, value}
+  defp reducer_output(:_max, %{max_value: value}), do: {:ok, value}
 
-  defp reducer_output(:_stats, _values, accumulator, numeric_values) do
-    with {:ok, sum} <- NumericAccumulator.sum(accumulator),
-         {:ok, sumsqr} <- NumericAccumulator.sumsqr(accumulator),
-         {:ok, min} <- reducer_output(:_min, [], accumulator, numeric_values),
-         {:ok, max} <- reducer_output(:_max, [], accumulator, numeric_values) do
+  defp reducer_output(:_stats, aggregate) do
+    with {:ok, sum} <- NumericAccumulator.sum(aggregate_accumulator(aggregate)),
+         {:ok, sumsqr} <- NumericAccumulator.sumsqr(aggregate_accumulator(aggregate)) do
       {:ok,
        %{
-         "count" => length(numeric_values),
+         "count" => aggregate.numeric_count,
          "sum" => sum,
-         "min" => min,
-         "max" => max,
+         "min" => aggregate.min_value,
+         "max" => aggregate.max_value,
          "sumsqr" => sumsqr
        }}
     end
@@ -632,8 +842,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
       :overflow -> {:error, ElixirDB.Error.resource_limit("numeric value is not representable")}
     end
   end
-
-  defp encoded_numeric(nil), do: {:ok, nil, nil}
 
   defp encoded_numeric(value) do
     with {:ok, json} <- Canonical.encode(value),
@@ -650,8 +858,8 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
         TermBlob.bind(group_sort),
         group_json,
         aggregate.count,
-        aggregate.sum_units,
-        aggregate.sumsqr_units,
+        Integer.to_string(aggregate.sum_units),
+        Integer.to_string(aggregate.sumsqr_units),
         aggregate.min_value_json,
         nullable_blob(aggregate.min_value_sort),
         aggregate.max_value_json,
@@ -738,26 +946,33 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   defp fetch_contributions(_conn, _source_uuid, []), do: {:ok, %{}}
 
   defp fetch_contributions(conn, source_uuid, document_ids) do
-    document_ids
-    |> Enum.uniq()
-    |> Enum.reduce_while({:ok, %{}}, fn document_id, {:ok, acc} ->
-      case fetch_contribution(conn, source_uuid, document_id) do
-        {:ok, nil} -> {:cont, {:ok, acc}}
-        {:ok, row} -> {:cont, {:ok, Map.put(acc, document_id, row)}}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-  end
+    document_ids = Enum.uniq(document_ids)
+    placeholders = Enum.map_join(document_ids, ", ", fn _ -> "?" end)
 
-  defp fetch_contribution(conn, source_uuid, document_id) do
+    sql =
+      "SELECT source_document_id, source_revision_id, rebuild_generation, key_json, key_sort, " <>
+        "group_key_json, group_key_sort, value_json, value_sort FROM derived_rows " <>
+        "WHERE source_database_uuid = ? AND source_document_id IN (" <> placeholders <> ")"
+
     case Connection.query(
            conn,
-           "SELECT source_document_id, source_revision_id, rebuild_generation, key_json, key_sort, group_key_json, group_key_sort, value_json, value_sort FROM derived_rows WHERE source_database_uuid = ? AND source_document_id = ?",
-           [source_uuid, document_id]
+           sql,
+           [source_uuid | document_ids]
          ) do
-      {:ok, []} -> {:ok, nil}
-      {:ok, [row]} -> decode_contribution(row, source_uuid)
+      {:ok, rows} -> decode_contributions(rows, source_uuid, %{})
       {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  defp decode_contributions([], _source_uuid, contributions), do: {:ok, contributions}
+
+  defp decode_contributions([row | rest], source_uuid, contributions) do
+    with {:ok, contribution} <- decode_contribution(row, source_uuid) do
+      decode_contributions(
+        rest,
+        source_uuid,
+        Map.put(contributions, contribution.source_document_id, contribution)
+      )
     end
   end
 
@@ -823,16 +1038,17 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   defp delete_contributions(_conn, _source_uuid, []), do: :ok
 
   defp delete_contributions(conn, source_uuid, document_ids) do
-    Enum.reduce_while(document_ids, :ok, fn document_id, :ok ->
-      case Connection.execute(
-             conn,
-             "DELETE FROM derived_rows WHERE source_database_uuid = ? AND source_document_id = ?",
-             [source_uuid, document_id]
-           ) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
-      end
-    end)
+    document_ids = Enum.uniq(document_ids)
+    placeholders = Enum.map_join(document_ids, ", ", fn _ -> "?" end)
+
+    sql =
+      "DELETE FROM derived_rows WHERE source_database_uuid = ? AND source_document_id IN (" <>
+        placeholders <> ")"
+
+    case Connection.execute(conn, sql, [source_uuid | document_ids]) do
+      :ok -> :ok
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
   end
 
   defp upsert_contributions(_conn, _source_uuid, [], _generation, _opts), do: :ok
@@ -972,8 +1188,9 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
     if value_present?(row) do
       value = MapAccess.get(row, :value)
 
-      with {:ok, value_json} <- Canonical.encode(value) do
-        {:ok, {value, value_json, value_json, true}}
+      with {:ok, value_json} <- Canonical.encode(value),
+           {:ok, value_sort} <- numeric_value_sort(value) do
+        {:ok, {value, value_json, value_sort, true}}
       end
     else
       {:ok, {nil, nil, nil, false}}
@@ -981,6 +1198,15 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   end
 
   defp value_present?(row), do: Map.has_key?(row, :value) or Map.has_key?(row, "value")
+
+  defp numeric_value_sort(value) when is_number(value) do
+    case KeyCodec.encode([value]) do
+      {:ok, sort} -> {:ok, sort}
+      {:error, _} -> {:error, ElixirDB.Error.resource_limit("numeric value is not representable")}
+    end
+  end
+
+  defp numeric_value_sort(_value), do: {:ok, nil}
 
   defp normalize_removals(removals) when is_list(removals) do
     Enum.reduce_while(removals, {:ok, MapSet.new(), []}, fn document_id, {:ok, seen, acc} ->

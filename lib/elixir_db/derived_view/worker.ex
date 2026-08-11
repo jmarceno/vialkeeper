@@ -307,26 +307,53 @@ defmodule ElixirDB.DerivedView.Worker do
          Map.has_key?(state.subscriptions, source.source_database_uuid) do
       {:ok, state}
     else
-      state = remove_subscription(state, source.source_database_uuid)
-
-      with {:ok, _identity} <- source_identity(source.source_database_uuid),
-           {:ok, ref, current} <- ChangeNotifier.subscribe(source.source_database_uuid, since) do
-        {:ok, put_subscription(state, source.source_database_uuid, ref, since, current)}
-      else
-        {:error, error} -> {:error, error, state}
-      end
+      subscribe_race_free(state, source.source_database_uuid, since)
     end
   end
 
   defp replace_subscription(state, source_uuid, since) do
+    subscribe_race_free(state, source_uuid, since)
+  end
+
+  defp subscribe_race_free(state, source_uuid, since) do
     state = remove_subscription(state, source_uuid)
 
-    case ChangeNotifier.subscribe(source_uuid, since) do
-      {:ok, ref, current} ->
-        {:ok, put_subscription(state, source_uuid, ref, since, current)}
+    with {:ok, before_sequence} <- source_sequence(source_uuid),
+         {:ok, ref, current, after_sequence} <-
+           subscribe_and_verify(source_uuid, max(since, before_sequence)) do
+      next = put_subscription(state, source_uuid, ref, since, current)
+      observed_sequence = if is_integer(current), do: current, else: 0
 
-      {:error, error} ->
-        {:error, error, state}
+      if Enum.max([before_sequence, after_sequence, observed_sequence]) > since,
+        do: {:ok, %{next | work_requested: true}},
+        else: {:ok, next}
+    else
+      {:error, error} -> {:error, error, state}
+    end
+  end
+
+  defp source_sequence(source_uuid) do
+    case source_identity(source_uuid) do
+      {:ok, identity} -> identity_sequence(identity)
+      {:error, _} = error -> error
+    end
+  end
+
+  defp subscribe_and_verify(source_uuid, since) do
+    case ChangeNotifier.subscribe(source_uuid, since) do
+      {:ok, ref, current} -> verify_subscription(source_uuid, ref, current)
+      {:error, _} = error -> error
+    end
+  end
+
+  defp verify_subscription(source_uuid, ref, current) do
+    case source_sequence(source_uuid) do
+      {:ok, sequence} ->
+        {:ok, ref, current, sequence}
+
+      {:error, _} = error ->
+        ChangeNotifier.unsubscribe(source_uuid, ref)
+        error
     end
   end
 
@@ -338,6 +365,14 @@ defmodule ElixirDB.DerivedView.Worker do
     }
 
     if is_integer(current) and current > since, do: %{state | work_requested: true}, else: state
+  end
+
+  defp identity_sequence(identity) do
+    sequence = Map.get(identity, :current_sequence, Map.get(identity, "current_sequence"))
+
+    if is_integer(sequence) and sequence >= 0,
+      do: {:ok, sequence},
+      else: {:error, Error.integrity_violation("source identity sequence is invalid")}
   end
 
   defp remove_subscription(state, source_uuid) do

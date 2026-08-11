@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS derived_rows (
   value_sort BLOB,
   PRIMARY KEY (source_database_uuid, source_document_id),
   CHECK ((group_key_json IS NULL AND group_key_sort IS NULL) OR (group_key_json IS NOT NULL AND group_key_sort IS NOT NULL)),
-  CHECK ((value_json IS NULL AND value_sort IS NULL) OR (value_json IS NOT NULL AND value_sort IS NOT NULL))
+  CHECK (value_json IS NOT NULL OR value_sort IS NULL)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS derived_rows_source_rebuild

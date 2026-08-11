@@ -2,7 +2,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
   @moduledoc "Covers runtime materialization, source changes, and derived-session recovery."
   use ExUnit.Case, async: false
 
-  alias ElixirDB.DerivedView.Worker
+  alias ElixirDB.DerivedView.{Manager, Worker}
   alias ElixirDB.Eventual
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.MaterializedViews
@@ -175,6 +175,43 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
              end,
              message: "derived worker restart did not replace its task supervisor"
            )
+  end
+
+  test "manager restart reconstructs enabled sessions and source dependencies", %{
+    source_uuid: source_uuid
+  } do
+    {:ok, derived, derived_bundle} = create_derived(source_uuid)
+    on_exit(fn -> cleanup(derived.database_uuid, derived_bundle) end)
+
+    assert Eventual.eventually(
+             fn -> match?({:ok, _pid}, Worker.pid(derived.database_uuid)) end,
+             message: "derived worker did not start before manager restart"
+           )
+
+    old_manager = Process.whereis(Manager)
+    Process.exit(old_manager, :kill)
+
+    assert Eventual.eventually(
+             fn ->
+               case Process.whereis(Manager) do
+                 manager when is_pid(manager) and manager != old_manager ->
+                   state = :sys.get_state(manager)
+
+                   Map.get(state.enabled, derived.database_uuid) == true and
+                     MapSet.member?(
+                       Map.get(state.dependencies, source_uuid, MapSet.new()),
+                       derived.database_uuid
+                     )
+
+                 _ ->
+                   false
+               end
+             end,
+             message: "manager did not reconstruct durable materializer state"
+           )
+
+    assert {:error, %ElixirDB.Error{code: :database_not_closable}} =
+             Manager.ensure_closable(source_uuid)
   end
 
   test "processes multiple sources in stable order and refreshes grouped output", %{
