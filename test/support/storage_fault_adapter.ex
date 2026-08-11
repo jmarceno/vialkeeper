@@ -150,6 +150,15 @@ defmodule ElixirDB.Storage.FaultAdapter do
     end
   end
 
+  defp derived_fault_fn(fault) do
+    fn point ->
+      case Fault.maybe_fail(fault, point) do
+        {:ok, _} -> :ok
+        {:error, error, _} -> {:error, error}
+      end
+    end
+  end
+
   @impl true
   def list_replication_jobs(%__MODULE__{inner: inner}),
     do: inner_module(inner).list_replication_jobs(inner)
@@ -264,6 +273,44 @@ defmodule ElixirDB.Storage.FaultAdapter do
   @impl true
   def read_winning_documents_page(%__MODULE__{inner: inner}, request),
     do: inner_module(inner).read_winning_documents_page(inner, request)
+
+  @impl true
+  def get_derived_view(%__MODULE__{inner: inner}),
+    do: inner_module(inner).get_derived_view(inner)
+
+  @impl true
+  def set_derived_enabled(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).set_derived_enabled(inner, request)
+
+  @impl true
+  def list_derived_sources(%__MODULE__{inner: inner}),
+    do: inner_module(inner).list_derived_sources(inner)
+
+  @impl true
+  def apply_derived_source_batch(%__MODULE__{inner: inner, fault: fault}, request) do
+    inner_with_fault = %{inner | derived_fault: derived_fault_fn(fault)}
+    inner_module(inner).apply_derived_source_batch(inner_with_fault, request)
+  end
+
+  @impl true
+  def begin_derived_source_rebuild(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).begin_derived_source_rebuild(inner, request)
+
+  @impl true
+  def apply_derived_rebuild_page(%__MODULE__{inner: inner, fault: fault}, request) do
+    inner_with_fault = %{inner | derived_fault: derived_fault_fn(fault)}
+    inner_module(inner).apply_derived_rebuild_page(inner_with_fault, request)
+  end
+
+  @impl true
+  def prune_derived_rebuild_stale_page(%__MODULE__{inner: inner, fault: fault}, request) do
+    inner_with_fault = %{inner | derived_fault: derived_fault_fn(fault)}
+    inner_module(inner).prune_derived_rebuild_stale_page(inner_with_fault, request)
+  end
+
+  @impl true
+  def finish_derived_source_rebuild(%__MODULE__{inner: inner}, request),
+    do: inner_module(inner).finish_derived_source_rebuild(inner, request)
 
   defp fail_after_compact(%__MODULE__{fault: fault}, result) do
     case Fault.maybe_fail(fault, :after_compact_retention) do

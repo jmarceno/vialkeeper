@@ -68,4 +68,17 @@ defmodule ElixirDB.Storage.Adapter do
   @callback query_view(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   @callback read_winning_documents_page(term(), map()) ::
               {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback get_derived_view(term()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback set_derived_enabled(term(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback list_derived_sources(term()) :: {:ok, list()} | {:error, ElixirDB.Error.t()}
+  @callback apply_derived_source_batch(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback begin_derived_source_rebuild(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback apply_derived_rebuild_page(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback prune_derived_rebuild_stale_page(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @callback finish_derived_source_rebuild(term(), map()) ::
+              {:ok, map()} | {:error, ElixirDB.Error.t()}
 end

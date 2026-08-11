@@ -279,6 +279,34 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp handle_command(%Commands.ReadWinningDocumentsPage{request: request}, _from, state),
     do: reply(Adapter.read_winning_documents_page(state.adapter, request), state)
 
+  defp handle_command(%Commands.GetDerivedView{}, _from, state),
+    do: reply(Adapter.get_derived_view(state.adapter), state)
+
+  defp handle_command(%Commands.SetDerivedEnabled{request: request}, _from, state),
+    do: reply(Adapter.set_derived_enabled(state.adapter, request), state)
+
+  defp handle_command(%Commands.ListDerivedSources{}, _from, state),
+    do: reply(Adapter.list_derived_sources(state.adapter), state)
+
+  defp handle_command(%Commands.ApplyDerivedSourceBatch{request: request}, _from, state),
+    do: mutate(Adapter.apply_derived_source_batch(state.adapter, request), state)
+
+  defp handle_command(%Commands.BeginDerivedSourceRebuild{request: request}, _from, state),
+    do: reply(Adapter.begin_derived_source_rebuild(state.adapter, request), state)
+
+  defp handle_command(%Commands.ApplyDerivedRebuildPage{request: request}, _from, state),
+    do: mutate(Adapter.apply_derived_rebuild_page(state.adapter, request), state)
+
+  defp handle_command(
+         %Commands.PruneDerivedRebuildStalePage{request: request},
+         _from,
+         state
+       ),
+       do: mutate(Adapter.prune_derived_rebuild_stale_page(state.adapter, request), state)
+
+  defp handle_command(%Commands.FinishDerivedSourceRebuild{request: request}, _from, state),
+    do: reply(Adapter.finish_derived_source_rebuild(state.adapter, request), state)
+
   defp handle_command(%Commands.Close{}, _from, state),
     do: {:stop, :shutdown, :ok, state}
 

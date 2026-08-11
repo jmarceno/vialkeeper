@@ -319,6 +319,52 @@ defmodule ElixirDB.Commands do
     defstruct [:request]
   end
 
+  defmodule GetDerivedView do
+    @moduledoc false
+    defstruct request: %{}
+  end
+
+  defmodule SetDerivedEnabled do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule ListDerivedSources do
+    @moduledoc false
+    defstruct request: %{}
+  end
+
+  defmodule ApplyDerivedSourceBatch do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule BeginDerivedSourceRebuild do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule ApplyDerivedRebuildPage do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule PruneDerivedRebuildStalePage do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
+  defmodule FinishDerivedSourceRebuild do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
   @doc "Converts tagged owner tuples and already-normalized structs into command structs."
   @spec normalize(term()) :: struct() | term()
   def normalize(%_{} = command), do: command
@@ -446,6 +492,30 @@ defmodule ElixirDB.Commands do
 
   def normalize({:command, :read_winning_documents_page, request}),
     do: %ReadWinningDocumentsPage{request: request}
+
+  def normalize({:command, :get_derived_view, request}),
+    do: %GetDerivedView{request: request || %{}}
+
+  def normalize({:command, :set_derived_enabled, request}),
+    do: %SetDerivedEnabled{request: request}
+
+  def normalize({:command, :list_derived_sources, request}),
+    do: %ListDerivedSources{request: request || %{}}
+
+  def normalize({:command, :apply_derived_source_batch, request}),
+    do: %ApplyDerivedSourceBatch{request: request}
+
+  def normalize({:command, :begin_derived_source_rebuild, request}),
+    do: %BeginDerivedSourceRebuild{request: request}
+
+  def normalize({:command, :apply_derived_rebuild_page, request}),
+    do: %ApplyDerivedRebuildPage{request: request}
+
+  def normalize({:command, :prune_derived_rebuild_stale_page, request}),
+    do: %PruneDerivedRebuildStalePage{request: request}
+
+  def normalize({:command, :finish_derived_source_rebuild, request}),
+    do: %FinishDerivedSourceRebuild{request: request}
 
   def normalize({:command, :close}), do: %Close{}
   def normalize(other), do: other

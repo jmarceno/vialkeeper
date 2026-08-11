@@ -178,9 +178,10 @@ defmodule ElixirDB.DerivedView.Definition do
   defp normalize_reducer(value), do: Reducer.normalize_reducer(value)
 
   defp normalize_group_level(definition, nil, _key_length) do
-    if Map.has_key?(definition, "group_level"),
-      do: {:error, ElixirDB.Error.invalid_request("group_level is only valid with a reducer")},
-      else: {:ok, nil}
+    case Map.get(definition, "group_level") do
+      nil -> {:ok, nil}
+      _ -> {:error, ElixirDB.Error.invalid_request("group_level is only valid with a reducer")}
+    end
   end
 
   defp normalize_group_level(definition, _reducer, key_length) do
