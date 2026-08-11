@@ -10,6 +10,7 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
 
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.BackendContext
+  alias ElixirDB.Storage.Sentinel.Ownership
 
   defstruct [:root, :identity, :closed?]
 
@@ -119,6 +120,24 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
   @impl true
   def identity(%__MODULE__{identity: identity}), do: {:ok, identity}
 
+  @doc "Returns the sentinel data artifact path (the bundle root)."
+  @spec artifact_path(binary()) :: binary()
+  def artifact_path(bundle_root) when is_binary(bundle_root), do: Path.expand(bundle_root)
+
+  @doc "Starts sentinel ownership for `bundle_root`."
+  @spec start_ownership(binary()) :: GenServer.on_start()
+  def start_ownership(bundle_root) when is_binary(bundle_root) do
+    Ownership.start_link(artifact_path(bundle_root))
+  end
+
+  @doc "Sentinel has no engine capability requirements."
+  @spec validate_capabilities!() :: :ok
+  def validate_capabilities!, do: :ok
+
+  @doc "Returns opaque sentinel capability metadata."
+  @spec capabilities_report() :: map()
+  def capabilities_report, do: %{engine: "sentinel", sql: false}
+
   @doc "Wraps a sentinel adapter in an opaque backend context."
   @spec to_context(t()) :: BackendContext.t()
   def to_context(%__MODULE__{} = adapter) do
@@ -136,9 +155,10 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
       root: Path.expand(path),
       closed?: false,
       identity: %{
-        "database_uuid" => uuid,
-        "backend" => "sentinel",
-        "engine" => "none"
+        database_uuid: uuid,
+        database_kind: :ordinary,
+        backend: "sentinel",
+        engine: "none"
       }
     }
   end

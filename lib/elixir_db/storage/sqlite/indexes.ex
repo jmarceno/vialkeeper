@@ -1,11 +1,10 @@
 defmodule ElixirDB.Storage.SQLite.Indexes do
   @moduledoc "SQLite-derived structured and FTS5 index management."
 
-  alias ElixirDB.Diagnostics
   alias ElixirDB.JSON.{Pointer, StrictCache}
   alias ElixirDB.MapAccess
   alias ElixirDB.Query.FullText
-  alias ElixirDB.Storage.SQLite.{Connection, QueryCompiler, TermBlob}
+  alias ElixirDB.Storage.SQLite.{Capabilities, Connection, QueryCompiler, TermBlob}
 
   @physical_version 1
   @fts_body_term_cache_limit 256
@@ -189,7 +188,7 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   end
 
   defp fts_table_kind do
-    if Diagnostics.fts5_contentless_delete_supported?() do
+    if Capabilities.fts5_contentless_delete_supported?() do
       "contentless_delete"
     else
       "contentless"

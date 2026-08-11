@@ -20,9 +20,7 @@ defmodule ElixirDB.Contract.DatabaseBundleTest do
       File.rm_rf(outside)
     end)
 
-    assert {:ok, bundle} = DatabaseBundle.create(root)
-    File.write!(DatabaseBundle.sqlite_path(bundle), "sqlite")
-
+    assert {:ok, _bundle} = DatabaseBundle.create(root)
     File.mkdir_p!(outside)
     File.rm_rf!(Path.join(root, "blobs"))
     File.ln_s!(outside, Path.join(root, "blobs"))
@@ -40,7 +38,6 @@ defmodule ElixirDB.Contract.DatabaseBundleTest do
     on_exit(fn -> File.rm_rf(root) end)
 
     assert {:ok, bundle} = DatabaseBundle.create(root)
-    File.write!(DatabaseBundle.sqlite_path(bundle), "sqlite")
     stale = Path.join(DatabaseBundle.tmp_path(bundle), "stale-upload")
     File.write!(stale, "partial")
     File.touch!(stale, {{2000, 1, 1}, {0, 0, 0}})

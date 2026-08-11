@@ -47,7 +47,7 @@ defmodule ElixirDB.Runtime.CatalogLifecycleTest do
     assert :ok = DatabaseCatalog.close(uuid)
 
     assert {:ok, bundle} = DatabaseBundle.create(replacement_bundle)
-    {:ok, other} = Adapter.create(DatabaseBundle.sqlite_path(bundle))
+    {:ok, other} = Adapter.create(Path.join(DatabaseBundle.root(bundle), "database.sqlite3"))
     {:ok, other_identity} = Adapter.identity(other)
     :ok = Adapter.close(other)
     assert other_identity.database_uuid != uuid

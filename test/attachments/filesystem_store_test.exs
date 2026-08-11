@@ -14,7 +14,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     on_exit(fn -> File.rm_rf(root) end)
 
     assert {:ok, bundle} = DatabaseBundle.create(root)
-    File.write!(DatabaseBundle.sqlite_path(bundle), "sqlite")
+    File.write!(Path.join(DatabaseBundle.root(bundle), "database.sqlite3"), "sqlite")
 
     %{bundle: bundle, root: bundle.root}
   end

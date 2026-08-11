@@ -20,7 +20,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   alias ElixirDB.DatabaseBundle
   alias ElixirDB.DerivedView.Manager, as: DerivedViewManager
   alias ElixirDB.PathSafety
-  alias ElixirDB.Storage.SQLite.Adapter
+  alias ElixirDB.Storage.Registry, as: StorageRegistry
   alias ElixirDB.View.Manager
   def start_link(_args), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
@@ -182,6 +182,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   defp create_new_bundle(state, relative_path, bundle_root, options, database_kind) do
+    backend = StorageRegistry.backend()
+
     case DatabaseBundle.create(bundle_root) do
       {:ok, bundle} ->
         result =
@@ -194,16 +196,16 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
                  |> Map.put(:config, config)
                  |> Map.put(:database_kind, database_kind),
                {:ok, adapter} <-
-                 Adapter.create(DatabaseBundle.sqlite_path(bundle), adapter_options),
-               {:ok, identity} <- Adapter.identity(adapter),
-               :ok <- Adapter.close(adapter),
+                 backend.create(backend.artifact_path(DatabaseBundle.root(bundle)), adapter_options),
+               {:ok, identity} <- backend.identity(adapter),
+               :ok <- backend.close(adapter),
                {:ok, next} <-
                  put_entry(
                    state,
-                   identity.database_uuid,
+                   identity_uuid(identity),
                    relative_path,
                    bundle,
-                   identity.database_kind
+                   identity_kind(identity)
                  ) do
             {:ok, identity, next}
           else
@@ -258,21 +260,23 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     # would crash the shared catalog. Catch and convert to a typed error.
     safe(
       fn ->
+        backend = StorageRegistry.backend()
+
         with {:ok, bundle_root} <- safe_path(state.root, relative_path),
              true <- File.dir?(bundle_root),
              :ok <- ensure_path_not_open(state, bundle_root),
              {:ok, bundle} <- DatabaseBundle.validate(bundle_root),
-             {:ok, adapter} <- Adapter.open(DatabaseBundle.sqlite_path(bundle)),
-             {:ok, identity} <- Adapter.identity(adapter),
-             :ok <- Adapter.close(adapter),
-             :ok <- no_duplicate_uuid(state, identity.database_uuid, bundle_root),
+             {:ok, adapter} <- backend.open(backend.artifact_path(DatabaseBundle.root(bundle))),
+             {:ok, identity} <- backend.identity(adapter),
+             :ok <- backend.close(adapter),
+             :ok <- no_duplicate_uuid(state, identity_uuid(identity), bundle_root),
              {:ok, next} <-
                put_entry(
                  state,
-                 identity.database_uuid,
+                 identity_uuid(identity),
                  relative_path,
                  bundle,
-                 identity.database_kind
+                 identity_kind(identity)
                ) do
           {:reply, {:ok, identity}, next}
         else
@@ -630,7 +634,6 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       uuid: uuid,
       path: relative,
       bundle_root: DatabaseBundle.root(bundle),
-      sqlite_path: DatabaseBundle.sqlite_path(bundle),
       database_kind: database_kind,
       status: :registered
     }
@@ -714,10 +717,12 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   defp inspect_entry(entry) do
+    backend = StorageRegistry.backend()
+
     if File.dir?(entry.bundle_root) do
-      case Adapter.open(entry.sqlite_path) do
+      case backend.open(backend.artifact_path(entry.bundle_root)) do
         {:ok, adapter} ->
-          inspect_open_adapter(adapter, entry)
+          inspect_open_adapter(backend, adapter, entry)
 
         {:error, error} ->
           {:error, error}
@@ -727,36 +732,47 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
-  defp inspect_open_adapter(adapter, entry) do
-    result = Adapter.identity(adapter)
-    _ = Adapter.close(adapter)
+  defp inspect_open_adapter(backend, adapter, entry) do
+    result = backend.identity(adapter)
+    _ = backend.close(adapter)
 
     case result do
-      {:ok, %{database_uuid: uuid, database_kind: database_kind}} when uuid == entry.uuid ->
-        if database_kind == Map.get(entry, :database_kind, :ordinary) do
-          result
-        else
-          {:error,
-           ElixirDB.Error.integrity_violation(
-             "database kind does not match registration hint",
-             ElixirDB.Error.identity_mismatch_details(
-               :database_kind_mismatch,
-               Map.get(entry, :database_kind, :ordinary),
-               database_kind
-             )
-           )}
-        end
+      {:ok, identity} ->
+        uuid = identity_uuid(identity)
+        database_kind = identity_kind(identity)
 
-      {:ok, %{database_uuid: actual}} ->
-        {:error,
-         ElixirDB.Error.database_unavailable(
-           "database UUID mismatch",
-           ElixirDB.Error.identity_mismatch_details(:uuid_mismatch, entry.uuid, actual)
-         )}
+        cond do
+          uuid == entry.uuid and database_kind == Map.get(entry, :database_kind, :ordinary) ->
+            {:ok, identity}
+
+          uuid == entry.uuid ->
+            {:error,
+             ElixirDB.Error.integrity_violation(
+               "database kind does not match registration hint",
+               ElixirDB.Error.identity_mismatch_details(
+                 :database_kind_mismatch,
+                 Map.get(entry, :database_kind, :ordinary),
+                 database_kind
+               )
+             )}
+
+          true ->
+            {:error,
+             ElixirDB.Error.database_unavailable(
+               "database UUID mismatch",
+               ElixirDB.Error.identity_mismatch_details(:uuid_mismatch, entry.uuid, uuid)
+             )}
+        end
 
       other ->
         other
     end
+  end
+
+  defp identity_uuid(identity) when is_map(identity), do: MapAccess.get(identity, :database_uuid)
+
+  defp identity_kind(identity) when is_map(identity) do
+    MapAccess.get(identity, :database_kind, :ordinary)
   end
 
   defp resume_registered_jobs(uuid) do

@@ -74,7 +74,6 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
            path: relative,
            database_kind: kind,
            bundle_root: bundle_root,
-           sqlite_path: Path.join(bundle_root, "database.sqlite3"),
            status: :unknown
          }
        end)}

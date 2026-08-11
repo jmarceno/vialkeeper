@@ -1,9 +1,17 @@
-defmodule ElixirDB.Runtime.FileLease do
-  @moduledoc false
+defmodule ElixirDB.Storage.SQLite.Ownership do
+  @moduledoc """
+  SQLite single-owner lease using a companion database and BEGIN EXCLUSIVE.
+
+  This is the physical ownership implementation. Runtime code starts ownership
+  through `ElixirDB.Runtime.Ownership`, never by constructing lease paths or
+  issuing SQLite transaction text.
+  """
   use GenServer
+
   alias ElixirDB.Storage.SQLite.Connection
 
-  def start_link(path), do: GenServer.start_link(__MODULE__, path)
+  @doc "Starts ownership for the SQLite data artifact at `database_path`."
+  def start_link(database_path), do: GenServer.start_link(__MODULE__, database_path)
 
   @impl true
   def init(database_path) do
@@ -16,10 +24,6 @@ defmodule ElixirDB.Runtime.FileLease do
             {:ok, %{conn: conn, path: lease_path}}
 
           {:error, reason} ->
-            # A failed contender still owns an SQLite connection. Close it
-            # before returning from init; otherwise its unfinalized handle can
-            # leave the lease journal/lock alive long enough to make a later
-            # reacquisition report a false :busy.
             _ = Connection.close(conn)
             unavailable(reason)
         end

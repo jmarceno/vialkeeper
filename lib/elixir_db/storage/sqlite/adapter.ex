@@ -17,6 +17,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   alias ElixirDB.Storage.SQLite.{
     Attachments,
+    Capabilities,
     Chains,
     Changes,
     Connection,
@@ -27,6 +28,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     Integrity,
     LocalRecords,
     Mutations,
+    Ownership,
     QueryRunner,
     ReplicationJobs,
     Retention,
@@ -113,6 +115,25 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
         {:error, normalize_error(reason)}
     end
   end
+
+  @doc "Returns the SQLite data artifact path inside a bundle root."
+  @spec artifact_path(binary()) :: binary()
+  def artifact_path(bundle_root) when is_binary(bundle_root),
+    do: Path.join(bundle_root, "database.sqlite3")
+
+  @doc "Starts SQLite ownership for the data artifact under `bundle_root`."
+  @spec start_ownership(binary()) :: GenServer.on_start()
+  def start_ownership(bundle_root) when is_binary(bundle_root) do
+    Ownership.start_link(artifact_path(bundle_root))
+  end
+
+  @doc "Validates required SQLite runtime capabilities."
+  @spec validate_capabilities!() :: binary()
+  def validate_capabilities!, do: Capabilities.validate!()
+
+  @doc "Returns opaque SQLite capability metadata."
+  @spec capabilities_report() :: map()
+  def capabilities_report, do: Capabilities.report()
 
   @impl true
   def open(path, _options \\ %{}) do

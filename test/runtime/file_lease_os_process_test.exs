@@ -1,14 +1,14 @@
-defmodule ElixirDB.Runtime.FileLeaseOsProcessTest do
+defmodule ElixirDB.Storage.SQLite.OwnershipOsProcessTest do
   @moduledoc """
   Gap D3: lease exclusion across real OS processes (not same-BEAM GenServers).
 
-  A child `mix run` / `elixir -e` process holds `FileLease`; the parent asserts
+  A child `mix run` / `elixir -e` process holds `Ownership`; the parent asserts
   `database_in_use`. OS PIDs must differ.
   """
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Runtime.FileLease
   alias ElixirDB.Storage.SQLite.Adapter
+  alias ElixirDB.Storage.SQLite.Ownership
 
   @moduletag :sqlite_physical
   @moduletag :os_process
@@ -33,7 +33,7 @@ defmodule ElixirDB.Runtime.FileLeaseOsProcessTest do
     {:ok, path: path, bundle_path: bundle_path, ready: ready, stop: stop}
   end
 
-  test "separate OS process holding FileLease yields database_in_use in parent", %{
+  test "separate OS process holding Ownership yields database_in_use in parent", %{
     path: path,
     ready: ready,
     stop: stop
@@ -47,7 +47,7 @@ defmodule ElixirDB.Runtime.FileLeaseOsProcessTest do
     ready = #{inspect(ready)}
     stop = #{inspect(stop)}
 
-    case GenServer.start(ElixirDB.Runtime.FileLease, path) do
+    case GenServer.start(ElixirDB.Storage.SQLite.Ownership, path) do
       {:ok, lease} ->
         File.write!(ready, "HELD:" <> to_string(:os.getpid()))
 
@@ -96,14 +96,14 @@ defmodule ElixirDB.Runtime.FileLeaseOsProcessTest do
     assert String.match?(child_os_pid, ~r/^\d+$/)
 
     assert {:error, %ElixirDB.Error{code: :database_in_use, retryable: true}} =
-             GenServer.start(FileLease, path)
+             GenServer.start(Ownership, path)
 
     File.write!(stop, "stop")
     {output, status} = Task.await(holder, 60_000)
 
     assert status == 0, "child mix run failed (status=#{status}): #{output}"
 
-    assert {:ok, lease} = GenServer.start(FileLease, path)
+    assert {:ok, lease} = GenServer.start(Ownership, path)
     assert :ok = GenServer.stop(lease)
   end
 end

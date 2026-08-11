@@ -10,16 +10,6 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
     Sentinel.Adapter
   }
 
-  @known_leak_paths [
-    "lib/elixir_db/database_bundle.ex",
-    "lib/elixir_db/runtime/database_owner.ex",
-    "lib/elixir_db/runtime/database_catalog.ex",
-    "lib/elixir_db/runtime/file_lease.ex",
-    "lib/elixir_db/runtime/registration_manifest.ex",
-    "lib/elixir_db/diagnostics.ex",
-    "lib/elixir_db/application.ex"
-  ]
-
   test "port families freeze the approved vocabulary" do
     assert :lifecycle in Ports.families()
     assert :transaction in Ports.families()
@@ -41,35 +31,19 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
     refute PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/adapter.ex")
   end
 
-  test "boundary guard reports known product/runtime leaks with file and line" do
+  test "boundary guard no longer reports cleared Wave 1 runtime/bundle leaks" do
     findings = BoundaryGuard.scan()
     leaking = BoundaryGuard.leaking_paths(findings)
 
-    for path <- @known_leak_paths do
-      assert path in leaking, "expected leak findings for #{path}, got #{inspect(leaking)}"
-
-      path_findings = BoundaryGuard.findings_for(findings, path)
-      assert path_findings != []
-      assert Enum.all?(path_findings, &(&1.line >= 1))
-      assert Enum.all?(path_findings, &is_atom(&1.pattern))
-    end
-
+    refute "lib/elixir_db/database_bundle.ex" in leaking
+    refute "lib/elixir_db/runtime/database_owner.ex" in leaking
+    refute "lib/elixir_db/runtime/database_catalog.ex" in leaking
+    refute "lib/elixir_db/runtime/registration_manifest.ex" in leaking
+    refute "lib/elixir_db/diagnostics.ex" in leaking
+    refute "lib/elixir_db/application.ex" in leaking
     refute "lib/elixir_db/storage/sqlite/adapter.ex" in leaking
     refute "lib/elixir_db/storage/sentinel/adapter.ex" in leaking
     refute "lib/elixir_db/storage/registry.ex" in leaking
-  end
-
-  test "boundary guard reports transaction modes and SQL strings in diagnostics and lease" do
-    findings = BoundaryGuard.scan()
-    diagnostics = BoundaryGuard.findings_for(findings, "lib/elixir_db/diagnostics.ex")
-    lease = BoundaryGuard.findings_for(findings, "lib/elixir_db/runtime/file_lease.ex")
-
-    assert Enum.any?(diagnostics, &(&1.pattern == :commit_mode))
-    assert Enum.any?(diagnostics, &(&1.pattern == :rollback_mode))
-    assert Enum.any?(diagnostics, &(&1.pattern == :begin_mode))
-    assert Enum.any?(diagnostics, &(&1.pattern == :sql_string))
-    assert Enum.any?(lease, &(&1.pattern == :rollback_mode))
-    assert Enum.any?(lease, &(&1.pattern == :begin_mode))
   end
 
   test "classified physical tests and support exist on disk and carry tags where required" do
@@ -94,13 +68,13 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
 
     assert {:ok, created} = Adapter.create(root, %{})
     assert {:ok, identity} = Adapter.identity(created)
-    assert identity["backend"] == "sentinel"
-    assert identity["engine"] == "none"
+    assert identity.backend == "sentinel"
+    assert identity.engine == "none"
     assert :ok = Adapter.close(created)
 
     assert {:ok, reopened} = Adapter.open(root, %{})
     assert {:ok, reopened_identity} = Adapter.identity(reopened)
-    assert reopened_identity["database_uuid"] == identity["database_uuid"]
+    assert reopened_identity.database_uuid == identity.database_uuid
 
     context = Adapter.to_context(reopened)
     assert %BackendContext{} = context

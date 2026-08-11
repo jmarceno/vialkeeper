@@ -571,7 +571,7 @@ defmodule ElixirDB.Attachments.GCTest do
   defp expire_pending!(uuid, digest) do
     {:ok, root} = DatabaseCatalog.bundle_root(uuid)
     {:ok, bundle} = DatabaseBundle.open(root)
-    path = DatabaseBundle.sqlite_path(bundle)
+    path = Path.join(DatabaseBundle.root(bundle), "database.sqlite3")
     past = DateTime.utc_now() |> DateTime.add(-3_600, :second) |> DateTime.to_iso8601()
 
     {:ok, conn} = Exqlite.Sqlite3.open(path)

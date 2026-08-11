@@ -4,7 +4,7 @@ defmodule ElixirDB.Application do
 
   @impl true
   def start(_type, _args) do
-    _ = ElixirDB.Diagnostics.validate_sqlite!()
+    _ = ElixirDB.Diagnostics.validate_backend!()
     listener = Application.get_env(:elixir_db, :listener, ip: {127, 0, 0, 1}, port: 4000)
 
     enforce_listener_safety!(listener)

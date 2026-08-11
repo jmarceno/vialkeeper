@@ -5,7 +5,8 @@ defmodule ElixirDB.Runtime.OwnerUniquenessTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Runtime.{DatabaseCatalog, FileLease}
+  alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.Storage.SQLite.Ownership
 
   setup do
     relative = "owner-#{System.unique_integer([:positive])}.elixirdb"
@@ -38,7 +39,7 @@ defmodule ElixirDB.Runtime.OwnerUniquenessTest do
     sqlite_path = ElixirDB.TempDatabase.sqlite_path(absolute)
 
     assert {:error, %ElixirDB.Error{code: :database_in_use}} =
-             GenServer.start(FileLease, sqlite_path)
+             GenServer.start(Ownership, sqlite_path)
 
     assert [{^owner_pid, _}] =
              Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, identity.database_uuid})

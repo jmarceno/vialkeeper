@@ -9,7 +9,7 @@ defmodule ElixirDB.Runtime.OwnerCrashTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Runtime.{DatabaseCatalog, FileLease}
+  alias ElixirDB.Runtime.{DatabaseCatalog, Ownership}
 
   setup do
     relative = "owner-crash-#{System.unique_integer([:positive])}.elixirdb"
@@ -46,7 +46,10 @@ defmodule ElixirDB.Runtime.OwnerCrashTest do
     assert Process.alive?(lease_pid)
 
     assert {:error, %ElixirDB.Error{code: :database_in_use}} =
-             GenServer.start(FileLease, ElixirDB.TempDatabase.sqlite_path(absolute))
+             GenServer.start(
+               ElixirDB.Storage.SQLite.Ownership,
+               ElixirDB.TempDatabase.sqlite_path(absolute)
+             )
 
     assert {:ok, %{revision: revision}} =
              ElixirDB.Documents.put(uuid, %{id: "crash-doc", body: %{"n" => 1}})
@@ -97,7 +100,12 @@ defmodule ElixirDB.Runtime.OwnerCrashTest do
     assert [] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
     refute Process.alive?(lease_pid)
 
-    assert {:ok, lease} = GenServer.start(FileLease, ElixirDB.TempDatabase.sqlite_path(absolute))
+    assert {:ok, lease} =
+             GenServer.start(
+               ElixirDB.Storage.SQLite.Ownership,
+               ElixirDB.TempDatabase.sqlite_path(absolute)
+             )
+
     assert :ok = GenServer.stop(lease)
 
     assert {:ok, _} = DatabaseCatalog.open(uuid)
@@ -110,7 +118,7 @@ defmodule ElixirDB.Runtime.OwnerCrashTest do
     runtime
     |> Supervisor.which_children()
     |> Enum.find_value(fn
-      {FileLease, pid, :worker, _} when is_pid(pid) -> pid
+      {Ownership, pid, :worker, _} when is_pid(pid) -> pid
       _ -> nil
     end)
   end

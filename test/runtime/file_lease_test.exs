@@ -1,10 +1,10 @@
-defmodule ElixirDB.Runtime.FileLeaseTest do
+defmodule ElixirDB.Storage.SQLite.OwnershipTest do
   @moduledoc """
   Gap D3: ownership lease exclusion (`database_in_use`).
 
   True cross-OS-process lease exclusion requires two OS processes holding the
   same companion `.lease` SQLite EXCLUSIVE lock. Within one BEAM VM we still
-  prove acquire / exclusion / release / re-acquire using `FileLease` GenServers.
+  prove acquire / exclusion / release / re-acquire using `Ownership` GenServers.
   """
   use ExUnit.Case, async: false
 
@@ -12,8 +12,8 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
   @moduletag :integration
 
   alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Runtime.FileLease
   alias ElixirDB.Storage.SQLite.Adapter
+  alias ElixirDB.Storage.SQLite.Ownership
 
   setup do
     {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-lease")
@@ -31,22 +31,22 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
   test "acquire succeeds, second holder gets database_in_use, release allows re-acquire", %{
     path: path
   } do
-    assert {:ok, first} = GenServer.start(FileLease, path)
+    assert {:ok, first} = GenServer.start(Ownership, path)
     assert Process.alive?(first)
 
     assert {:error, %ElixirDB.Error{code: :database_in_use}} =
-             GenServer.start(FileLease, path)
+             GenServer.start(Ownership, path)
 
     assert Process.alive?(first)
     assert :ok = GenServer.stop(first)
     refute Process.alive?(first)
 
-    assert {:ok, second} = GenServer.start(FileLease, path)
+    assert {:ok, second} = GenServer.start(Ownership, path)
     assert Process.alive?(second)
     assert :ok = GenServer.stop(second)
   end
 
-  test "catalog open holds the lease so a raw FileLease cannot steal ownership" do
+  test "catalog open holds the lease so a raw Ownership cannot steal ownership" do
     relative = "lease-catalog-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
     ElixirDB.TempDatabase.cleanup(absolute)
@@ -64,11 +64,11 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
     sqlite_path = ElixirDB.TempDatabase.sqlite_path(absolute)
 
     assert {:error, %ElixirDB.Error{code: :database_in_use}} =
-             GenServer.start(FileLease, sqlite_path)
+             GenServer.start(Ownership, sqlite_path)
 
     assert :ok = DatabaseCatalog.close(identity.database_uuid)
 
-    assert {:ok, lease} = GenServer.start(FileLease, sqlite_path)
+    assert {:ok, lease} = GenServer.start(Ownership, sqlite_path)
     assert :ok = GenServer.stop(lease)
   end
 end

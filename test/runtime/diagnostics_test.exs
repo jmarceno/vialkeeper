@@ -9,9 +9,11 @@ defmodule ElixirDB.Runtime.DiagnosticsTest do
     assert Map.has_key?(metadata, :app_version)
     assert Map.has_key?(metadata, :elixir)
     assert Map.has_key?(metadata, :otp)
-    assert Map.has_key?(metadata, :exqlite)
-    assert Map.has_key?(metadata, :sqlite)
-    assert Map.has_key?(metadata, :sqlite_compile_options)
+    assert Map.has_key?(metadata, :storage_backend)
+    assert Map.has_key?(metadata, :backend)
+    assert is_map(metadata.backend)
+    assert metadata.backend.engine == "sqlite"
+    assert Map.has_key?(metadata.backend, :sqlite)
 
     assert is_binary(metadata.app_version)
     assert metadata.app_version != ""
