@@ -8,6 +8,7 @@ defmodule ElixirDB.MaterializedViews do
   @spec create(map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def create(request) when is_map(request) do
     with {:ok, definition} <- Definition.normalize(request),
+         :ok <- validate_source_kinds(definition.sources),
          database_uuid <- ElixirDB.UUID.v4(),
          relative_path <- Path.for(definition.name, database_uuid),
          initial <- Definition.initial_metadata(definition, database_uuid),
@@ -28,4 +29,29 @@ defmodule ElixirDB.MaterializedViews do
 
   def create(_request),
     do: {:error, ElixirDB.Error.invalid_request("materialized view request must be an object")}
+
+  defp validate_source_kinds(sources) do
+    Enum.reduce_while(sources, :ok, fn source_uuid, :ok ->
+      case DatabaseCatalog.info(source_uuid) do
+        {:ok, %{database_kind: :ordinary}} ->
+          {:cont, :ok}
+
+        {:ok, %{"database_kind" => "ordinary"}} ->
+          {:cont, :ok}
+
+        {:ok, %{database_kind: :derived}} ->
+          {:halt,
+           {:error,
+            ElixirDB.Error.invalid_request("materialized view sources must be ordinary databases")}}
+
+        {:ok, %{"database_kind" => "derived"}} ->
+          {:halt,
+           {:error,
+            ElixirDB.Error.invalid_request("materialized view sources must be ordinary databases")}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
+  end
 end

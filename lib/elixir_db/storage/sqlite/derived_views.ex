@@ -88,7 +88,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
          :ok <-
            Connection.execute(
              conn,
-             "UPDATE derived_sources SET state = 'rebuilding', rebuild_generation = ?, rebuild_start_sequence = ?, rebuild_after_document_id = NULL, rebuild_catchup_sequence = ?, last_error_code = NULL WHERE source_database_uuid = ?",
+             "UPDATE derived_sources SET source_history_epoch = NULL, state = 'rebuilding', rebuild_generation = ?, rebuild_start_sequence = ?, rebuild_after_document_id = NULL, rebuild_catchup_sequence = ?, last_error_code = NULL WHERE source_database_uuid = ?",
              [generation, start_sequence, catchup_sequence, source_uuid]
            ),
          :ok <-

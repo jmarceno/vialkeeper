@@ -1,5 +1,5 @@
 defmodule ElixirDB.Application do
-  @moduledoc false
+  @moduledoc "OTP application supervisor for the ElixirDB runtime."
   use Application
 
   @impl true
@@ -21,6 +21,8 @@ defmodule ElixirDB.Application do
       ElixirDB.Replication.JobManager,
       {Task.Supervisor, name: ElixirDB.TaskSupervisor},
       ElixirDB.Runtime.DatabaseCatalog,
+      ElixirDB.DerivedView.Supervisor,
+      ElixirDB.DerivedView.Manager,
       http_server
     ]
 

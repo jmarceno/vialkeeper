@@ -17,6 +17,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   }
 
   alias ElixirDB.DatabaseBundle
+  alias ElixirDB.DerivedView.Manager, as: DerivedViewManager
   alias ElixirDB.PathSafety
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.View.Manager
@@ -492,6 +493,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp open_registered_entry(state, uuid, entry) do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
       [{_pid, _}] ->
+        _ = ensure_derived_manager(uuid, entry)
         {:ok, %{database_uuid: uuid, runtime_state: :open}, mark_status(state, uuid, :registered)}
 
       [] ->
@@ -516,27 +518,44 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp start_database_runtime(state, uuid, entry, bundle_root) do
     case DatabaseBundle.prepare_for_open(bundle_root) do
       {:ok, bundle} ->
-        case DynamicSupervisor.start_child(
-               ElixirDB.Runtime.DatabaseSupervisor,
-               {DatabaseRuntimeSupervisor,
-                %{
-                  uuid: uuid,
-                  bundle: bundle,
-                  database_kind: Map.get(entry, :database_kind, :ordinary)
-                }}
-             ) do
-          {:ok, _pid} ->
-            {:ok, %{database_uuid: uuid, runtime_state: :open},
-             mark_status(state, uuid, :registered)}
-
-          {:error, reason} ->
-            error = open_failure_error(reason, entry)
-            {:error, error, maybe_mark_unavailable(state, uuid, error)}
-        end
+        start_database_runtime_child(state, uuid, entry, bundle)
 
       {:error, error} ->
         {:error, error, maybe_mark_unavailable(state, uuid, error)}
     end
+  end
+
+  defp start_database_runtime_child(state, uuid, entry, bundle) do
+    args = %{
+      uuid: uuid,
+      bundle: bundle,
+      database_kind: Map.get(entry, :database_kind, :ordinary)
+    }
+
+    case DynamicSupervisor.start_child(
+           ElixirDB.Runtime.DatabaseSupervisor,
+           {DatabaseRuntimeSupervisor, args}
+         ) do
+      {:ok, _pid} -> finish_database_runtime_start(state, uuid, entry)
+      {:error, reason} -> open_runtime_child_error(state, uuid, entry, reason)
+    end
+  end
+
+  defp finish_database_runtime_start(state, uuid, entry) do
+    case ensure_derived_manager(uuid, entry) do
+      :ok ->
+        {:ok, %{database_uuid: uuid, runtime_state: :open}, mark_status(state, uuid, :registered)}
+
+      {:error, reason} ->
+        _ = stop_runtime_after_failed_open(uuid)
+        error = open_failure_error(reason, entry)
+        {:error, error, maybe_mark_unavailable(state, uuid, error)}
+    end
+  end
+
+  defp open_runtime_child_error(state, uuid, entry, reason) do
+    error = open_failure_error(reason, entry)
+    {:error, error, maybe_mark_unavailable(state, uuid, error)}
   end
 
   # LIFE-007: missing file or UUID mismatch MUST mark registration unavailable.
@@ -789,10 +808,31 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp abort_close_on_error(other, _uuid), do: other
 
   defp close_external_services(uuid) do
-    with :ok <- close_view_manager(uuid),
+    with :ok <- close_derived_manager(uuid),
+         :ok <- close_view_manager(uuid),
          :ok <- close_attachment_coordinator(uuid),
          :ok <- close_subscription_hub(uuid) do
       close_change_notifier(uuid)
+    end
+  end
+
+  defp ensure_derived_manager(uuid, %{database_kind: :derived}),
+    do: DerivedViewManager.start(uuid)
+
+  defp ensure_derived_manager(_uuid, _entry), do: :ok
+
+  defp stop_runtime_after_failed_open(uuid) do
+    case runtime_pid(uuid) do
+      pid when is_pid(pid) -> Supervisor.stop(pid, :shutdown, ElixirDB.Config.shutdown_timeout())
+      _ -> :ok
+    end
+  end
+
+  defp close_derived_manager(uuid) do
+    case DerivedViewManager.close(uuid) do
+      :ok -> :ok
+      {:error, %ElixirDB.Error{code: :database_closed}} -> :ok
+      {:error, _} = error -> error
     end
   end
 

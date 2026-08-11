@@ -3,6 +3,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   use GenServer
   alias ElixirDB.Commands
   alias ElixirDB.DatabaseBundle
+  alias ElixirDB.DerivedView.Manager, as: DerivedViewManager
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Compact
   alias ElixirDB.Runtime.{AttachmentCoordinator, ChangeNotifier, RetentionScheduler}
@@ -283,7 +284,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     do: reply(Adapter.get_derived_view(state.adapter), state)
 
   defp handle_command(%Commands.SetDerivedEnabled{request: request}, _from, state),
-    do: reply(Adapter.set_derived_enabled(state.adapter, request), state)
+    do: set_derived_enabled(request, state)
 
   defp handle_command(%Commands.ListDerivedSources{}, _from, state),
     do: reply(Adapter.list_derived_sources(state.adapter), state)
@@ -312,6 +313,19 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
 
   defp handle_command(_unknown, _from, state),
     do: {:reply, {:error, ElixirDB.Error.invalid_request("unknown database command")}, state}
+
+  defp set_derived_enabled(request, state) do
+    result = Adapter.set_derived_enabled(state.adapter, request)
+
+    case result do
+      {:ok, _} ->
+        _ = DerivedViewManager.refresh(state.uuid)
+        reply(result, state)
+
+      _ ->
+        reply(result, state)
+    end
+  end
 
   @impl true
   def terminate(_reason, %{adapter: adapter}), do: Adapter.close(adapter)
