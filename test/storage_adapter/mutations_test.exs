@@ -116,6 +116,12 @@ for {name, adapter_module} <- [
         assert {:ok, %{body: %{"kind" => "task"}}} =
                  @adapter.get_document(adapter, %{document_id: "task"})
 
+        assert {:ok, %{results: [%{id: "task"}], plan_kind: :bounded_scan}} =
+                 @adapter.execute_query(adapter, %{
+                   selector: %{"/kind" => "task"},
+                   limit: 10
+                 })
+
         assert {:ok, %{results: [first], last_sequence: 1, has_more: true}} =
                  @adapter.read_changes(adapter, %{since: 0, limit: 1})
 

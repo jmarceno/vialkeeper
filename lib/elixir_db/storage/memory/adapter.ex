@@ -9,6 +9,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   @behaviour ElixirDB.Storage.Adapter
 
   alias ElixirDB.MapAccess
+  alias ElixirDB.Query.{Normalizer, SubscriptionRequest}
   alias ElixirDB.Revisions.Winner
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.RequestValidation
@@ -47,10 +48,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     {:delete_index, 2},
     {:rebuild_index, 2},
     {:list_indexes, 1},
-    {:execute_query, 2},
-    {:execute_subscription_snapshot, 2},
     {:get_revisions_batch, 2},
-    {:explain_query, 2},
     {:list_views, 1},
     {:create_view, 2},
     {:delete_view, 2},
@@ -332,6 +330,40 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     Services.cleanup_expired_pending_blobs(to_context(adapter), request)
   end
 
+  @impl true
+  def execute_query(%__MODULE__{} = adapter, request) when is_map(request) do
+    with {:ok, identity} <- identity(adapter),
+         {:ok, normalized} <- prepare_query_request(request) do
+      Services.execute_query(to_context(adapter), normalized, identity)
+    end
+  end
+
+  def execute_query(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("query must be an object")}
+
+  @impl true
+  def execute_subscription_snapshot(%__MODULE__{} = adapter, request) when is_map(request) do
+    with {:ok, identity} <- identity(adapter),
+         {:ok, normalized} <-
+           SubscriptionRequest.prepare_snapshot(request, Map.get(identity, :config, %{})) do
+      Services.execute_subscription_snapshot(to_context(adapter), normalized, identity)
+    end
+  end
+
+  def execute_subscription_snapshot(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("subscription snapshot request must be an object")}
+
+  @impl true
+  def explain_query(%__MODULE__{} = adapter, request) when is_map(request) do
+    with {:ok, identity} <- identity(adapter),
+         {:ok, normalized} <- prepare_query_request(request) do
+      Services.explain_query(to_context(adapter), normalized, identity)
+    end
+  end
+
+  def explain_query(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("query explanation must be an object")}
+
   @doc "Wraps an open Memory adapter in an opaque backend context."
   @spec to_context(t()) :: BackendContext.t()
   def to_context(%__MODULE__{} = adapter) do
@@ -343,6 +375,8 @@ defmodule ElixirDB.Storage.Memory.Adapter do
       identity: Store.identity(adapter.store)
     )
   end
+
+  defp prepare_query_request(request), do: Normalizer.normalize_public_request(request)
 
   @doc "Returns the Memory module that implements `family`."
   @spec port(atom()) :: module()

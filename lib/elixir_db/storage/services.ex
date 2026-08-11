@@ -1,7 +1,7 @@
 defmodule ElixirDB.Storage.Services do
   @moduledoc """
   Shared storage services for mutation, import, replication chains, retention,
-  integrity, and attachment-metadata workflows.
+  integrity, attachment-metadata, and query workflows.
 
   Callers pass an opaque `BackendContext`. Services execute against storage
   ports inside backend transactions; physical backends only load facts and
@@ -17,6 +17,7 @@ defmodule ElixirDB.Storage.Services do
     Import,
     Integrity,
     Mutations,
+    Query,
     Retention
   }
 
@@ -161,6 +162,30 @@ defmodule ElixirDB.Storage.Services do
   def cleanup_expired_pending_blobs(%BackendContext{} = context, request \\ %{})
       when is_map(request),
       do: Attachments.cleanup_expired_pending_blobs(context, request)
+
+  @doc "Executes a normalized query against storage ports."
+  @spec execute_query(BackendContext.t(), map(), map() | nil) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def execute_query(%BackendContext{} = context, request, identity \\ nil)
+      when is_map(request) do
+    Query.execute(context, request, identity)
+  end
+
+  @doc "Executes a subscription membership snapshot query."
+  @spec execute_subscription_snapshot(BackendContext.t(), map(), map() | nil) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def execute_subscription_snapshot(%BackendContext{} = context, request, identity \\ nil)
+      when is_map(request) do
+    Query.subscription_snapshot(context, request, identity)
+  end
+
+  @doc "Builds a public explain payload for a normalized query."
+  @spec explain_query(BackendContext.t(), map(), map() | nil) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def explain_query(%BackendContext{} = context, request, identity \\ nil)
+      when is_map(request) do
+    Query.explain(context, request, identity)
+  end
 
   defp put_retention_fault(%BackendContext{} = context, fun) when is_function(fun, 1) do
     %{context | identity: Map.put(context.identity || %{}, :retention_fault, fun)}

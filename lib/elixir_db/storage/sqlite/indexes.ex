@@ -59,8 +59,9 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
   @spec search(Connection.handle(), map(), binary(), binary(), term()) ::
           {:ok, list()} | {:error, ElixirDB.Error.t()}
   def search(conn, metadata, text, mode, deadline) do
+    # FTS5 retrieves unordered/rank-tagged candidates only. Shared Query.Executor
+    # applies unicode_words_v1 via FullText.matches?/3 and canonical Ordering.
     name = MapAccess.get(metadata, :physical_name)
-    match_definition = Map.put(metadata, "mode", mode || "all")
 
     with true <- valid_identifier?(name),
          {:ok, query} <- compile_search(text, metadata, mode),
@@ -72,11 +73,9 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
              [query]
            ),
          :ok <- check_deadline(deadline),
-         {:ok, candidates} <- decode_search_rows(rows, deadline),
-         {:ok, filtered} <- filter_search_candidates(candidates, match_definition, text, deadline),
-         {:ok, sorted} <- sort_search_candidates(filtered, deadline) do
-      # FTS5 retrieves candidates; unicode_words_v1 via FullText.matches?/3 is authoritative.
-      {:ok, sorted}
+         {:ok, candidates} <- decode_search_rows(rows, deadline) do
+      _ = {metadata, mode}
+      {:ok, candidates}
     else
       false -> {:error, ElixirDB.Error.integrity_violation("index physical metadata is invalid")}
       {:error, %ElixirDB.Error{} = error} -> {:error, error}
@@ -343,36 +342,6 @@ defmodule ElixirDB.Storage.SQLite.Indexes do
 
       {:error, error} ->
         {:halt, {:error, error}}
-    end
-  end
-
-  defp filter_search_candidates(candidates, definition, text, deadline) do
-    candidates
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, &filter_search_candidate(&1, &2, definition, text, deadline))
-    |> case do
-      {:ok, values} -> {:ok, Enum.reverse(values)}
-      error -> error
-    end
-  end
-
-  defp filter_search_candidate({row, index}, {:ok, acc}, definition, text, deadline) do
-    case periodic_deadline_check(deadline, index) do
-      :ok ->
-        if FullText.matches?(row.body, definition, text),
-          do: {:cont, {:ok, [row | acc]}},
-          else: {:cont, {:ok, acc}}
-
-      {:error, _} = error ->
-        {:halt, error}
-    end
-  end
-
-  defp sort_search_candidates(candidates, deadline) do
-    with :ok <- check_deadline(deadline),
-         sorted <- Enum.sort_by(candidates, fn row -> {row.rank, row.id} end),
-         :ok <- check_deadline(deadline) do
-      {:ok, sorted}
     end
   end
 

@@ -2,14 +2,63 @@ defmodule ElixirDB.Query.Normalizer do
   @moduledoc "Validates and canonicalizes the storage-neutral query request."
 
   alias ElixirDB.JSON.{Canonical, Pointer, Stringify}
+  alias ElixirDB.MapAccess
   alias ElixirDB.Query.Predicate
+  alias ElixirDB.Query.Prepared
   alias ElixirDB.Query.Regex, as: QueryRegex
 
   @known [:selector, :sort, :fields, :limit, :bookmark, :index, :search]
+  @public_keys [
+    :selector,
+    :sort,
+    :fields,
+    :limit,
+    :bookmark,
+    :index,
+    :search,
+    "selector",
+    "sort",
+    "fields",
+    "limit",
+    "bookmark",
+    "index",
+    "search"
+  ]
   @max_nodes 256
   @max_depth 32
   @max_boolean_children 64
   @safe_integer 9_007_199_254_740_991
+
+  @doc """
+  Normalizes an adapter-facing public query map or prepared request.
+
+  Plain maps are always treated as untrusted public input. A client-supplied
+  `:normalized` marker or `:predicate` must never bypass `normalize/1`.
+  """
+  @spec normalize_public_request(Prepared.t() | map()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def normalize_public_request(%Prepared{} = prepared) do
+    {:ok, Prepared.unwrap(prepared)}
+  end
+
+  def normalize_public_request(request) when is_map(request) do
+    request
+    |> Map.take(@public_keys)
+    |> normalize()
+    |> preserve_query_cursor(request)
+  end
+
+  defp preserve_query_cursor({:ok, normalized}, request) do
+    {:ok,
+     normalized
+     |> maybe_put_internal(:after_id, MapAccess.get(request, :after_id))
+     |> maybe_put_internal(:after_ordering, MapAccess.get(request, :after_ordering))}
+  end
+
+  defp preserve_query_cursor(error, _request), do: error
+
+  defp maybe_put_internal(request, _key, nil), do: request
+  defp maybe_put_internal(request, key, value), do: Map.put(request, key, value)
 
   @spec normalize(map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def normalize(request) when is_map(request) do

@@ -16,8 +16,10 @@ defmodule ElixirDB.Storage.Ports.IndexCandidates do
   @callback create_index(BackendContext.t(), map()) :: result(index_definition())
   @callback delete_index(BackendContext.t(), binary()) :: :ok | {:error, ElixirDB.Error.t()}
   @callback rebuild_index(BackendContext.t(), binary()) :: result(map())
+  @callback winning_document_count(BackendContext.t()) :: result(non_neg_integer())
   @callback lookup_candidates(BackendContext.t(), map()) :: result([candidate()])
-  @callback range_scan_candidates(BackendContext.t(), map()) :: result([candidate()])
+  @callback range_scan_candidates(BackendContext.t(), map()) ::
+              result([candidate()] | %{candidates: [candidate()], examined: non_neg_integer()})
   @callback full_text_candidates(BackendContext.t(), map()) :: result([candidate()])
   @callback ready_definitions(BackendContext.t()) :: result([term()])
   @callback refresh_document(BackendContext.t(), binary(), map(), term()) ::

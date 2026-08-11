@@ -40,5 +40,6 @@ defmodule ElixirDB.Query.OrderingTest do
 
     assert Ordering.ordering_key(ranked, []) == %{"sort" => [], "rank" => -1.5, "id" => "ranked"}
     assert Ordering.compare_cursor(ranked, Ordering.ordering_key(other, []), []) == :gt
+    assert Ordering.compare_documents(other, ranked, []) == :lt
   end
 end

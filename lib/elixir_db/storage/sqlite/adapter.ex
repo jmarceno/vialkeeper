@@ -60,22 +60,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @type retention_fault :: (atom() -> :ok | {:error, ElixirDB.Error.t()}) | nil
   @type view_fault :: (atom() -> :ok | {:error, ElixirDB.Error.t()}) | nil
   @type derived_fault :: (atom() -> :ok | {:error, ElixirDB.Error.t()}) | nil
-  @query_public_keys [
-    :selector,
-    :sort,
-    :fields,
-    :limit,
-    :bookmark,
-    :index,
-    :search,
-    "selector",
-    "sort",
-    "fields",
-    "limit",
-    "bookmark",
-    "index",
-    "search"
-  ]
   @type t :: %__MODULE__{
           path: binary(),
           conn: Connection.handle(),
@@ -812,14 +796,16 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   def explain_query(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("query explanation must be an object")}
 
-  defp prepare_query_request(%Prepared{} = prepared) do
-    {:ok, Prepared.unwrap(prepared)}
-  end
+  defp prepare_query_request(%Prepared{} = prepared),
+    do: Normalizer.normalize_public_request(prepared)
 
   defp prepare_query_request(request) when is_map(request) do
-    # Plain maps are always treated as untrusted public input. A client-supplied
-    # `:normalized` marker or `:predicate` must never bypass Normalizer.
-    normalize_public_query(request)
+    StrictCache.memoize(
+      :public_query_normalization,
+      request,
+      @query_normalization_cache_limit,
+      fn -> Normalizer.normalize_public_request(request) end
+    )
   end
 
   defp prepare_subscription_snapshot_request(adapter, request) when is_map(request) do
@@ -827,32 +813,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       SubscriptionRequest.prepare_snapshot(request, Map.get(identity, :config, %{}))
     end
   end
-
-  defp normalize_public_query(request) do
-    StrictCache.memoize(
-      :public_query_normalization,
-      request,
-      @query_normalization_cache_limit,
-      fn ->
-        request
-        |> Map.take(@query_public_keys)
-        |> Normalizer.normalize()
-        |> preserve_query_cursor(request)
-      end
-    )
-  end
-
-  defp preserve_query_cursor({:ok, normalized}, request) do
-    {:ok,
-     normalized
-     |> maybe_put_internal(:after_id, MapAccess.get(request, :after_id))
-     |> maybe_put_internal(:after_ordering, MapAccess.get(request, :after_ordering))}
-  end
-
-  defp preserve_query_cursor(error, _request), do: error
-
-  defp maybe_put_internal(request, _key, nil), do: request
-  defp maybe_put_internal(request, key, value), do: Map.put(request, key, value)
 
   @impl true
   def resolve_attachment_ticket(%__MODULE__{} = adapter, request) when is_map(request),

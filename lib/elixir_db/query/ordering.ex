@@ -35,10 +35,7 @@ defmodule ElixirDB.Query.Ordering do
   @doc "Compares two documents using ordinary query ordering semantics."
   @spec compare_documents(map(), map(), list()) :: comparison()
   def compare_documents(left, right, sort) do
-    case compare_sort_values(left, right, sort) do
-      :eq -> compare_ids(MapAccess.get(left, :id), MapAccess.get(right, :id))
-      comparison -> comparison
-    end
+    compare_ordering_keys(ordering_key(left, sort), ordering_key(right, sort), sort)
   end
 
   @doc "Compares a document or ordering key with an ordinary query cursor."
