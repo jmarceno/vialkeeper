@@ -6,7 +6,9 @@ defmodule ElixirDB.Replication.AuthTokenTransportTest do
   Uses a tiny capture Plug + Bandit so the actual header sent over the wire is
   observed, rather than mocking the transport.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  @moduletag :integration
 
   defmodule CapturePlug do
     @moduledoc false

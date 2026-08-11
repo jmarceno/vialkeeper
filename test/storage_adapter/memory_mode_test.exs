@@ -1,7 +1,7 @@
 defmodule ElixirDB.StorageAdapter.MemoryModeTest do
   @moduledoc false
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias ElixirDB.Storage.SQLite.{Adapter, Connection}
 

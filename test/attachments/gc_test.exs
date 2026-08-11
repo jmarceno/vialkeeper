@@ -7,6 +7,8 @@ defmodule ElixirDB.Attachments.GCTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Attachments
   alias ElixirDB.Attachments.FilesystemStore
   alias ElixirDB.Attachments.Manifest

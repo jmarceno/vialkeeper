@@ -2,6 +2,8 @@ defmodule ElixirDB.HTTP.MaterializedViewsTest do
   @moduledoc "Covers the materialized-view HTTP contract and generated-data access."
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.Runtime.DatabaseCatalog

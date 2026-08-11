@@ -14,6 +14,8 @@ defmodule ElixirDB.Safety.InputContainmentTest do
 
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.HTTP.Router
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Runtime.DatabaseCatalog

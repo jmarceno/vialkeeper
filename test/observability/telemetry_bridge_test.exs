@@ -8,6 +8,8 @@ defmodule ElixirDB.Observability.TelemetryBridgeTest do
 
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   require OpenTelemetry.Tracer
 
   alias ElixirDB.Eventual

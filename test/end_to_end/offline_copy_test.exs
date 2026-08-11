@@ -1,6 +1,8 @@
 defmodule ElixirDB.EndToEnd.OfflineCopyTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Attachments
   alias ElixirDB.Attachments.FilesystemStore
   alias ElixirDB.Documents

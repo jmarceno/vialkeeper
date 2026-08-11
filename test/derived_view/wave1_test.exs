@@ -2,6 +2,8 @@ defmodule ElixirDB.DerivedView.Wave1Test do
   @moduledoc "Covers derived bundle authority, definition validation, and external write protection."
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.DerivedView.Definition
   alias ElixirDB.DerivedView.Path, as: DerivedPath
   alias ElixirDB.MaterializedViews

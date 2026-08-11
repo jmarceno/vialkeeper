@@ -4,6 +4,8 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Attachments
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Eventual

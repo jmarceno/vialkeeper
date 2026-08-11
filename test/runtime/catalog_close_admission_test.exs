@@ -5,6 +5,8 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.Replication.JobManager
   alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseAdmission, DatabaseCatalog}

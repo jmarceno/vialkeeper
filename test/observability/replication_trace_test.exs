@@ -14,6 +14,8 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
 
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.Observability.{TestExporter, TestMetricExporter}
   alias ElixirDB.Replication.Id

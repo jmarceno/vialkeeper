@@ -9,7 +9,7 @@ defmodule ElixirDB.Query.QueryTest do
   alias ElixirDB.Storage.SQLite.QueryCompiler
   alias ElixirDB.Storage.SQLite.QueryRunner
   alias ElixirDB.Storage.SQLite.TermBlob
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   setup do
     {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-query")

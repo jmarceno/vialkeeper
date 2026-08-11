@@ -4,6 +4,8 @@ defmodule ElixirDB.Runtime.AdmissionNonRetentionTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Attachments
   alias ElixirDB.Eventual
   alias ElixirDB.JSON.StrictDecoder

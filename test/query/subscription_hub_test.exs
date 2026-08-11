@@ -1,6 +1,8 @@
 defmodule ElixirDB.Query.SubscriptionHubTest do
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Documents
   alias ElixirDB.Eventual
   alias ElixirDB.Query.{SubscriptionHub, Subscriptions}

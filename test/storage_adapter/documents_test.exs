@@ -1,5 +1,5 @@
 defmodule ElixirDB.StorageAdapter.DocumentsTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias ElixirDB.Storage.SQLite.Adapter
 

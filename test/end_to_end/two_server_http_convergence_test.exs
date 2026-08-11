@@ -10,6 +10,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.EndToEnd.TwoServerHttpConvergenceTest.Barrier
   alias ElixirDB.MapAccess
   alias ElixirDB.Replication.Id

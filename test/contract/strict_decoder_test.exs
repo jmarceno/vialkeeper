@@ -6,6 +6,8 @@ defmodule ElixirDB.Contract.StrictDecoderTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.JSON.{StrictCache, StrictDecoder}
 
   @safe_max 9_007_199_254_740_991

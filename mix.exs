@@ -36,6 +36,7 @@ defmodule ElixirDB.MixProject do
         bench: :test,
         "bench.overhead": :prod,
         "check.fast": :test,
+        "check.integration": :test,
         "check.full": :test,
         "release.build": :prod
       ]
@@ -110,8 +111,9 @@ defmodule ElixirDB.MixProject do
         "compile --warnings-as-errors",
         "credo --strict",
         "ex_dna --max-clones 0",
-        "test --warnings-as-errors --exclude slow"
+        "test --warnings-as-errors --exclude slow --exclude integration"
       ],
+      "check.integration": ["test --warnings-as-errors --only integration"],
       "check.full": [
         "format --check-formatted",
         "compile --warnings-as-errors",

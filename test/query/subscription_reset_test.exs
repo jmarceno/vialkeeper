@@ -1,6 +1,8 @@
 defmodule ElixirDB.Query.SubscriptionResetTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Documents
   alias ElixirDB.Eventual
   alias ElixirDB.Query.Subscriptions

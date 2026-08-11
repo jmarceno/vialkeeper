@@ -4,6 +4,8 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
   embedded administration UI.
   """
   use ExUnit.Case, async: false
+
+  @moduletag :integration
   import Plug.Test
 
   alias ElixirDB.Documents

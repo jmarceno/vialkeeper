@@ -1,5 +1,5 @@
 defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias ElixirDB.Error
   alias ElixirDB.Replication.BlobStream

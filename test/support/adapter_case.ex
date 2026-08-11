@@ -21,7 +21,7 @@ defmodule ElixirDB.Storage.AdapterCase do
     adapter = Keyword.fetch!(opts, :adapter)
 
     quote do
-      use ExUnit.Case, async: false
+      use ExUnit.Case, async: true
       alias ElixirDB.Storage.AdapterCase, as: AdapterCaseModule
 
       @adapter unquote(adapter)

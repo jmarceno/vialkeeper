@@ -1,6 +1,8 @@
 defmodule ElixirDB.Runtime.OwnerUniquenessTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Runtime.{DatabaseCatalog, FileLease}
 
   setup do

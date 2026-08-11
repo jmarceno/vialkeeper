@@ -7,6 +7,8 @@ defmodule ElixirDB.Observability.DatabaseOpenSpanTest do
 
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Observability.{OtelCase, TestExporter}
   alias ElixirDB.Runtime.DatabaseCatalog
 

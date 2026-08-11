@@ -1,6 +1,8 @@
 defmodule ElixirDB.Runtime.RetentionSchedulerTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.Runtime.DatabaseCatalog
 

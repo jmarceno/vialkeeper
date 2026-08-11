@@ -7,6 +7,9 @@ defmodule ElixirDB.HTTP.AuthPlugTest do
   byte-identical 401 responses, plus a host.toml token round-trip.
   """
   use ExUnit.Case, async: false
+
+  @moduletag :integration
+
   import Plug.Test
 
   alias ElixirDB.HTTP.Router

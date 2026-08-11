@@ -1,6 +1,8 @@
 defmodule ElixirDB.EndToEnd.LocalConvergenceTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Runtime.DatabaseCatalog
 
   @tag :slow

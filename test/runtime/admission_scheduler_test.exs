@@ -5,6 +5,8 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
 
   alias ElixirDB.Runtime.{

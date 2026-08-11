@@ -2,6 +2,8 @@ defmodule ElixirDB.View.BuilderTest do
   @moduledoc "Unit tests for declarative view builder state transitions."
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.TestSupport.{AdmissionScenario, ViewBuilderProbe}

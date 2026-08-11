@@ -18,6 +18,8 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
 
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.HTTP.Router
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Observability.Instrumentation.HTTP

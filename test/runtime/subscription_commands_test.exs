@@ -1,6 +1,8 @@
 defmodule ElixirDB.Runtime.SubscriptionCommandsTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Runtime.DatabaseCatalog
 
   setup do

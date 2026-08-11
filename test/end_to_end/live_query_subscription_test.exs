@@ -8,6 +8,8 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
 
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Query.SubscriptionHub

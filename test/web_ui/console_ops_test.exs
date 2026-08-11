@@ -4,6 +4,8 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
   proofs for the embedded administration console.
   """
   use ExUnit.Case, async: false
+
+  @moduletag :integration
   import Plug.Test
 
   alias ElixirDB.Documents

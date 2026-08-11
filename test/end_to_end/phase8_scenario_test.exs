@@ -7,6 +7,8 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.HTTP.Router
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.MapAccess

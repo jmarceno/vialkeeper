@@ -6,6 +6,8 @@ defmodule ElixirDB.Observability.AdmissionPrivacyTest do
 
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Documents
   alias ElixirDB.Eventual
   alias ElixirDB.Observability.TestMetricExporter

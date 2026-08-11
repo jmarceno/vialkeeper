@@ -10,6 +10,8 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
 
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.FaultAdapter
   alias ElixirDB.Replication.Id
   alias ElixirDB.Replication.LocalEndpoint

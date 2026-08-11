@@ -1,5 +1,5 @@
 defmodule ElixirDB.Attachments.FilesystemStoreTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias ElixirDB.Attachments.FilesystemStore
   alias ElixirDB.DatabaseBundle

@@ -17,13 +17,15 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
       mix test test/end_to_end/admission_scenario_test.exs --only admission_e2e_isolation
       mix test test/end_to_end/admission_scenario_test.exs --only admission_e2e_composition
 
-  Tags (also all `@tag slow: true`):
+  Tags (also all `@tag :slow`):
 
   - `:admission_e2e_scheduling` — fairness, reservations, kill, and timeout races
   - `:admission_e2e_isolation` — disconnect cleanup, streaming, and A/B independence
   - `:admission_e2e_composition` — retention, replication, sustained load, close, and correctness
   """
   use ExUnit.Case, async: false
+
+  @moduletag :integration
 
   import ExUnit.Assertions
 
@@ -72,7 +74,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     :ok
   end
 
-  @tag slow: true
+  @tag :slow
   @tag admission_e2e_scheduling: true
   @tag timeout: 90_000
   test "scheduling: fairness, reservations, kill, and timeout races" do
@@ -94,7 +96,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     AdmissionScenario.assert_timeout_race_clean!(a_uuid, hook_ref)
   end
 
-  @tag slow: true
+  @tag :slow
   @tag admission_e2e_isolation: true
   @tag timeout: 90_000
   test "isolation: disconnect cleanup, streaming permits, and A/B independence" do
@@ -110,7 +112,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     assert_database_independence!(a_uuid, b_uuid, server)
   end
 
-  @tag slow: true
+  @tag :slow
   @tag admission_e2e_composition: true
   @tag timeout: 120_000
   test "composition: retention, replication, sustained load, close, and correctness" do

@@ -4,6 +4,8 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
   the embedded administration console.
   """
   use ExUnit.Case, async: false
+
+  @moduletag :integration
   import Plug.Test
 
   alias ElixirDB.HostConfig

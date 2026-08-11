@@ -13,6 +13,8 @@ defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
 
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.Observability.TestMetricExporter
   alias ElixirDB.Runtime.{AdmissionPolicy, AdmissionSupervisor, DatabaseAdmission}

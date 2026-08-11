@@ -2,6 +2,8 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
   @moduledoc "Covers runtime materialization, source changes, and derived-session recovery."
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.DerivedView.{Manager, Worker}
   alias ElixirDB.Eventual
   alias ElixirDB.JSON.Canonical

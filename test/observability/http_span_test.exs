@@ -8,6 +8,8 @@ defmodule ElixirDB.Observability.HTTPSpanTest do
 
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Observability.TestExporter
   alias ElixirDB.TestServer
 

@@ -8,6 +8,8 @@ defmodule ElixirDB.Observability.CommandSpanTest do
 
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Documents
   alias ElixirDB.Eventual
   alias ElixirDB.MapAccess

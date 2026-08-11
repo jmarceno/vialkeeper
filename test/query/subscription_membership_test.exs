@@ -1,6 +1,8 @@
 defmodule ElixirDB.Query.Subscription.MembershipTest do
   use ExUnit.Case, async: true
 
+  @moduletag :integration
+
   alias ElixirDB.Query.Normalizer
   alias ElixirDB.Query.Subscription.Membership
 

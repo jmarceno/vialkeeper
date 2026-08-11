@@ -1,6 +1,8 @@
 defmodule ElixirDB.Retention.ReviewerFixesTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Config
   alias ElixirDB.Documents
   alias ElixirDB.Domain.{BoundaryPage, RetentionBoundary}

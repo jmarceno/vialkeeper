@@ -1,6 +1,8 @@
 defmodule ElixirDB.Replication.Wave5Test do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Domain.PeerPosition
   alias ElixirDB.Error
   alias ElixirDB.MapAccess

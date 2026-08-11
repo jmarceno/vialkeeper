@@ -7,6 +7,8 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.{AdmissionPolicy, DatabaseCatalog}
 

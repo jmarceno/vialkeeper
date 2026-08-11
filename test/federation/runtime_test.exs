@@ -1,6 +1,8 @@
 defmodule ElixirDB.Federation.RuntimeTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Documents
   alias ElixirDB.Error
   alias ElixirDB.Federation

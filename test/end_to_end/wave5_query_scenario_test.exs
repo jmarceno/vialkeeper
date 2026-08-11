@@ -13,6 +13,8 @@ defmodule ElixirDB.EndToEnd.Wave5QueryScenarioTest do
 
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Query.BookmarkCodec
   alias ElixirDB.Replication
   alias ElixirDB.Runtime.DatabaseCatalog

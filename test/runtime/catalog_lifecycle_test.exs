@@ -1,6 +1,8 @@
 defmodule ElixirDB.Runtime.CatalogLifecycleTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.DatabaseBundle
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Storage.SQLite.Adapter

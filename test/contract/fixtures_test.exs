@@ -3,7 +3,7 @@ defmodule ElixirDB.Contract.FixturesTest do
   Contract tests that load language-neutral fixtures from priv/fixtures.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias ElixirDB.Domain.Checkpoint
   alias ElixirDB.JSON.Canonical

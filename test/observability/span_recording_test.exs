@@ -2,6 +2,8 @@ defmodule ElixirDB.Observability.SpanRecordingTest do
   @moduledoc false
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Observability.{OtelCase, TestExporter}
 
   test "a span created in the test process is recorded after flush" do

@@ -1,6 +1,8 @@
 defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.TestServer
 

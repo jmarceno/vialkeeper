@@ -1,6 +1,8 @@
 defmodule ElixirDB.Replication.SafeReportProbeTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.MapAccess
   alias ElixirDB.Replication

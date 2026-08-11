@@ -7,6 +7,8 @@ defmodule ElixirDB.WebUI.OfflineAssetsTest do
   dependency graph does not introduce Phoenix/LiveView or frontend runtimes.
   """
   use ExUnit.Case, async: false
+
+  @moduletag :integration
   import Plug.Test
 
   alias ElixirDB.HTTP.Router

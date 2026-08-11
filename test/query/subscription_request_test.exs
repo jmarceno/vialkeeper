@@ -1,6 +1,8 @@
 defmodule ElixirDB.Query.SubscriptionRequestTest do
   use ExUnit.Case, async: true
 
+  @moduletag :integration
+
   alias ElixirDB.Config
   alias ElixirDB.Query.SubscriptionRequest
 

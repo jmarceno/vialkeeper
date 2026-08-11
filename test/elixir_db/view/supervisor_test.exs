@@ -2,6 +2,8 @@ defmodule ElixirDB.View.SupervisorTest do
   @moduledoc "Supervision tests for declarative view runtimes."
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.View.Manager

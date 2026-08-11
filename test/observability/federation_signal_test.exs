@@ -1,6 +1,8 @@
 defmodule ElixirDB.Observability.FederationSignalTest do
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Error
   alias ElixirDB.Federation
   alias ElixirDB.TestServer

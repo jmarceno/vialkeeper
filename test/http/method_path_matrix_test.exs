@@ -7,6 +7,8 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Runtime.AttachmentCoordinator

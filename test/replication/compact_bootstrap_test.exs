@@ -1,6 +1,8 @@
 defmodule ElixirDB.Replication.CompactBootstrapTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.MapAccess
   alias ElixirDB.Replication
   alias ElixirDB.Replication.LocalEndpoint

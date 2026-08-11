@@ -7,6 +7,8 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Changes
   alias ElixirDB.Documents
   alias ElixirDB.Error

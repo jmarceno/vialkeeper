@@ -11,6 +11,8 @@ defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
 
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   @moduletag :slow
 
   @project_root Path.expand("../..", __DIR__)

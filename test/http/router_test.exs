@@ -4,6 +4,8 @@ defmodule ElixirDB.HTTP.RouterTest do
   alias ElixirDB.Runtime.DatabaseCatalog
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   test "database and document endpoints return versioned envelopes" do
     path = "http-#{System.unique_integer([:positive])}.elixirdb"
     body = IO.iodata_to_binary(JSON.encode_to_iodata!(%{"path" => path}))

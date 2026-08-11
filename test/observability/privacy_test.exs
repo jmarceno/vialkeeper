@@ -9,6 +9,8 @@ defmodule ElixirDB.Observability.PrivacyTest do
 
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Documents
   alias ElixirDB.Observability.TestExporter
   alias ElixirDB.Runtime.DatabaseCatalog

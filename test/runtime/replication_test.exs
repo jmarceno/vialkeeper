@@ -6,6 +6,8 @@ defmodule ElixirDB.Runtime.ReplicationTest do
   alias ElixirDB.Runtime.DatabaseCatalog
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   setup do
     prefix = "runtime-#{System.unique_integer([:positive])}"
     a_path = prefix <> "-a.elixirdb"

@@ -5,6 +5,8 @@ defmodule ElixirDB.Observability.AttachmentSignalTest do
   """
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Attachments
   alias ElixirDB.Documents
   alias ElixirDB.Eventual

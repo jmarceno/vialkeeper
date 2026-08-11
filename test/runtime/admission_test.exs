@@ -2,6 +2,8 @@ defmodule ElixirDB.Runtime.AdmissionTest do
   @moduledoc "Admission behavior tests for runtime commands."
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Runtime.{DatabaseAdmission, DatabaseCatalog}
   alias ElixirDB.View.Manager
 

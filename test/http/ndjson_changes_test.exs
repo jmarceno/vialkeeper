@@ -6,6 +6,8 @@ defmodule ElixirDB.HTTP.NdjsonChangesTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.DatabaseCatalog

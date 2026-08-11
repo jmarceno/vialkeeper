@@ -2,6 +2,8 @@ defmodule ElixirDB.DerivedView.Wave2Test do
   @moduledoc "Covers atomic derived contributions, generated documents, and exact grouped output."
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Error
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.MaterializedViews

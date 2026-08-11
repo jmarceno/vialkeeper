@@ -8,6 +8,8 @@ defmodule ElixirDB.Runtime.FileLeaseTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Runtime.FileLease
   alias ElixirDB.Storage.SQLite.Adapter

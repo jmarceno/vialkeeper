@@ -1,6 +1,8 @@
 defmodule ElixirDB.HTTP.FederationTest do
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Documents
   alias ElixirDB.Federation.Normalizer
   alias ElixirDB.Runtime.DatabaseCatalog

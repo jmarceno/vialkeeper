@@ -4,6 +4,8 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.MapAccess
   alias ElixirDB.Replication.Id
   alias ElixirDB.Runtime.DatabaseCatalog

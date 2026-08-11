@@ -2,6 +2,8 @@ defmodule ElixirDB.EndToEnd.ViewsWave3Test do
   @moduledoc "End-to-end tests for declarative view HTTP behavior."
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Eventual
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Views

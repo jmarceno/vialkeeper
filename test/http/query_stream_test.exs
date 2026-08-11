@@ -1,6 +1,8 @@
 defmodule ElixirDB.HTTP.QueryStreamTest do
   use ElixirDB.Observability.OtelCase, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Runtime.DatabaseCatalog
 

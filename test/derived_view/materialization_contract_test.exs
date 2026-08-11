@@ -2,6 +2,8 @@ defmodule ElixirDB.DerivedView.MaterializationContractTest do
   @moduledoc "Covers derived replication, lifecycle ownership, and bundle portability."
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Documents
   alias ElixirDB.Error
   alias ElixirDB.Eventual

@@ -5,6 +5,8 @@ defmodule ElixirDB.Runtime.WaiterTerminationTest do
   """
   use ExUnit.Case, async: false
 
+  @moduletag :integration
+
   alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
 
   setup do
