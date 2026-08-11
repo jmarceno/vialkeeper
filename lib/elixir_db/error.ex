@@ -26,6 +26,7 @@ defmodule ElixirDB.Error do
     replication_job_not_found: {404, false},
     database_in_use: {409, true},
     database_not_closable: {409, true},
+    derived_database_read_only: {403, false},
     duplicate_database_uuid: {409, false},
     revision_conflict: {409, false},
     bookmark_stale: {409, true},

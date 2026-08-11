@@ -10,7 +10,10 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   alias ElixirDB.Storage.SQLite.Adapter
 
   def start_link({uuid, %DatabaseBundle{} = bundle}),
-    do: GenServer.start_link(__MODULE__, {uuid, bundle}, name: via(uuid))
+    do: start_link({uuid, bundle, nil})
+
+  def start_link({uuid, %DatabaseBundle{} = bundle, expected_kind}),
+    do: GenServer.start_link(__MODULE__, {uuid, bundle, expected_kind}, name: via(uuid))
 
   def via(uuid), do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}}}
 
@@ -30,23 +33,33 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   end
 
   @impl true
-  def init({uuid, %DatabaseBundle{} = bundle}) do
+  def init({uuid, %DatabaseBundle{} = bundle, expected_kind}) do
     path = DatabaseBundle.sqlite_path(bundle)
 
     case Adapter.open(path) do
       {:ok, adapter} ->
-        case Map.get(adapter.identity, :database_uuid) do
-          ^uuid ->
+        case {Map.get(adapter.identity, :database_uuid), Map.get(adapter.identity, :database_kind)} do
+          {^uuid, actual_kind} when is_nil(expected_kind) or expected_kind == actual_kind ->
             {:ok, %{uuid: uuid, path: path, bundle: bundle, adapter: adapter}}
 
-          actual ->
+          {^uuid, actual_kind} ->
+            _ = Adapter.close(adapter)
+
+            {:stop,
+             ElixirDB.Error.integrity_violation("database kind does not match registration hint", %{
+               reason: :database_kind_mismatch,
+               expected: expected_kind,
+               actual: actual_kind
+             })}
+
+          {actual_uuid, _actual_kind} ->
             _ = Adapter.close(adapter)
 
             {:stop,
              ElixirDB.Error.database_unavailable("database UUID mismatch", %{
                reason: :uuid_mismatch,
                expected: uuid,
-               actual: actual
+               actual: actual_uuid
              })}
         end
 
@@ -88,25 +101,35 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
 
   defp handle_command(%Commands.PutDocument{request: request}, _from, state),
     do:
-      mutate(
-        wrap_put(Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :put))),
-        state
-      )
+      writable_mutation(state, fn ->
+        mutate(
+          wrap_put(Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :put))),
+          state
+        )
+      end)
 
   defp handle_command(%Commands.DeleteDocument{request: request}, _from, state),
     do:
-      mutate(
-        wrap_put(
-          Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :delete))
-        ),
-        state
-      )
+      writable_mutation(state, fn ->
+        mutate(
+          wrap_put(
+            Adapter.apply_local_mutation(state.adapter, Map.put(request, :operation, :delete))
+          ),
+          state
+        )
+      end)
 
   defp handle_command(%Commands.BulkWrite{request: request}, _from, state),
-    do: mutate(Adapter.apply_bulk_mutation(state.adapter, request), state)
+    do:
+      writable_mutation(state, fn ->
+        mutate(Adapter.apply_bulk_mutation(state.adapter, request), state)
+      end)
 
   defp handle_command(%Commands.ResolveConflict{request: request}, _from, state),
-    do: mutate(Adapter.resolve_conflict(state.adapter, request), state)
+    do:
+      writable_mutation(state, fn ->
+        mutate(Adapter.resolve_conflict(state.adapter, request), state)
+      end)
 
   defp handle_command(%Commands.ReadChanges{request: request}, _from, state),
     do: reply(wrap_changes(Adapter.read_changes(state.adapter, request)), state)
@@ -122,7 +145,10 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
          _from,
          state
        ),
-       do: mutate(Adapter.import_revision_chains(state.adapter, request), state)
+       do:
+         writable_mutation(state, fn ->
+           mutate(Adapter.import_revision_chains(state.adapter, request), state)
+         end)
 
   defp handle_command(
          %Commands.GetLocalRecord{namespace: namespace, key: key},
@@ -362,4 +388,20 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     do: {:ok, Results.read_changes(map)}
 
   defp wrap_changes(other), do: other
+
+  defp writable_mutation(state, fun) do
+    case database_kind(state) do
+      :derived ->
+        {:reply,
+         {:error,
+          ElixirDB.Error.derived_database_read_only(
+            "derived databases accept writes only from their materializer"
+          )}, state}
+
+      _ ->
+        fun.()
+    end
+  end
+
+  defp database_kind(%{adapter: adapter}), do: Map.get(adapter.identity, :database_kind, :ordinary)
 end

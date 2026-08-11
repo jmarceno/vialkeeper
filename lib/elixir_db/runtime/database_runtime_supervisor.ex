@@ -12,14 +12,14 @@ defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
   end
 
   @impl true
-  def init(%{uuid: uuid, bundle: %DatabaseBundle{} = bundle}) do
+  def init(%{uuid: uuid, bundle: %DatabaseBundle{} = bundle} = args) do
     limit = ElixirDB.Config.host_limits()[:admission_limit] || 128
     policy = admission_policy(limit)
     sqlite_path = DatabaseBundle.sqlite_path(bundle)
 
     children = [
       {ElixirDB.Runtime.FileLease, sqlite_path},
-      {ElixirDB.Runtime.DatabaseOwner, {uuid, bundle}},
+      {ElixirDB.Runtime.DatabaseOwner, {uuid, bundle, Map.get(args, :database_kind)}},
       AdmissionSupervisor.child_spec(uuid, limit, policy),
       {ElixirDB.Runtime.AttachmentCoordinator, uuid},
       {ElixirDB.Runtime.ChangeNotifier, uuid},

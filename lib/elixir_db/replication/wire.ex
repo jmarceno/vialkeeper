@@ -8,6 +8,7 @@ defmodule ElixirDB.Replication.Wire do
   def identity(identity) when is_map(identity) do
     %{
       "database_uuid" => MapAccess.get(identity, :database_uuid),
+      "database_kind" => MapAccess.get(identity, :database_kind, :ordinary) |> to_string(),
       "history_epoch" => MapAccess.get(identity, :history_epoch),
       "current_sequence" => MapAccess.get(identity, :current_sequence),
       "retention_floor" => retention_floor(identity),

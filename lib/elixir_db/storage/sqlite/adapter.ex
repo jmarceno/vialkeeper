@@ -79,7 +79,12 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
          :ok <- ensure_parent_directory(path, storage_mode),
          {:ok, conn} <- Connection.open(connection_path(path, storage_mode)),
          :ok <- Schema.configure(conn, storage_mode: storage_mode),
-         :ok <- Schema.create(conn, uuid, config_json, storage_mode: storage_mode),
+         :ok <-
+           Schema.create(conn, uuid, config_json,
+             storage_mode: storage_mode,
+             database_kind: MapAccess.get(options, :database_kind, :ordinary),
+             initial_derived_view: MapAccess.get(options, :initial_derived_view)
+           ),
          {:ok, identity} <- Schema.validate(conn, storage_mode: storage_mode) do
       {:ok,
        %__MODULE__{
@@ -137,30 +142,45 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   defp read_identity_metadata(conn, identity) do
     case Connection.query(
            conn,
-           "SELECT current_sequence, history_epoch, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
+           "SELECT database_kind, current_sequence, history_epoch, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
          ) do
-      {:ok, [[sequence, history_epoch, floor, compaction_epoch, boundary_digest, config_json]]} ->
-        config =
-          if config_json == identity.config_json,
-            do: identity.config,
-            else: decode_json!(config_json)
+      {:ok,
+       [
+         [
+           database_kind,
+           sequence,
+           history_epoch,
+           floor,
+           compaction_epoch,
+           boundary_digest,
+           config_json
+         ]
+       ]} ->
+        with {:ok, database_kind} <- ElixirDB.DatabaseKind.from_storage(database_kind) do
+          config = identity_config(config_json, identity)
 
-        {:ok,
-         %{
-           identity
-           | current_sequence: sequence,
-             history_epoch: history_epoch,
-             retention_floor_sequence: floor,
-             compaction_epoch: compaction_epoch,
-             retention_boundary_digest: boundary_digest,
-             config: config,
-             config_json: config_json,
-             retention_mode: get_in(config, ["retention", "mode"]) || "disabled"
-         }}
+          {:ok,
+           %{
+             identity
+             | database_kind: database_kind,
+               current_sequence: sequence,
+               history_epoch: history_epoch,
+               retention_floor_sequence: floor,
+               compaction_epoch: compaction_epoch,
+               retention_boundary_digest: boundary_digest,
+               config: config,
+               config_json: config_json,
+               retention_mode: get_in(config, ["retention", "mode"]) || "disabled"
+           }}
+        end
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
     end
+  end
+
+  defp identity_config(config_json, identity) do
+    if config_json == identity.config_json, do: identity.config, else: decode_json!(config_json)
   end
 
   @impl true
@@ -229,15 +249,19 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: {:error, ElixirDB.Error.invalid_request("revision request must be an object")}
 
   @impl true
-  def apply_local_mutation(adapter, request) when is_map(request),
-    do: transaction(adapter, fn -> Mutations.apply_local_tx(adapter, request) end)
+  def apply_local_mutation(adapter, request) when is_map(request) do
+    with :ok <- ensure_writable(adapter) do
+      transaction(adapter, fn -> Mutations.apply_local_tx(adapter, request) end)
+    end
+  end
 
   def apply_local_mutation(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("mutation request must be an object")}
 
   @impl true
   def apply_bulk_mutation(adapter, %{operations: operations}) do
-    with :ok <- Mutations.validate_operation_batch(operations) do
+    with :ok <- ensure_writable(adapter),
+         :ok <- Mutations.validate_operation_batch(operations) do
       transaction(adapter, fn -> Mutations.bulk_tx(adapter, operations) end)
     end
   end
@@ -249,8 +273,11 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: {:error, ElixirDB.Error.invalid_request("bulk mutation request must be an object")}
 
   @impl true
-  def resolve_conflict(adapter, request) when is_map(request),
-    do: transaction(adapter, fn -> Mutations.resolve_conflict_tx(adapter, request) end)
+  def resolve_conflict(adapter, request) when is_map(request) do
+    with :ok <- ensure_writable(adapter) do
+      transaction(adapter, fn -> Mutations.resolve_conflict_tx(adapter, request) end)
+    end
+  end
 
   def resolve_conflict(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("conflict request must be an object")}
@@ -332,6 +359,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def import_revision_chains(adapter, request) when is_map(request) do
+    with :ok <- ensure_writable(adapter) do
+      import_revision_chains_writable(adapter, request)
+    end
+  end
+
+  def import_revision_chains(_adapter, _request),
+    do: {:error, ElixirDB.Error.invalid_request("revision import request must be an object")}
+
+  defp import_revision_chains_writable(adapter, request) do
     chains = MapAccess.get(request, :chains, [])
 
     with :ok <- Import.validate_chain_batch(chains),
@@ -344,9 +380,6 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       transaction(adapter, fn -> Import.import_tx(adapter, request) end)
     end
   end
-
-  def import_revision_chains(_adapter, _request),
-    do: {:error, ElixirDB.Error.invalid_request("revision import request must be an object")}
 
   @impl true
   def get_local_record(%__MODULE__{conn: conn}, namespace, key),
@@ -895,6 +928,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     |> adapter_identity()
     |> Map.get(:config, ElixirDB.Config.defaults())
   end
+
+  defp ensure_writable(%__MODULE__{identity: %{database_kind: :derived}}),
+    do:
+      {:error,
+       ElixirDB.Error.derived_database_read_only(
+         "derived databases accept writes only from their materializer"
+       )}
+
+  defp ensure_writable(_adapter), do: :ok
 
   defp attachment_bundle_root(%__MODULE__{storage_mode: :memory}), do: nil
 

@@ -43,12 +43,15 @@ defmodule ElixirDB.Attachments do
   @spec upload_stream(binary(), chunk_source(), keyword()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def upload_stream(uuid, source, opts \\ []) when is_binary(uuid) and is_list(opts) do
+    admission_class = Keyword.get(opts, :admission_class, :foreground)
+
     with :ok <- ensure_open(uuid),
+         :ok <- ensure_writable(uuid, admission_class),
          {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
          {:ok, write_guard, max_bytes} <- AttachmentCoordinator.acquire_write(uuid) do
       try do
         AttachmentInstr.write(uuid, fn ->
-          do_upload(uuid, bundle_root, source, max_bytes, opts)
+          do_upload(uuid, bundle_root, source, max_bytes, opts, admission_class)
         end)
       after
         _ = AttachmentCoordinator.release(uuid, write_guard)
@@ -332,6 +335,7 @@ defmodule ElixirDB.Attachments do
     admission_class = Keyword.get(opts, :admission_class, :foreground)
 
     with :ok <- ensure_open(uuid),
+         :ok <- ensure_writable(uuid, admission_class),
          {:ok, digest} <- Manifest.validate_digest(digest),
          {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
          {:ok, write_guard, max_bytes} <- AttachmentCoordinator.acquire_write(uuid) do
@@ -410,14 +414,19 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  defp do_upload(uuid, bundle_root, source, max_bytes, opts) do
+  defp do_upload(uuid, bundle_root, source, max_bytes, opts, admission_class) do
     case @store.begin_put(bundle_root, max_bytes, Map.new(opts)) do
       {:ok, writer} ->
         try do
           with {:ok, stream_chunks} <- write_all_chunks(writer, source),
                {:ok, finished} <- @store.finish_put(writer),
                {:ok, protected} <-
-                 protect_uploaded_blob(uuid, finished.digest, finished.logical_size, :foreground) do
+                 protect_uploaded_blob(
+                   uuid,
+                   finished.digest,
+                   finished.logical_size,
+                   admission_class
+                 ) do
             {:ok,
              Map.merge(protected, %{
                stream_chunks: stream_chunks,
@@ -789,6 +798,28 @@ defmodule ElixirDB.Attachments do
     case DatabaseCatalog.open(uuid) do
       {:ok, _} -> :ok
       {:error, _} = error -> error
+    end
+  end
+
+  defp ensure_writable(uuid, admission_class) do
+    case DatabaseCatalog.command_as(uuid, admission_class, {:command, :identity, %{}}) do
+      {:ok, %{database_kind: :derived}} ->
+        {:error,
+         ElixirDB.Error.derived_database_read_only(
+           "derived databases do not accept attachment writes"
+         )}
+
+      {:ok, %{"database_kind" => "derived"}} ->
+        {:error,
+         ElixirDB.Error.derived_database_read_only(
+           "derived databases do not accept attachment writes"
+         )}
+
+      {:ok, _identity} ->
+        :ok
+
+      {:error, _} = error ->
+        error
     end
   end
 

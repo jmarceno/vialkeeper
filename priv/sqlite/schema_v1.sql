@@ -9,6 +9,7 @@ PRAGMA trusted_schema = OFF;
 CREATE TABLE IF NOT EXISTS db_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   database_uuid TEXT NOT NULL UNIQUE,
+  database_kind TEXT NOT NULL CHECK (database_kind IN ('ordinary', 'derived')),
   history_epoch TEXT NOT NULL,
   file_format_version INTEGER NOT NULL CHECK (file_format_version = 1),
   logical_schema_version INTEGER NOT NULL CHECK (logical_schema_version = 1),
@@ -144,3 +145,66 @@ CREATE TABLE IF NOT EXISTS view_rows (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS view_rows_sort ON view_rows(view_id, generation, key_sort, document_id);
+
+CREATE TABLE IF NOT EXISTS derived_view (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  materialization_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  definition_json TEXT NOT NULL,
+  definition_digest TEXT NOT NULL,
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  status TEXT NOT NULL,
+  options_json TEXT NOT NULL,
+  last_error_code TEXT
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS derived_sources (
+  source_ordinal INTEGER NOT NULL UNIQUE CHECK (source_ordinal >= 0),
+  source_database_uuid TEXT PRIMARY KEY,
+  source_history_epoch TEXT,
+  checkpoint_sequence INTEGER NOT NULL DEFAULT 0 CHECK (checkpoint_sequence >= 0),
+  state TEXT NOT NULL,
+  rebuild_generation INTEGER NOT NULL DEFAULT 0 CHECK (rebuild_generation >= 0),
+  rebuild_start_sequence INTEGER CHECK (rebuild_start_sequence IS NULL OR rebuild_start_sequence >= 0),
+  rebuild_after_document_id TEXT,
+  rebuild_catchup_sequence INTEGER CHECK (rebuild_catchup_sequence IS NULL OR rebuild_catchup_sequence >= 0),
+  last_error_code TEXT
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS derived_rows (
+  source_database_uuid TEXT NOT NULL,
+  source_document_id TEXT NOT NULL,
+  source_revision_id TEXT NOT NULL,
+  rebuild_generation INTEGER NOT NULL DEFAULT 0 CHECK (rebuild_generation >= 0),
+  key_json TEXT NOT NULL,
+  key_sort BLOB NOT NULL,
+  group_key_json TEXT,
+  group_key_sort BLOB,
+  value_json TEXT,
+  value_sort BLOB,
+  PRIMARY KEY (source_database_uuid, source_document_id),
+  CHECK ((group_key_json IS NULL AND group_key_sort IS NULL) OR (group_key_json IS NOT NULL AND group_key_sort IS NOT NULL)),
+  CHECK ((value_json IS NULL AND value_sort IS NULL) OR (value_json IS NOT NULL AND value_sort IS NOT NULL))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS derived_rows_source_rebuild
+  ON derived_rows(source_database_uuid, rebuild_generation, source_document_id);
+CREATE INDEX IF NOT EXISTS derived_rows_group
+  ON derived_rows(group_key_sort, value_sort, source_document_id);
+
+CREATE TABLE IF NOT EXISTS derived_groups (
+  group_key_sort BLOB PRIMARY KEY,
+  group_key_json TEXT NOT NULL,
+  count INTEGER NOT NULL CHECK (count >= 0),
+  sum_units TEXT NOT NULL,
+  sumsqr_units TEXT NOT NULL,
+  min_value_json TEXT,
+  min_value_sort BLOB,
+  max_value_json TEXT,
+  max_value_sort BLOB,
+  output_document_id TEXT NOT NULL UNIQUE,
+  CHECK ((min_value_json IS NULL AND min_value_sort IS NULL) OR (min_value_json IS NOT NULL AND min_value_sort IS NOT NULL)),
+  CHECK ((max_value_json IS NULL AND max_value_sort IS NULL) OR (max_value_json IS NOT NULL AND max_value_sort IS NOT NULL))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS derived_groups_output ON derived_groups(output_document_id);

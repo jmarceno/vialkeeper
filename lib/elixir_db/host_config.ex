@@ -48,7 +48,11 @@ defmodule ElixirDB.HostConfig do
     "max_query_subscription_heartbeat_ms" => 300_000,
     "max_views_per_database" => 256,
     "max_view_batch_changes" => 500,
-    "max_view_consistent_wait_ms" => 30_000
+    "max_view_consistent_wait_ms" => 30_000,
+    "max_materialized_view_sources" => 32,
+    "max_materialized_view_concurrent_sources" => 16,
+    "max_materialized_view_batch_documents" => 500,
+    "max_materialized_view_retry_delay_ms" => 300_000
   }
 
   @limit_key_atoms %{
@@ -81,7 +85,11 @@ defmodule ElixirDB.HostConfig do
     "max_query_subscription_heartbeat_ms" => :max_query_subscription_heartbeat_ms,
     "max_views_per_database" => :max_views_per_database,
     "max_view_batch_changes" => :max_view_batch_changes,
-    "max_view_consistent_wait_ms" => :max_view_consistent_wait_ms
+    "max_view_consistent_wait_ms" => :max_view_consistent_wait_ms,
+    "max_materialized_view_sources" => :max_materialized_view_sources,
+    "max_materialized_view_concurrent_sources" => :max_materialized_view_concurrent_sources,
+    "max_materialized_view_batch_documents" => :max_materialized_view_batch_documents,
+    "max_materialized_view_retry_delay_ms" => :max_materialized_view_retry_delay_ms
   }
 
   @default_auth %{"enabled" => false, "tokens" => []}

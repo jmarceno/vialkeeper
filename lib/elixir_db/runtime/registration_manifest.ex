@@ -52,17 +52,27 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
 
     with true <-
            Enum.all?(databases, fn entry ->
-             is_map(entry) and Map.keys(entry) in [["path", "uuid"], ["uuid", "path"]]
+             is_map(entry) and
+               Enum.sort(Map.keys(entry)) in [
+                 ["path", "uuid"],
+                 ["database_kind", "path", "uuid"]
+               ]
            end),
          {:ok, values} <- normalize_entries(databases),
          :ok <- ensure_unique(values) do
       {:ok,
-       Enum.map(values, fn %{"uuid" => uuid, "path" => relative} ->
+       Enum.map(values, fn %{
+                             "uuid" => uuid,
+                             "path" => relative,
+                             "database_kind" => stored_kind
+                           } ->
+         {:ok, kind} = ElixirDB.DatabaseKind.from_storage(stored_kind)
          bundle_root = Path.join(root, relative)
 
          %{
            uuid: uuid,
            path: relative,
+           database_kind: kind,
            bundle_root: bundle_root,
            sqlite_path: Path.join(bundle_root, "database.sqlite3"),
            status: :unknown
@@ -103,10 +113,24 @@ defmodule ElixirDB.Runtime.RegistrationManifest do
   defp normalize_entry(entry, acc) when is_map(entry) do
     uuid = Map.get(entry, "uuid", Map.get(entry, :uuid))
     relative = Map.get(entry, "path", Map.get(entry, :path))
+    kind = Map.get(entry, "database_kind", Map.get(entry, :database_kind, "ordinary"))
 
-    if is_binary(uuid) and is_binary(relative) and valid_uuid?(uuid) and safe_entry?(relative),
-      do: {:cont, {:ok, [%{"uuid" => uuid, "path" => relative} | acc]}},
-      else: invalid_entry(acc)
+    with true <-
+           is_binary(uuid) and is_binary(relative) and valid_uuid?(uuid) and safe_entry?(relative),
+         {:ok, normalized_kind} <- ElixirDB.DatabaseKind.normalize(kind) do
+      {:cont,
+       {:ok,
+        [
+          %{
+            "uuid" => uuid,
+            "path" => relative,
+            "database_kind" => ElixirDB.DatabaseKind.storage(normalized_kind)
+          }
+          | acc
+        ]}}
+    else
+      _ -> invalid_entry(acc)
+    end
   end
 
   defp normalize_entry(_entry, acc), do: invalid_entry(acc)

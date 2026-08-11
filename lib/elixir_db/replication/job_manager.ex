@@ -374,6 +374,7 @@ defmodule ElixirDB.Replication.JobManager do
     with {:ok, local} <- LocalEndpoint.new(uuid),
          {:ok, counterpart} <- endpoint_from_definition(endpoint),
          {:ok, source_target} <- endpoints_for_direction(local, counterpart, direction),
+         :ok <- validate_target_kind(source_target.target),
          {:ok, replication_id} <-
            Id.calculate(
              source_uuid(source_target.source),
@@ -440,6 +441,24 @@ defmodule ElixirDB.Replication.JobManager do
 
   defp endpoints_for_direction(local, counterpart, _),
     do: {:ok, %{source: local, target: counterpart}}
+
+  defp validate_target_kind(%LocalEndpoint{} = target) do
+    case LocalEndpoint.identity(target) do
+      {:ok, %{database_kind: :derived}} ->
+        {:error,
+         ElixirDB.Error.derived_database_read_only(
+           "derived databases cannot be replication targets"
+         )}
+
+      {:ok, _identity} ->
+        :ok
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp validate_target_kind(_target), do: :ok
 
   defp source_uuid(%{database_uuid: uuid}), do: uuid
 

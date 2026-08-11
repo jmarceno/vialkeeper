@@ -25,6 +25,10 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   def create(relative_path, options \\ %{}),
     do: GenServer.call(__MODULE__, {:create, relative_path, options})
 
+  @doc "Creates a derived bundle through the trusted materialization boundary."
+  def create_internal(relative_path, options \\ %{}),
+    do: GenServer.call(__MODULE__, {:create_internal, relative_path, options})
+
   def register(relative_path), do: GenServer.call(__MODULE__, {:register, relative_path})
   def unregister(uuid), do: GenServer.call(__MODULE__, {:unregister, uuid})
   def list, do: GenServer.call(__MODULE__, :list)
@@ -155,38 +159,91 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
+  defp create_database(state, relative_path, options, database_kind) when is_map(options) do
+    case safe_path(state.root, relative_path) do
+      {:ok, bundle_root} ->
+        if File.exists?(bundle_root) do
+          {:reply, {:error, ElixirDB.Error.invalid_request("database bundle already exists")},
+           state}
+        else
+          create_new_bundle(state, relative_path, bundle_root, options, database_kind)
+        end
+
+      {:error, %ElixirDB.Error{} = error} ->
+        {:reply, {:error, error}, state}
+    end
+  end
+
+  defp create_database(state, _relative_path, _options, _database_kind) do
+    {:reply,
+     {:error, ElixirDB.Error.invalid_request("database creation options must be an object")}, state}
+  end
+
+  defp create_new_bundle(state, relative_path, bundle_root, options, database_kind) do
+    case DatabaseBundle.create(bundle_root) do
+      {:ok, bundle} ->
+        result =
+          with {:ok, config} <-
+                 ElixirDB.Config.merge_and_bound(
+                   MapAccess.get(options, :config, ElixirDB.Config.defaults())
+                 ),
+               adapter_options <-
+                 options
+                 |> Map.put(:config, config)
+                 |> Map.put(:database_kind, database_kind),
+               {:ok, adapter} <-
+                 Adapter.create(DatabaseBundle.sqlite_path(bundle), adapter_options),
+               {:ok, identity} <- Adapter.identity(adapter),
+               :ok <- Adapter.close(adapter),
+               {:ok, next} <-
+                 put_entry(
+                   state,
+                   identity.database_uuid,
+                   relative_path,
+                   bundle,
+                   identity.database_kind
+                 ) do
+            {:ok, identity, next}
+          else
+            {:error, %ElixirDB.Error{} = error} ->
+              {:error, error}
+
+            {:error, reason} ->
+              {:error,
+               ElixirDB.Error.internal_error("database creation failed", %{cause: inspect(reason)})}
+          end
+
+        case result do
+          {:ok, identity, next} ->
+            {:reply, {:ok, identity}, next}
+
+          {:error, error} ->
+            _ = File.rm_rf(bundle_root)
+            {:reply, {:error, error}, state}
+        end
+
+      {:error, %ElixirDB.Error{} = error} ->
+        {:reply, {:error, error}, state}
+    end
+  end
+
   @impl true
   def handle_call({:create, relative_path, options}, _from, state) do
-    # SAFETY: create touches the filesystem and adapter DDL; an unanticipated raise here
-    # would crash the shared catalog. Catch and convert to a typed error.
+    safe(fn -> create_database(state, relative_path, options, :ordinary) end, state)
+  end
+
+  @impl true
+  def handle_call({:create_internal, relative_path, options}, _from, state) do
     safe(
       fn ->
-        with {:ok, bundle_root} <- safe_path(state.root, relative_path),
-             false <- File.exists?(bundle_root),
-             {:ok, bundle} <- DatabaseBundle.create(bundle_root),
-             {:ok, config} <-
-               ElixirDB.Config.merge_and_bound(
-                 MapAccess.get(options, :config, ElixirDB.Config.defaults())
-               ),
-             {:ok, adapter} <-
-               Adapter.create(DatabaseBundle.sqlite_path(bundle), Map.put(options, :config, config)),
-             {:ok, identity} <- Adapter.identity(adapter),
-             :ok <- Adapter.close(adapter),
-             {:ok, state} <- put_entry(state, identity.database_uuid, relative_path, bundle) do
-          {:reply, {:ok, identity}, state}
+        if is_map(options) and MapAccess.get(options, :database_kind) == :derived do
+          create_database(state, relative_path, options, :derived)
         else
-          true ->
-            {:reply, {:error, ElixirDB.Error.invalid_request("database bundle already exists")},
-             state}
-
-          {:error, %ElixirDB.Error{} = error} ->
-            {:reply, {:error, error}, state}
-
-          {:error, reason} ->
-            {:reply,
-             {:error,
-              ElixirDB.Error.internal_error("database creation failed", %{cause: inspect(reason)})},
-             state}
+          {:reply,
+           {:error,
+            ElixirDB.Error.invalid_request(
+              "internal database creation requires the derived database kind"
+            )}, state}
         end
       end,
       state
@@ -207,7 +264,14 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
              {:ok, identity} <- Adapter.identity(adapter),
              :ok <- Adapter.close(adapter),
              :ok <- no_duplicate_uuid(state, identity.database_uuid, bundle_root),
-             {:ok, next} <- put_entry(state, identity.database_uuid, relative_path, bundle) do
+             {:ok, next} <-
+               put_entry(
+                 state,
+                 identity.database_uuid,
+                 relative_path,
+                 bundle,
+                 identity.database_kind
+               ) do
           {:reply, {:ok, identity}, next}
         else
           false ->
@@ -454,7 +518,12 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       {:ok, bundle} ->
         case DynamicSupervisor.start_child(
                ElixirDB.Runtime.DatabaseSupervisor,
-               {DatabaseRuntimeSupervisor, %{uuid: uuid, bundle: bundle}}
+               {DatabaseRuntimeSupervisor,
+                %{
+                  uuid: uuid,
+                  bundle: bundle,
+                  database_kind: Map.get(entry, :database_kind, :ordinary)
+                }}
              ) do
           {:ok, _pid} ->
             {:ok, %{database_uuid: uuid, runtime_state: :open},
@@ -471,8 +540,13 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   # LIFE-007: missing file or UUID mismatch MUST mark registration unavailable.
-  defp maybe_mark_unavailable(state, uuid, %ElixirDB.Error{code: :database_unavailable} = error) do
-    if uuid_mismatch?(error) or missing_file?(error),
+  defp maybe_mark_unavailable(
+         state,
+         uuid,
+         %ElixirDB.Error{code: code} = error
+       )
+       when code in [:database_unavailable, :integrity_violation] do
+    if uuid_mismatch?(error) or missing_file?(error) or kind_mismatch?(error),
       do: mark_status(state, uuid, :unavailable),
       else: state
   end
@@ -509,6 +583,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp uuid_mismatch?(%ElixirDB.Error{details: %{reason: :uuid_mismatch}}), do: true
   defp uuid_mismatch?(_), do: false
 
+  defp kind_mismatch?(%ElixirDB.Error{details: %{reason: :database_kind_mismatch}}), do: true
+  defp kind_mismatch?(_), do: false
+
   defp missing_file?(%ElixirDB.Error{message: message}) when is_binary(message),
     do: String.contains?(message, "missing")
 
@@ -521,12 +598,13 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
-  defp put_entry(state, uuid, relative, %DatabaseBundle{} = bundle) do
+  defp put_entry(state, uuid, relative, %DatabaseBundle{} = bundle, database_kind) do
     entry = %{
       uuid: uuid,
       path: relative,
       bundle_root: DatabaseBundle.root(bundle),
       sqlite_path: DatabaseBundle.sqlite_path(bundle),
+      database_kind: database_kind,
       status: :registered
     }
 
@@ -600,7 +678,12 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
           end
       end
 
-    %{database_uuid: entry.uuid, path: entry.path, state: state}
+    %{
+      database_uuid: entry.uuid,
+      path: entry.path,
+      database_kind: Map.get(entry, :database_kind, :ordinary),
+      state: state
+    }
   end
 
   defp inspect_entry(entry) do
@@ -622,8 +705,17 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     _ = Adapter.close(adapter)
 
     case result do
-      {:ok, %{database_uuid: uuid}} when uuid == entry.uuid ->
-        result
+      {:ok, %{database_uuid: uuid, database_kind: database_kind}} when uuid == entry.uuid ->
+        if database_kind == Map.get(entry, :database_kind, :ordinary) do
+          result
+        else
+          {:error,
+           ElixirDB.Error.integrity_violation("database kind does not match registration hint", %{
+             reason: :database_kind_mismatch,
+             expected: Map.get(entry, :database_kind, :ordinary),
+             actual: database_kind
+           })}
+        end
 
       {:ok, %{database_uuid: actual}} ->
         {:error,

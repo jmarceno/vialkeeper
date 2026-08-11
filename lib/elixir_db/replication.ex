@@ -1090,6 +1090,12 @@ defmodule ElixirDB.Replication do
         {:error,
          ElixirDB.Error.replication_incompatible("source and target database UUIDs must differ")}
 
+      get(target, :database_kind) in [:derived, "derived"] ->
+        {:error,
+         ElixirDB.Error.derived_database_read_only(
+           "derived databases cannot be replication targets"
+         )}
+
       version(source, :replication_protocol_major) != version(target, :replication_protocol_major) ->
         {:error, ElixirDB.Error.replication_incompatible("replication protocol versions differ")}
 

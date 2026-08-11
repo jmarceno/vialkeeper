@@ -1,5 +1,5 @@
 defmodule ElixirDB.Storage.SQLite.Schema do
-  @moduledoc false
+  @moduledoc "Creates and validates the fixed Version 1 SQLite schema and metadata."
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.SQLite.Connection
   alias ElixirDB.UUID
@@ -25,22 +25,19 @@ defmodule ElixirDB.Storage.SQLite.Schema do
     schema =
       File.read!(Path.join([Application.app_dir(:elixir_db), "priv", "sqlite", "schema_v1.sql"]))
 
-    with :ok <- execute_script(conn, schema),
+    with {:ok, database_kind} <-
+           ElixirDB.DatabaseKind.normalize(Keyword.get(opts, :database_kind, :ordinary)),
+         :ok <- execute_script(conn, schema),
          :ok <- configure(conn, opts),
-         {:ok, _} <-
-           Connection.query(
-             conn,
-             "INSERT INTO db_meta VALUES (1, ?, ?, 1, 1, 1, 1, 1, 0, 0, 0, NULL, ?, ?)",
-             [
-               database_uuid,
-               UUID.v4(),
-               DateTime.utc_now() |> DateTime.to_iso8601(),
-               config_json
-             ]
-           ) do
+         :ok <- begin_initialization(conn),
+         :ok <- insert_metadata(conn, database_uuid, database_kind, config_json),
+         :ok <- initialize_derived(conn, database_kind, Keyword.get(opts, :initial_derived_view)),
+         :ok <- commit_initialization(conn) do
       :ok
     else
       {:error, reason} ->
+        _ = rollback_initialization(conn)
+
         {:error,
          ElixirDB.Error.internal_error("could not initialize SQLite schema", %{
            cause: inspect(reason)
@@ -61,18 +58,22 @@ defmodule ElixirDB.Storage.SQLite.Schema do
          {:ok, [meta]} <-
            Connection.query(
              conn,
-             "SELECT database_uuid, history_epoch, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, current_sequence, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
+             "SELECT database_uuid, database_kind, history_epoch, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, current_sequence, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
            ) do
-      validate_schema_metadata(
-        application_id,
-        user_version,
-        journal_mode,
-        synchronous,
-        locking_mode,
-        trusted_schema,
-        meta,
-        storage_mode
-      )
+      with {:ok, identity} <-
+             validate_schema_metadata(
+               application_id,
+               user_version,
+               journal_mode,
+               synchronous,
+               locking_mode,
+               trusted_schema,
+               meta,
+               storage_mode
+             ),
+           :ok <- validate_kind_state(conn, identity) do
+        {:ok, identity}
+      end
     else
       {:ok, []} ->
         {:error, ElixirDB.Error.unsupported_format("SQLite file has no ElixirDB metadata")}
@@ -121,6 +122,7 @@ defmodule ElixirDB.Storage.SQLite.Schema do
     case row do
       [
         _uuid,
+        _database_kind,
         _history_epoch,
         _format,
         _schema,
@@ -133,7 +135,8 @@ defmodule ElixirDB.Storage.SQLite.Schema do
         _boundary_digest,
         config_json
       ] ->
-        with :ok <- validate_metadata_scalars(row) do
+        with :ok <- validate_metadata_scalars(row),
+             {:ok, _} <- ElixirDB.DatabaseKind.from_storage(Enum.at(row, 1)) do
           validate_config_json(config_json, metadata_identity(row))
         end
 
@@ -145,6 +148,7 @@ defmodule ElixirDB.Storage.SQLite.Schema do
   defp validate_metadata_scalars(row) do
     [
       uuid,
+      database_kind,
       history_epoch,
       format,
       schema,
@@ -160,6 +164,7 @@ defmodule ElixirDB.Storage.SQLite.Schema do
 
     validators = [
       fn -> validate_metadata_uuid(uuid) end,
+      fn -> validate_metadata_kind(database_kind) end,
       fn -> validate_metadata_uuid(history_epoch) end,
       fn -> validate_metadata_versions(format, schema, revision, canonical, protocol) end,
       fn -> validate_metadata_sequence(sequence) end,
@@ -176,6 +181,10 @@ defmodule ElixirDB.Storage.SQLite.Schema do
 
   defp validate_metadata_uuid(value) do
     if valid_uuid?(value), do: nil, else: metadata_invalid_error()
+  end
+
+  defp validate_metadata_kind(value) do
+    if value in ["ordinary", "derived"], do: nil, else: metadata_invalid_error()
   end
 
   defp validate_metadata_versions(format, schema, revision, canonical, protocol) do
@@ -209,6 +218,7 @@ defmodule ElixirDB.Storage.SQLite.Schema do
 
   defp metadata_identity([
          uuid,
+         database_kind,
          history_epoch,
          format,
          schema,
@@ -221,8 +231,11 @@ defmodule ElixirDB.Storage.SQLite.Schema do
          boundary_digest,
          config_json
        ]) do
+    {:ok, database_kind} = ElixirDB.DatabaseKind.from_storage(database_kind)
+
     %{
       database_uuid: uuid,
+      database_kind: database_kind,
       history_epoch: history_epoch,
       file_format_version: format,
       logical_schema_version: schema,
@@ -256,6 +269,193 @@ defmodule ElixirDB.Storage.SQLite.Schema do
          })}
     end
   end
+
+  defp validate_kind_state(conn, %{database_kind: :ordinary}) do
+    case Connection.query(conn, "SELECT COUNT(*) FROM derived_view") do
+      {:ok, [[0]]} ->
+        :ok
+
+      {:ok, [[count]]} when is_integer(count) ->
+        {:error, ElixirDB.Error.integrity_violation("ordinary database contains derived metadata")}
+
+      {:error, reason} ->
+        {:error,
+         ElixirDB.Error.unsupported_format("SQLite derived metadata validation failed", %{
+           cause: inspect(reason)
+         })}
+    end
+  end
+
+  defp validate_kind_state(conn, %{database_kind: :derived}) do
+    with {:ok, [[1]]} <- Connection.query(conn, "SELECT COUNT(*) FROM derived_view"),
+         {:ok, [[source_count]]} <- Connection.query(conn, "SELECT COUNT(*) FROM derived_sources"),
+         true <- is_integer(source_count) and source_count > 0 do
+      :ok
+    else
+      false ->
+        {:error, ElixirDB.Error.unsupported_format("derived database has no source metadata")}
+
+      {:ok, [[count]]} ->
+        {:error,
+         ElixirDB.Error.unsupported_format("derived database metadata is incomplete", %{
+           count: count
+         })}
+
+      {:error, reason} ->
+        {:error,
+         ElixirDB.Error.unsupported_format("SQLite derived metadata validation failed", %{
+           cause: inspect(reason)
+         })}
+    end
+  end
+
+  defp begin_initialization(conn), do: Connection.execute(conn, "BEGIN IMMEDIATE")
+
+  defp commit_initialization(conn), do: Connection.execute(conn, "COMMIT")
+
+  defp rollback_initialization(conn), do: Connection.execute(conn, "ROLLBACK")
+
+  defp insert_metadata(conn, database_uuid, database_kind, config_json) do
+    Connection.execute(
+      conn,
+      "INSERT INTO db_meta (id, database_uuid, database_kind, history_epoch, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, current_sequence, retention_floor_sequence, compaction_epoch, retention_boundary_digest, created_at, config_json) VALUES (1, ?, ?, ?, 1, 1, 1, 1, 1, 0, 0, 0, NULL, ?, ?)",
+      [
+        database_uuid,
+        ElixirDB.DatabaseKind.storage(database_kind),
+        UUID.v4(),
+        DateTime.utc_now() |> DateTime.to_iso8601(),
+        config_json
+      ]
+    )
+  end
+
+  defp initialize_derived(_conn, :ordinary, nil), do: :ok
+
+  defp initialize_derived(_conn, :ordinary, _initial),
+    do:
+      {:error, ElixirDB.Error.invalid_request("ordinary database cannot include derived metadata")}
+
+  defp initialize_derived(conn, :derived, initial) when is_map(initial) do
+    with {:ok, name} <- fetch_binary(initial, :name),
+         {:ok, definition_json} <- fetch_binary(initial, :definition_json),
+         {:ok, definition_digest} <- fetch_binary(initial, :definition_digest),
+         {:ok, options_json} <- fetch_binary(initial, :options_json),
+         {:ok, materialization_id} <- fetch_binary(initial, :materialization_id),
+         {:ok, enabled} <- fetch_boolean(initial, :enabled),
+         {:ok, status} <- fetch_status(initial),
+         sources when is_list(sources) <-
+           Map.get(initial, :sources, Map.get(initial, "sources")),
+         :ok <-
+           insert_derived_view(
+             conn,
+             materialization_id,
+             name,
+             definition_json,
+             definition_digest,
+             enabled,
+             status,
+             options_json
+           ),
+         :ok <- insert_derived_sources(conn, sources) do
+      :ok
+    else
+      nil ->
+        {:error, ElixirDB.Error.invalid_request("derived source metadata is required")}
+
+      {:error, _} = error ->
+        error
+
+      _ ->
+        {:error, ElixirDB.Error.invalid_request("derived metadata is invalid")}
+    end
+  end
+
+  defp initialize_derived(_conn, :derived, _),
+    do: {:error, ElixirDB.Error.invalid_request("derived metadata is required")}
+
+  defp insert_derived_view(
+         conn,
+         materialization_id,
+         name,
+         definition_json,
+         definition_digest,
+         enabled,
+         status,
+         options_json
+       ) do
+    Connection.execute(
+      conn,
+      "INSERT INTO derived_view (id, materialization_id, name, definition_json, definition_digest, enabled, status, options_json, last_error_code) VALUES (1, ?, ?, ?, ?, ?, ?, ?, NULL)",
+      [
+        materialization_id,
+        name,
+        definition_json,
+        definition_digest,
+        bool_to_integer(enabled),
+        status,
+        options_json
+      ]
+    )
+  end
+
+  defp insert_derived_sources(conn, sources) do
+    sources
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {source, ordinal}, :ok ->
+      case insert_derived_source(conn, source, ordinal) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp insert_derived_source(conn, source, ordinal) do
+    case source_uuid(source) do
+      uuid when is_binary(uuid) ->
+        Connection.execute(
+          conn,
+          "INSERT INTO derived_sources (source_ordinal, source_database_uuid, source_history_epoch, checkpoint_sequence, state, rebuild_generation, rebuild_start_sequence, rebuild_after_document_id, rebuild_catchup_sequence, last_error_code) VALUES (?, ?, NULL, 0, 'pending', 0, NULL, NULL, NULL, NULL)",
+          [ordinal, uuid]
+        )
+
+      _ ->
+        {:error, ElixirDB.Error.invalid_request("derived source metadata is invalid")}
+    end
+  end
+
+  defp source_uuid(source) when is_binary(source), do: source
+  defp source_uuid(%{database_uuid: uuid}), do: uuid
+  defp source_uuid(%{"database_uuid" => uuid}), do: uuid
+  defp source_uuid(_), do: nil
+
+  defp fetch_binary(map, key) do
+    value = Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+    if is_binary(value) and value != "" do
+      {:ok, value}
+    else
+      {:error, ElixirDB.Error.invalid_request("derived metadata field is invalid")}
+    end
+  end
+
+  defp fetch_boolean(map, key) do
+    value = Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+    if is_boolean(value) do
+      {:ok, value}
+    else
+      {:error, ElixirDB.Error.invalid_request("derived metadata enabled flag is invalid")}
+    end
+  end
+
+  defp fetch_status(map) do
+    value = Map.get(map, :status, Map.get(map, "status"))
+
+    if is_atom(value), do: {:ok, Atom.to_string(value)}, else: fetch_binary(map, :status)
+  end
+
+  defp bool_to_integer(true), do: 1
+  defp bool_to_integer(false), do: 0
 
   defp valid_uuid?(uuid) when is_binary(uuid) do
     Regex.match?(
