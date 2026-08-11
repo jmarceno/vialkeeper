@@ -95,3 +95,8 @@ allow_insecure_remote = false
 # network connection to any collector is attempted.
 [observability]
 otlp_endpoint = ""
+
+# Embedded administration console served at /ui. When disabled, every /ui
+# route is unavailable; the /v1 API is unchanged.
+[web_ui]
+enabled = true

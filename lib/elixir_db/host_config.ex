@@ -96,15 +96,17 @@ defmodule ElixirDB.HostConfig do
   @default_tls %{"enabled" => false, "certfile" => "cert.pem", "keyfile" => "key.pem"}
   @default_security %{"allow_insecure_remote" => false}
   @default_observability %{"otlp_endpoint" => ""}
+  @default_web_ui %{"enabled" => true}
 
   @default_admission AdmissionPolicy.default_toml_map()
 
-  @known_sections ~w(listener limits admission auth tls security observability federation)
+  @known_sections ~w(listener limits admission auth tls security observability federation web_ui)
   @allowed_listener ~w(ip port)
   @allowed_auth ~w(enabled tokens)
   @allowed_tls ~w(enabled certfile keyfile)
   @allowed_security ~w(allow_insecure_remote)
   @allowed_observability ~w(otlp_endpoint)
+  @allowed_web_ui ~w(enabled)
   @allowed_federation ~w(max_sources max_concurrent_sources max_candidates max_execution_ms saved_query)
   @allowed_admission Map.keys(@default_admission)
 
@@ -131,6 +133,7 @@ defmodule ElixirDB.HostConfig do
       "tls" => @default_tls,
       "security" => @default_security,
       "observability" => @default_observability,
+      "web_ui" => @default_web_ui,
       "federation" => %{
         "max_sources" => 16,
         "max_concurrent_sources" => 8,
@@ -239,6 +242,7 @@ defmodule ElixirDB.HostConfig do
          {:ok, tls} <- validate_tls(raw["tls"], root),
          {:ok, security} <- validate_security(raw["security"]),
          {:ok, obs} <- validate_observability(raw["observability"]),
+         {:ok, web_ui} <- validate_web_ui(raw["web_ui"]),
          {:ok, federation} <- validate_federation(raw["federation"], limits) do
       # host_limits consumers (`ElixirDB.Config.host_limits/0`) expect atom keys,
       # matching the original `config/config.exs` keyword form. The keys are
@@ -257,6 +261,7 @@ defmodule ElixirDB.HostConfig do
         |> Keyword.put(:tls, tls)
         |> Keyword.put(:security, security)
         |> Keyword.put(:otlp_endpoint, obs)
+        |> Keyword.put(:web_ui, web_ui)
         |> Keyword.put(:federation, federation)
 
       {:ok, config}
@@ -453,6 +458,18 @@ defmodule ElixirDB.HostConfig do
   end
 
   defp validate_observability(_), do: {:error, "host.toml: [observability] must be a table"}
+
+  defp validate_web_ui(nil), do: {:ok, [enabled: true]}
+
+  defp validate_web_ui(%{} = web_ui) do
+    with :ok <- allow_only(web_ui, @allowed_web_ui, "web_ui"),
+         :ok <- validate_bool(web_ui["enabled"], "web_ui.enabled") do
+      enabled = if is_boolean(web_ui["enabled"]), do: web_ui["enabled"], else: true
+      {:ok, [enabled: enabled]}
+    end
+  end
+
+  defp validate_web_ui(_), do: {:error, "host.toml: [web_ui] must be a table"}
 
   defp validate_federation(nil, _limits),
     do:

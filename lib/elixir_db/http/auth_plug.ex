@@ -10,12 +10,18 @@ defmodule ElixirDB.HTTP.AuthPlug do
   Failures are indistinguishable (`AUTH-004`): a missing header, a malformed
   header, and a wrong token all yield the same `unauthorized` response, so the
   error cannot be used to probe which case occurred.
+
+  The only exemption is the inert Web UI shell and its fixed embedded assets
+  when `[web_ui] enabled = true`. Fragment and action routes under `/ui` remain
+  subject to the same bearer validation as `/v1`.
   """
 
   @behaviour Plug
 
   import Plug.Conn
   alias ElixirDB.HTTP.Response
+  alias ElixirDB.WebUI
+  alias ElixirDB.WebUI.Assets
 
   @bearer_prefix "Bearer "
 
@@ -29,21 +35,43 @@ defmodule ElixirDB.HTTP.AuthPlug do
     # Router's init_mode and without a recompile to pick up changed tokens.
     auth = Application.get_env(:elixir_db, :auth, [])
 
-    if Keyword.get(auth, :enabled, false) do
-      token_digests = Keyword.get(auth, :token_digests, [])
-
-      with [header | _] <- get_req_header(conn, "authorization"),
-           token when is_binary(token) <- extract_bearer(header),
-           digest <- digest(token),
-           true <- matches_any?(digest, token_digests) do
+    cond do
+      public_web_ui_request?(conn) ->
         conn
-      else
-        _ -> unauthorized(conn)
-      end
-    else
-      conn
+
+      Keyword.get(auth, :enabled, false) ->
+        token_digests = Keyword.get(auth, :token_digests, [])
+
+        with [header | _] <- get_req_header(conn, "authorization"),
+             token when is_binary(token) <- extract_bearer(header),
+             digest <- digest(token),
+             true <- matches_any?(digest, token_digests) do
+          conn
+        else
+          _ -> unauthorized(conn)
+        end
+
+      true ->
+        conn
     end
   end
+
+  @doc false
+  @spec public_web_ui_request?(Plug.Conn.t()) :: boolean()
+  def public_web_ui_request?(conn) do
+    WebUI.enabled?() and
+      conn.method in ["GET", "HEAD"] and
+      public_web_ui_path?(conn.request_path)
+  end
+
+  defp public_web_ui_path?("/ui"), do: true
+  defp public_web_ui_path?("/ui/"), do: true
+
+  defp public_web_ui_path?("/ui/assets/" <> name) do
+    Assets.known_name?(name) and not String.contains?(name, "/")
+  end
+
+  defp public_web_ui_path?(_), do: false
 
   # A missing or non-Bearer header must produce the same response as a wrong
   # token (AUTH-004). `extract_bearer/1` returns `nil` for anything that is not

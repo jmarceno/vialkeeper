@@ -65,7 +65,8 @@ config :elixir_db,
   auth: [enabled: false, token_digests: []],
   tls: [enabled: false],
   security: [allow_insecure_remote: false],
-  otlp_endpoint: ""
+  otlp_endpoint: "",
+  web_ui: [enabled: true]
 
 # Observability: never export over the network in tests. Wire the SDK to use
 # the simple (synchronous) span processor with the in-memory TestExporter so

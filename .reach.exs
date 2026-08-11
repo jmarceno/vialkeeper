@@ -1,10 +1,12 @@
 [
   layers: [
-    transport: "ElixirDB.HTTP.*",
+    transport: ["ElixirDB.HTTP.*", "ElixirDB.WebUI", "ElixirDB.WebUI.*"],
     application: [
       "ElixirDB.Documents",
       "ElixirDB.Changes",
       "ElixirDB.Query",
+      "ElixirDB.Views",
+      "ElixirDB.MaterializedViews",
       "ElixirDB.Federation",
       "ElixirDB.Federation.Executor",
       "ElixirDB.Federation.Normalizer",
@@ -14,6 +16,7 @@
       "ElixirDB.Federation.SourceDocument",
       "ElixirDB.Federation.SavedQueries",
       "ElixirDB.Replication",
+      "ElixirDB.Replication.JobManager",
       "ElixirDB.Attachments",
       "ElixirDB.Observability.Dashboard"
     ],

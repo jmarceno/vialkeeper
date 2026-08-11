@@ -71,6 +71,7 @@ defmodule ElixirDB.HostConfigTest do
     assert Keyword.get(config, :tls)[:enabled] == false
     assert Keyword.get(config, :security)[:allow_insecure_remote] == false
     assert Keyword.get(config, :otlp_endpoint) == ""
+    assert Keyword.get(config, :web_ui) == [enabled: true]
     # host_limits defaults are populated
     limits = Keyword.get(config, :host_limits) |> Map.new()
     assert limits[:max_document_bytes] == 1_048_576
