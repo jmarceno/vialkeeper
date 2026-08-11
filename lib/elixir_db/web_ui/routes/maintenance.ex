@@ -17,7 +17,7 @@ defmodule ElixirDB.WebUI.Routes.Maintenance do
   @spec show(Plug.Conn.t()) :: Plug.Conn.t()
   def show(conn) do
     case Request.require_uuid(conn.path_params["uuid"]) do
-      {:ok, uuid} -> Response.fragment(conn, render_console(uuid, nil, nil))
+      {:ok, uuid} -> Response.fragment(conn, render_console(uuid, nil))
       {:error, %Error{} = error} -> Response.error_fragment(conn, error)
     end
   end
@@ -27,7 +27,7 @@ defmodule ElixirDB.WebUI.Routes.Maintenance do
   def integrity_check(conn) do
     with {:ok, uuid} <- Request.require_uuid(conn.path_params["uuid"]),
          {:ok, data} <- DatabaseCatalog.command(uuid, {:command, :integrity_check, %{}}) do
-      Response.fragment(conn, render_console(uuid, {:integrity, data}, nil))
+      Response.fragment(conn, render_console(uuid, {:integrity, data}))
     else
       {:error, %Error{} = error} -> Response.error_fragment(conn, error)
     end
@@ -40,7 +40,7 @@ defmodule ElixirDB.WebUI.Routes.Maintenance do
          {:ok, params, conn} <- Request.fetch_params(conn),
          {:ok, request} <- decode_optional_json(params, "request"),
          {:ok, stats} <- DatabaseCatalog.command(uuid, {:command, :compact_retention, request}) do
-      Response.fragment(conn, render_console(uuid, {:compact, Wire.compact_stats(stats)}, nil))
+      Response.fragment(conn, render_console(uuid, {:compact, Wire.compact_stats(stats)}))
     else
       {:error, %Error{} = error} -> Response.error_fragment(conn, error)
     end
@@ -51,7 +51,7 @@ defmodule ElixirDB.WebUI.Routes.Maintenance do
   def attachment_gc(conn) do
     with {:ok, uuid} <- Request.require_uuid(conn.path_params["uuid"]),
          {:ok, stats} <- Attachments.gc(uuid) do
-      Response.fragment(conn, render_console(uuid, {:attachment_gc, public_stats(stats)}, nil))
+      Response.fragment(conn, render_console(uuid, {:attachment_gc, public_stats(stats)}))
     else
       {:error, %Error{} = error} -> Response.error_fragment(conn, error)
     end
@@ -75,7 +75,7 @@ defmodule ElixirDB.WebUI.Routes.Maintenance do
     end
   end
 
-  defp render_console(uuid, result, error) do
+  defp render_console(uuid, result) do
     [
       "<section class=\"stack\">\n",
       Components.page_header("Maintenance", uuid),
@@ -83,7 +83,6 @@ defmodule ElixirDB.WebUI.Routes.Maintenance do
       fragment_link("Database", "/ui/fragments/databases/#{uuid}"),
       fragment_link("Replications", "/ui/fragments/databases/#{uuid}/replications"),
       "  </div>\n",
-      if(error, do: Components.error_block(error), else: []),
       result_panel(result),
       integrity_form(uuid),
       compact_form(uuid),
