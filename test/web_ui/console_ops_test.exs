@@ -309,6 +309,7 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
 
     assert transitioning.resp_body =~ "Rebuilding"
     assert transitioning.resp_body =~ "every 2s"
+    assert transitioning.resp_body =~ ~s(hx-target="this")
     refute transitioning.resp_body =~ "hx-ws"
     refute transitioning.resp_body =~ "EventSource"
 

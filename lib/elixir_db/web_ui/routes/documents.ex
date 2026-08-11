@@ -305,7 +305,7 @@ defmodule ElixirDB.WebUI.Routes.Documents do
 
   defp delete_form(uuid, id, revision) do
     [
-      "    <form class=\"stack\" style=\"margin-top:1rem\" hx-post=\"",
+      "    <form class=\"stack form-follow\" hx-post=\"",
       HTML.attr("/ui/actions/databases/" <> uuid <> "/documents/delete"),
       "\" hx-target=\"#app\" hx-swap=\"innerHTML\" hx-confirm=\"Delete this document?\">\n",
       "      <input type=\"hidden\" name=\"id\" value=\"",

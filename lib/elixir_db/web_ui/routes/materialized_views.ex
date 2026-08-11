@@ -207,7 +207,7 @@ defmodule ElixirDB.WebUI.Routes.MaterializedViews do
         [
           " hx-get=\"",
           HTML.attr("/ui/fragments/materialized-views/#{uuid}/status"),
-          "\" hx-trigger=\"every 2s\" hx-swap=\"outerHTML\""
+          "\" hx-trigger=\"every 2s\" hx-target=\"this\" hx-swap=\"outerHTML\""
         ]
       else
         []

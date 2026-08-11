@@ -197,7 +197,7 @@ defmodule ElixirDB.WebUI.Routes.Views do
         [
           " hx-get=\"",
           HTML.attr("/ui/fragments/databases/#{uuid}/views/#{URI.encode_www_form(view_id)}/status"),
-          "\" hx-trigger=\"every 2s\" hx-swap=\"outerHTML\""
+          "\" hx-trigger=\"every 2s\" hx-target=\"this\" hx-swap=\"outerHTML\""
         ]
       else
         []

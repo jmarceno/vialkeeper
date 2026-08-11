@@ -272,6 +272,18 @@ button:disabled,
   }
 }
 
+.nav .logout-row {
+  margin-top: 1rem;
+}
+
+.auth-form .submit-row {
+  margin-top: 0.85rem;
+}
+
+.form-follow {
+  margin-top: 1rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

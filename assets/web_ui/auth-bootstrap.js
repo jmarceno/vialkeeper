@@ -95,7 +95,14 @@
     });
 
     hideAuthForm();
-    dispatchStart();
+
+    // Wait for window load so deferred HTMX has processed hx-trigger listeners
+    // before the first elixirdb:start event is dispatched.
+    if (document.readyState === "complete") {
+      dispatchStart();
+    } else {
+      window.addEventListener("load", dispatchStart, { once: true });
+    }
   }
 
   document.addEventListener("htmx:configRequest", function (event) {

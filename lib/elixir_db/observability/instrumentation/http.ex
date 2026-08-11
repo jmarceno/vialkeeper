@@ -35,6 +35,14 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
   """
   @spec wrap(Plug.Conn.t(), (Plug.Conn.t() -> Plug.Conn.t())) :: Plug.Conn.t()
   def wrap(conn, fun) when is_function(fun, 1) do
+    if tracing_api_available?() do
+      wrap_traced(conn, fun)
+    else
+      wrap_untraced(conn, fun)
+    end
+  end
+
+  defp wrap_traced(conn, fun) do
     # Extract inbound trace context (W3C traceparent/tracestate) so an external
     # caller's trace continues into this request span. extract/1 attaches the
     # extracted context and returns a detach token used to restore the prior
@@ -84,36 +92,64 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
         # No response was (or will be) sent: before_send never fires, so end
         # the span here with the effective 500.
         finish_raised(span_ctx, conn, route, db_uuid, started)
-
-        # SAFETY net: an unanticipated raise inside a route handler must never escape as a
-        # bare process crash that drops the HTTP connection without a JSON body. If the
-        # response has not yet started (conn.state still unsent), render a typed
-        # internal_error envelope so the client observes a stable 500. If the response was
-        # already started (e.g. mid-chunk on a streaming endpoint), the body can no longer
-        # be replaced, so reraise and let the server close the connection.
-        if conn.state in [:unset, :set, :set_chunked, :set_file] do
-          Plug.Conn.put_resp_content_type(conn, "application/json")
-          |> Plug.Conn.send_resp(
-            500,
-            JSON.encode_to_iodata!(%{
-              "request_id" => ElixirDB.UUID.v4(),
-              "error" =>
-                ElixirDB.Error.public(
-                  ElixirDB.Error.internal_error("request failed", %{
-                    cause: inspect(error)
-                  })
-                )
-            })
-          )
-        else
-          reraise error, __STACKTRACE__
-        end
+        render_or_reraise(conn, error, __STACKTRACE__)
     after
       # Restore the prior context so the extracted parent doesn't leak into
       # the next keep-alive request on this connection process.
       if extract_token, do: OpenTelemetry.Ctx.detach(extract_token)
       OpenTelemetry.Tracer.set_current_span(:undefined)
     end
+  end
+
+  defp wrap_untraced(conn, fun) do
+    fun.(conn)
+  rescue
+    error in [
+      ArgumentError,
+      ArithmeticError,
+      BadMapError,
+      CaseClauseError,
+      ErlangError,
+      FunctionClauseError,
+      KeyError,
+      MatchError,
+      Protocol.UndefinedError,
+      RuntimeError,
+      UndefinedFunctionError,
+      WithClauseError
+    ] ->
+      render_or_reraise(conn, error, __STACKTRACE__)
+  end
+
+  defp render_or_reraise(conn, error, stacktrace) do
+    # SAFETY net: an unanticipated raise inside a route handler must never escape as a
+    # bare process crash that drops the HTTP connection without a JSON body. If the
+    # response has not yet started (conn.state still unsent), render a typed
+    # internal_error envelope so the client observes a stable 500. If the response was
+    # already started (e.g. mid-chunk on a streaming endpoint), the body can no longer
+    # be replaced, so reraise and let the server close the connection.
+    if conn.state in [:unset, :set, :set_chunked, :set_file] do
+      Plug.Conn.put_resp_content_type(conn, "application/json")
+      |> Plug.Conn.send_resp(
+        500,
+        JSON.encode_to_iodata!(%{
+          "request_id" => ElixirDB.UUID.v4(),
+          "error" =>
+            ElixirDB.Error.public(
+              ElixirDB.Error.internal_error("request failed", %{
+                cause: inspect(error)
+              })
+            )
+        })
+      )
+    else
+      reraise error, stacktrace
+    end
+  end
+
+  defp tracing_api_available? do
+    # OpenTelemetry.Tracer.start_span/2 is a macro; probe the underlying module.
+    Code.ensure_loaded?(:otel_tracer) and function_exported?(:otel_tracer, :start_span, 3)
   end
 
   defp finish(span_ctx, conn, route, db_uuid, started) do
@@ -262,6 +298,11 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
   defp template_for(["v1", "registrations", _uuid]), do: "/v1/registrations/:uuid"
   defp template_for(["v1", "observability", "snapshot"]), do: "/v1/observability/snapshot"
 
+  defp template_for(["ui"]), do: "/ui"
+  defp template_for(["ui", "assets", _name]), do: "/ui/assets/:name"
+  defp template_for(["ui", "fragments" | _rest]), do: "/ui/fragments/*"
+  defp template_for(["ui", "actions" | _rest]), do: "/ui/actions/*"
+
   # Unknown route: constant fallback, never the raw path (§3.1 privacy,
   # bounded cardinality).
   defp template_for(_), do: "unknown"
@@ -273,6 +314,10 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
     case conn.path_info do
       ["v1", "databases", uuid | _] -> uuid
       ["v1", "materialized-views", uuid | _] -> uuid
+      ["ui", "fragments", "databases", uuid | _] -> uuid
+      ["ui", "actions", "databases", uuid | _] -> uuid
+      ["ui", "fragments", "materialized-views", uuid | _] -> uuid
+      ["ui", "actions", "materialized-views", uuid | _] -> uuid
       _ -> nil
     end
   end

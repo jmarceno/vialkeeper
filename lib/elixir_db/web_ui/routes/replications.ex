@@ -207,7 +207,7 @@ defmodule ElixirDB.WebUI.Routes.Replications do
           HTML.attr(
             "/ui/fragments/databases/#{uuid}/replications/#{URI.encode_www_form(job_id)}/status"
           ),
-          "\" hx-trigger=\"every 2s\" hx-swap=\"outerHTML\""
+          "\" hx-trigger=\"every 2s\" hx-target=\"this\" hx-swap=\"outerHTML\""
         ]
       else
         []

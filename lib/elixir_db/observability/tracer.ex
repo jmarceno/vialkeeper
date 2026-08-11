@@ -40,7 +40,11 @@ defmodule ElixirDB.Observability.Tracer do
   @doc "Sets an allow-listed attribute on the current span."
   @spec set_attributes(keyword()) :: boolean()
   def set_attributes(attrs) when is_list(attrs) do
-    OpenTelemetry.Tracer.set_attributes(Attributes.build(attrs))
+    if api_available?() do
+      OpenTelemetry.Tracer.set_attributes(Attributes.build(attrs))
+    else
+      false
+    end
   end
 
   @doc """
@@ -84,12 +88,25 @@ defmodule ElixirDB.Observability.Tracer do
   @doc "Injects the current trace context into a carrier (list of `{name, value}`)."
   @spec inject(term()) :: term()
   def inject(carrier) do
-    :otel_propagator_text_map.inject(carrier)
+    if api_available?() do
+      :otel_propagator_text_map.inject(carrier)
+    else
+      carrier
+    end
   end
 
   @doc "Extracts trace context from a carrier (list of `{name, value}`)."
-  @spec extract(term()) :: term()
+  @spec extract(term()) :: term() | nil
   def extract(carrier) do
-    :otel_propagator_text_map.extract(carrier)
+    if api_available?() do
+      :otel_propagator_text_map.extract(carrier)
+    else
+      nil
+    end
+  end
+
+  defp api_available? do
+    Code.ensure_loaded?(:otel_propagator_text_map) and
+      function_exported?(:otel_propagator_text_map, :extract, 1)
   end
 end

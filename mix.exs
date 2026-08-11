@@ -88,7 +88,16 @@ defmodule ElixirDB.MixProject do
     [
       elixir_db: [
         include_executables_for: [:unix],
-        applications: [runtime_tools: :permanent],
+        # `runtime: false` OpenTelemetry deps are excluded from releases unless
+        # listed here. `:load` keeps them from auto-starting; Observability.Supervisor
+        # starts them for no-op or OTLP-backed providers.
+        applications: [
+          runtime_tools: :permanent,
+          opentelemetry_api: :load,
+          opentelemetry: :load,
+          opentelemetry_exporter: :load,
+          opentelemetry_experimental: :load
+        ],
         steps: [:assemble, &ElixirDB.ReleaseSteps.patch_launcher/1]
       ]
     ]
