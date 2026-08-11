@@ -5,6 +5,13 @@
       "ElixirDB.Documents",
       "ElixirDB.Changes",
       "ElixirDB.Query",
+      "ElixirDB.Federation",
+      "ElixirDB.Federation.Executor",
+      "ElixirDB.Federation.Normalizer",
+      "ElixirDB.Federation.BookmarkCodec",
+      "ElixirDB.Federation.Ordering",
+      "ElixirDB.Federation.SourceCursor",
+      "ElixirDB.Federation.SavedQueries",
       "ElixirDB.Replication",
       "ElixirDB.Attachments",
       "ElixirDB.Observability.Dashboard"
