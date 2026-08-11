@@ -10,7 +10,7 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
-  alias ElixirDB.Storage.SQLite.{Adapter, Context, Indexes}
+  alias ElixirDB.Storage.SQLite.{Adapter, Context, Documents, IndexCatalog, Indexes}
 
   @impl true
   def list_indexes(%BackendContext{} = context) do
@@ -112,4 +112,33 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
     |> Map.drop([:doc_key])
     |> Map.put(:backend_meta, %{doc_key: doc_key})
   end
+
+  @impl true
+  def ready_definitions(%BackendContext{} = context) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Errors.wrap(IndexCatalog.ready_definitions(adapter.conn))
+    end
+  end
+
+  @impl true
+  def refresh_document(%BackendContext{} = context, document_id, winner, ready)
+      when is_binary(document_id) and is_map(winner) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, doc} <- require_document(doc) do
+      case ready do
+        :load ->
+          Errors.wrap(IndexCatalog.refresh_ready(adapter.conn, doc.doc_key, winner))
+
+        rows when is_list(rows) ->
+          Errors.wrap(IndexCatalog.refresh_ready(adapter.conn, doc.doc_key, winner, rows))
+      end
+    else
+      :missing_document -> :ok
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  defp require_document(nil), do: :missing_document
+  defp require_document(doc), do: {:ok, doc}
 end

@@ -12,6 +12,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.Revisions.Compare
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.{Attachments, Connection, TermBlob}
   @revision_body_term_cache_limit 256
@@ -306,27 +307,13 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   Encodes leaf revisions for a change-feed `leaf_set_json` column.
   """
   @spec encode_leaf_set([Revision.t()]) :: {:ok, binary()} | {:error, term()}
-  def encode_leaf_set(leaves),
-    do:
-      Canonical.encode(
-        Enum.map(leaves, fn leaf ->
-          %{
-            "revision" => leaf.revision_id,
-            "history_id" => leaf.history_id,
-            "deleted" => leaf.deleted
-          }
-        end)
-      )
+  def encode_leaf_set(leaves), do: Compare.encode_leaf_set(leaves)
 
   @doc """
   True when two revision structs describe the same stored content.
   """
   @spec same?(Revision.t(), Revision.t()) :: boolean()
-  def same?(a, b),
-    do:
-      a.revision_id == b.revision_id and a.generation == b.generation and
-        a.parent_revision == b.parent_revision and a.history_id == b.history_id and
-        a.deleted == b.deleted and a.body == b.body and a.attachments == b.attachments
+  def same?(a, b), do: Compare.same?(a, b)
 
   @doc false
   def from_row(row, attachments \\ %{})

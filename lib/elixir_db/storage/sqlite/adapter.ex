@@ -22,20 +22,19 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.OpaqueHandle
   alias ElixirDB.Storage.Ports.Errors
+  alias ElixirDB.Storage.RequestValidation
+  alias ElixirDB.Storage.Services
 
   alias ElixirDB.Storage.SQLite.{
     Attachments,
     Capabilities,
-    Chains,
     Changes,
     Connection,
     DerivedViews,
     Documents,
-    Import,
     IndexCatalog,
     Integrity,
     LocalRecords,
-    Mutations,
     Ownership,
     QueryRunner,
     ReplicationJobs,
@@ -351,7 +350,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @impl true
   def apply_local_mutation(adapter, request) when is_map(request) do
     with :ok <- ensure_writable(adapter) do
-      transaction(adapter, fn -> Mutations.apply_local_tx(adapter, request) end)
+      Services.apply_local_mutation(to_context(adapter), request)
     end
   end
 
@@ -359,15 +358,11 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     do: {:error, ElixirDB.Error.invalid_request("mutation request must be an object")}
 
   @impl true
-  def apply_bulk_mutation(adapter, %{operations: operations}) do
-    with :ok <- ensure_writable(adapter),
-         :ok <- Mutations.validate_operation_batch(operations) do
-      transaction(adapter, fn -> Mutations.bulk_tx(adapter, operations) end)
+  def apply_bulk_mutation(adapter, request) when is_map(request) do
+    with :ok <- ensure_writable(adapter) do
+      Services.apply_bulk_mutation(to_context(adapter), request)
     end
   end
-
-  def apply_bulk_mutation(adapter, %{"operations" => operations}),
-    do: apply_bulk_mutation(adapter, %{operations: operations})
 
   def apply_bulk_mutation(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("bulk mutation request must be an object")}
@@ -375,7 +370,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @impl true
   def resolve_conflict(adapter, request) when is_map(request) do
     with :ok <- ensure_writable(adapter) do
-      transaction(adapter, fn -> Mutations.resolve_conflict_tx(adapter, request) end)
+      Services.resolve_conflict(to_context(adapter), request)
     end
   end
 
@@ -445,14 +440,14 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def diff_revisions(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Chains.diff(adapter, request)
+    do: Services.diff_revisions(to_context(adapter), request)
 
   def diff_revisions(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("revision diff request must be an object")}
 
   @impl true
   def get_revision_chains(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Chains.get(adapter, request)
+    do: Services.get_revision_chains(to_context(adapter), request)
 
   def get_revision_chains(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("revision chain request must be an object")}
@@ -460,26 +455,12 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @impl true
   def import_revision_chains(adapter, request) when is_map(request) do
     with :ok <- ensure_writable(adapter) do
-      import_revision_chains_writable(adapter, request)
+      Services.import_revision_chains(to_context(adapter), request)
     end
   end
 
   def import_revision_chains(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("revision import request must be an object")}
-
-  defp import_revision_chains_writable(adapter, request) do
-    chains = MapAccess.get(request, :chains, [])
-
-    with :ok <- Import.validate_chain_batch(chains),
-         :ok <-
-           Import.validate_purged_boundaries(
-             MapAccess.get(request, :purged_boundaries, []),
-             MapAccess.get(request, :source_database_uuid)
-           ),
-         :ok <- Import.ensure_physical_blobs(adapter, chains) do
-      transaction(adapter, fn -> Import.import_tx(adapter, request) end)
-    end
-  end
 
   @impl true
   def get_local_record(%__MODULE__{conn: conn}, namespace, key),
@@ -956,37 +937,14 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   defp choose_revision(adapter, doc, revision),
     do: Revisions.find(adapter.conn, doc.doc_key, revision)
 
-  defp validate_changes_limit(limit, database_max) when is_integer(limit) and limit > 0 do
-    max = min(ElixirDB.Config.host_limits()[:max_changes_batch] || 500, database_max || 500)
+  defp validate_changes_limit(limit, database_max),
+    do: RequestValidation.validate_changes_limit(limit, database_max)
 
-    if limit <= max,
-      do: :ok,
-      else: {:error, ElixirDB.Error.resource_limit("changes batch exceeds the host limit")}
-  end
+  defp validate_non_negative_integer(value, label),
+    do: RequestValidation.validate_non_negative_integer(value, label)
 
-  defp validate_changes_limit(_, _),
-    do: {:error, ElixirDB.Error.invalid_request("changes limit must be a positive integer")}
-
-  defp validate_non_negative_integer(value, _label) when is_integer(value) and value >= 0, do: :ok
-
-  defp validate_non_negative_integer(_value, label),
-    do: {:error, ElixirDB.Error.invalid_request("#{label} must be a non-negative integer")}
-
-  defp validate_changes_since_floor(since, identity) do
-    floor = Map.get(identity, :retention_floor_sequence, 0) || 0
-
-    if since < floor do
-      {:error,
-       ElixirDB.Error.history_truncated("changes feed is below the retention floor", %{
-         database_uuid: identity.database_uuid,
-         history_epoch: identity.history_epoch,
-         retention_floor: floor,
-         compaction_epoch: Map.get(identity, :compaction_epoch, 0)
-       })}
-    else
-      :ok
-    end
-  end
+  defp validate_changes_since_floor(since, identity),
+    do: RequestValidation.validate_changes_since_floor(since, identity)
 
   defp retention_fault_check(nil, _point), do: :ok
 

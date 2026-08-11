@@ -5,8 +5,11 @@ defmodule ElixirDB.Storage.SQLite.Context do
   """
 
   alias ElixirDB.Storage.BackendContext
+  alias ElixirDB.Storage.ContextRef
   alias ElixirDB.Storage.OpaqueHandle
   alias ElixirDB.Storage.SQLite.Adapter
+
+  require ContextRef
 
   @doc "Returns the SQLite adapter stored in `context` or handle."
   @spec unwrap(BackendContext.t() | OpaqueHandle.t() | Adapter.t()) ::
@@ -43,15 +46,7 @@ defmodule ElixirDB.Storage.SQLite.Context do
 
   @doc "Rebuilds a context after mutating adapter fields inside a transaction."
   @spec replace_ref(BackendContext.t(), Adapter.t()) :: BackendContext.t()
-  def replace_ref(
-        %BackendContext{backend_ref: %OpaqueHandle{} = handle} = context,
-        %Adapter{} = adapter
-      ) do
-    _ = OpaqueHandle.replace(handle, adapter)
-    %{context | identity: adapter.identity}
-  end
-
   def replace_ref(%BackendContext{} = context, %Adapter{} = adapter) do
-    %{context | backend_ref: OpaqueHandle.wrap(adapter), identity: adapter.identity}
+    ContextRef.replace_ref(context, adapter)
   end
 end

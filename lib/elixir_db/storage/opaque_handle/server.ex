@@ -4,7 +4,8 @@ defmodule ElixirDB.Storage.OpaqueHandle.Server do
 
   @allowed_callers [
     ElixirDB.Storage.SQLite.Context,
-    ElixirDB.Storage.Sentinel.Context
+    ElixirDB.Storage.Sentinel.Context,
+    ElixirDB.Storage.Memory.Context
   ]
 
   @spec start_link(term()) :: GenServer.on_start()

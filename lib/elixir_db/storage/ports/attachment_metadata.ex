@@ -16,4 +16,10 @@ defmodule ElixirDB.Storage.Ports.AttachmentMetadata do
   @callback remove_pending_blob_protection(BackendContext.t(), map()) :: result(map())
   @callback list_live_attachment_digests(BackendContext.t(), map()) :: result(map())
   @callback cleanup_expired_pending_blobs(BackendContext.t(), map()) :: result(map())
+  @callback ensure_manifest_reachable(BackendContext.t(), map()) ::
+              :ok | {:error, ElixirDB.Error.t()}
+  @callback clear_pending_for_manifest(BackendContext.t(), map()) ::
+              :ok | {:error, ElixirDB.Error.t()}
+  @callback verify_physical_digests(BackendContext.t(), [{binary(), non_neg_integer()}]) ::
+              :ok | {:error, ElixirDB.Error.t()}
 end

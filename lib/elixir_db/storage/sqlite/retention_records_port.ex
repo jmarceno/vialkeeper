@@ -62,4 +62,43 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecordsPort do
       end)
     end
   end
+
+  @impl true
+  def list_boundaries(%BackendContext{} = context) do
+    list_boundaries(context, [])
+  end
+
+  @impl true
+  def list_boundaries(%BackendContext{} = context, opts) when is_list(opts) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Errors.wrap(RetentionRecords.list_boundaries(adapter.conn, opts))
+    end
+  end
+
+  @impl true
+  def install_imported_boundaries(%BackendContext{} = context, boundaries)
+      when is_list(boundaries) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Errors.wrap(RetentionRecords.install_imported_boundaries(adapter.conn, boundaries))
+    end
+  end
+
+  @impl true
+  def mark_pending_local_causal(%BackendContext{} = context) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Errors.wrap(RetentionRecords.mark_pending_local_causal(adapter.conn))
+    end
+  end
+
+  @impl true
+  def pending_local_causal?(%BackendContext{} = context) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Errors.wrap(RetentionRecords.pending_local_causal?(adapter.conn))
+    end
+  end
+
+  @impl true
+  def encode_stored_boundary(stored) when is_map(stored) do
+    RetentionRecords.encode_stored_boundary(stored)
+  end
 end

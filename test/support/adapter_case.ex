@@ -6,6 +6,11 @@ defmodule ElixirDB.Storage.AdapterCase do
 
       use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
 
+  Or for dual-backend semantic suites:
+
+      use ElixirDB.Storage.AdapterCase,
+          adapters: [ElixirDB.Storage.SQLite.Adapter, ElixirDB.Storage.Memory.Adapter]
+
   Each test receives a fresh temporary database handle under `:adapter` and
   the absolute path under `:path`. The suite owns storage-neutral expectations;
   SQLite-only probes remain in dedicated tests.
@@ -18,16 +23,21 @@ defmodule ElixirDB.Storage.AdapterCase do
   use ExUnit.CaseTemplate
 
   using opts do
-    adapter = Keyword.fetch!(opts, :adapter)
+    adapter = Keyword.get(opts, :adapter)
+    adapters = Keyword.get(opts, :adapters)
 
     quote do
       use ExUnit.Case, async: true
       alias ElixirDB.Storage.AdapterCase, as: AdapterCaseModule
 
       @adapter unquote(adapter)
+      @adapters unquote(adapters)
 
       setup context do
-        AdapterCaseModule.open_temp_adapter(@adapter, context)
+        AdapterCaseModule.open_temp_adapter(
+          @adapter || Map.fetch!(context, :adapter_module),
+          context
+        )
       end
 
       defp wire(document_id, revision_id, parent, deleted, body) do
@@ -42,16 +52,15 @@ defmodule ElixirDB.Storage.AdapterCase do
   @spec open_temp_adapter(module(), map()) :: {:ok, keyword()}
   def open_temp_adapter(adapter_mod, _context) when is_atom(adapter_mod) do
     {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-adapter")
-    sqlite_path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
-    {:ok, adapter} = adapter_mod.create(sqlite_path, %{})
+    path = adapter_path(adapter_mod, bundle_path)
+    {:ok, adapter} = adapter_mod.create(path, %{})
 
     ExUnit.Callbacks.on_exit(fn ->
       _ = safe_close(adapter_mod, adapter)
       ElixirDB.TempDatabase.cleanup(bundle_path)
     end)
 
-    {:ok,
-     adapter: adapter, path: sqlite_path, bundle_path: bundle_path, adapter_module: adapter_mod}
+    {:ok, adapter: adapter, path: path, bundle_path: bundle_path, adapter_module: adapter_mod}
   end
 
   @doc """
@@ -65,6 +74,11 @@ defmodule ElixirDB.Storage.AdapterCase do
 
     Wire.new(document_id, history_id, revision_id, generation, parent, deleted, body)
   end
+
+  defp adapter_path(ElixirDB.Storage.SQLite.Adapter, bundle_path),
+    do: ElixirDB.TempDatabase.sqlite_path(bundle_path)
+
+  defp adapter_path(_adapter_mod, bundle_path), do: bundle_path
 
   defp safe_close(adapter_mod, adapter) do
     adapter_mod.close(adapter)

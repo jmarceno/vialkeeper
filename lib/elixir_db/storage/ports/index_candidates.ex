@@ -19,4 +19,7 @@ defmodule ElixirDB.Storage.Ports.IndexCandidates do
   @callback lookup_candidates(BackendContext.t(), map()) :: result([candidate()])
   @callback range_scan_candidates(BackendContext.t(), map()) :: result([candidate()])
   @callback full_text_candidates(BackendContext.t(), map()) :: result([candidate()])
+  @callback ready_definitions(BackendContext.t()) :: result([term()])
+  @callback refresh_document(BackendContext.t(), binary(), map(), term()) ::
+              :ok | {:error, ElixirDB.Error.t()}
 end

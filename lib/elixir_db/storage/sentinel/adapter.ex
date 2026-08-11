@@ -10,6 +10,7 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
 
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.BackendContext
+  alias ElixirDB.Storage.RequestValidation
   alias ElixirDB.Storage.Sentinel.{Ownership, Transaction}
 
   defstruct [:root, :identity, :closed?]
@@ -196,19 +197,7 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
   defp normalize_options(options) when is_map(options), do: options
   defp normalize_options(_), do: %{}
 
-  defp validate_uuid(uuid) when is_binary(uuid) do
-    if Regex.match?(
-         ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-         uuid
-       ) do
-      :ok
-    else
-      {:error, ElixirDB.Error.invalid_request("database UUID must be a UUID")}
-    end
-  end
-
-  defp validate_uuid(_),
-    do: {:error, ElixirDB.Error.invalid_request("database UUID must be a UUID")}
+  defp validate_uuid(uuid), do: RequestValidation.validate_uuid(uuid)
 
   defp ensure_root(path) do
     case File.mkdir_p(path) do

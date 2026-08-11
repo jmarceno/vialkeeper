@@ -21,13 +21,23 @@ defmodule ElixirDB.Storage.Ports.DocumentFacts do
         }
 
   @callback find_document(BackendContext.t(), binary()) :: result(document_fact() | nil)
+  @callback find_documents(BackendContext.t(), [binary()]) ::
+              result(%{optional(binary()) => document_fact() | nil})
   @callback find_revision(BackendContext.t(), binary(), binary()) :: result(Revision.t() | nil)
   @callback list_leaves(BackendContext.t(), binary()) :: result([Revision.t()])
   @callback list_ancestors(BackendContext.t(), binary(), binary()) :: result([Revision.t()])
+  @callback list_document_page(BackendContext.t(), binary() | nil, pos_integer()) ::
+              result(%{document_ids: [binary()], next_cursor: binary() | nil})
   @callback ensure_document(BackendContext.t(), binary()) :: result(document_fact())
+  @callback ensure_parent(BackendContext.t(), binary(), binary() | nil) ::
+              :ok | {:error, ElixirDB.Error.t()}
   @callback insert_revision(BackendContext.t(), binary(), Revision.t()) ::
+              :ok | {:error, ElixirDB.Error.t()}
+  @callback insert_or_accept_revision(BackendContext.t(), binary(), Revision.t()) ::
               :ok | {:error, ElixirDB.Error.t()}
   @callback update_winning(BackendContext.t(), binary(), Revision.t(), non_neg_integer()) ::
               :ok | {:error, ElixirDB.Error.t()}
   @callback empty_document(BackendContext.t(), binary()) :: :ok | {:error, ElixirDB.Error.t()}
+  @callback delete_history(BackendContext.t(), binary(), binary()) ::
+              :ok | {:error, ElixirDB.Error.t()}
 end

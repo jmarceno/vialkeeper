@@ -6,9 +6,9 @@ defmodule ElixirDB.Storage.OpaqueHandle do
   physical fields such as connection references. Payloads live in a private ETS
   table owned by `ElixirDB.Storage.OpaqueHandle.Server`. Unwrap/replace/drop
   succeed only when the caller stack includes a backend Context module
-  (`SQLite.Context` or `Sentinel.Context`), so dictionary introspection,
-  bare `GenServer.call/2`, and direct MFA calls from shared code cannot recover
-  a live adapter. Reach also forbids those MFAs outside backends.
+  (`SQLite.Context`, `Memory.Context`, or `Sentinel.Context`), so dictionary
+  introspection, bare `GenServer.call/2`, and direct MFA calls from shared code
+  cannot recover a live adapter. Reach also forbids those MFAs outside backends.
   """
 
   @enforce_keys [:id]

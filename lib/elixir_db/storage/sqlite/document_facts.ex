@@ -11,13 +11,23 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
-  alias ElixirDB.Storage.SQLite.{Context, Documents, Revisions}
+  alias ElixirDB.Storage.SQLite.{Connection, Context, Documents, Revisions}
 
   @impl true
   def find_document(%BackendContext{} = context, document_id) when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context),
          {:ok, doc} <- Documents.find(adapter.conn, document_id) do
       {:ok, shape_document(doc)}
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
+  def find_documents(%BackendContext{} = context, document_ids) when is_list(document_ids) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, docs} <- Documents.find_many(adapter.conn, document_ids) do
+      {:ok, Map.new(docs, fn {id, doc} -> {id, shape_document(doc)} end)}
     else
       {:error, reason} -> {:error, Errors.normalize(reason)}
     end
@@ -77,6 +87,17 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   end
 
   @impl true
+  def list_document_page(%BackendContext{} = context, cursor, limit)
+      when (is_nil(cursor) or is_binary(cursor)) and is_integer(limit) and limit > 0 do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, {ids, next}} <- Documents.list_page(adapter.conn, cursor, limit) do
+      {:ok, %{document_ids: ids, next_cursor: next}}
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
   def ensure_document(%BackendContext{} = context, document_id) when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context),
          {:ok, existing} <- Documents.find(adapter.conn, document_id) do
@@ -100,6 +121,23 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   end
 
   @impl true
+  def ensure_parent(%BackendContext{} = context, document_id, parent)
+      when is_binary(document_id) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, doc} <- require_document(doc),
+         {:ok, doc_key} <- require_doc_key(doc) do
+      Errors.wrap(Revisions.ensure_parent(adapter.conn, doc_key, parent))
+    else
+      :missing_document ->
+        {:error, ElixirDB.Error.document_not_found("document not found")}
+
+      {:error, reason} ->
+        {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
   def insert_revision(%BackendContext{} = context, document_id, %Revision{} = revision)
       when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context),
@@ -107,6 +145,23 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
          {:ok, doc} <- require_document(doc),
          {:ok, doc_key} <- require_doc_key(doc) do
       Errors.wrap(Revisions.insert(adapter.conn, doc_key, revision))
+    else
+      :missing_document ->
+        {:error, ElixirDB.Error.document_not_found("document not found")}
+
+      {:error, reason} ->
+        {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
+  def insert_or_accept_revision(%BackendContext{} = context, document_id, %Revision{} = revision)
+      when is_binary(document_id) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, doc} <- require_document(doc),
+         {:ok, doc_key} <- require_doc_key(doc) do
+      Errors.wrap(Revisions.insert_or_accept(adapter.conn, doc_key, revision))
     else
       :missing_document ->
         {:error, ElixirDB.Error.document_not_found("document not found")}
@@ -143,6 +198,30 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
     else
       :missing_document ->
         {:error, ElixirDB.Error.document_not_found("document not found")}
+
+      {:error, reason} ->
+        {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
+  def delete_history(%BackendContext{} = context, document_id, history_id)
+      when is_binary(document_id) and is_binary(history_id) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, doc} <- require_document(doc),
+         {:ok, doc_key} <- require_doc_key(doc) do
+      case Connection.execute(
+             adapter.conn,
+             "DELETE FROM revisions WHERE doc_key = ? AND history_id = ?",
+             [doc_key, history_id]
+           ) do
+        :ok -> :ok
+        {:error, reason} -> {:error, Errors.normalize(reason)}
+      end
+    else
+      :missing_document ->
+        :ok
 
       {:error, reason} ->
         {:error, Errors.normalize(reason)}

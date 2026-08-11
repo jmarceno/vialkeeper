@@ -17,4 +17,11 @@ defmodule ElixirDB.Storage.Ports.RetentionRecords do
   @callback install_boundary_pages(BackendContext.t(), map()) :: result(map())
   @callback get_compaction_result(BackendContext.t()) :: result(map() | nil)
   @callback put_compaction_result(BackendContext.t(), map()) :: :ok | {:error, ElixirDB.Error.t()}
+  @callback list_boundaries(BackendContext.t()) :: result([map()])
+  @callback list_boundaries(BackendContext.t(), keyword()) :: result([map()])
+  @callback install_imported_boundaries(BackendContext.t(), [map()]) ::
+              :ok | {:error, ElixirDB.Error.t()}
+  @callback mark_pending_local_causal(BackendContext.t()) :: :ok | {:error, ElixirDB.Error.t()}
+  @callback pending_local_causal?(BackendContext.t()) :: result(boolean())
+  @callback encode_stored_boundary(map()) :: map()
 end
