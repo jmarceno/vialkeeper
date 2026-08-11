@@ -1,7 +1,8 @@
 defmodule ElixirDB.Replication.RemoteTransport do
+  @moduledoc "Executes authenticated HTTP requests and lazy response streams for remote replication."
+
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Observability.Tracer
-  @moduledoc false
 
   def request(base_url, method, path, body \\ nil, auth_token \\ nil) do
     # Inject the current trace context into outgoing replication requests so a

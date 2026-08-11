@@ -1,5 +1,5 @@
 defmodule ElixirDB.Query.SubscriptionSupervisor do
-  @moduledoc false
+  @moduledoc "Supervises one database's live-query hub and dynamic subscription tasks."
   use Supervisor
 
   alias ElixirDB.Query.SubscriptionHub
