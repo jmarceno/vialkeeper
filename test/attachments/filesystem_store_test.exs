@@ -1,4 +1,6 @@
 defmodule ElixirDB.Attachments.FilesystemStoreTest do
+  @moduledoc "Covers filesystem attachment storage and database bundle cleanup."
+
   use ExUnit.Case, async: true
 
   alias ElixirDB.Attachments.FilesystemStore

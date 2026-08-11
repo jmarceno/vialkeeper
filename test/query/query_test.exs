@@ -1,4 +1,6 @@
 defmodule ElixirDB.Query.QueryTest do
+  @moduledoc "Covers query planning, execution, and SQLite result semantics."
+
   use ExUnitProperties
 
   alias ElixirDB.Query.Normalizer

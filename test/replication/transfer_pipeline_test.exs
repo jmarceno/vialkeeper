@@ -1,4 +1,6 @@
 defmodule ElixirDB.Replication.TransferPipelineTest do
+  @moduledoc "Covers bounded replication transfer tasks and cancellation."
+
   use ExUnit.Case, async: true
 
   alias ElixirDB.Error

@@ -1,4 +1,6 @@
 defmodule ElixirDB.Federation.BookmarkCodecTest do
+  @moduledoc "Covers signed federation bookmark encoding and validation."
+
   use ExUnit.Case, async: true
 
   alias ElixirDB.Federation.BookmarkCodec

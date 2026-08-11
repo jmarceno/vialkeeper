@@ -1,4 +1,6 @@
 defmodule ElixirDB.Runtime.RetentionSchedulerTest do
+  @moduledoc "Covers scheduled retention compaction through database owners."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

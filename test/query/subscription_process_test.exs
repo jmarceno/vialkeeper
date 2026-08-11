@@ -1,4 +1,6 @@
 defmodule ElixirDB.Query.SubscriptionProcessTest do
+  @moduledoc "Covers subscription process lifecycle and database ownership."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

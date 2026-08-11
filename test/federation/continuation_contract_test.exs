@@ -1,4 +1,6 @@
 defmodule ElixirDB.Federation.ContinuationContractTest do
+  @moduledoc "Covers the query inputs bound into federation continuations."
+
   use ExUnit.Case, async: true
 
   alias ElixirDB.Error

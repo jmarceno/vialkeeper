@@ -1,4 +1,6 @@
 defmodule ElixirDB.Runtime.ReplicationTest do
+  @moduledoc "Covers runtime replication job lifecycle and worker behavior."
+
   alias ElixirDB.Replication.Id
   alias ElixirDB.Replication.JobManager
   alias ElixirDB.Replication.LocalEndpoint

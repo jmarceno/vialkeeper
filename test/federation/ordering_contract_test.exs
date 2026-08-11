@@ -1,4 +1,6 @@
 defmodule ElixirDB.Federation.OrderingContractTest do
+  @moduledoc "Covers stable federation ordering across source completion order."
+
   use ExUnit.Case, async: true
 
   alias ElixirDB.Federation.Executor

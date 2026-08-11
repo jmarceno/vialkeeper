@@ -1,5 +1,5 @@
 defmodule ElixirDB.StorageAdapter.MemoryModeTest do
-  @moduledoc false
+  @moduledoc "Covers isolated in-memory SQLite adapter behavior and validation."
 
   use ExUnit.Case, async: true
 

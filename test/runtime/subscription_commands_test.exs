@@ -1,4 +1,6 @@
 defmodule ElixirDB.Runtime.SubscriptionCommandsTest do
+  @moduledoc "Covers database-owner subscription command behavior."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

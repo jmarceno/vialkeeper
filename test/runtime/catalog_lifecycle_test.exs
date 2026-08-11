@@ -1,4 +1,6 @@
 defmodule ElixirDB.Runtime.CatalogLifecycleTest do
+  @moduledoc "Covers database catalog identity, replacement, and lifecycle rules."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

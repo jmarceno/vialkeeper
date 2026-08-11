@@ -1,4 +1,6 @@
 defmodule ElixirDB.Query.SubscriptionHubTest do
+  @moduledoc "Covers subscription hub lifecycle and event delivery."
+
   use ElixirDB.Observability.OtelCase, async: false
 
   @moduletag :integration

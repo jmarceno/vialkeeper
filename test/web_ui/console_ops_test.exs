@@ -173,6 +173,17 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
     assert next_page.resp_body =~ "d"
   end
 
+  test "ad-hoc federation rejects non-string JSON source values" do
+    response =
+      form_post("/ui/actions/federation/query", %{
+        "databases" => "[{}]",
+        "query" => ~s({"limit":1})
+      })
+
+    assert response.status == 400
+    assert response.resp_body =~ "databases must contain UUID strings"
+  end
+
   test "saved federation queries list and execute without a UI mutation path", %{
     first_uuid: first_uuid
   } do

@@ -1,4 +1,6 @@
 defmodule ElixirDB.HTTP.RetentionWave3Test do
+  @moduledoc "Covers HTTP retention identity and handshake behavior."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

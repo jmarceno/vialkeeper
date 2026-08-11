@@ -1,4 +1,6 @@
 defmodule ElixirDB.HTTP.FederationTest do
+  @moduledoc "Covers the HTTP federation request and response contract."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

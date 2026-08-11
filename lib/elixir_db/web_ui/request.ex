@@ -36,7 +36,7 @@ defmodule ElixirDB.WebUI.Request do
   @spec require_uuid(term()) :: {:ok, String.t()} | {:error, Error.t()}
   def require_uuid(uuid) when is_binary(uuid) do
     if Regex.match?(@uuid_re, uuid) do
-      {:ok, uuid}
+      {:ok, String.downcase(uuid)}
     else
       {:error, Error.invalid_request("database uuid is invalid")}
     end

@@ -1,4 +1,6 @@
 defmodule ElixirDB.EndToEnd.OfflineCopyTest do
+  @moduledoc "Covers offline bundle copy, registration, and integrity validation."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

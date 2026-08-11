@@ -4,6 +4,9 @@ defmodule ElixirDB.Commands do
 
   Public catalog/document callers may still pass tagged `{:command, ...}` tuples;
   `normalize/1` converts those into these structs before `DatabaseOwner` dispatches.
+
+  The nested structs are intentionally undocumented internal envelopes rather than
+  standalone public concepts.
   """
 
   defmodule Identity do

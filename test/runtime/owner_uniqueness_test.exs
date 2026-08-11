@@ -1,4 +1,6 @@
 defmodule ElixirDB.Runtime.OwnerUniquenessTest do
+  @moduledoc "Covers single-owner lease enforcement for database bundles."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

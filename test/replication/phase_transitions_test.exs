@@ -1,4 +1,6 @@
 defmodule ElixirDB.Replication.PhaseTransitionsTest do
+  @moduledoc "Covers replication worker state transitions and failure recovery."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

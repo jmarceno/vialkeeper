@@ -1,4 +1,6 @@
 defmodule ElixirDB.HTTP.QueryStreamTest do
+  @moduledoc "Covers HTTP query stream lifecycle events."
+
   use ElixirDB.Observability.OtelCase, async: false
 
   @moduletag :integration

@@ -1,4 +1,6 @@
 defmodule ElixirDB.Federation.ExecutorTest do
+  @moduledoc "Covers bounded federation execution and deterministic merging."
+
   use ExUnit.Case, async: true
 
   alias ElixirDB.Error

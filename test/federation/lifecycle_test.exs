@@ -1,4 +1,6 @@
 defmodule ElixirDB.Federation.LifecycleTest do
+  @moduledoc "Covers ownership and shutdown of federation source tasks."
+
   use ExUnit.Case, async: true
 
   alias ElixirDB.Federation.Executor

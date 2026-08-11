@@ -1,4 +1,6 @@
 defmodule ElixirDB.Replication.SafeReportProbeTest do
+  @moduledoc "Covers safe replication reports during retention and attachment errors."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

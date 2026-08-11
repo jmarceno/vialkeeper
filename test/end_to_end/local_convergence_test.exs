@@ -1,4 +1,6 @@
 defmodule ElixirDB.EndToEnd.LocalConvergenceTest do
+  @moduledoc "Covers local replication convergence between database runtimes."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

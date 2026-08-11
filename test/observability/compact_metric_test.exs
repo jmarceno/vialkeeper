@@ -1,4 +1,6 @@
 defmodule ElixirDB.Observability.CompactMetricTest do
+  @moduledoc "Covers compaction metric emission and attributes."
+
   use ElixirDB.Observability.OtelCase, async: false
 
   @moduletag :integration

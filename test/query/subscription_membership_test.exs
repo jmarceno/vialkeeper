@@ -1,4 +1,6 @@
 defmodule ElixirDB.Query.Subscription.MembershipTest do
+  @moduledoc "Covers subscription membership transitions for document changes."
+
   use ExUnit.Case, async: true
 
   @moduletag :integration

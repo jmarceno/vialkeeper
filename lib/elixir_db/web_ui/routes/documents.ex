@@ -373,7 +373,7 @@ defmodule ElixirDB.WebUI.Routes.Documents do
     encoded = HTML.encode_json(body)
 
     if byte_size(encoded) > 180 do
-      binary_part(encoded, 0, 180) <> "…"
+      String.slice(encoded, 0, 180) <> "…"
     else
       encoded
     end

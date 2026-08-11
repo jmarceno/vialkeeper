@@ -1,4 +1,6 @@
 defmodule ElixirDB.Observability.DashboardTest do
+  @moduledoc "Covers observability dashboard state and HTTP rendering."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

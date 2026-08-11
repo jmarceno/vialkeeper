@@ -1,4 +1,6 @@
 defmodule ElixirDB.Query.SubscriptionRequestTest do
+  @moduledoc "Covers subscription request validation and limits."
+
   use ExUnit.Case, async: true
 
   @moduletag :integration

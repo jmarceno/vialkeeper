@@ -1,4 +1,6 @@
 defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
+  @moduledoc "Covers attachment coordinator lifecycle and cleanup."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

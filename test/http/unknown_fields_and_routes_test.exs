@@ -1,4 +1,6 @@
 defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
+  @moduledoc "Covers HTTP unknown-field rejection and route validation."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

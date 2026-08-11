@@ -45,11 +45,14 @@ defmodule ElixirDB.Federation.Normalizer do
       Enum.any?(value, &(not is_binary(&1) or not uuid?(&1))) ->
         {:error, ElixirDB.Error.invalid_request("databases must contain UUID strings")}
 
-      length(Enum.uniq(value)) != length(value) ->
-        {:error, ElixirDB.Error.invalid_request("databases must not contain duplicates")}
-
       true ->
-        {:ok, value}
+        normalized = Enum.map(value, &String.downcase/1)
+
+        if length(Enum.uniq(normalized)) != length(normalized) do
+          {:error, ElixirDB.Error.invalid_request("databases must not contain duplicates")}
+        else
+          {:ok, normalized}
+        end
     end
   end
 

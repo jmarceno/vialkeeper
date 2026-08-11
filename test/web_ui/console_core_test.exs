@@ -120,6 +120,10 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
     assert detail.resp_body =~ "scan_threshold"
     refute detail.resp_body =~ "auth_token"
 
+    uppercase_detail = request("GET", "/ui/fragments/databases/#{String.upcase(uuid)}")
+    assert uppercase_detail.status == 200
+    assert uppercase_detail.resp_body =~ uuid
+
     config_json =
       JSON.encode!(%{
         "queries" => %{
@@ -335,6 +339,19 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
     browse = request("GET", "/ui/fragments/databases/#{uuid}/documents")
     assert browse.status == 200
     refute browse.resp_body =~ "<img src=x onerror=\"alert(1)\">"
+  end
+
+  test "document previews keep multibyte JSON valid when truncated", %{uuid: uuid} do
+    assert {:ok, _} =
+             Documents.put(uuid, %{
+               id: "unicode-preview",
+               body: %{"text" => String.duplicate("🙂", 200)}
+             })
+
+    browse = request("GET", "/ui/fragments/databases/#{uuid}/documents")
+
+    assert browse.status == 200
+    assert browse.resp_body =~ "unicode-preview"
   end
 
   test "local view create, list, query, rebuild, and delete", %{uuid: uuid} do

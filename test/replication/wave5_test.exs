@@ -1,4 +1,6 @@
 defmodule ElixirDB.Replication.Wave5Test do
+  @moduledoc "Covers checkpoint reconciliation, retention, and replication recovery."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

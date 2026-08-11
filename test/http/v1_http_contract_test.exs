@@ -1,4 +1,6 @@
 defmodule ElixirDB.HTTP.V1HTTPContractTest do
+  @moduledoc "Covers stable HTTP request and error contracts."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

@@ -1,4 +1,6 @@
 defmodule ElixirDB.Query.SubscriptionCreditsTest do
+  @moduledoc "Covers subscription credit accounting and backpressure."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

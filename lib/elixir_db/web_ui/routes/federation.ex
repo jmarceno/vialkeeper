@@ -294,7 +294,11 @@ defmodule ElixirDB.WebUI.Routes.Federation do
 
   defp validate_uuid_list(list) when is_list(list) do
     Enum.reduce_while(list, {:ok, []}, fn item, {:ok, acc} ->
-      case Request.require_uuid(to_string(item)) do
+      case item do
+        item when is_binary(item) -> Request.require_uuid(item)
+        _ -> {:error, Error.invalid_request("databases must contain UUID strings")}
+      end
+      |> case do
         {:ok, uuid} -> {:cont, {:ok, [uuid | acc]}}
         {:error, _} = error -> {:halt, error}
       end

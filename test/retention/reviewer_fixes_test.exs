@@ -1,4 +1,6 @@
 defmodule ElixirDB.Retention.ReviewerFixesTest do
+  @moduledoc "Covers retention, replication, and boundary regression behavior."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

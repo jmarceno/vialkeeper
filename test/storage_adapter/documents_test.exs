@@ -1,4 +1,6 @@
 defmodule ElixirDB.StorageAdapter.DocumentsTest do
+  @moduledoc "Covers SQLite document adapter persistence semantics."
+
   use ExUnit.Case, async: true
 
   alias ElixirDB.Storage.SQLite.Adapter

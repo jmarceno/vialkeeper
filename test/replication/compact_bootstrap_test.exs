@@ -1,4 +1,6 @@
 defmodule ElixirDB.Replication.CompactBootstrapTest do
+  @moduledoc "Covers replication bootstrap after compaction."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

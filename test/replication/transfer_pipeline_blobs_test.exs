@@ -1,4 +1,6 @@
 defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
+  @moduledoc "Covers the replication blob transfer pipeline and missing-data handling."
+
   use ExUnit.Case, async: true
 
   alias ElixirDB.Error

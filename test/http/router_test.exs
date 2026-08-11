@@ -1,4 +1,6 @@
 defmodule ElixirDB.HTTP.RouterTest do
+  @moduledoc "Covers versioned HTTP routing, envelopes, and lifecycle responses."
+
   alias ElixirDB.HTTP.Router
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Runtime.DatabaseCatalog

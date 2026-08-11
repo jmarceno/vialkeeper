@@ -1,5 +1,6 @@
 defmodule ElixirDB.Observability.SpanRecordingTest do
-  @moduledoc false
+  @moduledoc "Covers direct span recording and exporter flushing in tests."
+
   use ElixirDB.Observability.OtelCase, async: false
 
   @moduletag :integration

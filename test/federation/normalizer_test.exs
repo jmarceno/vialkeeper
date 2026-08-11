@@ -1,4 +1,6 @@
 defmodule ElixirDB.Federation.NormalizerTest do
+  @moduledoc "Covers strict federation request normalization and fingerprints."
+
   use ExUnit.Case, async: false
 
   alias ElixirDB.Federation.Normalizer
@@ -30,6 +32,15 @@ defmodule ElixirDB.Federation.NormalizerTest do
 
     assert {:ok, _} =
              Normalizer.normalize(%{"databases" => [@source], "query" => %{"selector" => %{}}})
+  end
+
+  test "canonicalizes UUID case and rejects case-insensitive duplicates" do
+    uppercase = String.upcase(@source)
+
+    assert {:ok, normalized} = Normalizer.normalize(%{databases: [uppercase], query: %{}})
+    assert normalized.databases == [@source]
+
+    assert invalid(%{databases: [@source, uppercase], query: %{}})
   end
 
   test "enforces non-empty, unique, valid, and bounded sources" do

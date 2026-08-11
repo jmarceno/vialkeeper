@@ -1,4 +1,6 @@
 defmodule ElixirDB.Federation.RuntimeTest do
+  @moduledoc "Covers federation queries against registered database runtimes."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

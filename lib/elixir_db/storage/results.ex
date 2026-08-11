@@ -3,6 +3,8 @@ defmodule ElixirDB.Storage.Results do
   Storage-neutral result structs for owner replies.
 
   HTTP still maps these to plain JSON envelopes via `to_public/1`.
+  The nested structs are internal result envelopes and are documented through
+  this parent module.
   """
 
   alias ElixirDB.MapAccess

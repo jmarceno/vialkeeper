@@ -1,4 +1,6 @@
 defmodule ElixirDB.Observability.FederationSignalTest do
+  @moduledoc "Covers federation tracing and metric signals without secrets."
+
   use ElixirDB.Observability.OtelCase, async: false
 
   @moduletag :integration

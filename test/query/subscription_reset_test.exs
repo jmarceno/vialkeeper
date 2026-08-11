@@ -1,4 +1,6 @@
 defmodule ElixirDB.Query.SubscriptionResetTest do
+  @moduledoc "Covers subscription reset behavior across retention boundaries."
+
   use ExUnit.Case, async: false
 
   @moduletag :integration

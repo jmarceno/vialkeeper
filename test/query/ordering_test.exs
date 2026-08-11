@@ -1,4 +1,6 @@
 defmodule ElixirDB.Query.OrderingTest do
+  @moduledoc "Covers query sort values and continuation cursor ordering."
+
   use ExUnit.Case, async: true
 
   alias ElixirDB.Query.Ordering

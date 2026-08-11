@@ -1,4 +1,6 @@
 defmodule ElixirDB.Query.NormalizerTest do
+  @moduledoc "Covers query selector normalization and generated predicates."
+
   use ExUnit.Case, async: true
   use ExUnitProperties
 
