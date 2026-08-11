@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.ReplicationTraceTest do
   @moduledoc """
-  Plan §7.2 / §9: replication trace continuity.
+  Replication trace continuity.
 
     * A one-shot local replication emits one `elixir_db.replication.batch`
       span wrapping the cycle, with both `elixir_db.replication.checkpoint`

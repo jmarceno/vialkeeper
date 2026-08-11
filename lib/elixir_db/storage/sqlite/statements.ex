@@ -2,8 +2,8 @@ defmodule ElixirDB.Storage.SQLite.Statements do
   @moduledoc """
   Prepared-statement cache owned by the process that holds the SQLite connection.
 
-  Per ARCH-001 / Plan §9.4, prepared statements are owned and reused by the
-  database owner process (via the connection handle it serializes through).
+  Prepared statements are owned and reused by the database owner process (via
+  the connection handle it serializes through).
   """
   alias Exqlite.Sqlite3
 

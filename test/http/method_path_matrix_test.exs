@@ -1,6 +1,6 @@
 defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   @moduledoc """
-  API-010–015 method/path matrix over real Bandit + Req (Plan §12.5).
+  Method/path matrix over real Bandit + Req.
 
   Each entry asserts an exact status family and at least one response invariant
   (success `data` shape, domain `error.code`, or envelope fields).

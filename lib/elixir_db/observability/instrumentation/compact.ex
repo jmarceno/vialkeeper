@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.Instrumentation.Compact do
   @moduledoc """
-  Emitters for Plan §11 / Architecture §20.5 compact-retention events:
+  Emitters for compact-retention events:
 
     * `elixir_db.database.compact` — span + counter + histogram
 

@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.DatabaseOpenSpanTest do
   @moduledoc """
-  Plan §7.2: assert the `elixir_db.database.open` span is emitted with
+  Assert the `elixir_db.database.open` span is emitted with
   `outcome: :ok` on a successful open and `outcome: :rejected` (status UNSET,
   not ERROR) on a rejected open.
   """

@@ -1,6 +1,6 @@
 defmodule ElixirDB.Contract.RevisionAdapterPropertiesTest do
   @moduledoc """
-  Phase 2 exit gate: random operation histories produce identical revision trees,
+  Random operation histories produce identical revision trees,
   winners, active conflicts, tombstones, and replay results in the pure model and
   the SQLite adapter (including after close/reopen).
   """

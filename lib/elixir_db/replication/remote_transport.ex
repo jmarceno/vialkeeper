@@ -6,14 +6,14 @@ defmodule ElixirDB.Replication.RemoteTransport do
   def request(base_url, method, path, body \\ nil, auth_token \\ nil) do
     # Inject the current trace context into outgoing replication requests so a
     # push job's trace spans both the local worker and the remote server
-    # (plan §6.2). The noop propagator (no SDK) returns the headers unchanged.
+    # The noop propagator (no SDK) returns the headers unchanged.
     options = request_options(base_url, method, path, body, auth_token)
 
     timeout = ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
 
     # Carry the trace context into the timeout-enforcement task so the Finch
     # telemetry-bridge span for this request parents under the replication
-    # trace (plan §6.2); without it the span would be a parentless root.
+    # trace; without it the span would be a parentless root.
     otel_ctx = OpenTelemetry.Ctx.get_current()
 
     task = request_task(options, otel_ctx)

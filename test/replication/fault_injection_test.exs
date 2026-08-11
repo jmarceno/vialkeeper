@@ -1,6 +1,6 @@
 defmodule ElixirDB.Replication.FaultInjectionTest do
   @moduledoc """
-  Plan §12.4 / gap B2: inject retryable failures before and after every phase transition.
+  Inject retryable failures before and after every phase transition.
 
   Core assertion: every injected retryable failure may repeat work but MUST NOT
   skip a committed source revision (exact leaf sets + full revision ids + checkpoints).
@@ -33,7 +33,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
                       [phase, :"after_#{phase}"]
                     end)
 
-  # Subset injected via FaultEndpoint (Plan §12.4 wrapper model). Checkpoint
+  # Subset injected via FaultEndpoint. Checkpoint
   # after-faults stay on phase_hook because a successful put_checkpoint advances
   # CAS version before the after_* hook — endpoint after-faults would then CAS-fail.
   # Blob mid-transfer stages use dedicated endpoint points below.

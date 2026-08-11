@@ -1,6 +1,6 @@
 defmodule ElixirDB.Storage.Results do
   @moduledoc """
-  Storage-neutral result structs for owner replies (Plan §6.4 / gap F6).
+  Storage-neutral result structs for owner replies.
 
   HTTP still maps these to plain JSON envelopes via `to_public/1`.
   """

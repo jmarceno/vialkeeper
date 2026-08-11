@@ -4,7 +4,7 @@ defmodule ElixirDB.Query.Planner do
 
   The authoritative planner consumes the normalized predicate tree and emits
   one complete candidate plan. `select_index/2` remains below as a small
-  migration seam for Wave 1 callers and tests.
+  migration seam for transitional callers and tests.
 
   Single-index selection priority:
 

@@ -1,6 +1,6 @@
 defmodule ElixirDB.Replication.BlobEndpointTest do
   @moduledoc """
-  Local and remote replication blob endpoint round-trips (plan §15 / Wave 3 B+C).
+  Local and remote replication blob endpoint round-trips.
   """
   use ExUnit.Case, async: false
 

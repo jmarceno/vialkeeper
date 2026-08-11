@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.CommandSpanTest do
   @moduledoc """
-  Plan §7.2: assert the `elixir_db.database.command` span is emitted with the
+  Assert the `elixir_db.database.command` span is emitted with the
   correct `command.type`; that a `:revision_conflict` put sets `error.code`
   and keeps status UNSET; that an injected `:internal_error` sets status
   ERROR; and parentage (no HTTP → root span).

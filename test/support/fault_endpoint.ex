@@ -1,6 +1,6 @@
 defmodule ElixirDB.FaultEndpoint do
   @moduledoc """
-  Thin fault-injecting endpoint wrapper around `LocalEndpoint` (Plan §12.4).
+  Thin fault-injecting endpoint wrapper around `LocalEndpoint`.
 
   Schedules retryable failures at named points via `ElixirDB.FaultAdapter` without
   changing production endpoint modules. Injection points:
@@ -45,7 +45,7 @@ defmodule ElixirDB.FaultEndpoint do
   end
 
   @doc """
-  Returns hit counts for debugging failed fault histories (Plan §12.7).
+  Returns hit counts for debugging failed fault histories.
   """
   @spec hits(t()) :: %{optional(atom()) => non_neg_integer()}
   def hits(%__MODULE__{agent: agent}) do

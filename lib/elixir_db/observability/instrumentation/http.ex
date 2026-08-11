@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.Instrumentation.HTTP do
   @moduledoc """
-  Emitter for the Plan §11 HTTP event:
+  Emitter for the HTTP request event:
 
     * `elixir_db.http.request` — span + histogram
 
@@ -17,7 +17,7 @@ defmodule ElixirDB.Observability.Instrumentation.HTTP do
   Sets `http.method`, `http.route` (a route template, never the raw path),
   `http.status_code`, and duration. Extracts inbound W3C
   `traceparent`/`tracestate` headers so a caller's trace continues into the
-  request span (plan §6.1) and restores the prior context afterwards (Bandit
+  request span and restores the prior context afterwards (Bandit
   reuses the connection process across keep-alive requests).
   """
 

@@ -1,6 +1,6 @@
 defmodule ElixirDB.EndToEnd.Wave5QueryScenarioTest do
   @moduledoc """
-  Plan §33 Wave 5 integration scenario.
+  Extended-query integration scenario.
 
   The test uses a real `.elixirdb` bundle and Bandit HTTP for the public
   document, index, query, explain, attachment, integrity, and lifecycle paths.
@@ -19,7 +19,7 @@ defmodule ElixirDB.EndToEnd.Wave5QueryScenarioTest do
   alias ElixirDB.TestServer
 
   @tag :slow
-  test "Plan §33 extended query integration scenario" do
+  test "extended query integration scenario" do
     server = TestServer.start_supervised!()
     root = ElixirDB.Config.database_root()
     prefix = "wave5-query-#{System.unique_integer([:positive])}"

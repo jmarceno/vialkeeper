@@ -2,8 +2,9 @@ defmodule ElixirDB.FaultAdapter do
   @moduledoc """
   Injects failures at named points for replication and adapter fault tests.
 
-  Scaffolding for Plan §12.4 / gap B2: wrap a real endpoint or adapter call site
-  and fail before or after named transitions without changing production code.
+  Scaffolding for fault-injection tests: wrap a real endpoint or adapter call
+  site and fail before or after named transitions without changing production
+  code.
   """
 
   defstruct inner: nil, faults: %{}, hits: %{}

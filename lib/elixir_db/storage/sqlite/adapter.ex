@@ -588,7 +588,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   def execute_query(%__MODULE__{} = adapter, request) when is_map(request) do
     # Capture the start in native units for the span (OTel uses native), and in
     # milliseconds for the overrun guard (config is in ms). Reusing one clock
-    # per plan §5.5.
+    # keeps the span and guard measurements consistent.
     started_native = System.monotonic_time()
     started_ms = System.monotonic_time(:millisecond)
 
@@ -1005,8 +1005,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   defp attachment_bundle_root(%__MODULE__{path: path}), do: Path.dirname(Path.expand(path))
 
-  # The candidate count the query runner computes (plan §5.5), bound as
-  # `examined` on the span/metric. Returns 0 when unavailable.
+  # The candidate count the query runner computes is bound as `examined` on the
+  # span/metric. Returns 0 when unavailable.
   defp examined_count({:ok, %{examined: examined}}) when is_integer(examined), do: examined
   defp examined_count(_), do: 0
 

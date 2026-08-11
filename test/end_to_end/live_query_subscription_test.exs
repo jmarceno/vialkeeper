@@ -1,6 +1,6 @@
 defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
   @moduledoc """
-  Mandatory live-query subscription E2E from the implementation plan §23.
+  Mandatory live-query subscription E2E.
 
   Uses real Bandit HTTP, a real `.elixirdb` bundle, SQLite indexes, and NDJSON
   chunked streaming.

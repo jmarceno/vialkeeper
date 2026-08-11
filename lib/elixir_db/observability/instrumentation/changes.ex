@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.Instrumentation.Changes do
   @moduledoc """
-  Emitter for the Plan §11 changes event:
+  Emitter for the changes event:
 
     * `elixir_db.changes.read` — span + histogram
 

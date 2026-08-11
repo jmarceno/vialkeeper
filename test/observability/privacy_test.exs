@@ -1,9 +1,9 @@
 defmodule ElixirDB.Observability.PrivacyTest do
   @moduledoc """
-  Plan §7.2 privacy gate (security): put a document with a distinctive body,
+  Privacy coverage (security): put a document with a distinctive body,
   document id, and search text, run a query and HTTP requests, then assert NO
   recorded span attribute contains the body, the search text, or the document
-  id. Enforces the Plan §11 allow-list (document bodies, search text, and IDs
+  id. Enforces the allow-list (document bodies, search text, and IDs
   are forbidden).
   """
 

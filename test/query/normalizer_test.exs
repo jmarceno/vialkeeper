@@ -35,7 +35,7 @@ defmodule ElixirDB.Query.NormalizerTest do
              Normalizer.normalize(%{selector: %{"/profile" => %{"name" => "A", "$eq" => "A"}}})
   end
 
-  test "supports the complete Wave 1 operator validation surface" do
+  test "supports the complete operator validation surface" do
     assert {:ok, normalized} =
              Normalizer.normalize(%{
                selector: %{

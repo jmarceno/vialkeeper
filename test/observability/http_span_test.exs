@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.HTTPSpanTest do
   @moduledoc """
-  Plan §7.2: assert the `elixir_db.http.request` span is emitted with method,
+  Assert the `elixir_db.http.request` span is emitted with method,
   route template, and status code; that an inbound `traceparent` makes the
   caller span the parent; and that the prior context never leaks into the next
   keep-alive request.
@@ -92,7 +92,7 @@ defmodule ElixirDB.Observability.HTTPSpanTest do
   test "a follow-up request without traceparent starts a fresh trace", %{server: server} do
     # First request carries a caller trace; the second carries nothing. Bandit
     # reuses the keep-alive connection process, so the second span proves the
-    # extracted context was detached after the first response (plan §6.1).
+    # extracted context was detached after the first response.
     assert {:ok, _} =
              Req.get(server.base_url <> "/v1/databases",
                headers: [{"traceparent", "00-#{@trace_id_hex}-#{@parent_span_hex}-01"}]

@@ -1,6 +1,6 @@
 defmodule ElixirDB.Safety.DefenseInDepthTest do
   @moduledoc """
-  Proves the two final safety nets (Plan §2 / Phase 2): even when source validation
+  Proves the two final safety nets: even when source validation
   is bypassed and a handler *raises*, the raise is contained — never crashing the
   shared DatabaseCatalog GenServer, and never dropping an HTTP connection without a
   typed JSON envelope.
@@ -87,7 +87,7 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
     test "Instrumentation.HTTP.wrap/2 converts a raised handler into a typed JSON 500" do
       # Directly exercise the rescue branch in wrap/2: a handler that raises before any
       # response is sent must yield a 500 JSON envelope (internal_error), not reraise.
-      # This is the exact predicate the Phase 2.2 net guarantees.
+      # This is the exact predicate the defense-in-depth net guarantees.
       conn = Plug.Test.conn(:get, "/v1/databases", nil)
 
       result_conn =

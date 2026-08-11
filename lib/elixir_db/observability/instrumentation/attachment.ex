@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.Instrumentation.Attachment do
   @moduledoc """
-  Emitters for attachment byte-path observability (plan §20):
+  Emitters for attachment byte-path observability:
 
     * `elixir_db.attachment.read`  — span + counter + histogram
     * `elixir_db.attachment.write` — span + counter + histogram

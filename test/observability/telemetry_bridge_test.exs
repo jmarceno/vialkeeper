@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.TelemetryBridgeTest do
   @moduledoc """
-  Plan §7.2: trigger a Req call; assert the Finch child span appears under the
+  Trigger a Req call; assert the Finch child span appears under the
   current span. Also asserts the bridge handlers are defensive: malformed
   telemetry metadata must never crash the emitting process (`:telemetry`
   propagates handler exceptions into the emitter).

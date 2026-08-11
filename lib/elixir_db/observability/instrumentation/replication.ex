@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.Instrumentation.Replication do
   @moduledoc """
-  Emitters for Plan §11 replication events:
+  Emitters for replication events:
 
     * `elixir_db.replication.batch`      — span + histogram (started/ended by
       `ElixirDB.Replication.Worker` so it wraps the full batch cycle and phase

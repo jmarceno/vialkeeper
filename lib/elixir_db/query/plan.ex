@@ -100,11 +100,11 @@ defmodule ElixirDB.Query.Plan do
   def index_bindings(%__MODULE__{selected_indexes: selected_indexes}), do: selected_indexes
 
   @doc """
-  Builds the stable Wave 1 transitional digest for one runner-selected source.
+  Builds the stable transitional digest for one runner-selected source.
 
   This representation intentionally contains only the candidate kind and the
-  logical index binding. Wave 3 may replace it with the complete owner-side
-  planner digest without changing the bookmark checksum format.
+  logical index binding. A future planner may replace it with the complete
+  owner-side digest without changing the bookmark checksum format.
   """
   @spec transitional_digest(:full_text | :single | :bounded_scan, index_binding() | []) ::
           {:ok, binary()} | {:error, ElixirDB.Error.t()}

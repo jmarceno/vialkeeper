@@ -3,7 +3,7 @@ defmodule ElixirDB.Observability.Tracer do
   Thin tracing wrappers around the OpenTelemetry API.
 
   Centralizes span creation so instrumentation sites stay small and the span
-  names match the catalog in Plan §11 / the observability plan §3. All span
+  names match the observability catalog. All span
   attributes pass through `ElixirDB.Observability.Attributes.build/1` so the
   allow-list is enforced at every emission site.
   """
@@ -44,7 +44,7 @@ defmodule ElixirDB.Observability.Tracer do
   end
 
   @doc """
-  Applies the error→span status policy (Plan §6.5):
+  Applies the error-to-span status policy:
 
     * `:internal_error` and the adapter `normalize_error` fallback → status ERROR
     * all other registered domain errors → status UNSET (rely on `error.code`)

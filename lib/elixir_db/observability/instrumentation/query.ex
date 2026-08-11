@@ -1,13 +1,13 @@
 defmodule ElixirDB.Observability.Instrumentation.Query do
   @moduledoc """
-  Emitters for Plan §11 query/index events:
+  Emitters for query and index events:
 
     * `elixir_db.query.execute` — span + histogram
     * `elixir_db.index.build`   — span + histogram
 
   Called from the SQLite adapter at the adapter entry, but via this service-level
   helper so the adapter itself stays OTel-agnostic (it only knows about a
-  project callback, plan §5.5).
+  project callback).
   """
 
   alias ElixirDB.Observability.{Meters, Tracer}

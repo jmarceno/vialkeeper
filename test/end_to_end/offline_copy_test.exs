@@ -84,7 +84,7 @@ defmodule ElixirDB.EndToEnd.OfflineCopyTest do
     assert MapSet.member?(index_ids, structured_id)
     assert MapSet.member?(index_ids, fts_id)
 
-    # Plan §12.6 scenario 6 — rebuild every derived index after registration.
+    # Rebuild every derived index after registration.
     for %{"index_id" => index_id} <- indexes do
       assert {:ok, %{rebuilt: true}} = ElixirDB.Query.rebuild_index(source_uuid, index_id)
     end

@@ -11,7 +11,7 @@ defmodule ElixirDB.Replication do
   alias ElixirDB.Retention.SafeReport
   @default_batch 100
 
-  @doc "Ordered worker phase states from Plan §7.7 (excluding terminal idle entry)."
+  @doc "Ordered worker phase states (excluding the terminal idle entry)."
   def phases do
     [
       :idle,

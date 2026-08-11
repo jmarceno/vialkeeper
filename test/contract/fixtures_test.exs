@@ -1,6 +1,6 @@
 defmodule ElixirDB.Contract.FixturesTest do
   @moduledoc """
-  Contract tests that load Phase 0 language-neutral fixtures from priv/fixtures.
+  Contract tests that load language-neutral fixtures from priv/fixtures.
   """
 
   use ExUnit.Case, async: false

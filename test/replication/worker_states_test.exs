@@ -1,6 +1,6 @@
 defmodule ElixirDB.Replication.WorkerStatesTest do
   @moduledoc """
-  Plan §7.7 / gap G7: harden the worker state proof.
+  Harden the worker state proof.
 
   The 8 active phases are observed via `phase_hook` logs in `phase_transitions_test.exs`;
   this suite asserts the literal emitted `state_notify` sequence including `:handshake`
@@ -76,7 +76,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
     assert {:ok, pid} = Worker.start_link(options)
     ref = Process.monitor(pid)
 
-    # REPL-004 / Plan §7.7: the initial worker state is :idle, emitted before :start.
+    # The initial worker state is :idle, emitted before :start.
     assert_receive {:replication_worker_state, :idle}, 1_000
 
     :gen_statem.cast(pid, :start)

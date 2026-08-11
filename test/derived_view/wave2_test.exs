@@ -338,7 +338,7 @@ defmodule ElixirDB.DerivedView.Wave2Test do
   defp create_derived(source_uuid, overrides) do
     request =
       %{
-        name: "Wave 2 #{System.unique_integer([:positive])}",
+        name: "Derived view #{System.unique_integer([:positive])}",
         sources: [source_uuid],
         map: %{key: [%{"path" => "/kind"}]}
       }

@@ -1,6 +1,6 @@
 defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   @moduledoc """
-  Plan §12.6 / Architecture §21 step 9: two real Bandit servers, remote
+  Two real Bandit servers, remote
   replication wire only, restart during continuous replication, resume through
   checkpoint reconciliation.
 

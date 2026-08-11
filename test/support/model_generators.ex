@@ -2,9 +2,9 @@ defmodule ElixirDB.ModelGenerators do
   @moduledoc """
   StreamData generators for revision histories, documents, and conflict scenarios.
 
-  These generators scaffold Phase 2 property/model tests (gap D4): random
-  histories should produce identical revision trees, winners, conflicts, and
-  tombstones in the pure model and storage adapter.
+  These generators support property/model tests: random histories should
+  produce identical revision trees, winners, conflicts, and tombstones in the
+  pure model and storage adapter.
   """
 
   alias ElixirDB.Domain.Revision
@@ -188,7 +188,7 @@ defmodule ElixirDB.ModelGenerators do
   end
 
   @doc """
-  Generates adapter/model operation histories for the Phase 2 exit gate.
+  Generates adapter/model operation histories for the property test suite.
 
   Histories cover local puts/updates/deletes, replicated sibling imports,
   conflict resolution in surviving-body and delete-all modes, and optional

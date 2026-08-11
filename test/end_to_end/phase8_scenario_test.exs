@@ -1,6 +1,6 @@
 defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
   @moduledoc """
-  Architecture §21 Phase 8 end-to-end scenario (gap D8).
+  End-to-end scenario covering the release-gate sequence.
 
   Walks as many of the 16 release-gate steps as practical with local endpoints
   (and Plug.Test HTTP for database creation).
@@ -14,7 +14,7 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
   alias ElixirDB.Runtime.DatabaseCatalog
   alias Plug.Conn
   @tag :slow
-  test "Architecture §21 Phase 8 scenario with local endpoints" do
+  test "release-gate scenario with local endpoints" do
     root = ElixirDB.Config.database_root()
     prefix = "phase8-#{System.unique_integer([:positive])}"
     a_path = prefix <> "-a.elixirdb"

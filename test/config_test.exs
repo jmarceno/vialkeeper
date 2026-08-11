@@ -4,7 +4,7 @@ defmodule ElixirDB.ConfigTest do
 
   alias ElixirDB.Config
 
-  test "wave 1 replication defaults are present" do
+  test "replication defaults are present" do
     replication = Config.defaults()["replication"]
 
     assert replication["max_concurrent_chain_fetches"] == 4

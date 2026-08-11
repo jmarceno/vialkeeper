@@ -2,7 +2,7 @@ defmodule ElixirDB.Replication.Worker do
   @moduledoc """
   Supervised replication state machine with cancellable bounded work.
 
-  States (Plan §7.7): idle, handshake, read_changes, diff, transfer,
+  States: idle, handshake, read_changes, diff, transfer,
   import, checkpoint_target, checkpoint_source, waiting, backoff, completed, failed.
 
   Cancellation (REPL-018) is checked between phases after a phase Task completes.
@@ -10,7 +10,7 @@ defmodule ElixirDB.Replication.Worker do
   task mid-import or mid-checkpoint commit.
 
   `:completed` and `:failed` are brief real gen_statem states entered before stop
-  so Plan §7.7 is literal for transition and fault tests.
+  so transition and fault tests observe the complete state sequence.
   """
   @behaviour :gen_statem
 
@@ -79,7 +79,7 @@ defmodule ElixirDB.Replication.Worker do
         batch_revisions: 0
       }
 
-      # Notify the initial :idle state so observers see the full Plan §7.7 sequence from
+      # Notify the initial :idle state so observers see the full state sequence from
       # :idle through :completed/:failed. notify_state/2 runs synchronously here (a direct
       # send) before the state machine loop starts, so the :idle notification is guaranteed
       # to arrive before any :start-driven phase notification.
@@ -242,7 +242,7 @@ defmodule ElixirDB.Replication.Worker do
     context = data.context
 
     # Capture the current OTel context so the async phase task is a child of
-    # the worker's trace (plan §6.2). Without detach/attach the task would have
+    # the worker's trace. Without detach/attach the task would have
     # no parent and the trace would break across the Task.Supervisor boundary.
     ctx = OpenTelemetry.Ctx.get_current()
 
@@ -401,8 +401,8 @@ defmodule ElixirDB.Replication.Worker do
   end
 
   defp handle_failure(data, error) do
-    # Emit the batch span/metric on failure too (plan §5.6: success or
-    # retryable failure). Uses the revisions captured at import if any.
+    # Emit the batch span/metric on failure too. Uses the revisions captured at
+    # import if any.
     replication_id = MapAccess.get(data.options, :replication_id)
     data = end_batch_span(data, replication_id, data.batch_revisions, {:error, error})
 
@@ -450,7 +450,7 @@ defmodule ElixirDB.Replication.Worker do
   end
 
   # Starts a replication.batch span in the worker process and makes it current
-  # so async phase tasks inherit the trace context (plan §6.2). Returns updated
+  # so async phase tasks inherit the trace context. Returns updated
   # data with the span ctx and a native monotonic start timestamp. No-op when
   # the SDK is absent (start_span returns a non-recording span ctx).
   defp start_batch_span(data) do

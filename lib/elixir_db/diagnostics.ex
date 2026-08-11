@@ -50,7 +50,7 @@ defmodule ElixirDB.Diagnostics do
          {:ok, [[version]]} <- Connection.query(conn, "SELECT sqlite_version()"),
          true <- version_at_least?(version, "3.45.0"),
          {:ok, _} <- Connection.query(conn, "CREATE VIRTUAL TABLE fts_probe USING fts5(body)") do
-      # Prefer contentless-delete when available; fall back to ordinary contentless (Plan §9.6).
+      # Prefer contentless-delete when available; fall back to ordinary contentless.
       Application.put_env(
         :elixir_db,
         :fts5_contentless_delete,

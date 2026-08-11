@@ -1,6 +1,6 @@
 defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
   @moduledoc """
-  Plan §12.6 / gap D8: crash recovery with a hot rollback journal (DELETE mode).
+  Crash recovery with a hot rollback journal (DELETE mode).
 
   Limitation (documented): fully mid-mutation SIGKILL of an in-BEAM Adapter owner
   during `apply_local_mutation` is not exercised here — that path shares the test

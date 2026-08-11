@@ -1,6 +1,6 @@
 defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
   @moduledoc """
-  Plan §9 acceptance: with no otlp_endpoint configured in host.toml, the app
+  With no otlp_endpoint configured in host.toml, the app
   wires NO exporter and opens no collector connection; with one set, the OTLP
   exporter is wired.
 
