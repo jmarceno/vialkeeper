@@ -4,7 +4,7 @@ defmodule ElixirDB.ApplicationStartupTest do
   non-loopback interface requires authentication, TLS, or the explicit
   allow_insecure_remote override.
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias ElixirDB.Application
 

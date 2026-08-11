@@ -4,7 +4,7 @@ defmodule ElixirDB.HostConfigTest do
   never-overwrite semantics, field-level validation errors, auth/TLS guards,
   and the template/defaults drift test.
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias ElixirDB.Federation.SavedQueries
   alias ElixirDB.HostConfig

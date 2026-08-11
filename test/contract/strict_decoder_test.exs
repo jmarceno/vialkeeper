@@ -2,9 +2,9 @@ defmodule ElixirDB.Contract.StrictDecoderTest do
   @moduledoc """
   Adversarial coverage for JSON-002 / JSON-003 via StrictDecoder.
 
-  These cases are the proof corpus for F1 (Plan §4.4 keep-or-migrate).
+  These cases are the proof corpus for strict-decoder compatibility behavior.
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias ElixirDB.JSON.{StrictCache, StrictDecoder}
 

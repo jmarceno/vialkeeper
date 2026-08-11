@@ -6,7 +6,7 @@ defmodule ElixirDB.HTTP.AuthPlugTest do
   indistinguishable failure cases (missing, malformed, wrong) yielding
   byte-identical 401 responses, plus a host.toml token round-trip.
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
   import Plug.Test
 
   alias ElixirDB.HTTP.Router

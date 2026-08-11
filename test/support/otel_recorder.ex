@@ -1,3 +1,24 @@
+defmodule ElixirDB.Observability.TestExporter.Owner do
+  @moduledoc """
+  Keeps the observability test span table alive independently of test processes.
+
+  Export callbacks run in short-lived OpenTelemetry worker processes. The table
+  must therefore be owned by a process whose lifetime is not tied to one test
+  or one export operation.
+  """
+
+  use GenServer
+
+  @impl true
+  def init(table) do
+    if :ets.whereis(table) == :undefined do
+      :ets.new(table, [:named_table, :public, :bag])
+    end
+
+    {:ok, table}
+  end
+end
+
 defmodule ElixirDB.Observability.TestExporter do
   @moduledoc """
   In-memory span exporter for tests. Implements the `otel_exporter_traces`
@@ -9,6 +30,7 @@ defmodule ElixirDB.Observability.TestExporter do
   """
 
   @behaviour :otel_exporter_traces
+  @owner ElixirDB.Observability.TestExporter.Owner
   @table __MODULE__
 
   # #span record tuple indices (0-based; tag at 0). From
@@ -141,19 +163,21 @@ defmodule ElixirDB.Observability.TestExporter do
 
   defp record_field(_, _), do: nil
 
-  # Concurrent :ets.new on the same name raises badarg; losing that race is
-  # fine, so never let it propagate.
+  # The owner is intentionally unlinked from test processes so the recorder
+  # survives test teardown and exporter worker turnover.
   defp ensure_table do
-    if :ets.whereis(@table) == :undefined do
-      try do
-        :ets.new(@table, [:named_table, :public, :bag])
-      rescue
-        ArgumentError -> :ok
-      catch
-        :error, :badarg -> :ok
-      end
+    case Process.whereis(@owner) do
+      pid when is_pid(pid) -> :ok
+      nil -> start_owner()
     end
 
     :ok
+  end
+
+  defp start_owner do
+    case GenServer.start(@owner, @table, name: @owner) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
   end
 end
