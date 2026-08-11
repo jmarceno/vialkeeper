@@ -16,12 +16,12 @@
       "ElixirDB.Federation.SourceDocument",
       "ElixirDB.Federation.SavedQueries",
       "ElixirDB.Replication",
-      "ElixirDB.Replication.JobManager",
       "ElixirDB.Attachments",
       "ElixirDB.Observability.Dashboard"
     ],
     runtime: [
       "ElixirDB.Runtime.*",
+      "ElixirDB.Replication.JobManager",
       "ElixirDB.Query.Subscriptions",
       "ElixirDB.Query.Subscription",
       "ElixirDB.Query.SubscriptionHub",
