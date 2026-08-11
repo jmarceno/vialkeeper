@@ -8,14 +8,14 @@ config :logger, :console,
   format: "[$level] $message\n",
   metadata: [:database_uuid, :kind, :reason]
 
-# OpenTelemetry resource identity and span batch processor tuning only (plan
-# §2.2). The OTLP endpoint is intentionally NOT set here — a hardcoded endpoint
+# OpenTelemetry resource identity and span batch processor tuning only. The OTLP
+# endpoint is intentionally NOT set here — a hardcoded endpoint
 # would risk a network attempt on misconfiguration and break the "no network
 # when unconfigured" guarantee (OBSV-004). The exporter is wired exclusively by
 # config/runtime.exs when an otlp_endpoint is present in host.toml.
 config :opentelemetry, :resource, service: %{name: "elixir_db", version: "0.1.0"}
 
-# Batch processor tuning (plan §2.2; the key names are the SDK's actual ones:
+# Batch processor tuning; the key names are the SDK's actual ones:
 # scheduled_delay_ms / max_queue_size / exporting_timeout_ms). The values equal
 # the SDK defaults — declared explicitly so the operational contract is visible.
 # test.exs overrides :processors with the synchronous simple processor.
