@@ -273,9 +273,8 @@ defmodule ElixirDB.WebUI.Routes.Queries do
     ]
   end
 
-  defp pagination_with_query(_uuid, bookmark, _query_text)
-       when not is_binary(bookmark) or bookmark == "",
-       do: []
+  defp pagination_with_query(_uuid, bookmark, _query_text) when not is_binary(bookmark), do: []
+  defp pagination_with_query(_uuid, "", _query_text), do: []
 
   defp pagination_with_query(uuid, bookmark, query_text) do
     [
@@ -334,15 +333,17 @@ defmodule ElixirDB.WebUI.Routes.Queries do
   end
 
   defp index_actions(uuid, index_id) do
+    encoded = URI.encode_www_form(index_id)
+
     [
       "<div class=\"row\">\n",
       "  <form hx-post=\"",
-      HTML.attr("/ui/actions/databases/#{uuid}/indexes/#{URI.encode_www_form(index_id)}/rebuild"),
+      HTML.attr("/ui/actions/databases/#{uuid}/indexes/#{encoded}/rebuild"),
       "\" hx-target=\"#app\" hx-swap=\"innerHTML\">\n",
       "    <button type=\"submit\" class=\"secondary\">Rebuild</button>\n",
       "  </form>\n",
       "  <form hx-post=\"",
-      HTML.attr("/ui/actions/databases/#{uuid}/indexes/#{URI.encode_www_form(index_id)}/delete"),
+      HTML.attr("/ui/actions/databases/#{uuid}/indexes/#{encoded}/delete"),
       "\" hx-target=\"#app\" hx-swap=\"innerHTML\" hx-confirm=\"Delete this index?\">\n",
       "    <button type=\"submit\" class=\"secondary\">Delete</button>\n",
       "  </form>\n",

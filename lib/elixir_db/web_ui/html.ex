@@ -55,10 +55,22 @@ defmodule ElixirDB.WebUI.HTML do
   """
   @spec stringify_keys(map()) :: map()
   def stringify_keys(map) when is_map(map) do
-    Map.new(map, fn
-      {key, value} when is_atom(key) -> {Atom.to_string(key), stringify_value(value)}
-      {key, value} when is_binary(key) -> {key, stringify_value(value)}
-      {key, value} -> {to_string(key), stringify_value(value)}
+    Enum.reduce(map, %{}, fn
+      {key, value}, acc when is_atom(key) ->
+        string_key = Atom.to_string(key)
+
+        # Prefer an existing string key when both `:name` and `"name"` are present.
+        if Map.has_key?(map, string_key) do
+          acc
+        else
+          Map.put(acc, string_key, stringify_value(value))
+        end
+
+      {key, value}, acc when is_binary(key) ->
+        Map.put(acc, key, stringify_value(value))
+
+      {key, value}, acc ->
+        Map.put(acc, to_string(key), stringify_value(value))
     end)
   end
 

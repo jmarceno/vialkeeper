@@ -922,14 +922,14 @@ defmodule ElixirDB.Storage.SQLite.Views do
   end
 
   defp state_result(row) do
-    %{
-      view_id: row.view_id,
-      active_generation: row.active_generation,
-      building_generation: row.building_generation,
-      indexed_through: row.indexed_through,
-      status: row.status,
-      last_error_code: row.last_error_code
-    }
+    state_row([
+      row.view_id,
+      row.active_generation,
+      row.building_generation,
+      row.indexed_through,
+      row.status,
+      row.last_error_code
+    ])
   end
 
   defp required_string(map, key) when is_binary(key) do

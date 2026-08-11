@@ -194,8 +194,10 @@ defmodule ElixirDB.WebUI.Routes.Federation do
   end
 
   defp pagination(_page, bookmark, _databases_text, _query_text, _executed_saved)
-       when not is_binary(bookmark) or bookmark == "",
+       when not is_binary(bookmark),
        do: []
+
+  defp pagination(_page, "", _databases_text, _query_text, _executed_saved), do: []
 
   defp pagination(_page, bookmark, _databases_text, _query_text, name)
        when is_binary(name) and name != "" do
@@ -293,12 +295,13 @@ defmodule ElixirDB.WebUI.Routes.Federation do
   defp validate_uuid_list(list) when is_list(list) do
     Enum.reduce_while(list, {:ok, []}, fn item, {:ok, acc} ->
       case Request.require_uuid(to_string(item)) do
-        {:ok, uuid} -> {:cont, {:ok, acc ++ [uuid]}}
+        {:ok, uuid} -> {:cont, {:ok, [uuid | acc]}}
         {:error, _} = error -> {:halt, error}
       end
     end)
     |> case do
       {:ok, []} -> {:error, Error.invalid_request("databases must list at least one UUID")}
+      {:ok, uuids} -> {:ok, Enum.reverse(uuids)}
       other -> other
     end
   end

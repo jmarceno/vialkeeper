@@ -170,20 +170,11 @@ defmodule ElixirDB.WebUI.Routes.Views do
   end
 
   defp status_embed(uuid, view_id, view) do
-    state = %{
-      view_id: view_id,
-      status: MapAccess.get(view, :status),
-      indexed_through: MapAccess.get(view, :indexed_through),
-      active_generation: MapAccess.get(view, :active_generation),
-      building_generation: MapAccess.get(view, :building_generation),
-      last_error_code: MapAccess.get(view, :last_error_code)
-    }
-
     [
       "  <div id=\"",
       HTML.attr("view-status-" <> view_id),
       "\">\n",
-      render_status(uuid, view_id, state),
+      render_status(uuid, view_id, view),
       "  </div>\n"
     ]
   end
@@ -290,15 +281,17 @@ defmodule ElixirDB.WebUI.Routes.Views do
   end
 
   defp view_actions(uuid, view_id) do
+    encoded = URI.encode_www_form(view_id)
+
     [
       "<div class=\"row\">\n",
       "  <form hx-post=\"",
-      HTML.attr("/ui/actions/databases/#{uuid}/views/#{URI.encode_www_form(view_id)}/rebuild"),
+      HTML.attr("/ui/actions/databases/#{uuid}/views/#{encoded}/rebuild"),
       "\" hx-target=\"#app\" hx-swap=\"innerHTML\">\n",
       "    <button type=\"submit\" class=\"secondary\">Rebuild</button>\n",
       "  </form>\n",
       "  <form hx-post=\"",
-      HTML.attr("/ui/actions/databases/#{uuid}/views/#{URI.encode_www_form(view_id)}/delete"),
+      HTML.attr("/ui/actions/databases/#{uuid}/views/#{encoded}/delete"),
       "\" hx-target=\"#app\" hx-swap=\"innerHTML\" hx-confirm=\"Delete this view?\">\n",
       "    <button type=\"submit\" class=\"secondary\">Delete</button>\n",
       "  </form>\n",
@@ -306,15 +299,7 @@ defmodule ElixirDB.WebUI.Routes.Views do
     ]
   end
 
-  defp public_result(result) when is_map(result) do
-    Map.new(result, fn
-      {key, value} when is_atom(key) -> {Atom.to_string(key), public_result(value)}
-      {key, value} -> {key, public_result(value)}
-    end)
-  end
-
-  defp public_result(list) when is_list(list), do: Enum.map(list, &public_result/1)
-  defp public_result(atom) when is_atom(atom), do: Atom.to_string(atom)
+  defp public_result(result) when is_map(result), do: HTML.stringify_keys(result)
   defp public_result(other), do: other
 
   defp status_tone(status) when status in ["ready", :ready, "current", :current], do: :ok

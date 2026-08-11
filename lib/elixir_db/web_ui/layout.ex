@@ -10,12 +10,15 @@ defmodule ElixirDB.WebUI.Layout do
   alias ElixirDB.WebUI.HTML
 
   @htmx_config ~s({"allowEval":false,"allowScriptTags":false,"historyCacheSize":0,"includeIndicatorStyles":false,"selfRequestsOnly":true})
+  @product_title "ElixirDB"
 
   @doc """
   Renders the public console shell document.
   """
   @spec shell() :: iodata()
   def shell do
+    title = HTML.escape(@product_title)
+
     [
       "<!DOCTYPE html>\n",
       "<html lang=\"en\">\n",
@@ -26,7 +29,7 @@ defmodule ElixirDB.WebUI.Layout do
       @htmx_config,
       "'>\n",
       "  <title>",
-      HTML.escape("ElixirDB"),
+      title,
       "</title>\n",
       "  <link rel=\"stylesheet\" href=\"/ui/assets/app.css\">\n",
       "  <script src=\"/ui/assets/htmx.min.js\" defer></script>\n",
@@ -36,7 +39,7 @@ defmodule ElixirDB.WebUI.Layout do
       "  <div class=\"shell\">\n",
       "    <nav class=\"nav\" aria-label=\"Console\">\n",
       "      <p class=\"brand\">",
-      HTML.escape("ElixirDB"),
+      title,
       "</p>\n",
       "      <ul>\n",
       nav_item("Home", "/ui/fragments/home"),
