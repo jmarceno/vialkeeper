@@ -12,6 +12,7 @@ defmodule ElixirDB.Storage.Ports.ChangeLog do
 
   @callback allocate_sequences(BackendContext.t(), non_neg_integer()) :: result([integer()])
   @callback append_change(BackendContext.t(), map()) :: :ok | {:error, ElixirDB.Error.t()}
+  @callback append_changes(BackendContext.t(), [map()]) :: :ok | {:error, ElixirDB.Error.t()}
   @callback read_page(BackendContext.t(), non_neg_integer(), pos_integer()) ::
               result(%{
                 results: [change_entry()],

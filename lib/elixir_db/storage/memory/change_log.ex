@@ -31,6 +31,15 @@ defmodule ElixirDB.Storage.Memory.ChangeLog do
   end
 
   @impl true
+  def append_changes(%BackendContext{} = context, entries) when is_list(entries) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      adapter.store
+      |> Store.update(&append_entries(&1, entries))
+      |> normalize_ok()
+    end
+  end
+
+  @impl true
   def read_page(%BackendContext{} = context, since, limit)
       when is_integer(since) and since >= 0 and is_integer(limit) and limit > 0 do
     with {:ok, adapter} <- Context.unwrap(context) do
@@ -91,6 +100,16 @@ defmodule ElixirDB.Storage.Memory.ChangeLog do
       last_sequence: last,
       has_more: length(changes) > limit
     }
+  end
+
+  defp append_entries(state, entries) do
+    new_state =
+      Enum.reduce(entries, state, fn entry, current ->
+        {:ok, updated} = Store.append_change(current, entry)
+        updated
+      end)
+
+    {:ok, new_state, :ok}
   end
 
   defp change_row(change) do

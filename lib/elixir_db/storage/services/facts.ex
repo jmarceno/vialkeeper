@@ -165,6 +165,11 @@ defmodule ElixirDB.Storage.Services.Facts do
   def append_change(%BackendContext{} = ctx, entry),
     do: Access.port(ctx, :change_log).append_change(ctx, entry)
 
+  @doc "Appends an ordered batch of change-log entries."
+  @spec append_changes(BackendContext.t(), [map()]) :: :ok | {:error, ElixirDB.Error.t()}
+  def append_changes(%BackendContext{} = ctx, entries) when is_list(entries),
+    do: Access.port(ctx, :change_log).append_changes(ctx, entries)
+
   @doc "Ensures every digest in a manifest is reachable."
   @spec ensure_manifest_reachable(BackendContext.t(), map()) ::
           :ok | {:error, ElixirDB.Error.t()}

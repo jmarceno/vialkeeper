@@ -78,6 +78,25 @@ defmodule ElixirDB.Storage.SQLite.Changes do
     end
   end
 
+  @doc "Inserts an ordered batch of change-feed rows."
+  @spec insert_many(Connection.handle(), [
+          {integer(), integer() | nil, binary(), ElixirDB.Domain.Revision.t(), binary(), binary()}
+        ]) :: :ok | {:error, term()}
+  def insert_many(_conn, []), do: :ok
+
+  def insert_many(conn, entries) when is_list(entries) do
+    entries
+    |> Enum.chunk_every(100)
+    |> Enum.reduce_while(:ok, fn chunk, :ok ->
+      with {:ok, rows} <- encode_change_rows(chunk),
+           :ok <- insert_rows(conn, rows) do
+        {:cont, :ok}
+      else
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
   @doc """
   Loads change-feed rows after `since`, limited to `limit` rows.
   """
@@ -186,6 +205,49 @@ defmodule ElixirDB.Storage.SQLite.Changes do
       leaf_revisions: leaves,
       origin: origin
     }
+
+  defp encode_change_rows(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn
+      {sequence, doc_key, document_id, winner, leaf_json, origin}, {:ok, rows} ->
+        with {:ok, leaves} <- StrictDecoder.decode(leaf_json),
+             {:ok, leaf_term} <- TermBlob.encode(leaves, leaf_json) do
+          {:cont,
+           {:ok,
+            [
+              [
+                sequence,
+                doc_key,
+                document_id,
+                winner.revision_id,
+                if(winner.deleted, do: 1, else: 0),
+                leaf_json,
+                TermBlob.bind(leaf_term),
+                origin
+              ]
+              | rows
+            ]}}
+        else
+          {:error, _} = error -> {:halt, error}
+        end
+    end)
+    |> reverse_rows()
+  end
+
+  defp reverse_rows({:ok, rows}), do: {:ok, Enum.reverse(rows)}
+  defp reverse_rows(error), do: error
+
+  defp insert_rows(_conn, []), do: :ok
+
+  defp insert_rows(conn, rows) do
+    placeholders = Enum.map_join(rows, ",", fn _row -> "(?, ?, ?, ?, ?, ?, ?, ?)" end)
+
+    Connection.execute(
+      conn,
+      "INSERT INTO changes(sequence, doc_key, document_id, winning_revision, winning_deleted, leaf_set_json, leaf_set_term, origin) VALUES " <>
+        placeholders,
+      List.flatten(rows)
+    )
+  end
 
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})

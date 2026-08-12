@@ -850,8 +850,76 @@ defmodule ElixirDB.Storage.Services.Mutations do
     entries = Enum.sort_by(affected, fn {_document_id, entry} -> entry.document_id end)
 
     with {:ok, sequences} <- Facts.allocate_sequences(context, length(entries)) do
+      finalize_bulk_document_entries(context, entries, sequences, ready_indexes)
+    end
+  end
+
+  defp finalize_bulk_document_entries(context, entries, sequences, ready_indexes) do
+    if all_fast_candidates?(entries) do
+      finalize_fast_bulk_documents(context, entries, sequences, ready_indexes)
+    else
       Enum.zip(entries, sequences)
       |> Enum.reduce_while({:ok, %{}}, &finalize_bulk_document(&1, &2, context, ready_indexes))
+    end
+  end
+
+  defp all_fast_candidates?([]), do: false
+
+  defp all_fast_candidates?(entries) do
+    Enum.all?(entries, fn
+      {_document_id, %{fast_candidate: %{revision: %Revision{}, body_json: _body_json}}} -> true
+      _ -> false
+    end)
+  end
+
+  defp finalize_fast_bulk_documents(context, entries, sequences, ready_indexes) do
+    result =
+      Enum.zip(entries, sequences)
+      |> Enum.reduce_while({:ok, %{}, []}, fn
+        {{document_id, %{fast_candidate: %{revision: candidate, body_json: body_json}}}, sequence},
+        {:ok, results, changes} ->
+          case materialize_new_bulk_document(
+                 context,
+                 document_id,
+                 candidate,
+                 body_json,
+                 ready_indexes,
+                 sequence
+               ) do
+            {:ok, document, leaf_json} ->
+              result =
+                publishless_result(
+                  document_id,
+                  candidate.revision_id,
+                  sequence,
+                  candidate.deleted,
+                  []
+                )
+
+              change =
+                new_bulk_change(
+                  document_id,
+                  candidate,
+                  sequence,
+                  leaf_json,
+                  document
+                )
+
+              {:cont, {:ok, Map.put(results, document_id, result), [change | changes]}}
+
+            {:error, error} ->
+              {:halt, {:error, error}}
+          end
+      end)
+
+    case result do
+      {:ok, results, changes} ->
+        with :ok <- Facts.append_changes(context, Enum.reverse(changes)) do
+          {:ok, results}
+        end
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -898,6 +966,32 @@ defmodule ElixirDB.Storage.Services.Mutations do
          ready_indexes,
          sequence
        ) do
+    with {:ok, document, leaf_json} <-
+           materialize_new_bulk_document(
+             context,
+             document_id,
+             candidate,
+             body_json,
+             ready_indexes,
+             sequence
+           ),
+         :ok <-
+           Facts.append_change(
+             context,
+             new_bulk_change(document_id, candidate, sequence, leaf_json, document)
+           ) do
+      {:ok, publishless_result(document_id, candidate.revision_id, sequence, candidate.deleted, [])}
+    end
+  end
+
+  defp materialize_new_bulk_document(
+         context,
+         document_id,
+         candidate,
+         body_json,
+         ready_indexes,
+         sequence
+       ) do
     with {:ok, leaf_json} <- Facts.encode_leaf_set([candidate]),
          {:ok, document} <-
            Facts.insert_document_with_revision(
@@ -908,19 +1002,20 @@ defmodule ElixirDB.Storage.Services.Mutations do
              body_json
            ),
          :ok <- Facts.clear_pending_for_manifest(context, candidate.attachments),
-         :ok <- refresh_ready_indexes(context, document_id, candidate, ready_indexes),
-         :ok <-
-           Facts.append_change(context, %{
-             sequence: sequence,
-             document_id: document_id,
-             winner: candidate,
-             leaf_json: leaf_json,
-             origin: "local",
-             backend_meta: Facts.backend_meta(document)
-           }) do
-      {:ok, publishless_result(document_id, candidate.revision_id, sequence, candidate.deleted, [])}
+         :ok <- refresh_ready_indexes(context, document_id, candidate, ready_indexes) do
+      {:ok, document, leaf_json}
     end
   end
+
+  defp new_bulk_change(document_id, candidate, sequence, leaf_json, document),
+    do: %{
+      sequence: sequence,
+      document_id: document_id,
+      winner: candidate,
+      leaf_json: leaf_json,
+      origin: "local",
+      backend_meta: Facts.backend_meta(document)
+    }
 
   defp publishless_result(document_id, revision_id, sequence, deleted, conflicts),
     do: %{
