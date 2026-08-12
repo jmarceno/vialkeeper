@@ -29,6 +29,13 @@ defmodule ElixirDB.Storage.Ports.DocumentFacts do
   @callback list_document_page(BackendContext.t(), binary() | nil, pos_integer()) ::
               result(%{document_ids: [binary()], next_cursor: binary() | nil})
   @callback ensure_document(BackendContext.t(), binary()) :: result(document_fact())
+  @callback insert_document_with_revision(
+              BackendContext.t(),
+              binary(),
+              Revision.t(),
+              non_neg_integer(),
+              binary() | nil
+            ) :: result(document_fact())
   @callback ensure_parent(BackendContext.t(), binary(), binary() | nil) ::
               :ok | {:error, ElixirDB.Error.t()}
   @callback insert_revision(BackendContext.t(), binary(), Revision.t()) ::

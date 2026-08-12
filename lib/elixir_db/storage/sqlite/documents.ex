@@ -104,6 +104,36 @@ defmodule ElixirDB.Storage.SQLite.Documents do
     end
   end
 
+  @doc "Inserts a document row with its first winning revision materialized."
+  @spec insert_with_winner(
+          Connection.handle(),
+          binary(),
+          Revision.t(),
+          non_neg_integer(),
+          binary() | nil
+        ) :: {:ok, integer()} | {:error, term()}
+  def insert_with_winner(conn, id, %Revision{} = winner, sequence, body_json)
+      when is_binary(id) and is_integer(sequence) and sequence >= 0 do
+    body = if winner.deleted, do: nil, else: body_json || Canonical.encode!(winner.body)
+
+    with {:ok, body_term} <- materialized_body_term(winner, body),
+         :ok <-
+           Connection.execute(
+             conn,
+             "INSERT INTO documents(document_id, winning_revision, winning_body_json, winning_body_term, winning_deleted, update_sequence) VALUES (?, ?, ?, ?, ?, ?)",
+             [
+               id,
+               winner.revision_id,
+               body,
+               TermBlob.bind(body_term),
+               if(winner.deleted, do: 1, else: 0),
+               sequence
+             ]
+           ) do
+      Sqlite3.last_insert_rowid(conn)
+    end
+  end
+
   @doc """
   Materializes the winning revision onto the document row.
   """

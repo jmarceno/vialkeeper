@@ -8,7 +8,7 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   @behaviour ElixirDB.Storage.Ports.DocumentFacts
 
   alias ElixirDB.Domain.Revision
-  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
   alias ElixirDB.Storage.SQLite.{Connection, Context, Documents, Revisions}
@@ -107,6 +107,33 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
     end
   end
 
+  @impl true
+  def insert_document_with_revision(
+        %BackendContext{} = context,
+        document_id,
+        %Revision{} = revision,
+        sequence,
+        body_json
+      )
+      when is_binary(document_id) and is_integer(sequence) and sequence >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context),
+         :ok <- validate_revision_document(document_id, revision),
+         body_json <- materialized_body_json(revision, body_json),
+         {:ok, doc_key} <-
+           Documents.insert_with_winner(
+             adapter.conn,
+             document_id,
+             revision,
+             sequence,
+             body_json
+           ),
+         :ok <- Errors.wrap(Revisions.insert(adapter.conn, doc_key, revision, body_json)) do
+      {:ok, materialized_document(document_id, doc_key, revision, sequence, body_json)}
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
   defp insert_or_return_document(_adapter, doc, _document_id) when not is_nil(doc) do
     {:ok, shape_document(doc)}
   end
@@ -122,14 +149,7 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   end
 
   defp placeholder_document(document_id, doc_key) do
-    shape_document(%{
-      doc_key: doc_key,
-      document_id: document_id,
-      winning_revision: nil,
-      winning_body_json: nil,
-      winning_deleted: true,
-      update_sequence: 0
-    })
+    shape_document(doc_key, document_id, nil, nil, true, 0)
   end
 
   @impl true
@@ -362,11 +382,51 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   defp fact_doc_key(_document, _revision_document_id),
     do: {:error, ElixirDB.Error.internal_error("document fact is missing backend metadata")}
 
+  defp validate_revision_document(document_id, %Revision{document_id: document_id}), do: :ok
+
+  defp validate_revision_document(_document_id, _revision),
+    do: {:error, ElixirDB.Error.integrity_violation("revision document does not match document")}
+
+  defp materialized_body_json(%Revision{deleted: true}, _body_json), do: nil
+  defp materialized_body_json(%Revision{}, body_json) when is_binary(body_json), do: body_json
+
+  defp materialized_body_json(%Revision{body: body}, _body_json),
+    do: Canonical.encode!(body)
+
+  defp materialized_document(document_id, doc_key, revision, sequence, body_json) do
+    shape_document(
+      doc_key,
+      document_id,
+      revision.revision_id,
+      body_json,
+      revision.deleted,
+      sequence
+    )
+  end
+
   defp shape_document(nil), do: nil
 
   defp shape_document(doc) do
+    shape_document(
+      doc.doc_key,
+      doc.document_id,
+      doc.winning_revision,
+      doc.winning_body_json,
+      doc.winning_deleted,
+      doc.update_sequence
+    )
+  end
+
+  defp shape_document(
+         doc_key,
+         document_id,
+         winning_revision,
+         winning_body_json,
+         winning_deleted,
+         update_sequence
+       ) do
     body =
-      case Map.get(doc, :winning_body_json) do
+      case winning_body_json do
         nil ->
           nil
 
@@ -378,12 +438,12 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
       end
 
     %{
-      document_id: doc.document_id,
-      winning_revision: doc.winning_revision,
-      winning_deleted: doc.winning_deleted,
-      update_sequence: doc.update_sequence,
+      document_id: document_id,
+      winning_revision: winning_revision,
+      winning_deleted: winning_deleted,
+      update_sequence: update_sequence,
       body: body,
-      backend_meta: %{doc_key: doc.doc_key}
+      backend_meta: %{doc_key: doc_key}
     }
   end
 end

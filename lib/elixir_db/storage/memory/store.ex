@@ -142,6 +142,23 @@ defmodule ElixirDB.Storage.Memory.Store do
     end
   end
 
+  @doc "Creates a new document and materializes its first revision."
+  @spec insert_document_with_revision(state(), binary(), Revision.t(), non_neg_integer()) ::
+          {:ok, state(), map()} | {:error, ElixirDB.Error.t()}
+  def insert_document_with_revision(state, document_id, %Revision{} = revision, sequence)
+      when is_binary(document_id) and is_integer(sequence) and sequence >= 0 do
+    if Map.has_key?(state.documents, document_id) do
+      {:error, ElixirDB.Error.integrity_violation("document already exists")}
+    else
+      {:ok, state, _document} = ensure_document(state, document_id)
+
+      with {:ok, state} <- insert_revision(state, document_id, revision),
+           {:ok, state} <- update_winning(state, document_id, revision, sequence) do
+        {:ok, state, find_document(state, document_id)}
+      end
+    end
+  end
+
   @doc "Inserts a revision and updates leaf markers."
   @spec insert_revision(state(), binary(), Revision.t()) ::
           {:ok, state()} | {:error, ElixirDB.Error.t()}

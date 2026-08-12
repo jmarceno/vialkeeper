@@ -74,6 +74,22 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
   end
 
   @impl true
+  def insert_document_with_revision(
+        %BackendContext{} = context,
+        document_id,
+        %Revision{} = revision,
+        sequence,
+        _body_json
+      )
+      when is_binary(document_id) and is_integer(sequence) and sequence >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Store.update(adapter.store, fn state ->
+        Store.insert_document_with_revision(state, document_id, revision, sequence)
+      end)
+    end
+  end
+
+  @impl true
   def ensure_parent(%BackendContext{}, document_id, nil)
       when is_binary(document_id),
       do: :ok

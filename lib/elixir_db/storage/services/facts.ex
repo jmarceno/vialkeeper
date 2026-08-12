@@ -54,6 +54,30 @@ defmodule ElixirDB.Storage.Services.Facts do
   def ensure_document(%BackendContext{} = ctx, document_id),
     do: Access.port(ctx, :document_facts).ensure_document(ctx, document_id)
 
+  @doc "Inserts a new document with its first revision already materialized."
+  @spec insert_document_with_revision(
+          BackendContext.t(),
+          binary(),
+          Revision.t(),
+          non_neg_integer(),
+          binary() | nil
+        ) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  def insert_document_with_revision(
+        %BackendContext{} = ctx,
+        document_id,
+        revision,
+        sequence,
+        body_json
+      ),
+      do:
+        Access.port(ctx, :document_facts).insert_document_with_revision(
+          ctx,
+          document_id,
+          revision,
+          sequence,
+          body_json
+        )
+
   @doc "Ensures a parent revision exists when required."
   @spec ensure_parent(BackendContext.t(), binary(), binary() | nil) ::
           :ok | {:error, ElixirDB.Error.t()}
