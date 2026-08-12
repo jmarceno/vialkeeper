@@ -9,6 +9,7 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
 
   alias ElixirDB.Attachments.Representation
   alias ElixirDB.Error
+  alias ElixirDB.Headers
 
   @media_type "application/vnd.elixirdb.blob-representation"
   @format_version_header "x-elixirdb-blob-format-version"
@@ -99,15 +100,15 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
     with :ok <- reject_content_encoding(headers),
          :ok <- require_media_type(headers),
          {:ok, format_version} <-
-           parse_canonical_positive_integer(header(headers, @format_version_header), :version),
-         {:ok, encoding} <- parse_encoding(header(headers, @encoding_header)),
+           parse_canonical_positive_integer(Headers.get(headers, @format_version_header), :version),
+         {:ok, encoding} <- parse_encoding(Headers.get(headers, @encoding_header)),
          {:ok, logical_length} <-
            parse_canonical_non_neg_integer(
-             header(headers, @logical_length_header),
+             Headers.get(headers, @logical_length_header),
              :logical_length
            ),
          {:ok, payload_length} <- parse_content_length(headers),
-         payload_sha256 <- header(headers, @payload_sha256_header),
+         payload_sha256 <- Headers.get(headers, @payload_sha256_header),
          {:ok, descriptor} <-
            Representation.descriptor(%{
              format_version: format_version,
@@ -138,7 +139,7 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
     do: {:error, Error.unsupported_format("unsupported attachment encoding")}
 
   defp require_media_type(headers) do
-    content_type = header(headers, "content-type")
+    content_type = Headers.get(headers, "content-type")
 
     cond do
       is_nil(content_type) ->
@@ -153,7 +154,7 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
   end
 
   defp reject_content_encoding(headers) do
-    case header(headers, "content-encoding") do
+    case Headers.get(headers, "content-encoding") do
       nil ->
         :ok
 
@@ -163,7 +164,7 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
   end
 
   defp parse_content_length(headers) do
-    parse_canonical_non_neg_integer(header(headers, "content-length"), :content_length)
+    parse_canonical_non_neg_integer(Headers.get(headers, "content-length"), :content_length)
   end
 
   defp parse_canonical_positive_integer(value, :version) do
@@ -203,26 +204,4 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
 
   defp header_error(_field),
     do: {:error, Error.invalid_request("malformed attachment representation header")}
-
-  defp header(headers, name) when is_map(headers) do
-    Enum.find_value(headers, fn {key, value} ->
-      if String.downcase(to_string(key)) == name, do: header_value(value)
-    end)
-  end
-
-  defp header(headers, name) when is_list(headers) do
-    Enum.find_value(headers, fn
-      {key, value} ->
-        if String.downcase(to_string(key)) == name, do: header_value(value)
-
-      _ ->
-        nil
-    end)
-  end
-
-  defp header(_, _), do: nil
-
-  defp header_value(value) when is_binary(value), do: value
-  defp header_value([value | _]) when is_binary(value), do: value
-  defp header_value(_), do: nil
 end

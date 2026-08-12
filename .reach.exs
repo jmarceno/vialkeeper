@@ -16,6 +16,7 @@
       "ElixirDB.Federation.SourceDocument",
       "ElixirDB.Federation.SavedQueries",
       "ElixirDB.Replication",
+      "ElixirDB.Replication.WireCompression",
       "ElixirDB.Attachments",
       "ElixirDB.Observability.Dashboard"
     ],
@@ -61,6 +62,7 @@
       "ElixirDB.Commands",
       "ElixirDB.Query.*",
       "ElixirDB.Error",
+      "ElixirDB.Headers",
       "ElixirDB.UUID",
       "ElixirDB.DurableFS",
       "ElixirDB.PathSafety",
@@ -71,7 +73,8 @@
       "ElixirDB.Attachments.Ticket",
       "ElixirDB.Attachments.Store",
       "ElixirDB.Attachments.Representation",
-      "ElixirDB.Replication.BlobRepresentationStream"
+      "ElixirDB.Replication.BlobRepresentationStream",
+      "ElixirDB.Replication.ZstdFrame"
     ],
     observability: "ElixirDB.Observability.*"
   ],
