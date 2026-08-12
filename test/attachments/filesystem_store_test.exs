@@ -3,7 +3,9 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
   use ExUnit.Case, async: true
 
+  alias ElixirDB.Attachments.Compression
   alias ElixirDB.Attachments.FilesystemStore
+  alias ElixirDB.Attachments.Representation
   alias ElixirDB.DatabaseBundle
 
   @moduletag :attachments
@@ -79,7 +81,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)
 
     prefix = String.slice(digest, 0, 2)
-    path = Path.join([bundle.root, "blobs", prefix, digest <> ".raw"])
+    path = Path.join([bundle.root, "blobs", prefix, digest <> ".blob"])
     File.write!(path, "corrupted")
 
     assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
@@ -95,7 +97,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     prefix = String.slice(digest, 0, 2)
     dir = Path.join([bundle.root, "blobs", prefix])
     File.mkdir_p!(dir)
-    File.write!(Path.join(dir, digest <> ".raw"), "corrupt")
+    File.write!(Path.join(dir, digest <> ".blob"), "corrupt")
 
     assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, byte_size(payload), %{})
     tmp_path = FilesystemStore.writer_tmp_path(writer)
@@ -169,7 +171,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     path = blob_path_for(bundle.root, digest)
     refute String.contains?(path, "diagram")
     refute String.contains?(path, "svg")
-    assert String.ends_with?(path, ".raw") or String.ends_with?(path, ".zst")
+    assert String.ends_with?(path, ".blob")
   end
 
   test "malformed digest cannot escape blob root", %{bundle: bundle} do
@@ -206,7 +208,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)
 
     assert {:ok, %{encoding: encoding}} = FilesystemStore.stat(bundle.root, digest)
-    assert encoding == :compressed
+    assert encoding == :zstd
 
     assert {:ok, reader} = FilesystemStore.open_read(bundle.root, digest)
     assert collect_reader(reader) == payload
@@ -237,16 +239,24 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
              FilesystemStore.verify(bundle.root, digest, size)
   end
 
-  test "both raw and zst representations are integrity violations", %{bundle: bundle} do
+  test "non-blob files are ignored and only digest.blob is accepted", %{bundle: bundle} do
     digest = String.duplicate("a", 64)
     prefix = String.slice(digest, 0, 2)
     dir = Path.join([bundle.root, "blobs", prefix])
     File.mkdir_p!(dir)
     File.write!(Path.join(dir, digest <> ".raw"), "raw")
     File.write!(Path.join(dir, digest <> ".zst"), "zst")
+    File.write!(Path.join(dir, "not-a-digest.blob"), "x")
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    refute FilesystemStore.exists?(bundle.root, digest)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+             FilesystemStore.stat(bundle.root, digest)
+
+    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
              FilesystemStore.verify(bundle.root, digest, 3)
+
+    assert {:ok, []} = FilesystemStore.list_digests(bundle.root)
   end
 
   test "large stream memory remains bounded during read and write", %{bundle: bundle} do
@@ -307,6 +317,350 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     refute FilesystemStore.exists?(bundle.root, digest)
   end
 
+  test "malformed blob is integrity_violation not not-found", %{bundle: bundle} do
+    payload = "malformed-stat"
+    assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)
+    path = blob_path_for(bundle.root, digest)
+    File.write!(path, "too-short")
+
+    assert FilesystemStore.exists?(bundle.root, digest)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.stat(bundle.root, digest)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.verify(bundle.root, digest, size)
+  end
+
+  test "payload bit flip is detected physically", %{bundle: bundle} do
+    payload = "payload-bit-flip"
+    assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)
+    path = blob_path_for(bundle.root, digest)
+    bytes = File.read!(path)
+
+    flipped =
+      <<:erlang.bxor(:binary.at(bytes, 0), 1), binary_part(bytes, 1, byte_size(bytes) - 1)::binary>>
+
+    File.write!(path, flipped)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.verify(bundle.root, digest, size)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             put_whole(bundle.root, payload)
+  end
+
+  test "trailer bit flip is detected structurally", %{bundle: bundle} do
+    payload = "trailer-bit-flip"
+    assert {:ok, %{digest: digest, logical_size: size}} = put_whole(bundle.root, payload)
+    path = blob_path_for(bundle.root, digest)
+    bytes = File.read!(path)
+    offset = byte_size(bytes) - Representation.trailer_size()
+    <<prefix::binary-size(^offset), byte, rest::binary>> = bytes
+    File.write!(path, prefix <> <<:erlang.bxor(byte, 1)>> <> rest)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.stat(bundle.root, digest)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.verify(bundle.root, digest, size)
+  end
+
+  test "file shorter than trailer is rejected", %{bundle: bundle} do
+    digest = :crypto.hash(:sha256, "short") |> Base.encode16(case: :lower)
+    dir = Path.join([bundle.root, "blobs", String.slice(digest, 0, 2)])
+    File.mkdir_p!(dir)
+    File.write!(blob_path_for(bundle.root, digest), :binary.copy(<<1>>, 40))
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.stat(bundle.root, digest)
+  end
+
+  test "representation reader returns encoded payload without decompressing", %{bundle: bundle} do
+    payload = compressible_payload()
+    assert {:ok, %{digest: digest, encoding: :zstd}} = put_whole(bundle.root, payload)
+    path = blob_path_for(bundle.root, digest)
+    file = File.read!(path)
+    stored_payload = binary_part(file, 0, byte_size(file) - Representation.trailer_size())
+
+    assert {:ok, {descriptor, reader}} =
+             FilesystemStore.open_representation_read(bundle.root, digest)
+
+    assert descriptor.encoding == :zstd
+    assert collect_representation(reader) == stored_payload
+    refute collect_representation_reopen(bundle.root, digest) == payload
+  end
+
+  test "representation installer writes canonical trailer and is idempotent", %{bundle: bundle} do
+    payload = "rep-install"
+    digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+
+    descriptor = %{
+      encoding: :raw,
+      logical_digest: digest,
+      logical_length: byte_size(payload),
+      payload_length: byte_size(payload),
+      payload_sha256: digest
+    }
+
+    assert {:ok, writer} = FilesystemStore.begin_put_representation(bundle.root, descriptor, 1_000)
+    assert :ok = FilesystemStore.write_representation_chunk(writer, payload)
+    assert {:ok, first} = FilesystemStore.finish_put_representation(writer)
+    assert first.encoding == :raw
+    assert first.digest == digest
+    refute first.deduplicated?
+
+    assert {:ok, writer} = FilesystemStore.begin_put_representation(bundle.root, descriptor, 1_000)
+    assert :ok = FilesystemStore.write_representation_chunk(writer, payload)
+    assert {:ok, second} = FilesystemStore.finish_put_representation(writer)
+    assert second.deduplicated?
+
+    assert {:ok, reader} = FilesystemStore.open_read(bundle.root, digest)
+    assert collect_reader(reader) == payload
+  end
+
+  test "representation installer rejects truncated payload and digest mismatch", %{bundle: bundle} do
+    payload = "full-payload"
+    digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+
+    descriptor = %{
+      encoding: :raw,
+      logical_digest: digest,
+      logical_length: byte_size(payload),
+      payload_length: byte_size(payload),
+      payload_sha256: digest
+    }
+
+    assert {:ok, writer} = FilesystemStore.begin_put_representation(bundle.root, descriptor, 1_000)
+    assert :ok = FilesystemStore.write_representation_chunk(writer, "short")
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.finish_put_representation(writer)
+
+    wrong = :crypto.hash(:sha256, "other") |> Base.encode16(case: :lower)
+
+    wrong_descriptor = %{
+      encoding: :raw,
+      logical_digest: wrong,
+      logical_length: byte_size(payload),
+      payload_length: byte_size(payload),
+      payload_sha256: wrong
+    }
+
+    assert {:ok, writer} =
+             FilesystemStore.begin_put_representation(bundle.root, wrong_descriptor, 1_000)
+
+    assert :ok = FilesystemStore.write_representation_chunk(writer, payload)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.finish_put_representation(writer)
+  end
+
+  test "representation installer rejects bytes beyond payload_length", %{bundle: bundle} do
+    payload = "abc"
+    digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+
+    descriptor = %{
+      encoding: :raw,
+      logical_digest: digest,
+      logical_length: 3,
+      payload_length: 3,
+      payload_sha256: digest
+    }
+
+    assert {:ok, writer} = FilesystemStore.begin_put_representation(bundle.root, descriptor, 1_000)
+    tmp_path = FilesystemStore.writer_tmp_path(writer)
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.write_representation_chunk(writer, "abcd")
+
+    refute File.exists?(tmp_path)
+  end
+
+  test "representation installer rejects logical length above the maximum", %{bundle: bundle} do
+    digest = :crypto.hash(:sha256, "x") |> Base.encode16(case: :lower)
+
+    descriptor = %{
+      encoding: :raw,
+      logical_digest: digest,
+      logical_length: 10,
+      payload_length: 10,
+      payload_sha256: digest
+    }
+
+    assert {:error, %ElixirDB.Error{code: :payload_too_large}} =
+             FilesystemStore.begin_put_representation(bundle.root, descriptor, 4)
+  end
+
+  test "abort_put_representation removes the temporary upload", %{bundle: bundle} do
+    digest = :crypto.hash(:sha256, "abort") |> Base.encode16(case: :lower)
+
+    descriptor = %{
+      encoding: :raw,
+      logical_digest: digest,
+      logical_length: 5,
+      payload_length: 5,
+      payload_sha256: digest
+    }
+
+    assert {:ok, writer} = FilesystemStore.begin_put_representation(bundle.root, descriptor, 1_000)
+    tmp_path = FilesystemStore.writer_tmp_path(writer)
+    assert File.regular?(tmp_path)
+    :ok = FilesystemStore.abort_put_representation(writer)
+    refute File.exists?(tmp_path)
+  end
+
+  test "concurrent identical representation install leaves one valid blob", %{bundle: bundle} do
+    payload = "same-rep"
+    digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+
+    descriptor = %{
+      encoding: :raw,
+      logical_digest: digest,
+      logical_length: byte_size(payload),
+      payload_length: byte_size(payload),
+      payload_sha256: digest
+    }
+
+    parent = self()
+
+    workers =
+      for _ <- 1..8 do
+        Task.async(fn ->
+          assert {:ok, writer} =
+                   FilesystemStore.begin_put_representation(bundle.root, descriptor, 1_000)
+
+          assert :ok = FilesystemStore.write_representation_chunk(writer, payload)
+          send(parent, {:ready_to_install, self()})
+
+          receive do
+            :install -> FilesystemStore.finish_put_representation(writer)
+          end
+        end)
+      end
+
+    for _ <- workers, do: assert_receive({:ready_to_install, _pid}, 1_000)
+    Enum.each(workers, &send(&1.pid, :install))
+
+    results =
+      Enum.map(workers, fn worker ->
+        case Task.await(worker, 5_000) do
+          {:ok, result} -> result
+          {:error, reason} -> flunk("concurrent representation install failed: #{inspect(reason)}")
+        end
+      end)
+
+    assert Enum.uniq(Enum.map(results, & &1.digest)) == [digest]
+    assert FilesystemStore.verify(bundle.root, digest, byte_size(payload)) == :ok
+    assert {:ok, [^digest]} = FilesystemStore.list_digests(bundle.root)
+  end
+
+  test "concurrent different representations keep the first valid file", %{bundle: bundle} do
+    logical = "shared-logical"
+    digest = :crypto.hash(:sha256, logical) |> Base.encode16(case: :lower)
+    other = "other-payload-bytes"
+    other_digest = :crypto.hash(:sha256, other) |> Base.encode16(case: :lower)
+
+    raw_descriptor = %{
+      encoding: :raw,
+      logical_digest: digest,
+      logical_length: byte_size(logical),
+      payload_length: byte_size(logical),
+      payload_sha256: digest
+    }
+
+    zstd_descriptor = %{
+      encoding: :zstd,
+      logical_digest: digest,
+      logical_length: byte_size(logical),
+      payload_length: byte_size(other),
+      payload_sha256: other_digest
+    }
+
+    parent = self()
+
+    raw_task =
+      Task.async(fn ->
+        assert {:ok, writer} =
+                 FilesystemStore.begin_put_representation(bundle.root, raw_descriptor, 1_000)
+
+        assert :ok = FilesystemStore.write_representation_chunk(writer, logical)
+        send(parent, {:ready, self()})
+
+        receive do
+          :install -> FilesystemStore.finish_put_representation(writer)
+        end
+      end)
+
+    zstd_task =
+      Task.async(fn ->
+        assert {:ok, writer} =
+                 FilesystemStore.begin_put_representation(bundle.root, zstd_descriptor, 1_000)
+
+        assert :ok = FilesystemStore.write_representation_chunk(writer, other)
+        send(parent, {:ready, self()})
+
+        receive do
+          :install -> FilesystemStore.finish_put_representation(writer)
+        end
+      end)
+
+    assert_receive {:ready, _}, 1_000
+    assert_receive {:ready, _}, 1_000
+    send(raw_task.pid, :install)
+    send(zstd_task.pid, :install)
+
+    assert {:ok, _} = Task.await(raw_task, 5_000)
+    assert {:ok, _} = Task.await(zstd_task, 5_000)
+
+    path = blob_path_for(bundle.root, digest)
+    assert File.regular?(path)
+
+    assert {:ok, {descriptor, reader}} =
+             FilesystemStore.open_representation_read(bundle.root, digest)
+
+    payload = collect_representation(reader)
+    assert byte_size(File.read!(path)) == descriptor.payload_length + Representation.trailer_size()
+
+    assert :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower) ==
+             descriptor.payload_sha256
+
+    assert descriptor.encoding in [:raw, :zstd]
+  end
+
+  @tag :compressed
+  test "verify detects a valid physical payload with the wrong logical digest", %{bundle: bundle} do
+    logical = compressible_payload()
+    lying_digest = :crypto.hash(:sha256, "not-the-logical-bytes") |> Base.encode16(case: :lower)
+    assert {:ok, ctx} = Compression.new_compression_context()
+    assert :ok = Compression.set_level(ctx)
+    assert {:ok, compressed} = Compression.compress_chunks(ctx, [logical], true)
+    payload_digest = :crypto.hash(:sha256, compressed) |> Base.encode16(case: :lower)
+
+    descriptor = %{
+      encoding: :zstd,
+      logical_digest: lying_digest,
+      logical_length: byte_size(logical),
+      payload_length: byte_size(compressed),
+      payload_sha256: payload_digest
+    }
+
+    assert {:ok, writer} =
+             FilesystemStore.begin_put_representation(bundle.root, descriptor, 1_000_000)
+
+    assert :ok = FilesystemStore.write_representation_chunk(writer, compressed)
+    assert {:ok, _} = FilesystemStore.finish_put_representation(writer)
+
+    assert {:ok, {stored, reader}} =
+             FilesystemStore.open_representation_read(bundle.root, lying_digest)
+
+    assert stored.payload_sha256 == payload_digest
+    assert collect_representation(reader) == compressed
+
+    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+             FilesystemStore.verify(bundle.root, lying_digest, byte_size(logical))
+  end
+
   defp put_whole(bundle_path, payload) do
     with {:ok, writer} <- FilesystemStore.begin_put(bundle_path, byte_size(payload) + 1, %{}),
          :ok <- FilesystemStore.write_chunk(writer, payload) do
@@ -326,6 +680,31 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
   defp collect_reader(reader) do
     collect_reader_loop(reader, <<>>)
+  end
+
+  defp collect_representation_reopen(bundle_root, digest) do
+    assert {:ok, {_descriptor, reader}} =
+             FilesystemStore.open_representation_read(bundle_root, digest)
+
+    collect_representation(reader)
+  end
+
+  defp collect_representation(reader) do
+    collect_representation_loop(reader, <<>>)
+  end
+
+  defp collect_representation_loop(reader, acc) do
+    case FilesystemStore.read_representation_chunks(reader) do
+      {:ok, chunk} ->
+        collect_representation_loop(reader, acc <> chunk)
+
+      {:done, _} ->
+        FilesystemStore.close_representation_read(reader)
+        acc
+
+      {:error, reason} ->
+        flunk("representation read failed: #{inspect(reason)}")
+    end
   end
 
   defp collect_reader_loop(reader, acc) do
@@ -392,13 +771,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
   end
 
   defp blob_path_for(bundle_root, digest) do
-    case FilesystemStore.stat(bundle_root, digest) do
-      {:ok, %{encoding: :raw}} ->
-        Path.join([bundle_root, "blobs", String.slice(digest, 0, 2), digest <> ".raw"])
-
-      {:ok, %{encoding: :compressed}} ->
-        Path.join([bundle_root, "blobs", String.slice(digest, 0, 2), digest <> ".zst"])
-    end
+    Path.join([bundle_root, "blobs", String.slice(digest, 0, 2), digest <> ".blob"])
   end
 
   defp compressible_payload do

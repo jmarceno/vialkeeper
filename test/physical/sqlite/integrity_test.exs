@@ -156,16 +156,13 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
 
     assert reclaimable >= 1
 
-    # Dual representation is corruption, not reclaimable garbage.
     prefix = String.slice(digest, 0, 2)
-    dual = Path.join([bundle, "blobs", prefix, digest <> ".zst"])
-    File.write!(dual, "bogus")
+    File.write!(Path.join([bundle, "blobs", prefix, digest <> ".zst"]), "bogus")
 
     assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
              @adapter.integrity_check(adapter, %{})
 
-    assert String.contains?(message, "multiple physical") or
-             String.contains?(message, "physical verification")
+    assert String.contains?(message, "malformed")
   end
 
   test "integrity rejects malformed blob filenames", %{adapter: adapter, path: path} do

@@ -70,6 +70,7 @@
       "ElixirDB.Attachments.Orchestration",
       "ElixirDB.Attachments.Ticket",
       "ElixirDB.Attachments.Store",
+      "ElixirDB.Attachments.Representation",
       "ElixirDB.Replication.BlobStream"
     ],
     observability: "ElixirDB.Observability.*"

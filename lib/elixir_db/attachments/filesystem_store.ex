@@ -2,13 +2,15 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   @moduledoc """
   Version 1 filesystem attachment store for database bundles.
 
-  Blobs live under `blobs/<prefix>/<digest>.raw` or `.zst`. Temporary uploads
-  use random names under `tmp/`.
+  Blobs live under `blobs/<prefix>/<digest>.blob` as encoded payload followed
+  by a canonical 92-byte trailer. Temporary uploads use random names under
+  `tmp/`.
   """
 
   @behaviour ElixirDB.Attachments.Store
 
   alias ElixirDB.Attachments.Compression
+  alias ElixirDB.Attachments.Representation
   alias ElixirDB.DatabaseBundle
   alias ElixirDB.DurableFS
   alias ElixirDB.Error
@@ -16,29 +18,16 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
   @probe_prefix_bytes 256 * 1024
   @read_chunk_size 64 * 1024
-  @integrity_footer_magic <<0x50, 0x2A, 0x4D, 0x18>>
-  @integrity_footer_payload_size 40
-  @integrity_footer_size 48
   @digest_pattern ~r/^[0-9a-f]{64}$/
   @writer_key {:elixirdb, :attachment_writer}
+  @representation_writer_key {:elixirdb, :attachment_representation_writer}
+  @reader_key {:elixirdb, :attachment_reader}
+  @representation_reader_key {:elixirdb, :attachment_representation_reader}
 
   @type writer :: {:writer, reference()}
-
-  @type writer_state :: %{
-          bundle_path: binary(),
-          tmp_path: binary(),
-          fd: :file.io_device(),
-          hash_ctx: term(),
-          logical_size: non_neg_integer(),
-          max_bytes: pos_integer(),
-          phase: :probing | {:writing, :raw | :compressed},
-          probe_buffer: binary(),
-          compression_ctx: reference() | nil
-        }
-
-  @reader_key {:elixirdb, :attachment_reader}
-
+  @type representation_writer :: {:representation_writer, reference()}
   @type reader :: {:reader, reference()}
+  @type representation_reader :: {:representation_reader, reference()}
 
   @impl true
   def begin_put(bundle_path, max_bytes, _options)
@@ -55,7 +44,9 @@ defmodule ElixirDB.Attachments.FilesystemStore do
           tmp_path: tmp_path,
           fd: fd,
           hash_ctx: :crypto.hash_init(:sha256),
+          payload_hash_ctx: :crypto.hash_init(:sha256),
           logical_size: 0,
+          payload_length: 0,
           max_bytes: max_bytes,
           phase: :probing,
           probe_buffer: <<>>,
@@ -94,36 +85,23 @@ defmodule ElixirDB.Attachments.FilesystemStore do
       with {:ok, state} <- fetch_writer(ref),
            {:ok, state} <- maybe_decide_encoding(state),
            {:ok, state} <- finalize_physical(state),
-           phase = state.phase,
-           encoding = encoding_from_phase(phase),
-           {:ok, digest, logical_size} <- finalize_digest(state),
-           :ok <- append_integrity_footer(state.fd, encoding, digest, logical_size),
+           {:ok, descriptor} <- original_descriptor(state),
+           {:ok, trailer} <- Representation.encode_trailer(descriptor),
+           :ok <- write_trailer(state.fd, trailer),
            :ok <- sync_file(state.fd),
            :ok <- close_fd(state.fd),
            {:ok, install_kind} <-
-             install(state.bundle_path, state.tmp_path, digest, logical_size, phase) do
+             install_blob(state.bundle_path, state.tmp_path, descriptor.logical_digest) do
         {:ok,
          %{
-           digest: digest,
-           logical_size: logical_size,
-           encoding: encoding,
+           digest: descriptor.logical_digest,
+           logical_size: descriptor.logical_length,
+           encoding: descriptor.encoding,
            deduplicated?: install_kind == :deduplicated
          }}
       end
 
-    case result do
-      {:ok, _} = ok ->
-        drop_writer(ref)
-        ok
-
-      {:error, %Error{} = error} ->
-        abort_put(writer)
-        {:error, error}
-
-      {:error, reason} ->
-        abort_put(writer)
-        {:error, Error.internal_error("attachment finish failed", %{reason: inspect(reason)})}
-    end
+    finish_writer_result(writer, ref, result, "attachment finish failed")
   end
 
   def finish_put(writer) do
@@ -133,65 +111,156 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
   @impl true
   def abort_put({:writer, ref}) do
-    state = fetch_writer(ref)
-
-    drop_writer(ref)
-
-    case state do
-      {:ok, %{fd: fd, tmp_path: tmp_path}} ->
-        close_fd(fd)
-        _ = File.rm(tmp_path)
-        :ok
-
-      _ ->
-        :ok
-    end
+    discard_writer(ref, @writer_key)
   end
 
   def abort_put(_), do: :ok
 
-  @doc false
-  @spec writer_tmp_path(writer()) :: binary() | nil
-  def writer_tmp_path({:writer, ref}) do
-    case fetch_writer(ref) do
-      {:ok, %{tmp_path: tmp_path}} -> tmp_path
-      _ -> nil
+  @impl true
+  def begin_put_representation(bundle_path, descriptor, max_logical_bytes)
+      when is_binary(bundle_path) and is_integer(max_logical_bytes) and max_logical_bytes > 0 do
+    with {:ok, descriptor} <- Representation.descriptor(descriptor),
+         :ok <- enforce_max_logical_bytes(descriptor.logical_length, max_logical_bytes),
+         {:ok, bundle} <- bundle_for(bundle_path),
+         {:ok, tmp_path} <- exclusive_tmp(bundle.tmp_path),
+         {:ok, fd} <- File.open(tmp_path, [:write, :binary, :raw]) do
+      ref = make_ref()
+
+      put_keyed(
+        @representation_writer_key,
+        ref,
+        %{
+          bundle_path: bundle.root,
+          tmp_path: tmp_path,
+          fd: fd,
+          descriptor: descriptor,
+          payload_hash_ctx: :crypto.hash_init(:sha256),
+          payload_length: 0
+        }
+      )
+
+      {:ok, {:representation_writer, ref}}
     end
   end
 
   @impl true
+  def write_representation_chunk({:representation_writer, ref} = writer, chunk)
+      when is_binary(chunk) do
+    case update_keyed(@representation_writer_key, ref, &write_representation_state(&1, chunk)) do
+      :ok ->
+        :ok
+
+      {:error, %Error{} = error} ->
+        abort_put_representation(writer)
+        {:error, error}
+
+      {:error, reason} ->
+        abort_put_representation(writer)
+
+        {:error,
+         Error.internal_error("attachment representation write failed", %{reason: inspect(reason)})}
+    end
+  end
+
+  def write_representation_chunk(writer, _chunk) do
+    abort_put_representation(writer)
+    {:error, Error.internal_error("attachment representation writer is in an invalid state")}
+  end
+
+  @impl true
+  def finish_put_representation({:representation_writer, ref} = writer) do
+    result =
+      with {:ok, state} <- fetch_keyed(@representation_writer_key, ref),
+           :ok <- finalize_representation_payload(state),
+           {:ok, trailer} <- Representation.encode_trailer(state.descriptor),
+           :ok <- write_trailer(state.fd, trailer),
+           :ok <- sync_file(state.fd),
+           :ok <- close_fd(state.fd),
+           {:ok, install_kind} <-
+             install_blob(state.bundle_path, state.tmp_path, state.descriptor.logical_digest) do
+        {:ok,
+         %{
+           digest: state.descriptor.logical_digest,
+           logical_size: state.descriptor.logical_length,
+           encoding: state.descriptor.encoding,
+           deduplicated?: install_kind == :deduplicated
+         }}
+      end
+
+    case result do
+      {:ok, _} = ok ->
+        drop_keyed(@representation_writer_key, ref)
+        ok
+
+      {:error, %Error{} = error} ->
+        abort_put_representation(writer)
+        {:error, error}
+
+      {:error, reason} ->
+        abort_put_representation(writer)
+
+        {:error,
+         Error.internal_error("attachment representation finish failed", %{reason: inspect(reason)})}
+    end
+  end
+
+  def finish_put_representation(writer) do
+    abort_put_representation(writer)
+    {:error, Error.internal_error("attachment representation writer is in an invalid state")}
+  end
+
+  @impl true
+  def abort_put_representation({:representation_writer, ref}) do
+    discard_writer(ref, @representation_writer_key)
+  end
+
+  def abort_put_representation(_), do: :ok
+
+  @doc false
+  @spec writer_tmp_path(writer() | representation_writer()) :: binary() | nil
+  def writer_tmp_path({:writer, ref}) do
+    writer_tmp_from_key(@writer_key, ref)
+  end
+
+  def writer_tmp_path({:representation_writer, ref}) do
+    writer_tmp_from_key(@representation_writer_key, ref)
+  end
+
+  def writer_tmp_path(_), do: nil
+
+  @impl true
   def exists?(bundle_path, digest) do
-    match?({:ok, _, _}, resolve_representation(bundle_path, digest))
+    match?({:ok, _path}, resolve_blob_file(bundle_path, digest))
   end
 
   @impl true
   def stat(bundle_path, digest) do
-    with {:ok, digest} <- validate_digest(digest),
-         {:ok, path, encoding} <- resolve_representation(bundle_path, digest),
-         {:ok, stat} <- file_stat(path) do
-      {:ok, %{encoding: encoding, physical_size: stat.size}}
+    with {:ok, path} <- resolve_blob_file(bundle_path, digest),
+         {:ok, descriptor, size} <- read_validated_descriptor(path, digest) do
+      {:ok, %{encoding: descriptor.encoding, physical_size: size}}
     end
   end
 
   @impl true
   def open_read(bundle_path, digest) do
-    with {:ok, digest} <- validate_digest(digest),
-         {:ok, path, encoding} <- resolve_representation(bundle_path, digest),
-         {:ok, fd, integrity, decompress_ctx} <- open_read_components(path, encoding, digest) do
+    with {:ok, path} <- resolve_blob_file(bundle_path, digest),
+         {:ok, descriptor, _size} <- read_validated_descriptor(path, digest),
+         {:ok, fd, decompress_ctx} <- open_logical_components(path, descriptor) do
       ref = make_ref()
 
       put_reader(
         ref,
         %{
           fd: fd,
-          encoding: encoding,
+          encoding: descriptor.encoding,
+          remaining_payload: descriptor.payload_length,
           decompress_ctx: decompress_ctx,
           pending: <<>>,
           done?: false,
           hash_ctx: :crypto.hash_init(:sha256),
           logical_size: 0,
-          expected_size: integrity.logical_size,
-          expected_digest: integrity.digest
+          expected_size: descriptor.logical_length,
+          expected_digest: descriptor.logical_digest
         }
       )
 
@@ -214,7 +283,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
       {:ok, %{encoding: :raw} = reader} ->
         read_raw_chunk(ref, reader)
 
-      {:ok, %{encoding: :compressed} = reader} ->
+      {:ok, %{encoding: :zstd} = reader} ->
         read_compressed_chunk(ref, reader)
 
       {:error, %Error{}} = error ->
@@ -226,15 +295,211 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     {:error, Error.internal_error("attachment reader is not active")}
   end
 
-  defp read_raw_chunk(ref, %{fd: fd} = reader) do
-    case :file.read(fd, @read_chunk_size) do
+  @impl true
+  def close_read({:reader, ref}) do
+    close_keyed_reader(@reader_key, ref)
+  end
+
+  def close_read(_), do: :ok
+
+  @impl true
+  def open_representation_read(bundle_path, digest) do
+    with {:ok, path} <- resolve_blob_file(bundle_path, digest),
+         {:ok, descriptor, _size} <- read_validated_descriptor(path, digest),
+         {:ok, fd} <- File.open(path, [:read, :binary, :raw]) do
+      ref = make_ref()
+
+      put_keyed(
+        @representation_reader_key,
+        ref,
+        %{
+          fd: fd,
+          remaining_payload: descriptor.payload_length,
+          done?: false
+        }
+      )
+
+      {:ok, {descriptor, {:representation_reader, ref}}}
+    else
+      {:error, %Error{}} = error ->
+        error
+
+      {:error, reason} ->
+        {:error,
+         Error.internal_error("attachment representation open failed", %{reason: inspect(reason)})}
+    end
+  end
+
+  @impl true
+  def read_representation_chunks({:representation_reader, ref}) do
+    case fetch_keyed(@representation_reader_key, ref) do
+      {:ok, %{done?: true}} ->
+        {:done, {:representation_reader, ref}}
+
+      {:ok, reader} ->
+        read_representation_payload(ref, reader)
+
+      {:error, %Error{}} = error ->
+        error
+    end
+  end
+
+  def read_representation_chunks(_reader) do
+    {:error, Error.internal_error("attachment representation reader is not active")}
+  end
+
+  @impl true
+  def close_representation_read({:representation_reader, ref}) do
+    close_keyed_reader(@representation_reader_key, ref)
+  end
+
+  def close_representation_read(_), do: :ok
+
+  @impl true
+  def list_digests(bundle_path) do
+    with {:ok, bundle} <- bundle_for(bundle_path) do
+      digests =
+        bundle.blobs_path
+        |> Path.join("**/*.blob")
+        |> Path.wildcard()
+        |> Enum.map(&digest_from_blob_path/1)
+        |> Enum.filter(&is_binary/1)
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      {:ok, digests}
+    end
+  end
+
+  @impl true
+  def delete(bundle_path, digest) do
+    with {:ok, path} <- resolve_blob_file(bundle_path, digest) do
+      safe_rm(path)
+    end
+  end
+
+  @impl true
+  def verify(bundle_path, digest, expected_size)
+      when is_integer(expected_size) and expected_size >= 0 do
+    with {:ok, path} <- resolve_blob_file(bundle_path, digest),
+         {:ok, descriptor} <- validate_physical_blob(path, digest),
+         :ok <- validate_expected_logical_size(descriptor, expected_size),
+         {:ok, reader} <- open_read(bundle_path, digest) do
+      stream_verify(reader, expected_size, digest)
+    end
+  end
+
+  @impl true
+  def cleanup_tmp(bundle_path, %DateTime{} = cutoff) do
+    with {:ok, bundle} <- bundle_for(bundle_path) do
+      cutoff_unix = DateTime.to_unix(cutoff)
+
+      bundle.tmp_path
+      |> File.ls()
+      |> cleanup_tmp_entries(bundle.tmp_path, cutoff_unix)
+    end
+  end
+
+  defp finish_writer_result(_writer, ref, {:ok, _} = ok, _message) do
+    drop_writer(ref)
+    ok
+  end
+
+  defp finish_writer_result(writer, _ref, {:error, %Error{} = error}, _message) do
+    abort_put(writer)
+    {:error, error}
+  end
+
+  defp finish_writer_result(writer, _ref, {:error, reason}, message) do
+    abort_put(writer)
+    {:error, Error.internal_error(message, %{reason: inspect(reason)})}
+  end
+
+  defp original_descriptor(state) do
+    encoding = encoding_from_phase(state.phase)
+    logical_digest = :crypto.hash_final(state.hash_ctx) |> Base.encode16(case: :lower)
+    payload_digest = :crypto.hash_final(state.payload_hash_ctx) |> Base.encode16(case: :lower)
+
+    Representation.descriptor(%{
+      encoding: encoding,
+      logical_digest: logical_digest,
+      logical_length: state.logical_size,
+      payload_length: state.payload_length,
+      payload_sha256: payload_digest
+    })
+  end
+
+  defp write_trailer(fd, trailer) do
+    case :file.write(fd, trailer) do
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp enforce_max_logical_bytes(logical_length, max_logical_bytes)
+       when logical_length <= max_logical_bytes,
+       do: :ok
+
+  defp enforce_max_logical_bytes(_logical_length, _max_logical_bytes) do
+    {:error, Error.payload_too_large("attachment exceeds max_attachment_bytes")}
+  end
+
+  defp write_representation_state(state, chunk) do
+    chunk_size = byte_size(chunk)
+    new_length = state.payload_length + chunk_size
+
+    cond do
+      chunk_size == 0 ->
+        {:ok, state}
+
+      new_length > state.descriptor.payload_length ->
+        {:error, Error.integrity_violation("attachment representation payload length mismatch")}
+
+      true ->
+        case :file.write(state.fd, chunk) do
+          :ok ->
+            {:ok,
+             %{
+               state
+               | payload_length: new_length,
+                 payload_hash_ctx: :crypto.hash_update(state.payload_hash_ctx, chunk)
+             }}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp finalize_representation_payload(state) do
+    digest = :crypto.hash_final(state.payload_hash_ctx) |> Base.encode16(case: :lower)
+
+    cond do
+      state.payload_length != state.descriptor.payload_length ->
+        {:error, Error.integrity_violation("attachment representation payload length mismatch")}
+
+      digest != state.descriptor.payload_sha256 ->
+        {:error, Error.integrity_violation("attachment representation payload digest mismatch")}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp read_raw_chunk(ref, %{fd: fd, remaining_payload: remaining} = reader) do
+    case read_payload_chunk(fd, remaining) do
       :eof ->
-        put_reader(ref, %{reader | done?: true})
+        put_reader(ref, %{reader | done?: true, remaining_payload: 0})
         close_read({:reader, ref})
         {:done, {:reader, ref}}
 
-      {:ok, chunk} ->
+      {:ok, chunk, unread} ->
+        put_reader(ref, %{reader | remaining_payload: unread})
         {:ok, chunk}
+
+      {:error, %Error{} = error} ->
+        close_read({:reader, ref})
+        {:error, error}
 
       {:error, reason} ->
         close_read({:reader, ref})
@@ -275,76 +540,59 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     end
   end
 
-  @impl true
-  def close_read({:reader, ref}) do
-    case fetch_reader(ref) do
+  defp read_representation_payload(ref, %{fd: fd, remaining_payload: remaining} = reader) do
+    case read_payload_chunk(fd, remaining) do
+      :eof ->
+        put_keyed(@representation_reader_key, ref, %{reader | done?: true, remaining_payload: 0})
+        close_representation_read({:representation_reader, ref})
+        {:done, {:representation_reader, ref}}
+
+      {:ok, chunk, unread} ->
+        put_keyed(@representation_reader_key, ref, %{reader | remaining_payload: unread})
+        {:ok, chunk}
+
+      {:error, %Error{} = error} ->
+        close_representation_read({:representation_reader, ref})
+        {:error, error}
+
+      {:error, reason} ->
+        close_representation_read({:representation_reader, ref})
+
+        {:error,
+         Error.internal_error("attachment representation read failed", %{reason: inspect(reason)})}
+    end
+  end
+
+  defp read_payload_chunk(_fd, remaining) when remaining <= 0, do: :eof
+
+  defp read_payload_chunk(fd, remaining) do
+    to_read = min(@read_chunk_size, remaining)
+
+    case :file.read(fd, to_read) do
+      :eof ->
+        {:error, Error.integrity_violation("attachment representation payload is truncated")}
+
+      {:ok, chunk} ->
+        {:ok, chunk, remaining - byte_size(chunk)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp put_reader(ref, state), do: put_keyed(@reader_key, ref, state)
+
+  defp fetch_reader(ref), do: fetch_keyed(@reader_key, ref)
+
+  defp close_keyed_reader(key, ref) do
+    case fetch_keyed(key, ref) do
       {:ok, %{fd: fd}} -> close_fd(fd)
       _ -> :ok
     end
 
-    drop_reader(ref)
+    drop_keyed(key, ref)
     :ok
   end
-
-  def close_read(_), do: :ok
-
-  @impl true
-  def list_digests(bundle_path) do
-    with {:ok, bundle} <- bundle_for(bundle_path) do
-      digests =
-        bundle.blobs_path
-        |> Path.join("**/*.{raw,zst}")
-        |> Path.wildcard()
-        |> Enum.map(&digest_from_blob_path/1)
-        |> Enum.filter(&valid_digest?/1)
-        |> Enum.uniq()
-        |> Enum.sort()
-
-      {:ok, digests}
-    end
-  end
-
-  @impl true
-  def delete(bundle_path, digest) do
-    with {:ok, digest} <- validate_digest(digest),
-         {:ok, path, _encoding} <- resolve_representation(bundle_path, digest) do
-      safe_rm(path)
-    end
-  end
-
-  @impl true
-  def verify(bundle_path, digest, expected_size)
-      when is_integer(expected_size) and expected_size >= 0 do
-    with {:ok, digest} <- validate_digest(digest),
-         :ok <- ensure_single_representation(bundle_path, digest),
-         {:ok, reader} <- open_read(bundle_path, digest) do
-      stream_verify(reader, expected_size, digest)
-    end
-  end
-
-  @impl true
-  def cleanup_tmp(bundle_path, %DateTime{} = cutoff) do
-    with {:ok, bundle} <- bundle_for(bundle_path) do
-      cutoff_unix = DateTime.to_unix(cutoff)
-
-      bundle.tmp_path
-      |> File.ls()
-      |> cleanup_tmp_entries(bundle.tmp_path, cutoff_unix)
-    end
-  end
-
-  defp put_reader(ref, state), do: Process.put(reader_key(ref), state)
-
-  defp drop_reader(ref), do: Process.delete(reader_key(ref))
-
-  defp fetch_reader(ref) do
-    case Process.get(reader_key(ref)) do
-      nil -> {:error, Error.internal_error("attachment reader is not active")}
-      state -> {:ok, state}
-    end
-  end
-
-  defp reader_key(ref), do: {@reader_key, ref}
 
   defp cleanup_tmp_entries({:ok, entries}, tmp_path, cutoff_unix) do
     Enum.each(entries, &cleanup_tmp_entry(tmp_path, &1, cutoff_unix))
@@ -369,22 +617,30 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     end
   end
 
-  defp put_writer(ref, state), do: Process.put(writer_key(ref), state)
+  defp put_writer(ref, state), do: put_keyed(@writer_key, ref, state)
 
-  defp drop_writer(ref), do: Process.delete(writer_key(ref))
+  defp drop_writer(ref), do: drop_keyed(@writer_key, ref)
 
-  defp fetch_writer(ref) do
-    case Process.get(writer_key(ref)) do
-      nil -> {:error, Error.internal_error("attachment writer is not active")}
+  defp fetch_writer(ref), do: fetch_keyed(@writer_key, ref)
+
+  defp update_writer(ref, fun), do: update_keyed(@writer_key, ref, fun)
+
+  defp put_keyed(key, ref, state), do: Process.put({key, ref}, state)
+
+  defp drop_keyed(key, ref), do: Process.delete({key, ref})
+
+  defp fetch_keyed(key, ref) do
+    case Process.get({key, ref}) do
+      nil -> {:error, Error.internal_error("attachment stream is not active")}
       state -> {:ok, state}
     end
   end
 
-  defp update_writer(ref, fun) do
-    with {:ok, state} <- fetch_writer(ref) do
+  defp update_keyed(key, ref, fun) do
+    with {:ok, state} <- fetch_keyed(key, ref) do
       case fun.(state) do
         {:ok, new_state} ->
-          put_writer(ref, new_state)
+          put_keyed(key, ref, new_state)
           :ok
 
         {:error, _} = error ->
@@ -393,7 +649,27 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     end
   end
 
-  defp writer_key(ref), do: {@writer_key, ref}
+  defp discard_writer(ref, key) do
+    state = fetch_keyed(key, ref)
+    drop_keyed(key, ref)
+
+    case state do
+      {:ok, %{fd: fd, tmp_path: tmp_path}} ->
+        close_fd(fd)
+        _ = File.rm(tmp_path)
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp writer_tmp_from_key(key, ref) do
+    case fetch_keyed(key, ref) do
+      {:ok, %{tmp_path: tmp_path}} -> tmp_path
+      _ -> nil
+    end
+  end
 
   defp write_chunk_state(state, chunk) do
     with {:ok, state} <- add_logical_bytes(state, chunk) do
@@ -422,8 +698,9 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
     cond do
       remaining_probe <= 0 ->
-        decide_encoding(state)
-        |> then(fn {:ok, state} -> write_payload(state, chunk) end)
+        with {:ok, state} <- decide_encoding(state) do
+          write_payload(state, chunk)
+        end
 
       byte_size(chunk) <= remaining_probe ->
         {:ok, %{state | probe_buffer: state.probe_buffer <> chunk}}
@@ -432,25 +709,24 @@ defmodule ElixirDB.Attachments.FilesystemStore do
         probe_part = binary_part(chunk, 0, remaining_probe)
         rest = binary_part(chunk, remaining_probe, byte_size(chunk) - remaining_probe)
 
-        decide_encoding(%{state | probe_buffer: state.probe_buffer <> probe_part})
-        |> then(fn {:ok, state} -> write_payload(state, rest) end)
+        with {:ok, state} <-
+               decide_encoding(%{state | probe_buffer: state.probe_buffer <> probe_part}) do
+          write_payload(state, rest)
+        end
     end
   end
 
   defp write_original_chunk(state, chunk), do: write_payload(state, chunk)
 
   defp write_payload(%{phase: {:writing, :raw}, fd: fd} = state, chunk) do
-    case :file.write(fd, chunk) do
-      :ok -> {:ok, state}
-      {:error, reason} -> {:error, reason}
-    end
+    append_payload_bytes(state, fd, chunk)
   end
 
-  defp write_payload(%{phase: {:writing, :compressed}, fd: fd, compression_ctx: ctx} = state, chunk) do
+  defp write_payload(%{phase: {:writing, :zstd}, fd: fd, compression_ctx: ctx} = state, chunk) do
     case Compression.compress_chunk(ctx, chunk) do
       {:ok, output, ctx} ->
-        case write_compressed_output(fd, output) do
-          :ok -> {:ok, %{state | compression_ctx: ctx}}
+        case append_payload_bytes(state, fd, output) do
+          {:ok, state} -> {:ok, %{state | compression_ctx: ctx}}
           {:error, reason} -> {:error, reason}
         end
 
@@ -461,7 +737,26 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
   defp write_payload(_state, _chunk), do: {:error, :invalid_writer_phase}
 
-  defp write_compressed_output(fd, output), do: :file.write(fd, output)
+  defp append_payload_bytes(state, fd, iodata) do
+    binary = IO.iodata_to_binary(iodata)
+
+    if binary == <<>> do
+      {:ok, state}
+    else
+      case :file.write(fd, binary) do
+        :ok ->
+          {:ok,
+           %{
+             state
+             | payload_length: state.payload_length + byte_size(binary),
+               payload_hash_ctx: :crypto.hash_update(state.payload_hash_ctx, binary)
+           }}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
 
   defp maybe_decide_encoding(%{phase: :probing} = state), do: decide_encoding(state)
   defp maybe_decide_encoding(state), do: {:ok, state}
@@ -479,7 +774,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
   defp encoding_for_probe(probe) do
     case Compression.probe(probe) do
-      {:ok, result} -> if Compression.worthwhile?(result), do: :compressed, else: :raw
+      {:ok, result} -> if Compression.worthwhile?(result), do: :zstd, else: :raw
       {:error, _} -> :raw
     end
   end
@@ -488,126 +783,30 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     {:ok, %{state | phase: {:writing, :raw}, compression_ctx: nil}}
   end
 
-  defp start_writing(state, :compressed) do
+  defp start_writing(state, :zstd) do
     with {:ok, ctx} <- Compression.new_compression_context(),
          :ok <- Compression.set_level(ctx) do
-      {:ok, %{state | phase: {:writing, :compressed}, compression_ctx: ctx}}
+      {:ok, %{state | phase: {:writing, :zstd}, compression_ctx: ctx}}
     end
   end
 
-  defp finalize_physical(%{phase: {:writing, :compressed}, fd: fd, compression_ctx: ctx} = state) do
+  defp finalize_physical(%{phase: {:writing, :zstd}, fd: fd, compression_ctx: ctx} = state) do
     with {:ok, output, _ctx} <- Compression.finish_compression(ctx, <<>>),
-         :ok <- write_compressed_output(fd, output) do
+         {:ok, state} <- append_payload_bytes(state, fd, output) do
       {:ok, state}
     end
   end
 
   defp finalize_physical(state), do: {:ok, state}
 
-  defp finalize_digest(%{hash_ctx: hash_ctx, logical_size: logical_size}) do
-    digest = :crypto.hash_final(hash_ctx) |> Base.encode16(case: :lower)
-    {:ok, digest, logical_size}
-  end
+  defp encoding_from_phase({:writing, encoding}), do: encoding
+  defp encoding_from_phase(:probing), do: :raw
 
-  defp append_integrity_footer(_fd, :raw, _digest, _logical_size), do: :ok
-
-  defp append_integrity_footer(fd, :compressed, digest, logical_size) do
-    case Base.decode16(digest, case: :lower) do
-      {:ok, digest_bytes} ->
-        footer =
-          @integrity_footer_magic <>
-            <<@integrity_footer_payload_size::little-unsigned-32>> <>
-            digest_bytes <>
-            <<logical_size::little-unsigned-64>>
-
-        :file.write(fd, footer)
-
-      :error ->
-        {:error, :invalid_digest}
-    end
-  end
-
-  defp read_integrity_footer(_fd, _path, :raw, _digest),
-    do: {:ok, %{logical_size: nil, digest: nil}}
-
-  defp read_integrity_footer(fd, path, :compressed, digest) do
-    with {:ok, %File.Stat{size: size}} <- File.stat(path),
-         true <- size >= @integrity_footer_size,
-         {:ok, footer} <- :file.pread(fd, size - @integrity_footer_size, @integrity_footer_size),
-         {:ok, logical_size} <- parse_integrity_footer(footer, digest) do
-      {:ok, %{logical_size: logical_size, digest: digest}}
-    else
-      false ->
-        {:error, Error.integrity_violation("compressed attachment integrity footer is missing")}
-
-      {:error, %Error{}} = error ->
-        error
-
-      {:error, reason} ->
-        {:error,
-         Error.integrity_violation(
-           "compressed attachment integrity footer is invalid",
-           %{reason: inspect(reason)}
-         )}
-
-      _ ->
-        {:error, Error.integrity_violation("compressed attachment integrity footer is invalid")}
-    end
-  end
-
-  defp open_read_components(path, encoding, digest) do
-    with {:ok, fd} <- File.open(path, [:read, :binary, :raw]) do
-      open_read_components(fd, path, encoding, digest)
-    end
-  end
-
-  defp open_read_components(fd, path, encoding, digest) do
-    case read_integrity_footer(fd, path, encoding, digest) do
-      {:ok, integrity} ->
-        open_read_decompressor(fd, integrity, encoding)
-
-      {:error, reason} ->
-        close_fd(fd)
-        {:error, reason}
-    end
-  end
-
-  defp open_read_decompressor(fd, integrity, encoding) do
-    case maybe_open_decompressor(encoding) do
-      {:ok, decompress_ctx} ->
-        {:ok, fd, integrity, decompress_ctx}
-
-      {:error, reason} ->
-        close_fd(fd)
-        {:error, reason}
-    end
-  end
-
-  defp parse_integrity_footer(
-         <<magic::binary-size(4), payload_size::little-unsigned-32, digest_bytes::binary-size(32),
-           logical_size::little-unsigned-64>>,
-         digest
-       ) do
-    with true <- magic == @integrity_footer_magic,
-         true <- payload_size == @integrity_footer_payload_size,
-         {:ok, expected_digest} <- Base.decode16(digest, case: :lower),
-         true <- digest_bytes == expected_digest do
-      {:ok, logical_size}
-    else
-      _ -> {:error, Error.integrity_violation("compressed attachment digest footer mismatch")}
-    end
-  end
-
-  defp parse_integrity_footer(_footer, _digest),
-    do: {:error, Error.integrity_violation("compressed attachment integrity footer is invalid")}
-
-  defp install(bundle_path, tmp_path, digest, logical_size, phase) do
-    encoding = encoding_from_phase(phase)
-
+  defp install_blob(bundle_path, tmp_path, digest) do
     case bundle_for(bundle_path) do
       {:ok, bundle} ->
         with :ok <- ensure_blob_directory(bundle, digest) do
-          install_into_bundle(bundle, tmp_path, digest, logical_size, encoding)
+          install_into_bundle(bundle, tmp_path, digest)
         end
 
       {:error, _} = error ->
@@ -615,36 +814,37 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     end
   end
 
-  defp encoding_from_phase({:writing, encoding}), do: encoding
-  defp encoding_from_phase(:probing), do: :raw
+  defp install_into_bundle(bundle, tmp_path, digest) do
+    dest = blob_path(bundle.blobs_path, digest)
 
-  defp install_into_bundle(bundle, tmp_path, digest, logical_size, encoding) do
-    case resolve_representation(bundle.root, digest) do
-      {:ok, _existing_path, _existing_encoding} ->
-        reuse_verified_blob(bundle.root, tmp_path, digest, logical_size)
+    case blob_file_kind(dest) do
+      :regular ->
+        reuse_validated_blob(dest, tmp_path, digest)
 
-      {:error, %Error{code: :attachment_blob_not_found}} ->
-        install_new_blob(bundle, tmp_path, digest, logical_size, encoding)
-
-      {:error, %Error{}} = error ->
+      :symlink ->
         _ = File.rm(tmp_path)
-        error
+        {:error, Error.integrity_violation("attachment blob representation is a symlink")}
+
+      :missing ->
+        install_new_blob(bundle, tmp_path, dest, digest)
+
+      {:error, reason} ->
+        _ = File.rm(tmp_path)
+        {:error, reason}
     end
   end
 
-  defp reuse_verified_blob(bundle_root, tmp_path, digest, logical_size) do
-    result = verify(bundle_root, digest, logical_size)
+  defp reuse_validated_blob(dest, tmp_path, digest) do
+    result = validate_physical_blob(dest, digest)
     _ = File.rm(tmp_path)
 
     case result do
-      :ok -> {:ok, :deduplicated}
+      {:ok, _descriptor} -> {:ok, :deduplicated}
       {:error, _} = error -> error
     end
   end
 
-  defp install_new_blob(bundle, tmp_path, digest, logical_size, encoding) do
-    dest = blob_path(bundle.blobs_path, digest, encoding)
-
+  defp install_new_blob(_bundle, tmp_path, dest, digest) do
     case atomic_install(tmp_path, dest) do
       :ok ->
         case DurableFS.sync_directory(Path.dirname(dest)) do
@@ -653,33 +853,34 @@ defmodule ElixirDB.Attachments.FilesystemStore do
         end
 
       {:error, :collision} ->
-        # Another writer won the race; reuse only after validating the winner.
         _ = File.rm(tmp_path)
-        reuse_after_collision(bundle.root, digest, logical_size)
+        reuse_after_collision(dest, digest)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp reuse_after_collision(bundle_root, digest, logical_size) do
-    case ensure_single_representation(bundle_root, digest) do
-      :ok ->
-        case verify(bundle_root, digest, logical_size) do
-          :ok -> {:ok, :deduplicated}
+  defp reuse_after_collision(dest, digest) do
+    case blob_file_kind(dest) do
+      :regular ->
+        case validate_physical_blob(dest, digest) do
+          {:ok, _descriptor} -> {:ok, :deduplicated}
           {:error, _} = error -> error
         end
 
-      {:error, _} = error ->
-        error
+      :symlink ->
+        {:error, Error.integrity_violation("attachment blob representation is a symlink")}
+
+      :missing ->
+        {:error, Error.attachment_blob_not_found("attachment blob not found")}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   defp atomic_install(tmp_path, dest) do
-    # A rename is not an exclusive install on POSIX: a concurrent writer can
-    # create `dest` after an existence check and the rename may replace it.
-    # Linking the private temp inode is atomic and fails without replacement
-    # when the destination already exists.
     case :file.make_link(tmp_path, dest) do
       :ok ->
         case File.rm(tmp_path) do
@@ -707,6 +908,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
         new_size = size + byte_size(chunk)
 
         if new_size > expected_size do
+          close_read(reader)
           {:error, Error.integrity_violation("attachment size mismatch")}
         else
           verify_loop(
@@ -737,7 +939,13 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     end
   end
 
-  defp read_decompressed_chunk(%{fd: fd, decompress_ctx: ctx, pending: pending} = reader) do
+  defp validate_expected_logical_size(%{logical_length: expected_size}, expected_size), do: :ok
+
+  defp validate_expected_logical_size(_descriptor, _expected_size) do
+    {:error, Error.integrity_violation("attachment size mismatch")}
+  end
+
+  defp read_decompressed_chunk(%{decompress_ctx: ctx, pending: pending} = reader) do
     case take_decompressed_output(ctx, pending) do
       {:ok, output, ctx, pending} when output != <<>> ->
         reader = %{reader | decompress_ctx: ctx, pending: pending}
@@ -748,19 +956,31 @@ defmodule ElixirDB.Attachments.FilesystemStore do
         end
 
       {:ok, <<>>, ctx, pending} ->
-        case :file.read(fd, @read_chunk_size) do
-          :eof ->
-            {:ok, %{reader | decompress_ctx: ctx, pending: pending, done?: true}, <<>>}
-
-          {:ok, compressed} ->
-            read_decompressed_chunk(%{reader | decompress_ctx: ctx, pending: pending <> compressed})
-
-          {:error, reason} ->
-            {:error, reason}
-        end
+        fill_compressed_input(%{reader | decompress_ctx: ctx, pending: pending})
 
       {:error, reason} ->
         {:error, Error.integrity_violation("compressed attachment is corrupt: #{inspect(reason)}")}
+    end
+  end
+
+  defp fill_compressed_input(%{remaining_payload: remaining} = reader) when remaining <= 0 do
+    {:ok, %{reader | done?: true, remaining_payload: 0}, <<>>}
+  end
+
+  defp fill_compressed_input(%{fd: fd, remaining_payload: remaining} = reader) do
+    case read_payload_chunk(fd, remaining) do
+      :eof ->
+        {:ok, %{reader | done?: true, remaining_payload: 0}, <<>>}
+
+      {:ok, compressed, unread} ->
+        read_decompressed_chunk(%{
+          reader
+          | remaining_payload: unread,
+            pending: reader.pending <> compressed
+        })
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -809,46 +1029,143 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     end
   end
 
-  defp maybe_open_decompressor(:raw), do: {:ok, nil}
+  defp open_logical_components(path, descriptor) do
+    with {:ok, fd} <- File.open(path, [:read, :binary, :raw]) do
+      case maybe_open_decompressor(descriptor.encoding) do
+        {:ok, decompress_ctx} ->
+          {:ok, fd, decompress_ctx}
 
-  defp maybe_open_decompressor(:compressed), do: Compression.new_decompression_context()
-
-  defp resolve_representation(bundle_path, digest) do
-    with {:ok, digest} <- validate_digest(digest),
-         {:ok, bundle} <- bundle_for(bundle_path),
-         :ok <- ensure_blob_path_safe(bundle, digest) do
-      raw = blob_path(bundle.blobs_path, digest, :raw)
-      zst = blob_path(bundle.blobs_path, digest, :compressed)
-      raw_symlink? = symlink_blob?(raw)
-      zst_symlink? = symlink_blob?(zst)
-      raw? = regular_blob?(raw)
-      zst? = regular_blob?(zst)
-
-      cond do
-        raw_symlink? or zst_symlink? ->
-          {:error, Error.integrity_violation("attachment blob representation is a symlink")}
-
-        raw? and zst? ->
-          {:error, Error.integrity_violation("attachment has multiple physical representations")}
-
-        raw? ->
-          {:ok, raw, :raw}
-
-        zst? ->
-          {:ok, zst, :compressed}
-
-        true ->
-          {:error, Error.attachment_blob_not_found("attachment blob not found")}
+        {:error, reason} ->
+          close_fd(fd)
+          {:error, reason}
       end
     end
   end
 
-  defp ensure_single_representation(bundle_path, digest) do
-    case resolve_representation(bundle_path, digest) do
-      {:error, %Error{code: :attachment_blob_not_found}} -> :ok
-      {:error, %Error{code: :integrity_violation}} = error -> error
-      {:ok, _, _} -> :ok
-      {:error, %Error{}} = error -> error
+  defp maybe_open_decompressor(:raw), do: {:ok, nil}
+
+  defp maybe_open_decompressor(:zstd), do: Compression.new_decompression_context()
+
+  defp resolve_blob_file(bundle_path, digest) do
+    with {:ok, digest} <- validate_digest(digest),
+         {:ok, bundle} <- bundle_for(bundle_path),
+         :ok <- ensure_blob_path_safe(bundle, digest) do
+      path = blob_path(bundle.blobs_path, digest)
+
+      case blob_file_kind(path) do
+        :regular ->
+          {:ok, path}
+
+        :symlink ->
+          {:error, Error.integrity_violation("attachment blob representation is a symlink")}
+
+        :missing ->
+          {:error, Error.attachment_blob_not_found("attachment blob not found")}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp blob_file_kind(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular}} ->
+        :regular
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        :symlink
+
+      {:error, :enoent} ->
+        :missing
+
+      {:ok, _stat} ->
+        {:error, Error.integrity_violation("attachment blob entry has an invalid type")}
+
+      {:error, reason} ->
+        {:error, Error.internal_error("cannot inspect attachment blob", %{reason: inspect(reason)})}
+    end
+  end
+
+  defp read_validated_descriptor(path, digest) do
+    with {:ok, %File.Stat{size: size}} <- File.stat(path),
+         true <- size >= Representation.trailer_size(),
+         {:ok, fd} <- File.open(path, [:read, :binary, :raw]) do
+      result = read_trailer_descriptor(fd, size, digest)
+      close_fd(fd)
+      result
+    else
+      false ->
+        {:error, Error.integrity_violation("attachment representation trailer is invalid")}
+
+      {:error, %Error{}} = error ->
+        error
+
+      {:error, reason} ->
+        {:error, Error.internal_error("attachment open failed", %{reason: inspect(reason)})}
+    end
+  end
+
+  defp read_trailer_descriptor(fd, size, digest) do
+    trailer_size = Representation.trailer_size()
+
+    with {:ok, trailer} <- :file.pread(fd, size - trailer_size, trailer_size),
+         {:ok, descriptor} <- Representation.parse_trailer(trailer),
+         :ok <- Representation.validate_file_size(size, descriptor),
+         :ok <- Representation.validate_route_digest(digest, descriptor) do
+      {:ok, descriptor, size}
+    else
+      {:error, %Error{}} = error ->
+        error
+
+      {:error, reason} ->
+        {:error,
+         Error.integrity_violation("attachment representation trailer is invalid", %{
+           reason: inspect(reason)
+         })}
+    end
+  end
+
+  defp validate_physical_blob(path, digest) do
+    with {:ok, descriptor, _size} <- read_validated_descriptor(path, digest),
+         {:ok, fd} <- File.open(path, [:read, :binary, :raw]) do
+      result = hash_payload(fd, descriptor)
+      close_fd(fd)
+      result
+    end
+  end
+
+  defp hash_payload(fd, descriptor) do
+    case hash_payload_loop(fd, descriptor.payload_length, :crypto.hash_init(:sha256)) do
+      {:ok, digest} ->
+        if digest == descriptor.payload_sha256 do
+          {:ok, descriptor}
+        else
+          {:error, Error.integrity_violation("attachment representation payload digest mismatch")}
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp hash_payload_loop(_fd, remaining, hash_ctx) when remaining <= 0 do
+    {:ok, :crypto.hash_final(hash_ctx) |> Base.encode16(case: :lower)}
+  end
+
+  defp hash_payload_loop(fd, remaining, hash_ctx) do
+    case read_payload_chunk(fd, remaining) do
+      {:ok, chunk, unread} ->
+        hash_payload_loop(fd, unread, :crypto.hash_update(hash_ctx, chunk))
+
+      :eof ->
+        {:error, Error.integrity_violation("attachment representation payload is truncated")}
+
+      {:error, %Error{}} = error ->
+        error
+
+      {:error, reason} ->
+        {:error, Error.internal_error("attachment read failed", %{reason: inspect(reason)})}
     end
   end
 
@@ -877,11 +1194,8 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     end
   end
 
-  defp blob_path(blobs_path, digest, :raw),
-    do: Path.join([blobs_path, prefix(digest), digest <> ".raw"])
-
-  defp blob_path(blobs_path, digest, :compressed),
-    do: Path.join([blobs_path, prefix(digest), digest <> ".zst"])
+  defp blob_path(blobs_path, digest),
+    do: Path.join([blobs_path, prefix(digest), digest <> ".blob"])
 
   defp prefix(digest), do: String.slice(digest, 0, 2)
 
@@ -948,14 +1262,6 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     end
   end
 
-  defp regular_blob?(path) do
-    match?({:ok, %File.Stat{type: :regular}}, File.lstat(path))
-  end
-
-  defp symlink_blob?(path) do
-    match?({:ok, %File.Stat{type: :symlink}}, File.lstat(path))
-  end
-
   defp validate_digest(digest) when is_binary(digest) do
     if valid_digest?(digest) do
       {:ok, digest}
@@ -967,13 +1273,19 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   defp valid_digest?(digest), do: byte_size(digest) == 64 and Regex.match?(@digest_pattern, digest)
 
   defp digest_from_blob_path(path) do
-    path
-    |> Path.basename()
-    |> String.replace_suffix(".raw", "")
-    |> String.replace_suffix(".zst", "")
-  end
+    digest =
+      path
+      |> Path.basename()
+      |> String.replace_suffix(".blob", "")
 
-  defp file_stat(path), do: File.stat(path)
+    prefix = path |> Path.dirname() |> Path.basename()
+
+    if valid_digest?(digest) and prefix(digest) == prefix do
+      digest
+    else
+      nil
+    end
+  end
 
   defp file_mtime(path) do
     case File.stat(path, time: :posix) do

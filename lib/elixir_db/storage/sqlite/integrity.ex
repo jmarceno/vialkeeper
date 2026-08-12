@@ -551,8 +551,8 @@ defmodule ElixirDB.Storage.SQLite.Integrity do
   end
 
   defp parse_blob_filename(prefix, file) do
-    case Regex.run(~r/^([0-9a-f]{64})\.(raw|zst)$/, file) do
-      [_, digest, _ext] ->
+    case Regex.run(~r/^([0-9a-f]{64})\.blob$/, file) do
+      [_, digest] ->
         if String.slice(digest, 0, 2) == prefix, do: {:ok, digest}, else: :error
 
       _ ->

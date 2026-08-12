@@ -146,7 +146,7 @@ defmodule ElixirDB.EndToEnd.OfflineCopyTest do
              Attachments.upload_stream(uuid, [zst_payload])
 
     assert {:ok, %{encoding: :raw}} = FilesystemStore.stat(source_abs, raw_digest)
-    assert {:ok, %{encoding: :compressed}} = FilesystemStore.stat(source_abs, zst_digest)
+    assert {:ok, %{encoding: :zstd}} = FilesystemStore.stat(source_abs, zst_digest)
 
     assert {:ok, %{revision: revision}} =
              Documents.put(uuid, %{
@@ -203,7 +203,7 @@ defmodule ElixirDB.EndToEnd.OfflineCopyTest do
     zst_stream.close.()
 
     assert {:ok, %{encoding: :raw}} = FilesystemStore.stat(dest_abs, raw_digest)
-    assert {:ok, %{encoding: :compressed}} = FilesystemStore.stat(dest_abs, zst_digest)
+    assert {:ok, %{encoding: :zstd}} = FilesystemStore.stat(dest_abs, zst_digest)
 
     assert {:ok, %{ok: true, reclaimable_blobs: 0}} =
              DatabaseCatalog.command(uuid, {:command, :integrity_check, %{}})
