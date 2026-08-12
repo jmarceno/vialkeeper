@@ -120,6 +120,7 @@ defmodule ElixirDB.MixProject do
         "xref graph --format cycles --label compile-connected --fail-above 0",
         "credo --strict",
         "ex_dna --max-clones 0",
+        "storage.boundary_check",
         # Smell baseline holds known storage-extraction debt; new smells still fail.
         "reach.check --arch --smells --strict --baseline .reach-smells-baseline.json",
         "test --warnings-as-errors",

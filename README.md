@@ -586,6 +586,13 @@ mix check.full    # before handoff / wave completion
 MIX_ENV=prod mix release.build
 ```
 
+The full gate includes the repository storage-boundary scan. Run it directly
+when changing storage, runtime, domain, or product-model code:
+
+```sh
+mix storage.boundary_check
+```
+
 `ElixirDB.Diagnostics.runtime/0` reports application / Elixir / OTP /
 selected-backend / protocol versions from the assembled BEAMs.
 

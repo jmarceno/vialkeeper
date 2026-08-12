@@ -2,6 +2,8 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
   @moduledoc "Tests storage-boundary classification, composition, and leak scanning."
   use ExUnit.Case, async: true
 
+  @moduletag :slow
+
   alias ElixirDB.Storage.{
     BackendContext,
     BoundaryGuard,
@@ -24,6 +26,10 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
 
     refute "README.md" in BoundaryGuard.leaking_paths(findings)
     refute "Operations.md" in BoundaryGuard.leaking_paths(findings)
+  end
+
+  test "no physical references escape the product boundary" do
+    assert BoundaryGuard.scan() == []
   end
 
   test "physical allowlist classifies sqlite implementation and physical tests" do

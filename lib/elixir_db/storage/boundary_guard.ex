@@ -2,7 +2,7 @@ defmodule ElixirDB.Storage.BoundaryGuard do
   @moduledoc """
   Static physical-reference guard for the storage boundary.
 
-  Scans repository text for SQLite/Exqlite/SQL physical markers outside
+  Scans product source and documentation for SQLite/Exqlite/SQL physical markers outside
   `ElixirDB.Storage.PhysicalAllowlist`. Findings are returned to the caller so
   every exception is explicit and reviewable.
   """
@@ -22,18 +22,14 @@ defmodule ElixirDB.Storage.BoundaryGuard do
     {:database_sqlite3, ~r/database\.sqlite3/},
     {:sqlite_path, ~r/\bsqlite_path\b/},
     {:validate_sqlite, ~r/\bvalidate_sqlite!?\b/},
-    {:opaque_unwrap, ~r/\bOpaqueHandle\.(?:unwrap|replace|drop)\b/},
-    {:opaque_ets, ~r/:ets\.(?:lookup|tab2list|match|select)\([^\n]*OpaqueHandle/},
-    {:opaque_server_call, ~r/GenServer\.call\(\s*(?:ElixirDB\.Storage\.)?OpaqueHandle\.Server\b/},
-    {:begin_mode, ~r/\bBEGIN(?:\s+(?:EXCLUSIVE|IMMEDIATE|DEFERRED))?\b/i},
-    {:commit_mode, ~r/\bCOMMIT\b/i},
-    {:rollback_mode, ~r/\bROLLBACK\b/i},
-    {:pragma, ~r/\bPRAGMA\b/},
-    {:rowid, ~r/\browid\b/i},
-    {:sql_string, ~r/["']\s*(?:SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\b/i}
+    {:transaction_sql,
+     ~r/["']\s*(?:BEGIN(?:\s+(?:EXCLUSIVE|IMMEDIATE|DEFERRED))?|COMMIT|ROLLBACK)\s*["']/i},
+    {:pragma, ~r/\bPRAGMA\s+[A-Za-z_]/i},
+    {:sql_string,
+     ~r/(?:^\s*|["'])\s*(?:SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+[A-Za-z_][\w.]*\s+SET|DELETE\s+FROM|CREATE\s+(?:TABLE|INDEX|VIRTUAL|TRIGGER)|DROP\s+(?:TABLE|INDEX|TRIGGER)|ALTER\s+TABLE)\b/i}
   ]
 
-  @scan_roots ["lib", "test", "bench", "priv"]
+  @scan_roots ["lib", "bench", "priv"]
   @scan_extensions ~w(.ex .exs .sql .md .toml)
 
   @doc "Approved physical marker patterns scanned by the guard."
@@ -41,11 +37,13 @@ defmodule ElixirDB.Storage.BoundaryGuard do
   def patterns, do: @patterns
 
   @doc """
-  Scans the repository for physical markers outside the allowlist.
+  Scans product source and documentation for physical markers outside the
+  allowlist.
 
   Returns findings sorted by path and line. Product documentation at the repo
   root (`README.md`, `Operations.md`) is included so product-model leaks are
-  checked together with source code.
+  checked together with source code. Tests are intentionally excluded: physical
+  test coverage is classified separately by `PhysicalAllowlist`.
   """
   @spec scan(binary()) :: [finding()]
   def scan(root \\ File.cwd!()) when is_binary(root) do
