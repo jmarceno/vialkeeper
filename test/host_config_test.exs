@@ -193,6 +193,24 @@ defmodule ElixirDB.HostConfigTest do
     assert String.contains?(msg, "escapes the database root")
   end
 
+  test "tls enabled with a symlink escaping the root is rejected", %{dir: dir} do
+    outside =
+      Path.join(
+        System.tmp_dir!(),
+        "elixirdb-outside-cert-#{System.unique_integer([:positive])}"
+      )
+
+    File.write!(outside, "certificate")
+    on_exit(fn -> File.rm(outside) end)
+
+    assert :ok = File.ln_s(outside, Path.join(dir, "cert.pem"))
+    File.write!(Path.join(dir, "key.pem"), "key")
+    write_config(dir, "[tls]\nenabled = true\ncertfile = \"cert.pem\"\nkeyfile = \"key.pem\"\n")
+
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "escapes the database root")
+  end
+
   test "tls enabled with readable in-root cert loads", %{dir: dir} do
     File.write!(Path.join(dir, "cert.pem"), "fake cert")
     File.write!(Path.join(dir, "key.pem"), "fake key")

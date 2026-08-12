@@ -8,7 +8,7 @@ defmodule ElixirDB.Storage.Services.DerivedViews do
   load facts and apply atomic effects through `Ports.DerivedState`.
   """
 
-  alias ElixirDB.DerivedView.Engine
+  alias ElixirDB.DerivedView.{Engine, RebuildState}
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.BackendContext
@@ -110,14 +110,17 @@ defmodule ElixirDB.Storage.Services.DerivedViews do
              Engine.optional_non_negative(request, :catchup_sequence, start_sequence) do
         generation = source.rebuild_generation + 1
 
-        port(tx).put_derived_rebuild_begin(tx, %{
-          materialization_id: metadata.materialization_id,
-          source_database_uuid: source_uuid,
-          generation: generation,
-          start_sequence: start_sequence,
-          catchup_sequence: catchup_sequence,
-          previous_checkpoint_sequence: source.checkpoint_sequence
-        })
+        port(tx).put_derived_rebuild_begin(
+          tx,
+          RebuildState.new(%{
+            materialization_id: metadata.materialization_id,
+            source_database_uuid: source_uuid,
+            generation: generation,
+            start_sequence: start_sequence,
+            catchup_sequence: catchup_sequence,
+            previous_checkpoint_sequence: source.checkpoint_sequence
+          })
+        )
       end
     end)
   end

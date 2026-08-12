@@ -121,7 +121,7 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     pid_file = #{inspect(pid_file)}
     path = #{inspect(sqlite_path)}
     File.write!(pid_file, System.pid())
-    {:ok, _} = Application.ensure_all_started(:exqlite)
+    {:ok, _} = Application.ensure_all_started(:elixir_db)
     {:ok, adapter} = ElixirDB.Storage.SQLite.Adapter.open(path)
     :ok = ElixirDB.Storage.SQLite.Connection.execute(adapter.conn, "BEGIN IMMEDIATE")
     :ok =

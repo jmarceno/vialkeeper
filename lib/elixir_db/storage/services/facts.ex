@@ -12,6 +12,15 @@ defmodule ElixirDB.Storage.Services.Facts do
   alias ElixirDB.Storage.Ports.Access
   alias ElixirDB.Storage.Services.Attachments
 
+  @type change_entry :: %{
+          required(:sequence) => pos_integer(),
+          required(:document_id) => binary(),
+          required(:winner) => Revision.t(),
+          required(:leaf_json) => binary(),
+          required(:origin) => binary(),
+          required(:backend_meta) => map()
+        }
+
   @doc "Loads one document fact or `nil`."
   @spec find_document(BackendContext.t(), binary()) ::
           {:ok, map() | nil} | {:error, ElixirDB.Error.t()}
@@ -160,13 +169,27 @@ defmodule ElixirDB.Storage.Services.Facts do
   def allocate_sequences(%BackendContext{} = ctx, count),
     do: Access.port(ctx, :change_log).allocate_sequences(ctx, count)
 
+  @doc "Builds the backend-neutral change entry accepted by the change-log port."
+  @spec change_entry(pos_integer(), binary(), Revision.t(), binary(), binary(), map()) ::
+          change_entry()
+  def change_entry(sequence, document_id, winner, leaf_json, origin, backend_meta) do
+    %{
+      sequence: sequence,
+      document_id: document_id,
+      winner: winner,
+      leaf_json: leaf_json,
+      origin: origin,
+      backend_meta: backend_meta
+    }
+  end
+
   @doc "Appends one change-log entry."
-  @spec append_change(BackendContext.t(), map()) :: :ok | {:error, ElixirDB.Error.t()}
+  @spec append_change(BackendContext.t(), change_entry()) :: :ok | {:error, ElixirDB.Error.t()}
   def append_change(%BackendContext{} = ctx, entry),
     do: Access.port(ctx, :change_log).append_change(ctx, entry)
 
   @doc "Appends an ordered batch of change-log entries."
-  @spec append_changes(BackendContext.t(), [map()]) :: :ok | {:error, ElixirDB.Error.t()}
+  @spec append_changes(BackendContext.t(), [change_entry()]) :: :ok | {:error, ElixirDB.Error.t()}
   def append_changes(%BackendContext{} = ctx, entries) when is_list(entries),
     do: Access.port(ctx, :change_log).append_changes(ctx, entries)
 

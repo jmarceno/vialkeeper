@@ -187,11 +187,11 @@ defmodule ElixirDB.Storage.Services.Retention do
         Facts.complete_boundary_install(context, install_id)
       else
         {:ok,
-         %{
-           installed: length(page.boundaries),
-           boundary_digest: page.boundary_digest,
-           compaction_epoch: page.compaction_epoch
-         }}
+         RetentionService.install_result(
+           length(page.boundaries),
+           page.boundary_digest,
+           page.compaction_epoch
+         )}
       end
     end
   end

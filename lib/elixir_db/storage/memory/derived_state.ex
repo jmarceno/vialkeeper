@@ -7,7 +7,7 @@ defmodule ElixirDB.Storage.Memory.DerivedState do
   """
   @behaviour ElixirDB.Storage.Ports.DerivedState
 
-  alias ElixirDB.DerivedView.Engine
+  alias ElixirDB.DerivedView.{Engine, RebuildState}
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Memory.{Context, Store}
@@ -98,15 +98,7 @@ defmodule ElixirDB.Storage.Memory.DerivedState do
             derived_view: %{state.derived_view | status: :rebuilding, last_error_code: nil}
         }
 
-        {:ok, next,
-         %{
-           materialization_id: effect.materialization_id,
-           source_database_uuid: source_uuid,
-           generation: effect.generation,
-           start_sequence: effect.start_sequence,
-           catchup_sequence: effect.catchup_sequence,
-           previous_checkpoint_sequence: effect.previous_checkpoint_sequence
-         }}
+        {:ok, next, RebuildState.new(effect)}
       end)
     end
   end

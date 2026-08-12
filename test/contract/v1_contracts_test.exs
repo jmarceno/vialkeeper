@@ -199,7 +199,38 @@ defmodule ElixirDB.Contract.V1ContractsTest do
 
     assert transient.retryable == true
 
-    assert %{code: "internal_error", retryable: false} = ElixirDB.Error.public(default)
+    assert %{
+             code: "internal_error",
+             message: "internal error",
+             retryable: false,
+             details: %{}
+           } = ElixirDB.Error.public(default)
+
+    diagnostic =
+      ElixirDB.Error.internal_error("SQLite statement failed: users@example.test", %{
+        cause: "{:sqlite_error, 'disk I/O error'}",
+        database_path: "/private/customer.elixirdb"
+      })
+
+    refute inspect(ElixirDB.Error.public(diagnostic)) =~ "SQLite"
+    refute inspect(ElixirDB.Error.public(diagnostic)) =~ "users@example.test"
+    refute inspect(ElixirDB.Error.public(diagnostic)) =~ "/private/customer.elixirdb"
+  end
+
+  test "public domain errors omit private causes while retaining stable details" do
+    error =
+      ElixirDB.Error.database_unavailable("database unavailable", %{
+        cause: "{:file_error, '/private/customer.elixirdb'}",
+        database_uuid: "db-uuid",
+        history_epoch: "epoch"
+      })
+
+    assert %{
+             code: "database_unavailable",
+             message: "database unavailable",
+             retryable: true,
+             details: %{database_uuid: "db-uuid", history_epoch: "epoch"}
+           } = ElixirDB.Error.public(error)
   end
 
   test "unicode_words_v1 tokenization is deterministic" do

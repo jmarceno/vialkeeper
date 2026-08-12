@@ -7,7 +7,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   `ElixirDB.Storage.Services.DerivedViews`.
   """
 
-  alias ElixirDB.DerivedView.Engine
+  alias ElixirDB.DerivedView.{Engine, RebuildState}
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.SQLite.{Connection, TermBlob}
 
@@ -145,15 +145,7 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
              conn,
              "UPDATE derived_view SET status = 'rebuilding', last_error_code = NULL WHERE id = 1"
            ) do
-      {:ok,
-       %{
-         materialization_id: effect.materialization_id,
-         source_database_uuid: effect.source_database_uuid,
-         generation: effect.generation,
-         start_sequence: effect.start_sequence,
-         catchup_sequence: effect.catchup_sequence,
-         previous_checkpoint_sequence: effect.previous_checkpoint_sequence
-       }}
+      {:ok, RebuildState.new(effect)}
     else
       {:error, reason} -> {:error, normalize_error(reason)}
     end

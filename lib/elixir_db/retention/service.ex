@@ -37,6 +37,38 @@ defmodule ElixirDB.Retention.Service do
           result_stats: map()
         }
 
+  @type install_result :: %{
+          required(:installed) => non_neg_integer(),
+          required(:boundary_digest) => binary(),
+          required(:compaction_epoch) => non_neg_integer()
+        }
+
+  @type stored_boundary :: %{
+          required(:source_database_uuid) => binary(),
+          required(:source_history_epoch) => binary(),
+          required(:compaction_epoch) => non_neg_integer(),
+          required(:boundary) => term()
+        }
+
+  @spec install_result(non_neg_integer(), binary(), non_neg_integer()) :: install_result()
+  def install_result(installed, boundary_digest, compaction_epoch) do
+    %{
+      installed: installed,
+      boundary_digest: boundary_digest,
+      compaction_epoch: compaction_epoch
+    }
+  end
+
+  @spec stored_boundary(binary(), binary(), non_neg_integer(), term()) :: stored_boundary()
+  def stored_boundary(source_database_uuid, source_history_epoch, compaction_epoch, boundary) do
+    %{
+      source_database_uuid: source_database_uuid,
+      source_history_epoch: source_history_epoch,
+      compaction_epoch: compaction_epoch,
+      boundary: boundary
+    }
+  end
+
   @doc "Builds Frontier input, marking lease-expired active peers as `:expired`."
   @spec compute_frontier_input(meta(), [PeerPosition.t()], atom(), DateTime.t()) :: map()
   def compute_frontier_input(meta, peers, mode, now)

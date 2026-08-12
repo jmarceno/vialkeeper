@@ -15,6 +15,66 @@ defmodule ElixirDB.DerivedView.Engine do
 
   @default_batch_limit 500
 
+  @type source_row :: %{
+          required(:source_document_id) => binary(),
+          required(:source_revision_id) => binary(),
+          required(:key) => [term()],
+          optional(:value) => term()
+        }
+
+  @type batch_request :: %{
+          required(:materialization_id) => binary(),
+          required(:source_database_uuid) => binary(),
+          required(:source_history_epoch) => binary(),
+          required(:expected_checkpoint_sequence) => non_neg_integer(),
+          required(:through_sequence) => non_neg_integer(),
+          required(:rows) => [source_row()],
+          required(:removals) => [binary()]
+        }
+
+  @doc "Builds one storage-neutral source contribution row."
+  @spec source_row(binary(), binary(), [term()]) :: source_row()
+  def source_row(document_id, revision_id, key) do
+    %{source_document_id: document_id, source_revision_id: revision_id, key: key}
+  end
+
+  @doc "Builds one storage-neutral source contribution row with a value."
+  @spec source_row(binary(), binary(), [term()], term()) :: source_row()
+  def source_row(document_id, revision_id, key, value) do
+    source_row(document_id, revision_id, key)
+    |> Map.put(:value, value)
+  end
+
+  @doc "Builds the storage-neutral request for one incremental source batch."
+  @spec batch_request(
+          binary(),
+          binary(),
+          binary(),
+          non_neg_integer(),
+          non_neg_integer(),
+          [source_row()],
+          [binary()]
+        ) :: batch_request()
+  def batch_request(
+        materialization_id,
+        source_database_uuid,
+        source_history_epoch,
+        expected_checkpoint_sequence,
+        through_sequence,
+        rows,
+        removals
+      ) do
+    %{
+      materialization_id: materialization_id,
+      source_database_uuid: source_database_uuid,
+      source_history_epoch: source_history_epoch,
+      expected_checkpoint_sequence: expected_checkpoint_sequence,
+      through_sequence: through_sequence,
+      rows: rows,
+      removals: removals
+    }
+  end
+
   @doc "Normalizes an incremental derived source batch."
   @spec normalize_batch(map(), map(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def normalize_batch(request, definition, source)

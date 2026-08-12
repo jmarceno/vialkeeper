@@ -595,9 +595,12 @@ defmodule ElixirDB.HostConfig do
     root_abs = Path.expand(root)
     resolved = resolve_path(root, path)
 
-    if String.starts_with?(resolved <> "/", root_abs <> "/"),
-      do: :ok,
-      else: {:error, "host.toml: tls path #{inspect(path)} escapes the database root"}
+    if String.starts_with?(resolved <> "/", root_abs <> "/") and
+         ElixirDB.PathSafety.no_symlink_components?(resolved) do
+      :ok
+    else
+      {:error, "host.toml: tls path #{inspect(path)} escapes the database root"}
+    end
   end
 
   defp readable?(path, field) do

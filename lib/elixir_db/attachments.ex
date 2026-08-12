@@ -837,7 +837,7 @@ defmodule ElixirDB.Attachments do
              admission_class
            ),
          {:ok, on_disk} <- @store.list_digests(bundle_root),
-         {:ok, deleted} <- delete_unreachable(bundle_root, on_disk, live),
+         {:ok, {deleted, bytes_deleted}} <- delete_unreachable(bundle_root, on_disk, live),
          :ok <- @store.cleanup_tmp(bundle_root, tmp_cleanup_cutoff()) do
       {:ok,
        %{
@@ -846,7 +846,7 @@ defmodule ElixirDB.Attachments do
          live_count: MapSet.size(live),
          expired_pending_removed: MapAccess.get(expired, :removed, 0),
          blobs_deleted: length(deleted),
-         bytes_deleted: 0
+         bytes_deleted: bytes_deleted
        }}
     end
   end
@@ -886,24 +886,25 @@ defmodule ElixirDB.Attachments do
   defp delete_unreachable(bundle_root, on_disk, live) do
     unreachable = Enum.reject(on_disk, &MapSet.member?(live, &1))
 
-    deleted =
-      Enum.reduce(unreachable, [], fn digest, acc ->
-        invoke_gc_hook({:before_delete, digest})
+    unreachable
+    |> Enum.reduce_while({:ok, {[], 0}}, fn digest, {:ok, {deleted, bytes_deleted}} ->
+      invoke_gc_hook({:before_delete, digest})
 
-        case @store.delete(bundle_root, digest) do
-          :ok ->
-            [digest | acc]
+      with {:ok, %{physical_size: physical_size}} <- @store.stat(bundle_root, digest),
+           :ok <- @store.delete(bundle_root, digest) do
+        {:cont, {:ok, {[digest | deleted], bytes_deleted + physical_size}}}
+      else
+        {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} ->
+          {:cont, {:ok, {deleted, bytes_deleted}}}
 
-          {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} ->
-            acc
-
-          {:error, _} ->
-            # Crash/partial failure may leave garbage; never roll back metadata.
-            acc
-        end
-      end)
-
-    {:ok, Enum.reverse(deleted)}
+        {:error, %ElixirDB.Error{} = error} ->
+          {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, {deleted, bytes_deleted}} -> {:ok, {Enum.reverse(deleted), bytes_deleted}}
+      {:error, _} = error -> error
+    end
   end
 
   defp tmp_cleanup_cutoff do

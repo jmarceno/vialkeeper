@@ -298,11 +298,11 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
          :ok <- put_boundary_install_state(conn, metadata),
          :ok <- delete_staging_install(conn, install_id) do
       {:ok,
-       %{
-         installed: length(boundaries),
-         boundary_digest: metadata.boundary_digest,
-         compaction_epoch: metadata.compaction_epoch
-       }}
+       RetentionService.install_result(
+         length(boundaries),
+         metadata.boundary_digest,
+         metadata.compaction_epoch
+       )}
     else
       false ->
         {:error, ElixirDB.Error.boundary_conflict("installed boundary digest mismatch")}
@@ -780,7 +780,7 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
   end
 
   @doc "Applies a shared compaction effect to SQLite physical stores."
-  @spec apply_compaction_effect(Connection.handle(), map()) ::
+  @spec apply_compaction_effect(Connection.handle(), RetentionService.effect_meta()) ::
           :ok | {:error, ElixirDB.Error.t()}
   def apply_compaction_effect(conn, effect) when is_map(effect) do
     source_uuid = Map.fetch!(effect, :source_database_uuid)

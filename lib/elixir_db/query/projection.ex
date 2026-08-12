@@ -6,7 +6,7 @@ defmodule ElixirDB.Query.Projection do
   def project(document, request) when is_map(document) and is_map(request) do
     case get(request, :fields) do
       nil ->
-        %{id: document.id, revision: document.revision, body: document.body}
+        document(document.id, document.revision, document.body)
 
       fields ->
         %{
@@ -24,6 +24,16 @@ defmodule ElixirDB.Query.Projection do
         }
     end
   end
+
+  @type document :: %{
+          required(:id) => binary(),
+          required(:revision) => binary(),
+          required(:body) => map()
+        }
+
+  @doc "Builds the storage-neutral document shape consumed by query execution."
+  @spec document(binary(), binary(), map()) :: document()
+  def document(id, revision, body), do: %{id: id, revision: revision, body: body}
 
   defp get(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

@@ -12,12 +12,21 @@ defmodule ElixirDB.Storage.Memory.Store do
   alias ElixirDB.Domain.{BoundaryPage, PeerPosition, Revision}
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.MapAccess
+  alias ElixirDB.Retention.Service
   alias ElixirDB.Revisions.Compare
 
   @snapshot_file "memory.backend"
 
   @type peer_entry :: %{version: non_neg_integer(), value: map()}
   @type staging_entry :: %{state: map(), boundaries: %{optional({binary(), binary()}) => term()}}
+
+  @type change_entry :: %{
+          required(:document_id) => binary(),
+          required(:leaf_json) => binary(),
+          required(:sequence) => pos_integer(),
+          required(:winner) => ElixirDB.Domain.Revision.t(),
+          optional(:origin) => binary()
+        }
 
   @type state :: %{
           root: binary(),
@@ -392,7 +401,8 @@ defmodule ElixirDB.Storage.Memory.Store do
   end
 
   @doc "Appends a change-log entry."
-  @spec append_change(state(), map()) :: {:ok, state()} | {:error, ElixirDB.Error.t()}
+  @spec append_change(state(), change_entry()) ::
+          {:ok, state()} | {:error, ElixirDB.Error.t()}
   def append_change(state, entry) when is_map(entry) do
     winner = Map.fetch!(entry, :winner)
 
@@ -485,12 +495,13 @@ defmodule ElixirDB.Storage.Memory.Store do
 
   defp upsert_boundaries(state, boundaries, source_uuid, source_epoch, epoch) do
     Enum.reduce_while(boundaries, {:ok, state}, fn boundary, {:ok, acc} ->
-      stored = %{
-        source_database_uuid: source_uuid,
-        source_history_epoch: source_epoch,
-        compaction_epoch: epoch,
-        boundary: boundary
-      }
+      stored =
+        Service.stored_boundary(
+          source_uuid,
+          source_epoch,
+          epoch,
+          boundary
+        )
 
       {:cont, {:ok, %{acc | boundaries: upsert_boundary_list(acc.boundaries, stored)}}}
     end)

@@ -217,17 +217,16 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     # so they are legitimately parentless roots. The post-handshake wire calls
     # (diff/import/checkpoint) must be parented by the extracted context and
     # share the worker's trace.
-    {propagated, _roots} =
-      Enum.split_with(wire_spans, &(&1[:parent_span_id] != :undefined))
+    batch_wire_spans =
+      Enum.filter(wire_spans, &MapSet.member?(batch_traces, &1[:trace_id]))
 
-    assert propagated != [],
-           "no wire span was parented by an extracted trace context — outbound " <>
-             "injection or inbound extraction is broken"
+    assert batch_wire_spans != [],
+           "no wire span shared a worker batch trace — outbound injection or " <>
+             "inbound extraction is broken; worker traces: #{inspect(MapSet.to_list(batch_traces))}"
 
-    for span <- propagated do
-      assert MapSet.member?(batch_traces, span[:trace_id]),
-             "wire span trace #{inspect(span[:trace_id])} is not any worker batch trace " <>
-               "#{inspect(MapSet.to_list(batch_traces))}"
+    for span <- batch_wire_spans do
+      assert span[:parent_span_id] != :undefined,
+             "wire span in a worker batch trace must be parented by the extracted context"
     end
   end
 

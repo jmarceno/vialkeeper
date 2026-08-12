@@ -10,9 +10,7 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   `Revisions`.
   """
 
-  alias ElixirDB.Attachments.Manifest
-  alias ElixirDB.Attachments.MetadataRequest
-  alias ElixirDB.Attachments.Ticket
+  alias ElixirDB.Attachments.{Manifest, MetadataRequest, Orchestration, Ticket}
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.SQLite.Connection
 
@@ -218,12 +216,7 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
       {:ok, rows} ->
         {:ok,
          Enum.map(rows, fn [digest, logical_size, expires_at, updated_at] ->
-           %{
-             digest: digest,
-             logical_size: logical_size,
-             expires_at: expires_at,
-             updated_at: updated_at
-           }
+           Orchestration.pending_snapshot(digest, logical_size, expires_at, updated_at)
          end)}
 
       {:error, reason} ->

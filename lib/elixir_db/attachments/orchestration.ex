@@ -39,6 +39,24 @@ defmodule ElixirDB.Attachments.Orchestration do
     }
   end
 
+  @type pending_snapshot :: %{
+          required(:digest) => binary(),
+          required(:logical_size) => non_neg_integer(),
+          required(:expires_at) => binary(),
+          required(:updated_at) => binary()
+        }
+
+  @doc "Builds the normalized pending-blob shape used by ports and integrity snapshots."
+  @spec pending_snapshot(binary(), non_neg_integer(), binary(), binary()) :: pending_snapshot()
+  def pending_snapshot(digest, logical_size, expires_at, updated_at) do
+    %{
+      digest: digest,
+      logical_size: logical_size,
+      expires_at: expires_at,
+      updated_at: updated_at
+    }
+  end
+
   @doc "True when pending metadata expires strictly after `now`."
   @spec pending_unexpired?(map(), DateTime.t()) :: boolean()
   def pending_unexpired?(meta, %DateTime{} = now) when is_map(meta) do

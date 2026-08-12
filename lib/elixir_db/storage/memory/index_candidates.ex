@@ -7,6 +7,7 @@ defmodule ElixirDB.Storage.Memory.IndexCandidates do
   """
   @behaviour ElixirDB.Storage.Ports.IndexCandidates
 
+  alias ElixirDB.Query.Projection
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Memory.{Context, Store}
 
@@ -74,11 +75,7 @@ defmodule ElixirDB.Storage.Memory.IndexCandidates do
 
   defp append_live_candidate(acc, document_id, doc) do
     [
-      %{
-        id: document_id,
-        revision: doc.winning_revision,
-        body: doc.body
-      }
+      Projection.document(document_id, doc.winning_revision, doc.body)
       | acc
     ]
   end

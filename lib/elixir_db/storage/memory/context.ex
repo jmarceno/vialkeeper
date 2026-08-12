@@ -14,7 +14,7 @@ defmodule ElixirDB.Storage.Memory.Context do
   @doc "Returns the Memory adapter stored in `context`."
   @spec unwrap(BackendContext.t()) :: {:ok, Adapter.t()} | {:error, ElixirDB.Error.t()}
   def unwrap(%BackendContext{backend_ref: %OpaqueHandle{} = handle}) do
-    case OpaqueHandle.unwrap(handle) do
+    case OpaqueHandle.backend_unwrap(handle) do
       %Adapter{} = adapter -> {:ok, adapter}
       _ -> {:error, ElixirDB.Error.internal_error("backend context is not a Memory adapter")}
     end

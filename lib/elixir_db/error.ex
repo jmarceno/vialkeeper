@@ -98,7 +98,21 @@ defmodule ElixirDB.Error do
   end
 
   @spec public(t()) :: map()
+  def public(%__MODULE__{code: :internal_error, retryable: retryable}) do
+    %{
+      code: "internal_error",
+      message: "internal error",
+      retryable: retryable,
+      details: %{}
+    }
+  end
+
   def public(%__MODULE__{code: code, message: message, retryable: retryable, details: details}) do
-    %{code: Atom.to_string(code), message: message, retryable: retryable, details: details}
+    %{
+      code: Atom.to_string(code),
+      message: message,
+      retryable: retryable,
+      details: Map.drop(details, [:cause, "cause"])
+    }
   end
 end

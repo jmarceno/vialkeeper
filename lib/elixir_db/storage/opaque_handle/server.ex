@@ -2,10 +2,11 @@ defmodule ElixirDB.Storage.OpaqueHandle.Server do
   @moduledoc """
   Private process backing `ElixirDB.Storage.OpaqueHandle`.
 
-  The server stores payloads in a private ETS table and authorizes unwrap,
-  replacement, and deletion requests from backend context modules. It is an
-  implementation detail of the storage boundary and is not a general-purpose
-  term registry.
+  The server stores payloads in a private ETS table. General unwrap,
+  replacement, and deletion requests are authorized from backend context
+  modules. A lower-overhead unwrap request exists for backend Context modules
+  and is statically confined there by Reach. The server is an implementation
+  detail of the storage boundary and is not a general-purpose term registry.
   """
   use GenServer
 
@@ -27,6 +28,12 @@ defmodule ElixirDB.Storage.OpaqueHandle.Server do
           {:ok, term()} | {:error, :missing | :forbidden}
   def unwrap(%ElixirDB.Storage.OpaqueHandle{} = handle) do
     GenServer.call(__MODULE__, {:unwrap, handle})
+  end
+
+  @doc false
+  @spec backend_unwrap(ElixirDB.Storage.OpaqueHandle.t()) :: {:ok, term()} | {:error, :missing}
+  def backend_unwrap(%ElixirDB.Storage.OpaqueHandle{} = handle) do
+    GenServer.call(__MODULE__, {:backend_unwrap, handle})
   end
 
   @spec replace(ElixirDB.Storage.OpaqueHandle.t(), term()) ::
@@ -60,6 +67,13 @@ defmodule ElixirDB.Storage.OpaqueHandle.Server do
     else
       [] -> {:reply, {:error, :missing}, tid}
       {:error, _} = error -> {:reply, error, tid}
+    end
+  end
+
+  def handle_call({:backend_unwrap, %ElixirDB.Storage.OpaqueHandle{id: id}}, _from, tid) do
+    case :ets.lookup(tid, id) do
+      [{^id, term}] -> {:reply, {:ok, term}, tid}
+      [] -> {:reply, {:error, :missing}, tid}
     end
   end
 

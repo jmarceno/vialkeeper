@@ -31,7 +31,7 @@ defmodule ElixirDB.Integrity.Rules do
   Returns `:ok` when all shared rules pass, otherwise an integrity violation
   with the same error identity used by the product integrity path.
   """
-  @spec validate(map()) :: :ok | {:error, ElixirDB.Error.t()}
+  @spec validate(snapshot()) :: :ok | {:error, ElixirDB.Error.t()}
   def validate(snapshot) when is_map(snapshot) do
     meta = Map.fetch!(snapshot, :meta)
     boundaries = Map.get(snapshot, :boundaries, [])

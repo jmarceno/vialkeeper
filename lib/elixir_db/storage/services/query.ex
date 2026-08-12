@@ -11,7 +11,7 @@ defmodule ElixirDB.Storage.Services.Query do
   alias ElixirDB.JSON.StrictCache
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Query, as: QueryInstrumentation
-  alias ElixirDB.Query.{Executor, Plan, Planner}
+  alias ElixirDB.Query.{Executor, Plan, Planner, Projection}
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Access
 
@@ -322,11 +322,11 @@ defmodule ElixirDB.Storage.Services.Query do
   defp normalize_candidate(candidate) when is_map(candidate) do
     id = MapAccess.get(candidate, :id) || MapAccess.get(candidate, :document_id)
 
-    %{
-      id: id,
-      revision: MapAccess.get(candidate, :revision) || MapAccess.get(candidate, :winning_revision),
-      body: MapAccess.get(candidate, :body)
-    }
+    Projection.document(
+      id,
+      MapAccess.get(candidate, :revision) || MapAccess.get(candidate, :winning_revision),
+      MapAccess.get(candidate, :body)
+    )
     |> maybe_put_rank(MapAccess.get(candidate, :rank))
   end
 

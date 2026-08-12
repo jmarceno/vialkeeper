@@ -249,7 +249,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
   end
 
   defp request_task(options, otel_ctx) do
-    Task.async(fn ->
+    Task.Supervisor.async_nolink(ElixirDB.TaskSupervisor, fn ->
       token = OpenTelemetry.Ctx.attach(otel_ctx)
 
       try do

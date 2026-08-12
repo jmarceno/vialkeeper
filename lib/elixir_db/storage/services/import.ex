@@ -702,14 +702,17 @@ defmodule ElixirDB.Storage.Services.Import do
              {:ok, sequence} <- Facts.allocate_sequence(context),
              :ok <- Facts.update_winning(context, document_id, winner, sequence),
              :ok <-
-               Facts.append_change(context, %{
-                 sequence: sequence,
-                 document_id: document_id,
-                 winner: winner,
-                 leaf_json: leaf_json,
-                 origin: "replication",
-                 backend_meta: Facts.backend_meta(doc)
-               }) do
+               Facts.append_change(
+                 context,
+                 Facts.change_entry(
+                   sequence,
+                   document_id,
+                   winner,
+                   leaf_json,
+                   "replication",
+                   Facts.backend_meta(doc)
+                 )
+               ) do
           {:cont,
            {:ok,
             %{

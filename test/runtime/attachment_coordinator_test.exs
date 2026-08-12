@@ -8,6 +8,19 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
   alias ElixirDB.Eventual
   alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
 
+  defmodule BlockingGC do
+    @moduledoc "Test GC that remains alive until its owner releases it."
+
+    def gc(uuid) do
+      parent = :persistent_term.get({__MODULE__, uuid})
+      send(parent, {:blocking_gc_started, self()})
+
+      receive do
+        :release -> :ok
+      end
+    end
+  end
+
   setup do
     relative = "attachment-coordinator-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), relative)
@@ -374,5 +387,63 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
              timeout: 5_000,
              message: "attachment coordinator did not restart with persisted limits"
            )
+  end
+
+  test "coordinator termination cannot orphan a scheduled gc task", %{uuid: uuid} do
+    key = {BlockingGC, uuid}
+    :persistent_term.put(key, self())
+    on_exit(fn -> :persistent_term.erase(key) end)
+
+    assert :ok = AttachmentCoordinator.schedule_gc(uuid, BlockingGC)
+    assert_receive {:blocking_gc_started, gc_pid}, 1_000
+    gc_ref = Process.monitor(gc_pid)
+
+    [{coordinator_pid, _}] =
+      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid})
+
+    Process.exit(coordinator_pid, :kill)
+
+    assert_receive {:DOWN, ^gc_ref, :process, ^gc_pid, _reason}, 1_000
+
+    assert Eventual.eventually(
+             fn ->
+               case AttachmentCoordinator.status(uuid) do
+                 %{gc_scheduled: false} -> true
+                 _ -> false
+               end
+             end,
+             timeout: 5_000,
+             message: "attachment coordinator did not restart after forced termination"
+           )
+  end
+
+  test "closing a coordinator classifies the killed scheduled gc exit", %{uuid: uuid} do
+    key = {BlockingGC, uuid}
+    :persistent_term.put(key, self())
+    on_exit(fn -> :persistent_term.erase(key) end)
+
+    assert :ok = AttachmentCoordinator.schedule_gc(uuid, BlockingGC)
+    assert_receive {:blocking_gc_started, gc_pid}, 1_000
+    gc_ref = Process.monitor(gc_pid)
+
+    [{coordinator_pid, _}] =
+      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid})
+
+    assert :ok = AttachmentCoordinator.begin_close(uuid)
+    assert_receive {:DOWN, ^gc_ref, :process, ^gc_pid, :killed}, 1_000
+
+    assert Eventual.eventually(
+             fn ->
+               Process.alive?(coordinator_pid) and
+                 MapSet.size(:sys.get_state(coordinator_pid).gc_task_links) == 0
+             end,
+             message: "scheduled GC exit was not consumed by the original coordinator"
+           )
+
+    assert [{^coordinator_pid, _}] =
+             Registry.lookup(
+               ElixirDB.Runtime.DatabaseRegistry,
+               {:attachment_coordinator, uuid}
+             )
   end
 end

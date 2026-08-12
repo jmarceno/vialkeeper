@@ -8,6 +8,7 @@ defmodule ElixirDB.Storage.Memory.Inspection do
   """
   @behaviour ElixirDB.Storage.Ports.Inspection
 
+  alias ElixirDB.Attachments.Orchestration
   alias ElixirDB.Integrity.Rules
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.MapAccess
@@ -131,12 +132,12 @@ defmodule ElixirDB.Storage.Memory.Inspection do
 
   defp snapshot_pending_blobs(pending) when is_map(pending) do
     Enum.map(pending, fn {digest, meta} ->
-      %{
-        digest: digest,
-        logical_size: MapAccess.get(meta, :logical_size),
-        expires_at: MapAccess.get(meta, :expires_at),
-        updated_at: MapAccess.get(meta, :updated_at)
-      }
+      Orchestration.pending_snapshot(
+        digest,
+        MapAccess.get(meta, :logical_size),
+        MapAccess.get(meta, :expires_at),
+        MapAccess.get(meta, :updated_at)
+      )
     end)
   end
 

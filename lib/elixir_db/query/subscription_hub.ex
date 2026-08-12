@@ -2,6 +2,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
   @moduledoc "Per-database coordinator for live-query subscription state and change delivery."
   use GenServer
 
+  alias ElixirDB.Changes.Page
   alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
 
@@ -347,11 +348,11 @@ defmodule ElixirDB.Query.SubscriptionHub do
   end
 
   defp normalize_changes_result(result) when is_map(result) do
-    %{
-      results: MapAccess.get(result, :results, []),
-      last_sequence: MapAccess.get(result, :last_sequence, 0),
-      has_more: MapAccess.get(result, :has_more, false)
-    }
+    Page.new(
+      MapAccess.get(result, :results, []),
+      MapAccess.get(result, :last_sequence, 0),
+      MapAccess.get(result, :has_more, false)
+    )
   end
 
   defp fetch_revision_envelopes(uuid, result, results) do

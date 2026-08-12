@@ -4,11 +4,11 @@ defmodule ElixirDB.Storage.OpaqueHandle do
 
   Shared and runtime code may pass handles but must not unwrap them or read
   physical fields such as connection references. Payloads live in a private ETS
-  table owned by `ElixirDB.Storage.OpaqueHandle.Server`. Unwrap/replace/drop
-  succeed only when the caller stack includes a backend Context module
-  (`SQLite.Context`, `Memory.Context`, or `Sentinel.Context`), so dictionary
-  introspection, bare `GenServer.call/2`, and direct MFA calls from shared code
-  cannot recover a live adapter. Reach also forbids those MFAs outside backends.
+  table owned by `ElixirDB.Storage.OpaqueHandle.Server`. The general
+  unwrap/replace/drop operations require a backend Context module in the caller
+  stack. Backend Context modules use a lower-overhead unwrap operation that the
+  Reach architecture rules forbid everywhere else. This is an internal
+  architecture boundary, not a security sandbox for arbitrary BEAM code.
   """
 
   @enforce_keys [:id]
@@ -26,8 +26,7 @@ defmodule ElixirDB.Storage.OpaqueHandle do
         :ok
 
       nil ->
-        {:ok, _pid} = Server.start_link([])
-        :ok
+        raise "storage opaque-handle server is not running"
     end
   end
 
@@ -52,6 +51,17 @@ defmodule ElixirDB.Storage.OpaqueHandle do
 
       {:error, :forbidden} ->
         raise ArgumentError, "storage opaque handle unwrap is not permitted for this caller"
+    end
+  end
+
+  @doc false
+  @spec backend_unwrap(t()) :: term()
+  def backend_unwrap(%__MODULE__{} = handle) do
+    ensure_table!()
+
+    case Server.backend_unwrap(handle) do
+      {:ok, term} -> term
+      {:error, :missing} -> raise ArgumentError, "storage opaque handle is no longer valid"
     end
   end
 

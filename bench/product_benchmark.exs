@@ -39,36 +39,64 @@ defmodule ElixirDB.Benchmarks.Runner do
   def main(argv) do
     options = parse_options(argv)
     ensure_test_observability!()
-    {:ok, _started} = Application.ensure_all_started(:elixir_db)
 
-    config = benchmark_config(options)
-    started_at = DateTime.utc_now() |> DateTime.to_iso8601()
-    modes = parse_modes(options[:mode])
-    scenarios = parse_scenarios(options[:scenario])
+    with_isolated_runtime(fn ->
+      config = benchmark_config(options)
+      started_at = DateTime.utc_now() |> DateTime.to_iso8601()
+      modes = parse_modes(options[:mode])
+      scenarios = parse_scenarios(options[:scenario])
 
-    results =
-      for mode <- modes, scenario <- scenarios do
-        run_case(mode, scenario, config)
+      results =
+        for mode <- modes, scenario <- scenarios do
+          run_case(mode, scenario, config)
+        end
+
+      report = %{
+        "schema_version" => 1,
+        "started_at" => started_at,
+        "git_revision" => git_revision(),
+        "runtime" => runtime_metadata(),
+        "configuration" => config,
+        "results" => results
+      }
+
+      output = options[:output] || default_output_path()
+      write_report(report, output)
+      print_summary(report, output)
+
+      if baseline = options[:baseline] do
+        compare_with_baseline!(report, baseline, config["max_regression_pct"])
       end
+    end)
+  end
 
-    report = %{
-      "schema_version" => 1,
-      "started_at" => started_at,
-      "git_revision" => git_revision(),
-      "runtime" => runtime_metadata(),
-      "configuration" => config,
-      "results" => results
-    }
+  defp with_isolated_runtime(fun) do
+    root = Path.join(System.tmp_dir!(), "elixir-db-product-benchmark-#{unique_suffix()}")
+    previous_root = Application.get_env(:elixir_db, :database_root)
+    previous_listener = Application.get_env(:elixir_db, :listener)
+    ensure_application_stopped!()
+    File.mkdir_p!(root)
+    Application.put_env(:elixir_db, :database_root, root)
+    Application.put_env(:elixir_db, :listener, ip: {127, 0, 0, 1}, port: 0)
 
-    output = options[:output] || default_output_path()
-    write_report(report, output)
-    print_summary(report, output)
-
-    if baseline = options[:baseline] do
-      compare_with_baseline!(report, baseline, config["max_regression_pct"])
+    try do
+      {:ok, _started} = Application.ensure_all_started(:elixir_db)
+      fun.()
+    after
+      _ = Application.stop(:elixir_db)
+      restore_application_env(:database_root, previous_root)
+      restore_application_env(:listener, previous_listener)
+      _ = File.rm_rf(root)
     end
+  end
 
-    :ok
+  defp restore_application_env(key, nil), do: Application.delete_env(:elixir_db, key)
+  defp restore_application_env(key, value), do: Application.put_env(:elixir_db, key, value)
+
+  defp ensure_application_stopped! do
+    if Enum.any?(Application.started_applications(), &match?({:elixir_db, _, _}, &1)) do
+      Mix.raise("benchmark must be launched with mix run --no-start")
+    end
   end
 
   defp parse_options(argv) do
@@ -639,7 +667,7 @@ defmodule ElixirDB.Benchmarks.Runner do
     %{
       "elixir" => System.version(),
       "otp" => :erlang.system_info(:otp_release) |> to_string(),
-      "sqlite" => ElixirDB.Diagnostics.runtime() |> Map.get(:sqlite),
+      "sqlite" => ElixirDB.Diagnostics.runtime().backend,
       "schedulers_online" => :erlang.system_info(:schedulers_online),
       "os" => :os.type() |> inspect()
     }
@@ -665,6 +693,9 @@ defmodule ElixirDB.Benchmarks.Runner do
     :ok
   end
 
+  defp unique_suffix,
+    do: "#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}"
+
   defp phase_name({phase, _number}), do: Atom.to_string(phase)
   defp token_number({_phase, number}), do: number
 
@@ -676,7 +707,7 @@ defmodule ElixirDB.Benchmarks.Runner do
   defp usage do
     """
     Usage:
-      MIX_ENV=test mix run bench/product_benchmark.exs -- [options]
+      MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- [options]
 
     Options:
       --mode disk|memory|both        Storage mode (default: both)

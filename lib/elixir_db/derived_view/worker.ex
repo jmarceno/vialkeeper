@@ -4,7 +4,7 @@ defmodule ElixirDB.DerivedView.Worker do
   require Logger
 
   alias ElixirDB.Changes
-  alias ElixirDB.DerivedView.Definition
+  alias ElixirDB.DerivedView.{Definition, Engine}
   alias ElixirDB.DerivedView.Supervisor
   alias ElixirDB.Error
   alias ElixirDB.Observability.Instrumentation.DerivedView, as: DerivedViewInstrumentation
@@ -861,15 +861,15 @@ defmodule ElixirDB.DerivedView.Worker do
            instrumented_destination_command(
              state,
              :apply_derived_source_batch,
-             %{
-               materialization_id: state.metadata.materialization_id,
-               source_database_uuid: source.source_database_uuid,
-               source_history_epoch: identity.history_epoch,
-               expected_checkpoint_sequence: source.checkpoint_sequence,
-               through_sequence: changes.last_sequence,
-               rows: rows,
-               removals: removals
-             }
+             Engine.batch_request(
+               state.metadata.materialization_id,
+               source.source_database_uuid,
+               identity.history_epoch,
+               source.checkpoint_sequence,
+               changes.last_sequence,
+               rows,
+               removals
+             )
            ),
          {:ok, next} <- update_active_source(state, source, applied),
          {:ok, next} <-
@@ -881,6 +881,7 @@ defmodule ElixirDB.DerivedView.Worker do
 
       {:ok, next}
     else
+      {:error, error, next} -> {:error, source.source_database_uuid, error, next}
       {:error, error} -> {:error, source.source_database_uuid, error, state}
     end
   end
@@ -1072,7 +1073,7 @@ defmodule ElixirDB.DerivedView.Worker do
   defp sort_rows_result({:error, _} = error), do: error
 
   defp public_row(%{document_id: document_id, revision_id: revision_id, key: key} = row) do
-    base = %{source_document_id: document_id, source_revision_id: revision_id, key: key}
+    base = Engine.source_row(document_id, revision_id, key)
 
     case Map.fetch(row, :value) do
       {:ok, value} -> Map.put(base, :value, value)

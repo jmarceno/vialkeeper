@@ -73,6 +73,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
 
   @impl true
   def init(uuid) do
+    Process.flag(:trap_exit, true)
     limits = load_limits(uuid)
 
     {:ok,
@@ -89,6 +90,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
        # Count of asynchronously scheduled GC Tasks not yet finished (post-compact).
        gc_scheduled: 0,
        gc_task_monitors: %{},
+       gc_task_links: MapSet.new(),
        close_waiters: [],
        guards: %{},
        monitors: %{},
@@ -241,6 +243,15 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   end
 
   @impl true
+  def handle_info({:EXIT, pid, reason}, state) do
+    if MapSet.member?(state.gc_task_links, pid) do
+      {:noreply, %{state | gc_task_links: MapSet.delete(state.gc_task_links, pid)}}
+    else
+      {:stop, reason, state}
+    end
+  end
+
+  @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
     cond do
       ref == state.gc_monitor_ref ->
@@ -309,13 +320,14 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
 
   defp start_scheduled_gc(state, module) do
     uuid = state.uuid
-    {:ok, pid} = Task.start(fn -> _ = module.gc(uuid) end)
+    {:ok, pid} = Task.start_link(fn -> _ = module.gc(uuid) end)
     ref = Process.monitor(pid)
 
     %{
       state
       | gc_scheduled: state.gc_scheduled + 1,
-        gc_task_monitors: Map.put(state.gc_task_monitors, ref, pid)
+        gc_task_monitors: Map.put(state.gc_task_monitors, ref, pid),
+        gc_task_links: MapSet.put(state.gc_task_links, pid)
     }
   end
 

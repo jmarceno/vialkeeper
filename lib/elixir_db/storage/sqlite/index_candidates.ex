@@ -15,7 +15,7 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
   alias ElixirDB.JSON.StrictCache
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.SQLite
-  alias ElixirDB.Query.{Executor, Plan}
+  alias ElixirDB.Query.{Executor, Plan, Projection}
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
   alias ElixirDB.Storage.SQLite.Adapter
@@ -281,7 +281,11 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
            @query_body_term_cache_limit
          ) do
       {:ok, body} ->
-        decode_query_documents(rows, [%{id: id, revision: revision, body: body} | acc], max_depth)
+        decode_query_documents(
+          rows,
+          [Projection.document(id, revision, body) | acc],
+          max_depth
+        )
 
       {:error, error} ->
         {:error, error}

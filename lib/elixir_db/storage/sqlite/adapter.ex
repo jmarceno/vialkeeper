@@ -16,6 +16,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @behaviour ElixirDB.Storage.Adapter
   use ElixirDB.Storage.AdapterFacade
 
+  alias ElixirDB.Changes.Page
   alias ElixirDB.JSON.{Canonical, StrictCache, StrictDecoder}
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.{Query, SQLite}
@@ -394,12 +395,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
            SQLite.trace_sqlite_phase(:changes_has_more, fn ->
              {:ok, page_has_more}
            end) do
-      {:ok,
-       %{
-         results: results,
-         last_sequence: last_sequence,
-         has_more: has_more
-       }}
+      {:ok, Page.new(results, last_sequence, has_more)}
     else
       {:error, reason} -> {:error, normalize_error(reason)}
     end

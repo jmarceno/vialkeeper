@@ -93,12 +93,12 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
       pending =
         Store.get(adapter.store).pending_blobs
         |> Enum.map(fn {digest, meta} ->
-          %{
-            digest: digest,
-            logical_size: MapAccess.get(meta, :logical_size),
-            expires_at: MapAccess.get(meta, :expires_at),
-            updated_at: MapAccess.get(meta, :updated_at)
-          }
+          Orchestration.pending_snapshot(
+            digest,
+            MapAccess.get(meta, :logical_size),
+            MapAccess.get(meta, :expires_at),
+            MapAccess.get(meta, :updated_at)
+          )
         end)
 
       {:ok, pending}

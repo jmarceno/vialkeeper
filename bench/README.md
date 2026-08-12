@@ -12,7 +12,7 @@ environment so the existing in-memory OpenTelemetry trace and metric exporters
 are enabled:
 
 ```sh
-MIX_ENV=test mix run bench/product_benchmark.exs \
+MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
   --mode both \
   --scenario all \
   --iterations 15 \
@@ -28,7 +28,7 @@ short summary. A later run can compare the median latency for every
 storage-mode/scenario pair:
 
 ```sh
-MIX_ENV=test mix run bench/product_benchmark.exs \
+MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
   --mode both \
   --baseline output/benchmarks/baseline.json \
   --max-regression 20
@@ -62,6 +62,12 @@ not database creation, seeding, index setup, or cleanup. The report includes
 sample values, median/p95/p99, per-operation latency, throughput, VM memory
 before/after, backend pragmas where available, runtime metadata, and
 observability signals.
+
+Both runners require `--no-start` (the Mix aliases include it), then start the
+application themselves with an ephemeral listener and an isolated temporary
+database root. This prevents registered databases, materializers, and host
+configuration from contaminating measurements. The temporary root is removed
+after the report is written.
 
 ## ExQLite overhead control (SQLite backend diagnostic)
 

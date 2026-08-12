@@ -2,6 +2,8 @@ defmodule ElixirDB.Storage.Memory.ChangeLog do
   @moduledoc "Memory change-log fact port."
   @behaviour ElixirDB.Storage.Ports.ChangeLog
 
+  alias ElixirDB.Changes.Page
+  alias ElixirDB.Domain.Change
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Memory.{Context, Store}
@@ -95,11 +97,7 @@ defmodule ElixirDB.Storage.Memory.ChangeLog do
     page = Enum.take(changes, limit)
     last = List.last(page, %{sequence: since}).sequence
 
-    %{
-      results: Enum.map(page, &change_row/1),
-      last_sequence: last,
-      has_more: length(changes) > limit
-    }
+    Page.new(Enum.map(page, &change_row/1), last, length(changes) > limit)
   end
 
   defp append_entries(state, entries) do
@@ -119,14 +117,14 @@ defmodule ElixirDB.Storage.Memory.ChangeLog do
         _ -> []
       end
 
-    %{
-      sequence: change.sequence,
-      document_id: change.document_id,
-      winning_revision: change.winning_revision,
-      deleted: change.winning_deleted,
-      leaf_revisions: leaves,
-      origin: change.origin
-    }
+    Change.public(
+      change.sequence,
+      change.document_id,
+      change.winning_revision,
+      change.winning_deleted,
+      leaves,
+      change.origin
+    )
   end
 
   defp normalize_ok({:ok, :ok}), do: :ok

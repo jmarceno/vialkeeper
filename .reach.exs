@@ -156,9 +156,11 @@
         ],
         [
           "ElixirDB.Storage.OpaqueHandle.unwrap",
+          "ElixirDB.Storage.OpaqueHandle.backend_unwrap",
           "ElixirDB.Storage.OpaqueHandle.replace",
           "ElixirDB.Storage.OpaqueHandle.drop",
           "ElixirDB.Storage.OpaqueHandle.Server.unwrap",
+          "ElixirDB.Storage.OpaqueHandle.Server.backend_unwrap",
           "ElixirDB.Storage.OpaqueHandle.Server.replace",
           "ElixirDB.Storage.OpaqueHandle.Server.drop"
         ]

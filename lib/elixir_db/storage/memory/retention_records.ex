@@ -191,11 +191,11 @@ defmodule ElixirDB.Storage.Memory.RetentionRecords do
         new_state = replace_authoritative(state, normalized, boundaries)
 
         {:ok, new_state,
-         %{
-           installed: length(boundaries),
-           boundary_digest: normalized.boundary_digest,
-           compaction_epoch: normalized.compaction_epoch
-         }}
+         RetentionService.install_result(
+           length(boundaries),
+           normalized.boundary_digest,
+           normalized.compaction_epoch
+         )}
       end)
     end
   end
@@ -346,11 +346,11 @@ defmodule ElixirDB.Storage.Memory.RetentionRecords do
         end)
 
       {:ok, new_state,
-       %{
-         installed: length(boundaries),
-         boundary_digest: metadata.boundary_digest,
-         compaction_epoch: metadata.compaction_epoch
-       }}
+       RetentionService.install_result(
+         length(boundaries),
+         metadata.boundary_digest,
+         metadata.compaction_epoch
+       )}
     else
       {:error, ElixirDB.Error.boundary_conflict("installed boundary digest mismatch")}
     end
@@ -376,12 +376,7 @@ defmodule ElixirDB.Storage.Memory.RetentionRecords do
 
     installed =
       Enum.map(boundaries, fn boundary ->
-        %{
-          source_database_uuid: source_uuid,
-          source_history_epoch: source_epoch,
-          compaction_epoch: compaction_epoch,
-          boundary: boundary
-        }
+        RetentionService.stored_boundary(source_uuid, source_epoch, compaction_epoch, boundary)
       end)
 
     %{
@@ -422,13 +417,7 @@ defmodule ElixirDB.Storage.Memory.RetentionRecords do
            MapAccess.get(raw, :source_history_epoch) || MapAccess.get(raw, "source_history_epoch"),
          compaction_epoch when is_integer(compaction_epoch) <-
            MapAccess.get(raw, :compaction_epoch) || MapAccess.get(raw, "compaction_epoch") || 0 do
-      {:ok,
-       %{
-         source_database_uuid: source_uuid,
-         source_history_epoch: source_epoch,
-         compaction_epoch: compaction_epoch,
-         boundary: boundary
-       }}
+      {:ok, RetentionService.stored_boundary(source_uuid, source_epoch, compaction_epoch, boundary)}
     else
       _ -> {:error, ElixirDB.Error.invalid_request("purged boundary is invalid")}
     end

@@ -133,42 +133,60 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   @spec main([binary()]) :: :ok
   def main(argv) do
     options = parse_options(argv)
-    configure_runtime_root()
-    {:ok, _started} = Application.ensure_all_started(:elixir_db)
 
-    config = benchmark_config(options)
-    started_at = DateTime.utc_now() |> DateTime.to_iso8601()
-    modes = parse_modes(options[:mode])
-    scenarios = parse_scenarios(options[:scenario])
+    with_isolated_runtime(fn ->
+      config = benchmark_config(options)
+      started_at = DateTime.utc_now() |> DateTime.to_iso8601()
+      modes = parse_modes(options[:mode])
+      scenarios = parse_scenarios(options[:scenario])
 
-    results =
-      for mode <- modes, scenario <- scenarios do
-        run_case(mode, scenario, config)
-      end
+      results =
+        for mode <- modes, scenario <- scenarios do
+          run_case(mode, scenario, config)
+        end
 
-    report = %{
-      "schema_version" => 1,
-      "benchmark" => "elixir_db_overhead_vs_exqlite",
-      "started_at" => started_at,
-      "git_revision" => git_revision(),
-      "runtime" => runtime_metadata(),
-      "configuration" => config,
-      "results" => results
-    }
+      report = %{
+        "schema_version" => 1,
+        "benchmark" => "elixir_db_overhead_vs_exqlite",
+        "started_at" => started_at,
+        "git_revision" => git_revision(),
+        "runtime" => runtime_metadata(),
+        "configuration" => config,
+        "results" => results
+      }
 
-    output = options[:output] || default_output_path()
-    write_report(report, output)
-    print_summary(report, output)
-    :ok
+      output = options[:output] || default_output_path()
+      write_report(report, output)
+      print_summary(report, output)
+    end)
   end
 
-  defp configure_runtime_root do
-    case System.get_env("ELIXIR_DB_ROOT") do
-      root when is_binary(root) and root != "" ->
-        Application.put_env(:elixir_db, :database_root, Path.expand(root))
+  defp with_isolated_runtime(fun) do
+    root = Path.join(System.tmp_dir!(), "elixir-db-overhead-benchmark-#{unique_suffix()}")
+    previous_root = Application.get_env(:elixir_db, :database_root)
+    previous_listener = Application.get_env(:elixir_db, :listener)
+    ensure_application_stopped!()
+    File.mkdir_p!(root)
+    Application.put_env(:elixir_db, :database_root, root)
+    Application.put_env(:elixir_db, :listener, ip: {127, 0, 0, 1}, port: 0)
 
-      _ ->
-        :ok
+    try do
+      {:ok, _started} = Application.ensure_all_started(:elixir_db)
+      fun.()
+    after
+      _ = Application.stop(:elixir_db)
+      restore_application_env(:database_root, previous_root)
+      restore_application_env(:listener, previous_listener)
+      _ = File.rm_rf(root)
+    end
+  end
+
+  defp restore_application_env(key, nil), do: Application.delete_env(:elixir_db, key)
+  defp restore_application_env(key, value), do: Application.put_env(:elixir_db, key, value)
+
+  defp ensure_application_stopped! do
+    if Enum.any?(Application.started_applications(), &match?({:elixir_db, _, _}, &1)) do
+      Mix.raise("benchmark must be launched with mix run --no-start")
     end
   end
 
@@ -1216,7 +1234,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   defp usage do
     """
     Usage:
-      MIX_ENV=prod mix run bench/sqlite_exqlite_overhead_benchmark.exs -- [options]
+      MIX_ENV=prod mix run --no-start bench/sqlite_exqlite_overhead_benchmark.exs -- [options]
 
     Options:
       --mode memory|disk|both       SQLite mode (default: memory)

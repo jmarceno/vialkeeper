@@ -16,6 +16,28 @@ defmodule ElixirDB.Domain.Change do
 
   @known [:sequence, :document_id, :winning_revision, :deleted, :leaf_revisions, :origin]
 
+  @type public :: %{
+          required(:sequence) => pos_integer(),
+          required(:document_id) => binary(),
+          required(:winning_revision) => binary(),
+          required(:deleted) => boolean(),
+          required(:leaf_revisions) => [Leaf.t() | map()],
+          optional(:origin) => binary() | nil
+        }
+
+  @spec public(pos_integer(), binary(), binary(), boolean(), [Leaf.t() | map()], binary() | nil) ::
+          public()
+  def public(sequence, document_id, winning_revision, deleted, leaf_revisions, origin) do
+    %{
+      sequence: sequence,
+      document_id: document_id,
+      winning_revision: winning_revision,
+      deleted: deleted,
+      leaf_revisions: leaf_revisions,
+      origin: origin
+    }
+  end
+
   @spec new(map()) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
   def new(attrs) when is_map(attrs) do
     if Enum.any?(Map.keys(attrs), &(&1 not in @known)),

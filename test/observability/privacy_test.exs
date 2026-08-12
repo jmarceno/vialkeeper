@@ -57,10 +57,15 @@ defmodule ElixirDB.Observability.PrivacyTest do
     all_spans = TestExporter.spans()
     assert [_ | _] = all_spans, "expected some spans to be recorded"
 
-    assert Enum.any?(all_spans, &(&1[:name] == "elixir_db.query.execute")),
-           "expected a query.execute span to exercise the search-text path"
+    query_span =
+      Enum.find(all_spans, fn span ->
+        span[:name] == "elixir_db.query.execute" and
+          TestExporter.span_attr(span, :"db.uuid") == uuid
+      end)
 
-    query_span = Enum.find(all_spans, &(&1[:name] == "elixir_db.query.execute"))
+    assert query_span,
+           "expected a query.execute span for the test database to exercise the search-text path"
+
     assert TestExporter.span_attr(query_span, :plan_kind) == :bounded_scan
     assert TestExporter.span_attr(query_span, :selected_index_count) == 0
     assert TestExporter.span_attr(query_span, :union_branch_count) == 0

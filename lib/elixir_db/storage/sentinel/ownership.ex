@@ -22,9 +22,6 @@ defmodule ElixirDB.Storage.Sentinel.Ownership do
     end
   end
 
-  @impl true
-  def terminate(_reason, _state), do: :ok
-
   defp unavailable(reason) do
     {:stop,
      ElixirDB.Error.database_in_use("database ownership lease is unavailable", %{

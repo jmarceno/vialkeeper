@@ -432,14 +432,17 @@ defmodule ElixirDB.Storage.Services.Mutations do
          {:ok, sequence} <- allocated_or_new_sequence(context, allocated_sequence),
          :ok <- Facts.update_winning(context, document_id, winner, sequence),
          :ok <-
-           Facts.append_change(context, %{
-             sequence: sequence,
-             document_id: document_id,
-             winner: winner,
-             leaf_json: leaf_json,
-             origin: "local",
-             backend_meta: Facts.backend_meta(doc)
-           }),
+           Facts.append_change(
+             context,
+             Facts.change_entry(
+               sequence,
+               document_id,
+               winner,
+               leaf_json,
+               "local",
+               Facts.backend_meta(doc)
+             )
+           ),
          :ok <- mark_pending_if_needed(context, mark_pending?) do
       publishless =
         publishless_result(
@@ -1008,14 +1011,15 @@ defmodule ElixirDB.Storage.Services.Mutations do
   end
 
   defp new_bulk_change(document_id, candidate, sequence, leaf_json, document),
-    do: %{
-      sequence: sequence,
-      document_id: document_id,
-      winner: candidate,
-      leaf_json: leaf_json,
-      origin: "local",
-      backend_meta: Facts.backend_meta(document)
-    }
+    do:
+      Facts.change_entry(
+        sequence,
+        document_id,
+        candidate,
+        leaf_json,
+        "local",
+        Facts.backend_meta(document)
+      )
 
   defp publishless_result(document_id, revision_id, sequence, deleted, conflicts),
     do: %{

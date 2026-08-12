@@ -33,16 +33,7 @@ defmodule ElixirDB.Storage.Contracts.Derived do
 
       materialization_id = UUID.v4()
 
-      initial = %{
-        materialization_id: materialization_id,
-        name: definition.name,
-        definition_json: definition.definition_json,
-        definition_digest: definition.definition_digest,
-        options_json: definition.options_json,
-        enabled: true,
-        status: "rebuilding",
-        sources: [source_uuid]
-      }
+      initial = Definition.initial_metadata(definition, materialization_id)
 
       {:ok, adapter} =
         adapter_mod.create(path, %{
@@ -84,16 +75,7 @@ defmodule ElixirDB.Storage.Contracts.Derived do
 
       materialization_id = UUID.v4()
 
-      initial = %{
-        materialization_id: materialization_id,
-        name: definition.name,
-        definition_json: definition.definition_json,
-        definition_digest: definition.definition_digest,
-        options_json: definition.options_json,
-        enabled: true,
-        status: "rebuilding",
-        sources: [source_uuid]
-      }
+      initial = Definition.initial_metadata(definition, materialization_id)
 
       {:ok, bundle_path} = TempDatabase.create(prefix: "elixirdb-derived-stats")
       path = AdapterCase.adapter_path(adapter_mod, bundle_path)
@@ -110,22 +92,16 @@ defmodule ElixirDB.Storage.Contracts.Derived do
     end
 
     def map_cases(adapter_mod, ctx) do
-      batch = %{
-        materialization_id: ctx.materialization_id,
-        source_database_uuid: ctx.source_uuid,
-        source_history_epoch: ctx.history_epoch,
-        expected_checkpoint_sequence: 0,
-        through_sequence: 1,
-        rows: [
-          %{
-            source_document_id: "one",
-            source_revision_id: "1-rev",
-            key: ["alpha"],
-            value: 2
-          }
-        ],
-        removals: []
-      }
+      batch =
+        Engine.batch_request(
+          ctx.materialization_id,
+          ctx.source_uuid,
+          ctx.history_epoch,
+          0,
+          1,
+          [Engine.source_row("one", "1-rev", ["alpha"], 2)],
+          []
+        )
 
       assert {:ok, %{applied: true, last_sequence: first_sequence}} =
                adapter_mod.apply_derived_source_batch(ctx.adapter, batch)
@@ -168,26 +144,22 @@ defmodule ElixirDB.Storage.Contracts.Derived do
       {adapter, materialization_id} = open_stats_derived(adapter_mod, source_uuid)
 
       rows = [
-        %{source_document_id: "low", source_revision_id: "1-low", key: ["alpha", 1], value: -1},
-        %{source_document_id: "high", source_revision_id: "1-high", key: ["alpha", 2], value: 3},
-        %{
-          source_document_id: "text",
-          source_revision_id: "1-text",
-          key: ["alpha", 3],
-          value: "skip"
-        },
-        %{source_document_id: "mid", source_revision_id: "1-mid", key: ["alpha", 4], value: 0}
+        Engine.source_row("low", "1-low", ["alpha", 1], -1),
+        Engine.source_row("high", "1-high", ["alpha", 2], 3),
+        Engine.source_row("text", "1-text", ["alpha", 3], "skip"),
+        Engine.source_row("mid", "1-mid", ["alpha", 4], 0)
       ]
 
-      batch = %{
-        materialization_id: materialization_id,
-        source_database_uuid: source_uuid,
-        source_history_epoch: history_epoch,
-        expected_checkpoint_sequence: 0,
-        through_sequence: 1,
-        rows: Enum.shuffle(rows),
-        removals: []
-      }
+      batch =
+        Engine.batch_request(
+          materialization_id,
+          source_uuid,
+          history_epoch,
+          0,
+          1,
+          Enum.shuffle(rows),
+          []
+        )
 
       assert {:ok, %{applied: true}} = adapter_mod.apply_derived_source_batch(adapter, batch)
 
@@ -209,28 +181,19 @@ defmodule ElixirDB.Storage.Contracts.Derived do
     end
 
     def rebuild_cases(adapter_mod, ctx) do
-      batch = %{
-        materialization_id: ctx.materialization_id,
-        source_database_uuid: ctx.source_uuid,
-        source_history_epoch: ctx.history_epoch,
-        expected_checkpoint_sequence: 0,
-        through_sequence: 1,
-        rows: [
-          %{
-            source_document_id: "keep",
-            source_revision_id: "1-keep",
-            key: ["alpha"],
-            value: 1
-          },
-          %{
-            source_document_id: "drop",
-            source_revision_id: "1-drop",
-            key: ["beta"],
-            value: 2
-          }
-        ],
-        removals: []
-      }
+      batch =
+        Engine.batch_request(
+          ctx.materialization_id,
+          ctx.source_uuid,
+          ctx.history_epoch,
+          0,
+          1,
+          [
+            Engine.source_row("keep", "1-keep", ["alpha"], 1),
+            Engine.source_row("drop", "1-drop", ["beta"], 2)
+          ],
+          []
+        )
 
       assert {:ok, %{applied: true}} = adapter_mod.apply_derived_source_batch(ctx.adapter, batch)
 
@@ -255,12 +218,7 @@ defmodule ElixirDB.Storage.Contracts.Derived do
                  source_database_uuid: ctx.source_uuid,
                  generation: generation,
                  rows: [
-                   %{
-                     source_document_id: "keep",
-                     source_revision_id: "2-keep",
-                     key: ["alpha"],
-                     value: 9
-                   }
+                   Engine.source_row("keep", "2-keep", ["alpha"], 9)
                  ],
                  removals: [],
                  after_document_id: "keep"

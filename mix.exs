@@ -121,12 +121,11 @@ defmodule ElixirDB.MixProject do
         "credo --strict",
         "ex_dna --max-clones 0",
         "storage.boundary_check",
-        # Smell baseline holds known storage-extraction debt; new smells still fail.
-        "reach.check --arch --smells --strict --baseline .reach-smells-baseline.json",
+        "reach.check --arch --smells --strict",
         "test --warnings-as-errors",
         "dialyzer"
       ],
-      bench: ["run bench/product_benchmark.exs"],
+      bench: ["run --no-start bench/product_benchmark.exs"],
       "bench.overhead": ["run --no-start bench/sqlite_exqlite_overhead_benchmark.exs"],
       "release.build": ["deps.get", "compile", "release --overwrite"]
     ]

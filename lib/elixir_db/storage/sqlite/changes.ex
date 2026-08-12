@@ -7,6 +7,7 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   orchestration remain centralized until further Track A extraction.
   """
 
+  alias ElixirDB.Domain.Change
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.{Connection, TermBlob}
@@ -197,14 +198,15 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   end
 
   defp change_entry(sequence, document_id, winning, deleted, leaves, origin),
-    do: %{
-      sequence: sequence,
-      document_id: document_id,
-      winning_revision: winning,
-      deleted: deleted == 1,
-      leaf_revisions: leaves,
-      origin: origin
-    }
+    do:
+      Change.public(
+        sequence,
+        document_id,
+        winning,
+        deleted == 1,
+        leaves,
+        origin
+      )
 
   defp encode_change_rows(entries) do
     Enum.reduce_while(entries, {:ok, []}, fn

@@ -68,6 +68,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
                   :owner_fun,
                   :executor_pid,
                   :executor_monitor_ref,
+                  :drain_pid,
+                  :drain_monitor_ref,
                   :trace_context,
                   :probe_op,
                   executor_started?: false
@@ -86,6 +88,8 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
             owner_fun: nil | (-> term()),
             executor_pid: pid() | nil,
             executor_monitor_ref: reference() | nil,
+            drain_pid: pid() | nil,
+            drain_monitor_ref: reference() | nil,
             trace_context: term() | nil,
             probe_op: term() | nil,
             executor_started?: boolean()
@@ -438,10 +442,22 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   @impl true
   def handle_info({:executor_drain, request_ref}, state) do
     case state.active do
-      %ActivePermit{request_ref: ^request_ref} = active ->
-        case sync_owner_for_drain(state.uuid) do
+      %ActivePermit{request_ref: ^request_ref, drain_pid: nil} = active ->
+        {:noreply, start_executor_drain(state, active)}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:executor_drain_result, request_ref, drain_pid, result}, state) do
+    case state.active do
+      %ActivePermit{request_ref: ^request_ref, drain_pid: ^drain_pid} = active ->
+        state = clear_drain_monitor(state, active)
+
+        case result do
           :ok ->
-            {:noreply, grant_loop(clear_active(state, active))}
+            {:noreply, grant_loop(clear_active(state, state.active))}
 
           :retry ->
             Process.send_after(self(), {:executor_drain, request_ref}, drain_sync_retry_ms())
@@ -468,6 +484,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
   def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
     state =
       state
+      |> handle_executor_drain_down(monitor_ref, pid)
       |> handle_executor_down(monitor_ref, reason)
       |> handle_active_caller_down(monitor_ref, pid)
       |> remove_queued_by_monitor(monitor_ref)
@@ -809,6 +826,21 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     end
   end
 
+  defp handle_executor_drain_down(%__MODULE__{} = state, monitor_ref, pid) do
+    case state.active do
+      %ActivePermit{
+        request_ref: request_ref,
+        drain_pid: ^pid,
+        drain_monitor_ref: ^monitor_ref
+      } = active ->
+        Process.send_after(self(), {:executor_drain, request_ref}, drain_sync_retry_ms())
+        %{state | active: %{active | drain_pid: nil, drain_monitor_ref: nil}}
+
+      _ ->
+        state
+    end
+  end
+
   defp reply_executor_crash(%ActivePermit{from: from}, reason) do
     if from,
       do:
@@ -869,6 +901,12 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
 
     if active.executor_monitor_ref,
       do: Process.demonitor(active.executor_monitor_ref, [:flush])
+
+    if active.drain_monitor_ref,
+      do: Process.demonitor(active.drain_monitor_ref, [:flush])
+
+    if active.drain_pid && Process.alive?(active.drain_pid),
+      do: DynamicSupervisor.terminate_child(state.admitted_command_supervisor, active.drain_pid)
 
     state
     |> Map.put(:active, nil)
@@ -972,6 +1010,43 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
     catch
       :exit, _ -> :retry
     end
+  end
+
+  defp start_executor_drain(%__MODULE__{} = state, %ActivePermit{} = active) do
+    scheduler_pid = self()
+    request_ref = active.request_ref
+    uuid = state.uuid
+
+    child_spec =
+      Task.child_spec(fn ->
+        result = sync_owner_for_drain(uuid)
+        send(scheduler_pid, {:executor_drain_result, request_ref, self(), result})
+      end)
+
+    case DynamicSupervisor.start_child(state.admitted_command_supervisor, child_spec) do
+      {:ok, drain_pid} ->
+        drain_monitor_ref = Process.monitor(drain_pid)
+
+        %{
+          state
+          | active: %{
+              active
+              | drain_pid: drain_pid,
+                drain_monitor_ref: drain_monitor_ref
+            }
+        }
+
+      {:error, _reason} ->
+        Process.send_after(self(), {:executor_drain, request_ref}, drain_sync_retry_ms())
+        state
+    end
+  end
+
+  defp clear_drain_monitor(%__MODULE__{} = state, %ActivePermit{} = active) do
+    if active.drain_monitor_ref,
+      do: Process.demonitor(active.drain_monitor_ref, [:flush])
+
+    %{state | active: %{active | drain_pid: nil, drain_monitor_ref: nil}}
   end
 
   defp drain_sync_retry_ms do

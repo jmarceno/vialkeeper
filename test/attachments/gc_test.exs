@@ -72,6 +72,21 @@ defmodule ElixirDB.Attachments.GCTest do
     assert blob_exists?(uuid, digest)
   end
 
+  test "gc reports physical bytes deleted", %{uuid: uuid} do
+    payload = :binary.copy("compressible-gc-payload", 1_000)
+    digest = upload!(uuid, payload)
+    expire_pending!(uuid, digest)
+
+    {:ok, root} = DatabaseCatalog.bundle_root(uuid)
+    assert {:ok, %{physical_size: physical_size}} = FilesystemStore.stat(root, digest)
+
+    assert {:ok, stats} = Attachments.gc(uuid)
+    assert stats.deleted == 1
+    assert stats.blobs_deleted == 1
+    assert stats.bytes_deleted == physical_size
+    refute FilesystemStore.exists?(root, digest)
+  end
+
   test "both losing and winning conflict branches retain their attachment blobs", %{uuid: uuid} do
     document_id = "conflict-attachments"
     history_id = ElixirDB.RevisionFixtures.shared_history_id()
