@@ -154,7 +154,19 @@ defmodule ElixirDB.DerivedView.Wave1Test do
     end
 
     assert {:error, %ElixirDB.Error{code: :derived_database_read_only}} =
-             ElixirDB.Attachments.put_blob(uuid, digest, 0, blob_source)
+             ElixirDB.Attachments.put_blob_representation(
+               uuid,
+               %{
+                 logical_digest: digest,
+                 logical_length: 0,
+                 format_version: 1,
+                 encoding: :raw,
+                 payload_length: 0,
+                 payload_sha256: digest
+               },
+               blob_source,
+               []
+             )
 
     refute_received :blob_source_consumed
 

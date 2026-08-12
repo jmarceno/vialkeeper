@@ -10,7 +10,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
   alias ElixirDB.Documents
   alias ElixirDB.Eventual
   alias ElixirDB.Query.Subscriptions
-  alias ElixirDB.Replication.{BlobStream, LocalEndpoint}
+  alias ElixirDB.Replication.LocalEndpoint
 
   alias ElixirDB.Runtime.{
     AttachmentCoordinator,
@@ -494,8 +494,8 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
 
       with_probe(fn probe ->
         AdmissionClassProbe.assert_only!(probe, :replication, @forbidden_trusted, fn ->
-          assert {:ok, stream} = BlobStream.new(digest, byte_size(bytes), [bytes])
-          assert :ok = LocalEndpoint.put_blob(endpoint, stream)
+          assert {:ok, stream} = raw_blob_stream(digest, bytes)
+          assert :ok = LocalEndpoint.put_blob_representation(endpoint, stream)
         end)
       end)
     end
@@ -505,14 +505,14 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
       digest = :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
       missing = :crypto.hash(:sha256, "missing") |> Base.encode16(case: :lower)
 
-      assert {:ok, stream} = BlobStream.new(digest, byte_size(bytes), [bytes])
-      assert :ok = LocalEndpoint.put_blob(endpoint, stream)
+      assert {:ok, stream} = raw_blob_stream(digest, bytes)
+      assert :ok = LocalEndpoint.put_blob_representation(endpoint, stream)
 
       with_probe(fn probe ->
         AdmissionClassProbe.assert_only!(probe, :replication, @forbidden_trusted, fn ->
           assert {:ok, [^missing]} = LocalEndpoint.diff_blobs(endpoint, [missing])
-          assert {:ok, opened} = LocalEndpoint.open_blob(endpoint, digest)
-          assert opened.digest == digest
+          assert {:ok, opened} = LocalEndpoint.open_blob_representation(endpoint, digest)
+          assert opened.logical_digest == digest
         end)
       end)
     end
@@ -641,5 +641,17 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
         )
       end)
     end
+  end
+
+  defp raw_blob_stream(digest, bytes) do
+    ElixirDB.Replication.BlobRepresentationStream.new(%{
+      logical_digest: digest,
+      logical_length: byte_size(bytes),
+      format_version: 1,
+      encoding: :raw,
+      payload_length: byte_size(bytes),
+      payload_sha256: digest,
+      body: [bytes]
+    })
   end
 end

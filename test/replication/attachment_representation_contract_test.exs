@@ -9,7 +9,7 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
 
   alias ElixirDB.Attachments
   alias ElixirDB.Attachments.FilesystemStore
-  alias ElixirDB.Replication.{BlobStream, LocalEndpoint, RemoteEndpoint}
+  alias ElixirDB.Replication.{BlobRepresentationStream, LocalEndpoint, RemoteEndpoint}
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.TestServer
 
@@ -101,14 +101,17 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
     target_bytes = representation_file_bytes!(target_bundle, digest)
     assert target_bytes == source_bytes
 
-    assert {:ok, opened} = Attachments.open_blob(target_uuid, digest)
-    assert opened.length == logical
-    assert Enum.into(opened.body, <<>>) == payload
+    assert {:ok, opened} = Attachments.open_blob_representation(target_uuid, digest)
+    assert opened.logical_length == logical
+    {:ok, reader} = FilesystemStore.open_read(target_bundle, digest)
+    assert Enum.into(logical_chunks(reader), <<>>) == payload
   end
 
   defp transfer_representation!(source_endpoint, remote, digest) do
-    assert {:ok, %BlobStream{} = stream} = LocalEndpoint.open_blob(source_endpoint, digest)
-    assert :ok = RemoteEndpoint.put_blob(remote, stream)
+    assert {:ok, %BlobRepresentationStream{} = stream} =
+             LocalEndpoint.open_blob_representation(source_endpoint, digest)
+
+    assert :ok = RemoteEndpoint.put_blob_representation(remote, stream)
   end
 
   defp count_probes(fun) do
@@ -202,4 +205,20 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
   defp header_value(value) when is_binary(value), do: value
   defp header_value([value | _]) when is_binary(value), do: value
   defp header_value(_), do: nil
+
+  defp logical_chunks(reader) do
+    Stream.unfold(reader, fn current ->
+      case FilesystemStore.read_chunks(current) do
+        {:ok, chunk} ->
+          {chunk, current}
+
+        {:done, current} ->
+          _ = FilesystemStore.close_read(current)
+          nil
+
+        {:error, error} ->
+          flunk("logical read failed: #{inspect(error)}")
+      end
+    end)
+  end
 end

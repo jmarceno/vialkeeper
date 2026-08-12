@@ -32,7 +32,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   alias ElixirDB.Attachments
   alias ElixirDB.Eventual
   alias ElixirDB.Query.Subscriptions
-  alias ElixirDB.Replication.{BlobStream, JobManager, LocalEndpoint}
+  alias ElixirDB.Replication.{JobManager, LocalEndpoint}
 
   alias ElixirDB.Runtime.{
     AdmissionPolicy,
@@ -784,10 +784,11 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     transfer =
       Task.async(fn ->
-        assert {:ok, source_stream} = LocalEndpoint.open_blob(source_endpoint, digest)
+        assert {:ok, source_stream} =
+                 LocalEndpoint.open_blob_representation(source_endpoint, digest)
+
         gated_body = gated_blob_body(source_stream.body, parent, gate, :blob_transfer_blocked)
-        assert {:ok, target_stream} = BlobStream.new(digest, byte_size(payload), gated_body)
-        LocalEndpoint.put_blob(target_endpoint, target_stream)
+        LocalEndpoint.put_blob_representation(target_endpoint, %{source_stream | body: gated_body})
       end)
 
     assert_receive {:blob_transfer_blocked, ^gate}, 2_000
@@ -822,15 +823,18 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
       end
 
     transfers =
-      Enum.map(digests, fn {digest, size} ->
+      Enum.map(digests, fn {digest, _size} ->
         Task.async(fn ->
-          assert {:ok, source_stream} = LocalEndpoint.open_blob(source_endpoint, digest)
+          assert {:ok, source_stream} =
+                   LocalEndpoint.open_blob_representation(source_endpoint, digest)
 
           gated_body =
             gated_blob_body(source_stream.body, parent, gate, {:blob_transfer_blocked, digest})
 
-          assert {:ok, target_stream} = BlobStream.new(digest, size, gated_body)
-          LocalEndpoint.put_blob(target_endpoint, target_stream)
+          LocalEndpoint.put_blob_representation(
+            target_endpoint,
+            %{source_stream | body: gated_body}
+          )
         end)
       end)
 

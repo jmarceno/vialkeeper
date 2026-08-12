@@ -111,10 +111,10 @@ defmodule ElixirDB.Replication.LocalEndpoint do
     do: Attachments.diff_blobs(uuid, digests, admission_class: :replication)
 
   @impl true
-  def open_blob(%__MODULE__{database_uuid: uuid}, digest),
-    do: Attachments.open_blob(uuid, digest, admission_class: :replication)
+  def open_blob_representation(%__MODULE__{database_uuid: uuid}, digest),
+    do: Attachments.open_blob_representation(uuid, digest, admission_class: :replication)
 
   @impl true
-  def put_blob(%__MODULE__{database_uuid: uuid}, stream),
-    do: Attachments.put_blob(uuid, stream, admission_class: :replication)
+  def put_blob_representation(%__MODULE__{database_uuid: uuid}, stream),
+    do: Attachments.put_blob_representation(uuid, stream, admission_class: :replication)
 end

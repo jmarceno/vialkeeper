@@ -7,10 +7,10 @@ defmodule ElixirDB.Attachments do
   while attachment bytes are transferred.
   """
 
-  alias ElixirDB.Attachments.{FilesystemStore, Manifest, Ticket}
+  alias ElixirDB.Attachments.{FilesystemStore, Manifest, Representation, Ticket}
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Attachment, as: AttachmentInstr
-  alias ElixirDB.Replication.BlobStream
+  alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
 
   @store FilesystemStore
@@ -263,14 +263,14 @@ defmodule ElixirDB.Attachments do
     do: {:error, ElixirDB.Error.invalid_request("blob digests must be a list")}
 
   @doc """
-  Opens a lazy original-byte stream for a digest under a read guard.
+  Opens a lazy encoded-payload stream for a digest under a read guard.
 
-  The returned `BlobStream` body enumerable releases the reader and guard when
-  consumed or abandoned.
+  The returned `BlobRepresentationStream` body enumerable releases the reader
+  and guard when consumed or abandoned. Payload bytes are not decompressed.
   """
-  @spec open_blob(binary(), binary(), keyword()) ::
-          {:ok, BlobStream.t()} | {:error, ElixirDB.Error.t()}
-  def open_blob(uuid, digest, opts \\ []) when is_binary(uuid) do
+  @spec open_blob_representation(binary(), binary(), keyword()) ::
+          {:ok, BlobRepresentationStream.t()} | {:error, ElixirDB.Error.t()}
+  def open_blob_representation(uuid, digest, opts \\ []) when is_binary(uuid) do
     admission_class = Keyword.get(opts, :admission_class, :foreground)
 
     with :ok <- ensure_open(uuid),
@@ -279,7 +279,13 @@ defmodule ElixirDB.Attachments do
       read_handle = AttachmentInstr.start_read(uuid)
 
       try do
-        case open_blob_under_guard(uuid, digest, read_guard, read_handle, admission_class) do
+        case open_blob_representation_under_guard(
+               uuid,
+               digest,
+               read_guard,
+               read_handle,
+               admission_class
+             ) do
           {:ok, _} = ok ->
             ok
 
@@ -314,39 +320,38 @@ defmodule ElixirDB.Attachments do
   end
 
   @doc """
-  Installs original bytes through the public write path and pending protection.
+  Installs an encoded representation through pending protection.
 
-  Validates the finished digest and logical size against the request. `source`
-  may be a `BlobStream`, `Plug.Conn`, enumerable, or zero-arity chunk function.
+  Writes payload bytes with `begin_put_representation/3` and does not probe or
+  recompress. `source` may be a `BlobRepresentationStream`, `Plug.Conn`,
+  enumerable, or zero-arity chunk function.
   """
-  @spec put_blob(binary(), BlobStream.t(), keyword()) :: :ok | {:error, ElixirDB.Error.t()}
-  def put_blob(uuid, stream, opts \\ [])
+  @spec put_blob_representation(binary(), BlobRepresentationStream.t(), keyword()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def put_blob_representation(uuid, stream, opts \\ [])
 
-  def put_blob(uuid, %BlobStream{digest: digest, length: length, body: body}, opts)
+  def put_blob_representation(uuid, %BlobRepresentationStream{} = stream, opts)
       when is_binary(uuid) do
-    put_blob(uuid, digest, length, body, opts)
+    put_blob_representation(uuid, BlobRepresentationStream.descriptor(stream), stream.body, opts)
   end
 
-  @spec put_blob(binary(), binary(), non_neg_integer(), chunk_source(), keyword()) ::
+  @spec put_blob_representation(binary(), map(), chunk_source(), keyword()) ::
           :ok | {:error, ElixirDB.Error.t()}
-  def put_blob(uuid, digest, length, source, opts \\ [])
-
-  def put_blob(uuid, digest, length, source, opts)
-      when is_binary(uuid) and is_integer(length) and length >= 0 do
+  def put_blob_representation(uuid, descriptor, source, opts)
+      when is_binary(uuid) and is_map(descriptor) do
     admission_class = Keyword.get(opts, :admission_class, :foreground)
 
     with :ok <- ensure_open(uuid),
          :ok <- ensure_writable(uuid, admission_class),
-         {:ok, digest} <- Manifest.validate_digest(digest),
+         {:ok, descriptor} <- Representation.descriptor(descriptor),
          {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
          {:ok, write_guard, max_bytes} <- AttachmentCoordinator.acquire_write(uuid) do
       try do
         case AttachmentInstr.write(uuid, fn ->
-               put_blob_under_guard(
+               put_blob_representation_under_guard(
                  uuid,
                  bundle_root,
-                 digest,
-                 length,
+                 descriptor,
                  source,
                  max_bytes,
                  admission_class
@@ -361,37 +366,55 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  def put_blob(_uuid, _digest, _length, _source, _opts),
-    do: {:error, ElixirDB.Error.invalid_request("invalid blob put")}
+  def put_blob_representation(_uuid, _descriptor, _source, _opts),
+    do: {:error, ElixirDB.Error.invalid_request("invalid blob representation put")}
 
-  defp put_blob_under_guard(uuid, bundle_root, digest, length, source, max_bytes, admission_class) do
-    case @store.begin_put(bundle_root, max_bytes, %{}) do
+  defp put_blob_representation_under_guard(
+         uuid,
+         bundle_root,
+         descriptor,
+         source,
+         max_bytes,
+         admission_class
+       ) do
+    case @store.begin_put_representation(bundle_root, descriptor, max_bytes) do
       {:ok, writer} ->
         try do
-          with {:ok, stream_chunks} <- write_all_chunks(writer, source),
-               {:ok, finished} <- @store.finish_put(writer),
+          with {:ok, stream_chunks} <- write_all_representation_chunks(writer, source),
+               {:ok, finished} <- @store.finish_put_representation(writer),
                :ok <-
-                 match_blob_identity(digest, length, finished.digest, finished.logical_size),
+                 match_blob_identity(
+                   descriptor.logical_digest,
+                   descriptor.logical_length,
+                   finished.digest,
+                   finished.logical_size
+                 ),
                {:ok, protected} <-
-                 protect_uploaded_blob(uuid, digest, finished.logical_size, admission_class) do
+                 protect_uploaded_blob(
+                   uuid,
+                   descriptor.logical_digest,
+                   finished.logical_size,
+                   admission_class
+                 ) do
             {:ok,
              Map.merge(protected, %{
                stream_chunks: stream_chunks,
                encoding: finished.encoding,
+               payload_length: descriptor.payload_length,
                deduplicated?: finished.deduplicated?
              })}
           else
             {:error, _} = error ->
-              abort_writer(writer)
+              abort_representation_writer(writer)
               error
           end
         rescue
           exception in @release_on_raise ->
-            abort_writer(writer)
+            abort_representation_writer(writer)
             reraise(exception, __STACKTRACE__)
         catch
           kind, reason ->
-            abort_writer(writer)
+            abort_representation_writer(writer)
             :erlang.raise(kind, reason, __STACKTRACE__)
         end
 
@@ -490,7 +513,7 @@ defmodule ElixirDB.Attachments do
     Enum.reject(digests, &durable_blob?(uuid, bundle_root, &1, admission_class))
   end
 
-  defp open_blob_under_guard(uuid, digest, read_guard, read_handle, admission_class) do
+  defp open_blob_representation_under_guard(uuid, digest, read_guard, read_handle, admission_class) do
     with {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
          true <- @store.exists?(bundle_root, digest),
          {:ok, meta} <-
@@ -501,12 +524,18 @@ defmodule ElixirDB.Attachments do
            ),
          length when is_integer(length) and length >= 0 <-
            MapAccess.get_first(meta, [:logical_size, :length]),
-         {:ok, reader} <- @store.open_read(bundle_root, digest),
+         {:ok, {descriptor, reader}} <- @store.open_representation_read(bundle_root, digest),
+         :ok <- Representation.validate_route_digest(digest, descriptor),
          read_handle <-
-           AttachmentInstr.finish_read_open(read_handle, logical_bytes: length) do
-      finish = once_read_finish(reader, uuid, read_guard, read_handle)
+           AttachmentInstr.finish_read_open(read_handle,
+             logical_bytes: length,
+             payload_length: descriptor.payload_length
+           ) do
+      finish = once_representation_read_finish(reader, uuid, read_guard, read_handle)
 
-      case BlobStream.new(digest, length, blob_body_stream(reader, finish)) do
+      case BlobRepresentationStream.new(
+             Map.put(descriptor, :body, blob_representation_body_stream(reader, finish))
+           ) do
         {:ok, stream} ->
           {:ok, stream}
 
@@ -530,14 +559,23 @@ defmodule ElixirDB.Attachments do
   end
 
   defp blob_body_stream(reader, finish) when is_function(finish, 1) do
+    store_body_stream(reader, finish, &@store.read_chunks/1)
+  end
+
+  defp blob_representation_body_stream(reader, finish) when is_function(finish, 1) do
+    store_body_stream(reader, finish, &@store.read_representation_chunks/1)
+  end
+
+  defp store_body_stream(reader, finish, read_fun)
+       when is_function(finish, 1) and is_function(read_fun, 1) do
     Stream.resource(
       fn -> {:open, reader} end,
       fn
         {:open, current} ->
-          case @store.read_chunks(current) do
+          case read_fun.(current) do
             {:ok, chunk} -> {[chunk], {:open, current}}
             {:done, current} -> {:halt, {:done, current}}
-            {:error, %ElixirDB.Error{} = error} -> {[error: error], {:failed, current}}
+            {:error, %ElixirDB.Error{} = error} -> {[{:error, error}], {:failed, current}}
           end
 
         {:done, current} ->
@@ -554,12 +592,27 @@ defmodule ElixirDB.Attachments do
   end
 
   defp once_read_finish(reader, uuid, read_guard, read_handle) do
+    once_store_read_finish(reader, uuid, read_guard, read_handle, &@store.close_read/1)
+  end
+
+  defp once_representation_read_finish(reader, uuid, read_guard, read_handle) do
+    once_store_read_finish(
+      reader,
+      uuid,
+      read_guard,
+      read_handle,
+      &@store.close_representation_read/1
+    )
+  end
+
+  defp once_store_read_finish(reader, uuid, read_guard, read_handle, close_fun)
+       when is_function(close_fun, 1) do
     finished? = :atomics.new(1, signed: false)
 
     fn attrs ->
       case :atomics.compare_exchange(finished?, 1, 0, 1) do
         :ok ->
-          _ = @store.close_read(reader)
+          _ = close_fun.(reader)
           _ = AttachmentCoordinator.release(uuid, read_guard)
           _ = AttachmentInstr.end_read(read_handle, attrs)
           :ok
@@ -570,21 +623,32 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  defp write_all_chunks(writer, %Plug.Conn{} = conn) do
-    write_conn_chunks(writer, conn, 0)
-  end
-
-  defp write_all_chunks(writer, source) when is_function(source, 0) do
-    write_fun_chunks(writer, source, 0)
-  end
-
   defp write_all_chunks(writer, source) do
+    write_all_source_chunks(writer, source, &@store.write_chunk/2)
+  end
+
+  defp write_all_representation_chunks(writer, source) do
+    write_all_source_chunks(writer, source, &@store.write_representation_chunk/2)
+  end
+
+  defp write_all_source_chunks(writer, %Plug.Conn{} = conn, write_fun) do
+    write_conn_chunks(writer, conn, 0, write_fun)
+  end
+
+  defp write_all_source_chunks(writer, source, write_fun) when is_function(source, 0) do
+    write_fun_chunks(writer, source, 0, write_fun)
+  end
+
+  defp write_all_source_chunks(writer, source, write_fun) do
     Enum.reduce_while(source, {:ok, 0}, fn
       chunk, {:ok, count} when is_binary(chunk) ->
-        case @store.write_chunk(writer, chunk) do
+        case write_fun.(writer, chunk) do
           :ok -> {:cont, {:ok, count + 1}}
           {:error, _} = error -> {:halt, error}
         end
+
+      {:error, %ElixirDB.Error{}} = error, {:ok, _count} ->
+        {:halt, error}
 
       other, {:ok, _count} ->
         {:halt,
@@ -595,19 +659,19 @@ defmodule ElixirDB.Attachments do
     end)
   end
 
-  defp write_conn_chunks(writer, conn, count) do
+  defp write_conn_chunks(writer, conn, count, write_fun) do
     case Plug.Conn.read_body(conn, @read_chunk_opts) do
       {:ok, "", _conn} ->
         {:ok, count}
 
       {:ok, body, _conn} ->
-        with :ok <- @store.write_chunk(writer, body) do
+        with :ok <- write_fun.(writer, body) do
           {:ok, count + 1}
         end
 
       {:more, body, conn} ->
-        with :ok <- @store.write_chunk(writer, body) do
-          write_conn_chunks(writer, conn, count + 1)
+        with :ok <- write_fun.(writer, body) do
+          write_conn_chunks(writer, conn, count + 1, write_fun)
         end
 
       {:error, reason} ->
@@ -618,11 +682,11 @@ defmodule ElixirDB.Attachments do
     end
   end
 
-  defp write_fun_chunks(writer, fun, count) do
+  defp write_fun_chunks(writer, fun, count, write_fun) do
     case fun.() do
       {:ok, chunk, next} when is_binary(chunk) and is_function(next, 0) ->
-        with :ok <- @store.write_chunk(writer, chunk) do
-          write_fun_chunks(writer, next, count + 1)
+        with :ok <- write_fun.(writer, chunk) do
+          write_fun_chunks(writer, next, count + 1, write_fun)
         end
 
       :done ->
@@ -826,6 +890,10 @@ defmodule ElixirDB.Attachments do
 
   defp abort_writer(writer) do
     @store.abort_put(writer)
+  end
+
+  defp abort_representation_writer(writer) do
+    @store.abort_put_representation(writer)
   end
 
   defp run_gc(uuid, bundle_root, admission_class) do

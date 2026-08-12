@@ -60,7 +60,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
     :after_diff_blobs,
     :before_blob_transfer,
     :before_open_blob,
-    :open_blob,
+    :open_blob_representation,
     :mid_source_stream,
     :after_open_blob,
     :before_put_blob,
@@ -640,11 +640,11 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   end
 
   defp configure_blob_fault(point, source, target, _faults, seen)
-       when point in [:open_blob, :mid_source_stream, :mid_target_stream] do
+       when point in [:open_blob_representation, :mid_source_stream, :mid_target_stream] do
     fault = {:once, retryable_fault(point)}
 
     case point do
-      point when point in [:open_blob, :mid_source_stream] ->
+      point when point in [:open_blob_representation, :mid_source_stream] ->
         {FaultEndpoint.inject(source, point, fault), target, phase_observer_hook(seen)}
 
       :mid_target_stream ->
@@ -657,8 +657,8 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   end
 
   defp assert_fault_observed(point, _phases, source, target)
-       when point in [:open_blob, :mid_source_stream, :mid_target_stream] do
-    endpoint = if point in [:open_blob, :mid_source_stream], do: source, else: target
+       when point in [:open_blob_representation, :mid_source_stream, :mid_target_stream] do
+    endpoint = if point in [:open_blob_representation, :mid_source_stream], do: source, else: target
     assert FaultEndpoint.hits(endpoint)[point] >= 1
   end
 
@@ -668,7 +668,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
   end
 
   defp assert_no_reupload_after_lost_response(:after_put_blob, target) do
-    assert FaultEndpoint.hits(target)[:put_blob] == 1
+    assert FaultEndpoint.hits(target)[:put_blob_representation] == 1
     assert FaultEndpoint.hits(target)[:diff_blobs] >= 2
   end
 

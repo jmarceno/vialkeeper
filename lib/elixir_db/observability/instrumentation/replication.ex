@@ -122,7 +122,12 @@ defmodule ElixirDB.Observability.Instrumentation.Replication do
   def blob_transfer_span(replication_id, attrs \\ [], fun)
       when is_binary(replication_id) and is_list(attrs) and is_function(fun, 0) do
     started = System.monotonic_time()
-    base = Keyword.merge([replication_id: replication_id], Keyword.take(attrs, [:logical_bytes]))
+
+    base =
+      Keyword.merge(
+        [replication_id: replication_id],
+        Keyword.take(attrs, [:logical_bytes, :payload_length])
+      )
 
     Tracer.with_span(@blob_transfer_span, base, fn ->
       result = fun.()

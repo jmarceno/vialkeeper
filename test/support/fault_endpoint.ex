@@ -11,7 +11,7 @@ defmodule ElixirDB.FaultEndpoint do
   @behaviour ElixirDB.Replication.Endpoint
 
   alias ElixirDB.FaultAdapter
-  alias ElixirDB.Replication.BlobStream
+  alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Replication.LocalEndpoint
 
   defstruct [:inner, :agent]
@@ -139,17 +139,17 @@ defmodule ElixirDB.FaultEndpoint do
     do: invoke(endpoint, :diff_blobs, &LocalEndpoint.diff_blobs(&1, digests))
 
   @impl true
-  def open_blob(%__MODULE__{} = endpoint, digest),
+  def open_blob_representation(%__MODULE__{} = endpoint, digest),
     do:
       endpoint
-      |> invoke(:open_blob, &LocalEndpoint.open_blob(&1, digest))
+      |> invoke(:open_blob_representation, &LocalEndpoint.open_blob_representation(&1, digest))
       |> maybe_inject_stream_fault(endpoint, :mid_source_stream)
 
   @impl true
-  def put_blob(%__MODULE__{} = endpoint, stream),
+  def put_blob_representation(%__MODULE__{} = endpoint, stream),
     do:
-      invoke(endpoint, :put_blob, fn inner ->
-        LocalEndpoint.put_blob(inner, maybe_inject_target_stream(endpoint, stream))
+      invoke(endpoint, :put_blob_representation, fn inner ->
+        LocalEndpoint.put_blob_representation(inner, maybe_inject_target_stream(endpoint, stream))
       end)
 
   defp invoke(%__MODULE__{inner: inner, agent: agent}, point, fun) when is_function(fun, 1) do
@@ -189,7 +189,7 @@ defmodule ElixirDB.FaultEndpoint do
 
   defp after_point(point), do: :"after_#{point}"
 
-  defp maybe_inject_stream_fault({:ok, %BlobStream{} = stream}, endpoint, point) do
+  defp maybe_inject_stream_fault({:ok, %BlobRepresentationStream{} = stream}, endpoint, point) do
     case Agent.get_and_update(endpoint.agent, &stream_fault(&1, point)) do
       {:none, _adapter} -> {:ok, stream}
       {{:fault, %ElixirDB.Error{} = error}, _adapter} -> {:ok, faulty_stream(stream, error)}

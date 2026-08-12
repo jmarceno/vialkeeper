@@ -4,7 +4,7 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
   use ExUnit.Case, async: true
 
   alias ElixirDB.Error
-  alias ElixirDB.Replication.BlobStream
+  alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Replication.TransferPipeline
 
   defmodule FakeEndpoint do
@@ -46,7 +46,7 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
       endpoint.diff_result || {:ok, missing}
     end
 
-    def open_blob(endpoint, digest) do
+    def open_blob_representation(endpoint, digest) do
       send(endpoint.owner, {:blob_opened, digest, self()})
       wait_for(endpoint.blocked_blobs, {:release_blob, digest})
 
@@ -58,22 +58,22 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
               _ -> [<<"chunk">>]
             end
 
-          BlobStream.new(digest, endpoint.lengths[digest], body)
+          FakeEndpoint.raw_stream(digest, endpoint.lengths[digest], body)
 
         result ->
           result
       end
     end
 
-    def put_blob(endpoint, stream) do
-      send(endpoint.owner, {:blob_put, stream.digest, self()})
+    def put_blob_representation(endpoint, stream) do
+      send(endpoint.owner, {:blob_put, stream.logical_digest, self()})
 
       cond do
-        endpoint.failed_blob == stream.digest ->
+        endpoint.failed_blob == stream.logical_digest ->
           {:error, Error.internal_error("fake blob failure")}
 
         endpoint.lost_response == true and not is_nil(endpoint.durable_digests) ->
-          durable_install(endpoint.durable_digests, stream.digest)
+          durable_install(endpoint.durable_digests, stream.logical_digest)
 
         endpoint.put_result == :ok ->
           consume_stream(stream.body, endpoint.stream_failure)
@@ -114,6 +114,18 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
       do: Enum.each(body, fn _chunk -> raise "target stream failure" end)
 
     defp consume_stream(body, _failure), do: Enum.each(body, & &1)
+
+    def raw_stream(digest, length, body) do
+      BlobRepresentationStream.new(%{
+        logical_digest: digest,
+        logical_length: length,
+        format_version: 1,
+        encoding: :raw,
+        payload_length: length,
+        payload_sha256: digest,
+        body: body
+      })
+    end
   end
 
   defmodule SourceEndpoint do
@@ -122,13 +134,16 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
     def get_revision_chains(endpoint, request),
       do: FakeEndpoint.get_revision_chains(endpoint.inner, request)
 
-    def open_blob(endpoint, digest), do: FakeEndpoint.open_blob(endpoint.inner, digest)
+    def open_blob_representation(endpoint, digest),
+      do: FakeEndpoint.open_blob_representation(endpoint.inner, digest)
   end
 
   defmodule TargetEndpoint do
     defstruct [:inner]
     def diff_blobs(endpoint, digests), do: FakeEndpoint.diff_blobs(endpoint.inner, digests)
-    def put_blob(endpoint, stream), do: FakeEndpoint.put_blob(endpoint.inner, stream)
+
+    def put_blob_representation(endpoint, stream),
+      do: FakeEndpoint.put_blob_representation(endpoint.inner, stream)
   end
 
   test "bounds blob concurrency and reaches the configured bound" do

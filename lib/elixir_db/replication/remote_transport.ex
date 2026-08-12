@@ -3,6 +3,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
 
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Observability.Tracer
+  alias ElixirDB.Replication.BlobRepresentationStream
 
   def request(base_url, method, path, body \\ nil, auth_token \\ nil) do
     # Inject the current trace context into outgoing replication requests so a
@@ -22,27 +23,29 @@ defmodule ElixirDB.Replication.RemoteTransport do
   end
 
   @doc """
-  Opens a lazy octet-stream GET response.
+  Opens a lazy blob-representation GET response.
 
   Must run in the calling process (`into: :self`). The returned enumerable
-  cancels the HTTP response when abandoned early.
+  cancels the HTTP response when abandoned early. Does not decode JSON bodies.
   """
-  @spec open_stream(binary(), binary(), binary() | nil) ::
-          {:ok, non_neg_integer(), Enumerable.t()} | {:error, ElixirDB.Error.t()}
-  def open_stream(base_url, path, auth_token \\ nil) do
+  @spec open_stream(binary(), binary(), binary(), binary() | nil) ::
+          {:ok, map(), Enumerable.t()} | {:error, ElixirDB.Error.t()}
+  def open_stream(base_url, path, digest, auth_token \\ nil) do
     options =
       stream_base_options(base_url, :get, path)
       |> Keyword.merge(
         into: :self,
         decode_body: false,
+        compressed: false,
         headers: [
-          {"accept", "application/octet-stream"} | auth_headers(auth_token) ++ trace_headers()
+          {"accept", BlobRepresentationStream.media_type()}
+          | auth_headers(auth_token) ++ trace_headers()
         ]
       )
 
     case Req.request(options) do
       {:ok, %{status: status, body: body} = result} when status in 200..299 ->
-        open_stream_success(result, body)
+        open_stream_success(result, body, digest)
 
       {:ok, %{status: status, body: body} = result} ->
         open_stream_error(status, body, result)
@@ -56,29 +59,30 @@ defmodule ElixirDB.Replication.RemoteTransport do
   end
 
   @doc """
-  PUTs an enumerable request body as `application/octet-stream`.
+  PUTs a blob representation as `application/vnd.elixirdb.blob-representation`.
 
   Runs in the calling process so a body sourced from `open_stream/3` remains
-  valid. Expects a JSON success envelope.
+  valid. Expects a JSON success envelope. Does not JSON-encode the blob body.
   """
-  @spec put_stream(binary(), binary(), Enumerable.t(), non_neg_integer(), binary() | nil) ::
-          :ok | {:error, ElixirDB.Error.t()}
-  def put_stream(base_url, path, body, expected_length, auth_token \\ nil)
-      when is_integer(expected_length) and expected_length >= 0 do
+  @spec put_stream(
+          binary(),
+          binary(),
+          BlobRepresentationStream.t(),
+          binary() | nil
+        ) :: :ok | {:error, ElixirDB.Error.t()}
+  def put_stream(base_url, path, %BlobRepresentationStream{} = stream, auth_token \\ nil) do
     auth = auth_headers(auth_token)
     trace = trace_headers()
 
     options =
       stream_base_options(base_url, :put, path)
       |> Keyword.merge(
-        body: body,
+        body: stream.body,
         decode_body: true,
-        headers: [
-          {"accept", "application/json"},
-          {"content-type", "application/octet-stream"},
-          {"content-length", Integer.to_string(expected_length)}
-          | auth ++ trace
-        ]
+        compressed: false,
+        headers:
+          [{"accept", "application/json"} | BlobRepresentationStream.response_headers(stream)] ++
+            auth ++ trace
       )
 
     case Req.request(options) do
@@ -100,10 +104,9 @@ defmodule ElixirDB.Replication.RemoteTransport do
     end
   end
 
-  defp open_stream_success(result, body) do
-    with :ok <- validate_octet_stream_response(result),
-         {:ok, length} <- response_content_length(result) do
-      {:ok, length, body}
+  defp open_stream_success(result, body, digest) do
+    with {:ok, descriptor} <- BlobRepresentationStream.parse_http_headers(result.headers, digest) do
+      {:ok, descriptor, body}
     end
   end
 
@@ -159,49 +162,6 @@ defmodule ElixirDB.Replication.RemoteTransport do
   defp enumerable_body?(%Req.Response.Async{}), do: true
   defp enumerable_body?(body) when is_struct(body), do: true
   defp enumerable_body?(_), do: false
-
-  defp validate_octet_stream_response(result) do
-    content_type =
-      result
-      |> Map.get(:headers, [])
-      |> Enum.find_value(fn
-        {key, value} when key in ["content-type", "Content-Type"] -> value
-        _ -> nil
-      end)
-      |> content_type_header()
-
-    if is_nil(content_type) or String.starts_with?(content_type, "application/octet-stream") do
-      :ok
-    else
-      invalid_response_error()
-    end
-  end
-
-  defp response_content_length(result) do
-    length_header =
-      result
-      |> Map.get(:headers, [])
-      |> Enum.find_value(fn
-        {key, value} when key in ["content-length", "Content-Length"] -> value
-        _ -> nil
-      end)
-      |> content_type_header()
-
-    case length_header do
-      nil ->
-        {:error, ElixirDB.Error.database_unavailable("remote blob response missing content-length")}
-
-      value ->
-        case Integer.parse(value) do
-          {length, ""} when length >= 0 ->
-            {:ok, length}
-
-          _ ->
-            {:error,
-             ElixirDB.Error.database_unavailable("remote blob response has invalid content-length")}
-        end
-    end
-  end
 
   defp stream_base_options(base_url, method, path) do
     timeout = ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000

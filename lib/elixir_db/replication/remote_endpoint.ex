@@ -5,7 +5,7 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.ReplicationEndpoint
   alias ElixirDB.MapAccess
-  alias ElixirDB.Replication.BlobStream
+  alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Replication.RemoteTransport
 
   defstruct [:base_url, :database_uuid, :auth_token]
@@ -234,26 +234,19 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
     do: {:error, ElixirDB.Error.invalid_request("blob digests must be a list")}
 
   @impl true
-  def open_blob(endpoint, digest) do
+  def open_blob_representation(endpoint, digest) do
     with {:ok, digest} <- Manifest.validate_digest(digest),
          path = "/v1/databases/#{endpoint.database_uuid}/replication/blobs/#{digest}",
-         {:ok, length, body} <-
-           RemoteTransport.open_stream(endpoint.base_url, path, endpoint.auth_token) do
-      BlobStream.new(digest, length, body)
+         {:ok, descriptor, body} <-
+           RemoteTransport.open_stream(endpoint.base_url, path, digest, endpoint.auth_token) do
+      BlobRepresentationStream.new(Map.put(descriptor, :body, body))
     end
   end
 
   @impl true
-  def put_blob(endpoint, %BlobStream{} = stream) do
-    path = "/v1/databases/#{endpoint.database_uuid}/replication/blobs/#{stream.digest}"
-
-    RemoteTransport.put_stream(
-      endpoint.base_url,
-      path,
-      stream.body,
-      stream.length,
-      endpoint.auth_token
-    )
+  def put_blob_representation(endpoint, %BlobRepresentationStream{} = stream) do
+    path = "/v1/databases/#{endpoint.database_uuid}/replication/blobs/#{stream.logical_digest}"
+    RemoteTransport.put_stream(endpoint.base_url, path, stream, endpoint.auth_token)
   end
 
   defp call(endpoint, method, path, body \\ nil) do

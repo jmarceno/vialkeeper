@@ -682,7 +682,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
              "retry-chain"
            ) == [retry_chain_revision]
 
-    # Retryable blob failure uses a brand-new digest so open_blob is required.
+    # Retryable blob failure uses a brand-new digest so open_blob_representation is required.
     retry_blob = upload_blob!(server_a, a_uuid, blob_payload <> "-try")
     Barrier.fail_next_blob(barrier)
 

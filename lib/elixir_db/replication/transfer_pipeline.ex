@@ -10,7 +10,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
   alias ElixirDB.Error
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationModule
-  alias ElixirDB.Replication.BlobStream
+  alias ElixirDB.Replication.BlobRepresentationStream
 
   defmodule ChainChunk do
     @moduledoc false
@@ -790,11 +790,14 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
     with :ok <- invoke_phase_hook(phase_hook, :before_blob_transfer, context),
          :ok <- invoke_phase_hook(phase_hook, :before_open_blob, context),
-         {:ok, %BlobStream{} = stream} <- endpoint_call(source, :open_blob, [digest]),
+         {:ok, %BlobRepresentationStream{} = stream} <-
+           endpoint_call(source, :open_blob_representation, [digest]),
          :ok <- invoke_phase_hook(phase_hook, :after_open_blob, Map.put(context, :stream, stream)),
          :ok <- validate_blob_stream(stream, digest, length),
+         :ok <- record_payload_length(stream),
          :ok <- invoke_phase_hook(phase_hook, :before_put_blob, context),
-         :ok <- normalize_put_blob(endpoint_call(target, :put_blob, [stream])),
+         :ok <-
+           normalize_put_blob(endpoint_call(target, :put_blob_representation, [stream])),
          :ok <- invoke_phase_hook(phase_hook, :after_put_blob, context) do
       :ok
     else
@@ -817,10 +820,26 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
   defp invoke_phase_hook(_phase_hook, _phase, _context), do: :ok
 
-  defp validate_blob_stream(%BlobStream{digest: digest, length: length}, digest, length), do: :ok
+  defp validate_blob_stream(
+         %BlobRepresentationStream{
+           logical_digest: digest,
+           logical_length: length,
+           format_version: 1,
+           encoding: encoding
+         },
+         digest,
+         length
+       )
+       when encoding in [:raw, :zstd],
+       do: :ok
 
-  defp validate_blob_stream(%BlobStream{}, _digest, _length),
+  defp validate_blob_stream(%BlobRepresentationStream{}, _digest, _length),
     do: {:error, Error.integrity_violation("blob stream metadata does not match manifest")}
+
+  defp record_payload_length(%BlobRepresentationStream{payload_length: payload_length}) do
+    _ = ElixirDB.Observability.Tracer.set_attributes(payload_length: payload_length)
+    :ok
+  end
 
   defp normalize_put_blob(:ok), do: :ok
   defp normalize_put_blob({:ok, _result}), do: :ok

@@ -16,7 +16,7 @@ defmodule ElixirDB.Observability.Attributes do
   `selected_index_count`, `union_branch_count`, `replication.id`, `endpoint`
   (`:source` | `:target`), the bounded counts `entries`, `examined`,
   `revisions_written`, attachment stream measurements `logical_bytes`,
-  `stream_chunks`, `compressed`, `deduplicated`, `blobs_deleted`,
+  `payload_length`, `stream_chunks`, `compressed`, `deduplicated`, `blobs_deleted`,
   `bytes_deleted`, transfer measurements `chain_chunks`,
   `max_chain_concurrency_observed`, `blob_count`,
   `max_blob_concurrency_observed`, `peak_reserved_transfer_bytes`, and
@@ -72,6 +72,7 @@ defmodule ElixirDB.Observability.Attributes do
     compaction_epoch: :compaction_epoch,
     retention_mode: :retention_mode,
     logical_bytes: :logical_bytes,
+    payload_length: :payload_length,
     logical_blob_bytes: :logical_blob_bytes,
     stream_chunks: :stream_chunks,
     compressed: :compressed,

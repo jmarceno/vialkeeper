@@ -5,6 +5,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   alias ElixirDB.Domain.Checkpoint
   alias ElixirDB.HTTP.{Request, Response}
   alias ElixirDB.HTTP.Schemas
+  alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Replication.Wire
   alias ElixirDB.Runtime.DatabaseCatalog
   plug(:match)
@@ -248,8 +249,10 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
 
   get "/blobs/:digest" do
     with_blob_digest(conn, fn conn, digest ->
-      case ElixirDB.Attachments.open_blob(Request.uuid(conn), digest, admission_class: :replication) do
-        {:ok, stream} -> send_blob(conn, stream)
+      case ElixirDB.Attachments.open_blob_representation(Request.uuid(conn), digest,
+             admission_class: :replication
+           ) do
+        {:ok, stream} -> send_blob_representation(conn, stream)
         {:error, error} -> Response.error(conn, error)
       end
     end)
@@ -257,26 +260,20 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
 
   put "/blobs/:digest" do
     with_blob_digest(conn, fn conn, digest ->
-      case require_octet_stream(conn) do
-        :ok ->
-          case content_length(conn) do
-            {:ok, length} ->
-              Response.result(
-                conn,
-                ElixirDB.Attachments.put_blob(
-                  Request.uuid(conn),
-                  digest,
-                  length,
-                  conn,
-                  admission_class: :replication
-                )
-              )
-
-            {:error, error} ->
-              Response.error(conn, error)
-          end
+      case BlobRepresentationStream.parse_http_headers(conn.req_headers, digest) do
+        {:ok, descriptor} ->
+          Response.result(
+            conn,
+            ElixirDB.Attachments.put_blob_representation(
+              Request.uuid(conn),
+              descriptor,
+              conn,
+              admission_class: :replication
+            )
+          )
 
         {:error, error} ->
+          conn = discard_request_body(conn)
           Response.error(conn, error)
       end
     end)
@@ -389,52 +386,25 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     end
   end
 
-  defp require_octet_stream(conn) do
-    content_type = conn |> Plug.Conn.get_req_header("content-type") |> List.first()
-
-    cond do
-      is_nil(content_type) ->
-        {:error,
-         ElixirDB.Error.invalid_request(
-           "replication blob content type must be application/octet-stream"
-         )}
-
-      String.starts_with?(content_type, "application/octet-stream") ->
-        :ok
-
-      true ->
-        {:error,
-         ElixirDB.Error.invalid_request(
-           "replication blob content type must be application/octet-stream"
-         )}
+  defp discard_request_body(conn) do
+    case Plug.Conn.read_body(conn, length: 65_536, read_length: 65_536) do
+      {:ok, _, conn} -> conn
+      {:more, _, conn} -> discard_request_body(conn)
+      {:error, _} -> conn
     end
   end
 
-  defp content_length(conn) do
-    case Plug.Conn.get_req_header(conn, "content-length") do
-      [value | _] ->
-        case Integer.parse(value) do
-          {length, ""} when length >= 0 ->
-            {:ok, length}
-
-          _ ->
-            {:error,
-             ElixirDB.Error.invalid_request("content-length must be a non-negative integer")}
-        end
-
-      _ ->
-        {:error, ElixirDB.Error.invalid_request("content-length is required")}
-    end
-  end
-
-  defp send_blob(conn, stream) do
+  defp send_blob_representation(conn, stream) do
     request_id = Response.request_id(conn)
+
+    conn =
+      Enum.reduce(BlobRepresentationStream.response_headers(stream), conn, fn {key, value}, conn ->
+        Plug.Conn.put_resp_header(conn, key, value)
+      end)
 
     conn =
       conn
       |> Plug.Conn.put_resp_header("x-request-id", request_id)
-      |> Plug.Conn.put_resp_header("content-type", "application/octet-stream")
-      |> Plug.Conn.put_resp_header("content-length", Integer.to_string(stream.length))
       |> Plug.Conn.send_chunked(200)
 
     Response.stream_chunks(conn, stream.body)

@@ -71,7 +71,7 @@
       "ElixirDB.Attachments.Ticket",
       "ElixirDB.Attachments.Store",
       "ElixirDB.Attachments.Representation",
-      "ElixirDB.Replication.BlobStream"
+      "ElixirDB.Replication.BlobRepresentationStream"
     ],
     observability: "ElixirDB.Observability.*"
   ],
