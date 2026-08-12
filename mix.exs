@@ -38,6 +38,7 @@ defmodule ElixirDB.MixProject do
         "check.fast": :test,
         "check.integration": :test,
         "check.full": :test,
+        "bench.replication": :test,
         "release.build": :prod
       ]
     ]
@@ -127,6 +128,7 @@ defmodule ElixirDB.MixProject do
       ],
       bench: ["run --no-start bench/product_benchmark.exs"],
       "bench.overhead": ["run --no-start bench/sqlite_exqlite_overhead_benchmark.exs"],
+      "bench.replication": ["run --no-start bench/replication_wire_benchmark.exs"],
       "release.build": ["deps.get", "compile", "release --overwrite"]
     ]
   end
