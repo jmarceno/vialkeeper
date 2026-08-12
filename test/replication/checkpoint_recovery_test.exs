@@ -1,4 +1,4 @@
-defmodule ElixirDB.Replication.Wave5Test do
+defmodule ElixirDB.Replication.CheckpointRecoveryTest do
   @moduledoc "Covers checkpoint reconciliation, retention, and replication recovery."
 
   use ExUnit.Case, async: false
@@ -16,7 +16,7 @@ defmodule ElixirDB.Replication.Wave5Test do
   alias ElixirDB.TempDatabase
 
   setup do
-    prefix = "wave5-#{System.unique_integer([:positive])}"
+    prefix = "ckpt-recovery-#{System.unique_integer([:positive])}"
     a_path = prefix <> "-a.elixirdb"
     b_path = prefix <> "-b.elixirdb"
     root = ElixirDB.Config.database_root()
@@ -76,12 +76,12 @@ defmodule ElixirDB.Replication.Wave5Test do
   end
 
   test "checkpoint CAS rejects safe sequence regression", %{a: a} do
-    {:ok, bundle_path} = TempDatabase.create(prefix: "wave5-cas")
+    {:ok, bundle_path} = TempDatabase.create(prefix: "ckpt-recovery-cas")
     path = TempDatabase.sqlite_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{database_uuid: a.database_uuid})
 
     try do
-      replication_id = "wave5-rep-#{System.unique_integer([:positive])}"
+      replication_id = "ckpt-recovery-rep-#{System.unique_integer([:positive])}"
 
       base = %{
         namespace: "checkpoints",
@@ -159,7 +159,7 @@ defmodule ElixirDB.Replication.Wave5Test do
     b: b
   } do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "wave5", body: %{"v" => 1}})
+             ElixirDB.Documents.put(a.database_uuid, %{id: "ckpt-recovery-doc", body: %{"v" => 1}})
 
     {:ok, source} = LocalEndpoint.new(a.database_uuid)
     {:ok, target} = LocalEndpoint.new(b.database_uuid)
@@ -171,7 +171,7 @@ defmodule ElixirDB.Replication.Wave5Test do
              })
 
     assert result.status == :completed
-    assert {:ok, doc} = ElixirDB.Documents.get(b.database_uuid, %{id: "wave5"})
+    assert {:ok, doc} = ElixirDB.Documents.get(b.database_uuid, %{id: "ckpt-recovery-doc"})
     assert doc.body["v"] == 1
   end
 

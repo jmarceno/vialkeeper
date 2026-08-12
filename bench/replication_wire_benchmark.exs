@@ -408,16 +408,15 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
   defp encoded_payload_bytes(bundle, digest, stat) do
     prefix = String.slice(digest, 0, 2)
     blob = Path.join([bundle, "blobs", prefix, digest <> ".blob"])
-    zst = Path.join([bundle, "blobs", prefix, digest <> ".zst"])
 
-    cond do
-      File.regular?(blob) -> File.stat!(blob).size - 92
-      File.regular?(zst) -> File.stat!(zst).size - 48
-      true -> stat.physical_size
+    if File.regular?(blob) do
+      File.stat!(blob).size - 92
+    else
+      stat.physical_size
     end
   end
 
-  defp encoding_name(encoding) when encoding in [:compressed, :zstd], do: "zstd"
+  defp encoding_name(:zstd), do: "zstd"
   defp encoding_name(_encoding), do: "raw"
 
   defp representation_sha256(_uuid, nil), do: nil

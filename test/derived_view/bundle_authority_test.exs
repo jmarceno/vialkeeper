@@ -1,4 +1,4 @@
-defmodule ElixirDB.DerivedView.Wave1Test do
+defmodule ElixirDB.DerivedView.BundleAuthorityTest do
   @moduledoc "Covers derived bundle authority, definition validation, and external write protection."
   use ExUnit.Case, async: false
 
@@ -11,7 +11,7 @@ defmodule ElixirDB.DerivedView.Wave1Test do
   alias ElixirDB.Runtime.DatabaseCatalog
 
   setup do
-    source_path = "derived-wave1-source-#{System.unique_integer([:positive])}.elixirdb"
+    source_path = "derived-authority-source-#{System.unique_integer([:positive])}.elixirdb"
     source_abs = Path.join(ElixirDB.Config.database_root(), source_path)
     ElixirDB.TempDatabase.cleanup(source_abs)
 
@@ -49,7 +49,7 @@ defmodule ElixirDB.DerivedView.Wave1Test do
   end
 
   test "ordinary creation records ordinary kind", _context do
-    path = "derived-wave1-ordinary-#{System.unique_integer([:positive])}.elixirdb"
+    path = "derived-authority-ordinary-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), path)
     on_exit(fn -> ElixirDB.TempDatabase.cleanup(absolute) end)
 

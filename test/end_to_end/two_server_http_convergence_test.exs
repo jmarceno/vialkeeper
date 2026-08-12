@@ -460,7 +460,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   @tag :slow
   test "bounded remote pull overlaps chains and blobs with barriers" do
     root = ElixirDB.Config.database_root()
-    prefix = "e2e-wave6-#{System.unique_integer([:positive])}"
+    prefix = "e2e-overlap-#{System.unique_integer([:positive])}"
     a_path = prefix <> "-a.elixirdb"
     b_path = prefix <> "-b.elixirdb"
     {:ok, barrier} = Barrier.start_link(self())
@@ -504,12 +504,12 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     assert byte_size(blob_payload <> "-six") == blob_bytes
 
     expected_blobs = %{
-      "wave-1" => shared_blob,
-      "wave-2" => blob_two,
-      "wave-3" => shared_blob,
-      "wave-4" => blob_three,
-      "wave-5" => blob_two,
-      "wave-6" => blob_three
+      "batch-1" => shared_blob,
+      "batch-2" => blob_two,
+      "batch-3" => shared_blob,
+      "batch-4" => blob_three,
+      "batch-5" => blob_two,
+      "batch-6" => blob_three
     }
 
     assert {:ok, _} = put_document!(server_a, a_uuid, "baseline", %{"n" => 0})
@@ -546,14 +546,14 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     await_checkpoint(b_uuid, initial_replication_id, source_sequence!(a_uuid))
     assert {:ok, _} = JobManager.disable(b_uuid, job_id)
 
-    wave_revisions =
+    batch_revisions =
       for {id, n, blob} <- [
-            {"wave-1", 1, shared_blob},
-            {"wave-2", 2, blob_two},
-            {"wave-3", 3, shared_blob},
-            {"wave-4", 4, blob_three},
-            {"wave-5", 5, blob_two},
-            {"wave-6", 6, blob_three}
+            {"batch-1", 1, shared_blob},
+            {"batch-2", 2, blob_two},
+            {"batch-3", 3, shared_blob},
+            {"batch-4", 4, blob_three},
+            {"batch-5", 5, blob_two},
+            {"batch-6", 6, blob_three}
           ],
           into: %{} do
         assert {:ok, %{"revision" => revision}} =
@@ -561,7 +561,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
                    server_a,
                    a_uuid,
                    id,
-                   %{"n" => n, "wave" => true},
+                   %{"n" => n, "batch" => true},
                    %{
                      "attachment.bin" => %{
                        "blob" => blob,
@@ -574,7 +574,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
       end
 
     assert {:ok, replication_id} = Id.calculate(a_uuid, b_uuid, "pull", "continuous")
-    checkpoint_before_wave = checkpoint_source_sequence(b_uuid, replication_id)
+    checkpoint_before_batch = checkpoint_source_sequence(b_uuid, replication_id)
     Barrier.reset(barrier)
     Barrier.activate(barrier)
     assert {:ok, _} = JobManager.enable(b_uuid, job_id)
@@ -591,7 +591,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     assert Barrier.count(barrier, :released_chains) == 1
     assert match?([_, _ | _], Barrier.pids(barrier, :chains))
     assert Barrier.count(barrier, :blobs) == 1
-    assert_document_missing!(server_b, b_uuid, "wave-6")
+    assert_document_missing!(server_b, b_uuid, "batch-6")
 
     Barrier.deactivate_chains(barrier)
     Barrier.release(barrier, :chains, 10)
@@ -599,8 +599,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     assert Barrier.count(barrier, :blobs) == 2
     assert Barrier.count(barrier, :max_blobs) == 2
     assert Barrier.count(barrier, :blobs_total) == 2
-    assert_document_missing!(server_b, b_uuid, "wave-1")
-    assert_document_missing!(server_b, b_uuid, "wave-6")
+    assert_document_missing!(server_b, b_uuid, "batch-1")
+    assert_document_missing!(server_b, b_uuid, "batch-6")
 
     # Byte reservation (not a sleep / not the count limit): concurrency allows 4,
     # but the budget only fits two logical blob lengths. Releasing one reservation
@@ -609,12 +609,12 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     Barrier.await_total(barrier, :blobs, 3)
     assert Barrier.count(barrier, :blobs) == 2
     assert Barrier.count(barrier, :max_blobs) == 2
-    assert_document_missing!(server_b, b_uuid, "wave-6")
+    assert_document_missing!(server_b, b_uuid, "batch-6")
 
     assert {:ok, _} = JobManager.disable(b_uuid, job_id)
     await_job_state(b_uuid, job_id, :disabled)
-    assert checkpoint_source_sequence(b_uuid, replication_id) == checkpoint_before_wave
-    assert_document_missing!(server_b, b_uuid, "wave-6")
+    assert checkpoint_source_sequence(b_uuid, replication_id) == checkpoint_before_batch
+    assert_document_missing!(server_b, b_uuid, "batch-6")
 
     Barrier.release(barrier, :chains, 10)
     Barrier.release(barrier, :blobs, 10)
@@ -625,15 +625,15 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     Barrier.deactivate_blobs(barrier)
     assert {:ok, _} = JobManager.enable(b_uuid, job_id)
 
-    wait_for_document!(server_b, b_uuid, "wave-6", wave_revisions["wave-6"], %{
+    wait_for_document!(server_b, b_uuid, "batch-6", batch_revisions["batch-6"], %{
       "n" => 6,
-      "wave" => true
+      "batch" => true
     })
 
     Barrier.await(barrier, :checkpoint_source, 1)
     assert {:ok, target_checkpoint} = checkpoint_source_sequence(b_uuid, replication_id)
     assert {:ok, source_checkpoint_before_put} = checkpoint_source_sequence(a_uuid, replication_id)
-    assert {:ok, previous_target_checkpoint} = checkpoint_before_wave
+    assert {:ok, previous_target_checkpoint} = checkpoint_before_batch
     assert target_checkpoint > previous_target_checkpoint
     assert source_checkpoint_before_put < target_checkpoint
     Barrier.release(barrier, :checkpoint_source, 1)
@@ -650,8 +650,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     assert checkpoint_source_sequence(b_uuid, replication_id) == {:ok, source_sequence}
     assert checkpoint_source_sequence(a_uuid, replication_id) == {:ok, source_sequence}
 
-    for id <- ["wave-1", "wave-2", "wave-3", "wave-4", "wave-5", "wave-6"] do
-      assert {:ok, %{"body" => %{"wave" => true}, "attachments" => attachments}} =
+    for id <- ["batch-1", "batch-2", "batch-3", "batch-4", "batch-5", "batch-6"] do
+      assert {:ok, %{"body" => %{"batch" => true}, "attachments" => attachments}} =
                get_document!(server_b, b_uuid, id)
 
       assert %{"attachment.bin" => %{"blob" => blob}} = attachments
@@ -659,7 +659,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     end
 
     assert_leaf_sets_equal!(a_uuid, b_uuid)
-    assert_wave_documents_equal!(server_a, server_b, a_uuid, b_uuid)
+    assert_batch_documents_equal!(server_a, server_b, a_uuid, b_uuid)
 
     # Retryable chain failure: observed 503, then convergence without duplicate
     # logical revisions.
@@ -721,7 +721,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
              put_document!(
                server_a,
                a_uuid,
-               "reuse-wave",
+               "reuse-doc",
                %{"n" => 9},
                %{
                  "attachment.bin" => %{
@@ -731,7 +731,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
                }
              )
 
-    wait_for_document!(server_b, b_uuid, "reuse-wave", reuse_revision, %{"n" => 9})
+    wait_for_document!(server_b, b_uuid, "reuse-doc", reuse_revision, %{"n" => 9})
     await_job_state(b_uuid, job_id, :idle)
     assert Barrier.count(barrier, :blob_opens) == blob_opens_before_reuse
 
@@ -850,8 +850,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
            "leaf sets differ: source=#{inspect(source_leaves)} target=#{inspect(target_leaves)}"
   end
 
-  defp assert_wave_documents_equal!(source_server, target_server, source_uuid, target_uuid) do
-    for id <- ["wave-1", "wave-2", "wave-3", "wave-4", "wave-5", "wave-6"] do
+  defp assert_batch_documents_equal!(source_server, target_server, source_uuid, target_uuid) do
+    for id <- ["batch-1", "batch-2", "batch-3", "batch-4", "batch-5", "batch-6"] do
       assert {:ok, source_document} = get_document!(source_server, source_uuid, id)
       assert {:ok, target_document} = get_document!(target_server, target_uuid, id)
       assert target_document == source_document

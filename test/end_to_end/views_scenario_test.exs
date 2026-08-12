@@ -1,4 +1,4 @@
-defmodule ElixirDB.EndToEnd.ViewsWave3Test do
+defmodule ElixirDB.EndToEnd.ViewsScenarioTest do
   @moduledoc "End-to-end tests for declarative view HTTP behavior."
   use ExUnit.Case, async: false
 
@@ -9,7 +9,7 @@ defmodule ElixirDB.EndToEnd.ViewsWave3Test do
   alias ElixirDB.Views
 
   test "replication transfers documents only and view state survives reopen" do
-    prefix = "views-wave3-#{System.unique_integer([:positive])}"
+    prefix = "views-e2e-#{System.unique_integer([:positive])}"
     source_path = prefix <> "-source.elixirdb"
     target_path = prefix <> "-target.elixirdb"
 
@@ -71,7 +71,7 @@ defmodule ElixirDB.EndToEnd.ViewsWave3Test do
   end
 
   test "view rows follow the winning revision when replication creates a conflict" do
-    prefix = "views-wave3-conflict-#{System.unique_integer([:positive])}"
+    prefix = "views-e2e-conflict-#{System.unique_integer([:positive])}"
     source_path = prefix <> "-source.elixirdb"
     target_path = prefix <> "-target.elixirdb"
 
@@ -135,7 +135,7 @@ defmodule ElixirDB.EndToEnd.ViewsWave3Test do
   end
 
   test "compaction preserves a caught-up view" do
-    path = "views-wave3-compact-#{System.unique_integer([:positive])}.elixirdb"
+    path = "views-e2e-compact-#{System.unique_integer([:positive])}.elixirdb"
     {:ok, identity} = DatabaseCatalog.create(path)
     uuid = identity.database_uuid
 

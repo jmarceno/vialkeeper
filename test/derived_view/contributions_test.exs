@@ -1,4 +1,4 @@
-defmodule ElixirDB.DerivedView.Wave2Test do
+defmodule ElixirDB.DerivedView.ContributionsTest do
   @moduledoc "Covers atomic derived contributions, generated documents, and exact grouped output."
   use ExUnit.Case, async: false
 
@@ -13,7 +13,7 @@ defmodule ElixirDB.DerivedView.Wave2Test do
   alias ElixirDB.TempDatabase
 
   setup do
-    path = "derived-wave2-source-#{System.unique_integer([:positive])}.elixirdb"
+    path = "derived-contrib-source-#{System.unique_integer([:positive])}.elixirdb"
     absolute = Path.join(ElixirDB.Config.database_root(), path)
     TempDatabase.cleanup(absolute)
 

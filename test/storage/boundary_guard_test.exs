@@ -45,7 +45,7 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
     refute PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/adapter.ex")
   end
 
-  test "boundary guard no longer reports cleared Wave 1 runtime/bundle leaks" do
+  test "boundary guard reports no runtime/bundle leaks for cleared modules" do
     findings = BoundaryGuard.scan()
     leaking = BoundaryGuard.leaking_paths(findings)
 

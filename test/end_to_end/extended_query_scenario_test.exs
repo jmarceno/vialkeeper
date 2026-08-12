@@ -1,4 +1,4 @@
-defmodule ElixirDB.EndToEnd.Wave5QueryScenarioTest do
+defmodule ElixirDB.EndToEnd.ExtendedQueryScenarioTest do
   @moduledoc """
   Extended-query integration scenario.
 
@@ -24,7 +24,7 @@ defmodule ElixirDB.EndToEnd.Wave5QueryScenarioTest do
   test "extended query integration scenario" do
     server = TestServer.start_supervised!()
     root = ElixirDB.Config.database_root()
-    prefix = "wave5-query-#{System.unique_integer([:positive])}"
+    prefix = "extended-query-#{System.unique_integer([:positive])}"
     source_path = prefix <> "-source.elixirdb"
     target_path = prefix <> "-target.elixirdb"
 
@@ -49,7 +49,7 @@ defmodule ElixirDB.EndToEnd.Wave5QueryScenarioTest do
       assert %{status: 201} = put_document!(server, source_uuid, id, body)
     end
 
-    attachment_bytes = "wave-5-attachment-#{System.unique_integer([:positive])}"
+    attachment_bytes = "extended-query-attachment-#{System.unique_integer([:positive])}"
     blob = upload_attachment!(server, source_uuid, attachment_bytes)
 
     assert %{status: 201} =

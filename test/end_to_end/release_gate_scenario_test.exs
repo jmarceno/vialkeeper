@@ -1,4 +1,4 @@
-defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
+defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
   @moduledoc """
   End-to-end scenario covering the release-gate sequence.
 
@@ -18,7 +18,7 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
   @tag :slow
   test "release-gate scenario with local endpoints" do
     root = ElixirDB.Config.database_root()
-    prefix = "phase8-#{System.unique_integer([:positive])}"
+    prefix = "release-gate-#{System.unique_integer([:positive])}"
     a_path = prefix <> "-a.elixirdb"
     b_path = prefix <> "-b.elixirdb"
 
@@ -323,7 +323,7 @@ defmodule ElixirDB.EndToEnd.Phase8ScenarioTest do
     alias ElixirDB.Storage.AdapterCase
 
     root = ElixirDB.Config.database_root()
-    prefix = "phase8-del-conflict-#{System.unique_integer([:positive])}"
+    prefix = "release-gate-del-conflict-#{System.unique_integer([:positive])}"
     a_path = prefix <> "-a.elixirdb"
     b_path = prefix <> "-b.elixirdb"
 
