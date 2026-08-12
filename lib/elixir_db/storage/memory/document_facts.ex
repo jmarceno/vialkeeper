@@ -103,6 +103,16 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
   end
 
   @impl true
+  def insert_revision_for_document(
+        %BackendContext{} = context,
+        %{document_id: document_id},
+        %Revision{} = revision
+      )
+      when is_binary(document_id) do
+    insert_revision(context, document_id, revision)
+  end
+
+  @impl true
   def insert_or_accept_revision(%BackendContext{} = context, document_id, %Revision{} = revision)
       when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context) do
@@ -116,6 +126,17 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
     with {:ok, adapter} <- Context.unwrap(context) do
       apply_store_ok(adapter, &Store.update_winning(&1, document_id, winner, sequence))
     end
+  end
+
+  @impl true
+  def update_winning_for_document(
+        %BackendContext{} = context,
+        %{document_id: document_id},
+        %Revision{} = winner,
+        sequence
+      )
+      when is_binary(document_id) and is_integer(sequence) and sequence >= 0 do
+    update_winning(context, document_id, winner, sequence)
   end
 
   @impl true

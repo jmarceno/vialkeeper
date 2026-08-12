@@ -117,7 +117,11 @@ defmodule ElixirDB.Storage.Services.Attachments do
           :ok | {:error, ElixirDB.Error.t()}
   def clear_pending_for_manifest(%BackendContext{} = context, manifest) when is_map(manifest) do
     digests = Orchestration.manifest_digests(manifest)
-    Access.port(context, :attachment_metadata).delete_pending_digests(context, digests)
+
+    case digests do
+      [] -> :ok
+      _ -> Access.port(context, :attachment_metadata).delete_pending_digests(context, digests)
+    end
   end
 
   @doc "Verifies physical attachment digests before import."

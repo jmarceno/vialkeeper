@@ -457,6 +457,8 @@ defmodule ElixirDB.Storage.Services.Mutations do
   defp refresh_ready_indexes(context, document_id, winner, :load),
     do: Facts.refresh_document(context, document_id, winner)
 
+  defp refresh_ready_indexes(_context, _document_id, _winner, []), do: :ok
+
   defp refresh_ready_indexes(context, document_id, winner, ready_indexes),
     do: Facts.refresh_document(context, document_id, winner, ready_indexes)
 
@@ -621,8 +623,8 @@ defmodule ElixirDB.Storage.Services.Mutations do
        ) do
     body_json = if materialize_pending?, do: nil, else: revision_body_json(candidate)
 
-    with {:ok, _doc} <- Facts.ensure_document(context, document_id),
-         :ok <- Facts.insert_revision(context, document_id, candidate),
+    with {:ok, doc} <- Facts.ensure_document(context, document_id),
+         :ok <- Facts.insert_revision_for_document(context, doc, candidate),
          :ok <- Facts.clear_pending_for_manifest(context, candidate.attachments),
          :ok <-
            maybe_update_pending_document(
@@ -637,7 +639,7 @@ defmodule ElixirDB.Storage.Services.Mutations do
          revision: candidate.revision_id,
          sequence: 0
        })
-       |> maybe_mark_fast_candidate(candidate, materialize_pending?, body_json)}
+       |> maybe_mark_fast_candidate(candidate, materialize_pending?, body_json, doc)}
     end
   end
 
@@ -812,10 +814,15 @@ defmodule ElixirDB.Storage.Services.Mutations do
       result: result
     }
 
-  defp maybe_mark_fast_candidate(effect, _candidate, true, _body_json), do: effect
+  defp maybe_mark_fast_candidate(effect, _candidate, true, _body_json, _doc), do: effect
 
-  defp maybe_mark_fast_candidate(effect, candidate, false, body_json),
-    do: Map.put(effect, :fast_candidate, %{revision: candidate, body_json: body_json})
+  defp maybe_mark_fast_candidate(effect, candidate, false, body_json, doc),
+    do:
+      Map.put(effect, :fast_candidate, %{
+        revision: candidate,
+        body_json: body_json,
+        document: doc
+      })
 
   defp revision_body_json(%Revision{deleted: true}), do: nil
   defp revision_body_json(%Revision{body: body}), do: Canonical.encode!(body)
@@ -857,10 +864,11 @@ defmodule ElixirDB.Storage.Services.Mutations do
        ) do
     result =
       case entry.fast_candidate do
-        %{revision: %Revision{} = candidate, body_json: body_json} ->
+        %{revision: %Revision{} = candidate, body_json: body_json, document: document} ->
           finalize_new_bulk_document(
             context,
             document_id,
+            document,
             candidate,
             body_json,
             ready_indexes,
@@ -887,14 +895,14 @@ defmodule ElixirDB.Storage.Services.Mutations do
   defp finalize_new_bulk_document(
          context,
          document_id,
+         document,
          candidate,
          _body_json,
          ready_indexes,
          sequence
        ) do
-    with {:ok, doc} <- Facts.find_document(context, document_id),
-         {:ok, leaf_json} <- Facts.encode_leaf_set([candidate]),
-         :ok <- Facts.update_winning(context, document_id, candidate, sequence),
+    with {:ok, leaf_json} <- Facts.encode_leaf_set([candidate]),
+         :ok <- Facts.update_winning_for_document(context, document, candidate, sequence),
          :ok <- refresh_ready_indexes(context, document_id, candidate, ready_indexes),
          :ok <-
            Facts.append_change(context, %{
@@ -903,7 +911,7 @@ defmodule ElixirDB.Storage.Services.Mutations do
              winner: candidate,
              leaf_json: leaf_json,
              origin: "local",
-             backend_meta: Facts.backend_meta(doc)
+             backend_meta: Facts.backend_meta(document)
            }) do
       {:ok, publishless_result(document_id, candidate.revision_id, sequence, candidate.deleted, [])}
     end

@@ -8,11 +8,14 @@ defmodule ElixirDB.Storage.Services.Query do
   and explain shaping.
   """
 
+  alias ElixirDB.JSON.StrictCache
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Query, as: QueryInstrumentation
   alias ElixirDB.Query.{Executor, Plan, Planner}
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Access
+
+  @query_plan_cache_limit 16
 
   @doc "Executes a normalized query request against an opaque backend context."
   @spec execute(BackendContext.t(), map(), map() | nil) ::
@@ -34,7 +37,7 @@ defmodule ElixirDB.Storage.Services.Query do
 
     with {:ok, indexes} <- list_indexes(context),
          :ok <- Executor.check_deadline(deadline),
-         {:ok, plan} <- plan_request(indexes, request),
+         {:ok, plan} <- plan_request(identity, indexes, request),
          :ok <- Executor.check_deadline(deadline),
          :ok <- Executor.validate_bookmark_plan(request, plan),
          limit <- Executor.page_limit(request, identity),
@@ -78,7 +81,7 @@ defmodule ElixirDB.Storage.Services.Query do
 
     with {:ok, indexes} <- list_indexes(context),
          :ok <- Executor.check_deadline(deadline),
-         {:ok, plan} <- plan_request(indexes, request),
+         {:ok, plan} <- plan_request(identity, indexes, request),
          :ok <- Executor.check_deadline(deadline),
          candidate_limit <-
            if(Executor.no_post_filter?(plan, request), do: max_members + 1, else: nil),
@@ -275,11 +278,18 @@ defmodule ElixirDB.Storage.Services.Query do
   defp winning_document_count(context),
     do: Access.port(context, :index_candidates).winning_document_count(context)
 
-  defp plan_request(indexes, request) do
-    case Planner.plan(indexes, request) do
-      {:ok, _} = result -> result
-      {:error, error} -> Executor.plan_error(request, error)
-    end
+  defp plan_request(identity, indexes, request) do
+    StrictCache.memoize(
+      :query_plan,
+      {Map.get(identity, :database_uuid), indexes, request},
+      @query_plan_cache_limit,
+      fn ->
+        case Planner.plan(indexes, request) do
+          {:ok, _} = result -> result
+          {:error, error} -> Executor.plan_error(request, error)
+        end
+      end
+    )
   end
 
   defp attach_full_text_index(request, %Plan{kind: :full_text} = plan, indexes) do

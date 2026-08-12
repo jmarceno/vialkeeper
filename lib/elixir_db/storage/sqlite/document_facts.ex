@@ -112,12 +112,24 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   end
 
   defp insert_or_return_document(adapter, nil, document_id) do
-    with {:ok, _doc_key} <- Documents.insert(adapter.conn, document_id),
-         {:ok, doc} <- Documents.find(adapter.conn, document_id) do
-      {:ok, shape_document(doc)}
-    else
-      {:error, reason} -> {:error, Errors.normalize(reason)}
+    case Documents.insert(adapter.conn, document_id) do
+      {:ok, doc_key} ->
+        {:ok, placeholder_document(document_id, doc_key)}
+
+      {:error, reason} ->
+        {:error, Errors.normalize(reason)}
     end
+  end
+
+  defp placeholder_document(document_id, doc_key) do
+    shape_document(%{
+      doc_key: doc_key,
+      document_id: document_id,
+      winning_revision: nil,
+      winning_body_json: nil,
+      winning_deleted: true,
+      update_sequence: 0
+    })
   end
 
   @impl true
@@ -155,6 +167,20 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   end
 
   @impl true
+  def insert_revision_for_document(
+        %BackendContext{} = context,
+        document,
+        %Revision{} = revision
+      ) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc_key} <- fact_doc_key(document, revision.document_id) do
+      Errors.wrap(Revisions.insert(adapter.conn, doc_key, revision))
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
   def insert_or_accept_revision(%BackendContext{} = context, document_id, %Revision{} = revision)
       when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context),
@@ -185,6 +211,22 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
 
       {:error, reason} ->
         {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
+  def update_winning_for_document(
+        %BackendContext{} = context,
+        document,
+        %Revision{} = winner,
+        sequence
+      )
+      when is_integer(sequence) and sequence >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc_key} <- fact_doc_key(document, winner.document_id) do
+      Errors.wrap(Documents.update(adapter.conn, doc_key, winner, sequence))
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
     end
   end
 
@@ -306,6 +348,18 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   defp require_doc_key(%{doc_key: doc_key}) when not is_nil(doc_key), do: {:ok, doc_key}
 
   defp require_doc_key(_),
+    do: {:error, ElixirDB.Error.internal_error("document fact is missing backend metadata")}
+
+  defp fact_doc_key(%{document_id: document_id}, revision_document_id)
+       when document_id != revision_document_id do
+    {:error, ElixirDB.Error.integrity_violation("document fact does not match revision")}
+  end
+
+  defp fact_doc_key(%{backend_meta: %{doc_key: doc_key}}, _revision_document_id)
+       when is_integer(doc_key),
+       do: {:ok, doc_key}
+
+  defp fact_doc_key(_document, _revision_document_id),
     do: {:error, ElixirDB.Error.internal_error("document fact is missing backend metadata")}
 
   defp shape_document(nil), do: nil

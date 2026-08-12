@@ -66,6 +66,12 @@ defmodule ElixirDB.Storage.Services.Facts do
   def insert_revision(%BackendContext{} = ctx, document_id, revision),
     do: Access.port(ctx, :document_facts).insert_revision(ctx, document_id, revision)
 
+  @doc "Inserts a revision using an already loaded document fact."
+  @spec insert_revision_for_document(BackendContext.t(), map(), Revision.t()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def insert_revision_for_document(%BackendContext{} = ctx, document, revision),
+    do: Access.port(ctx, :document_facts).insert_revision_for_document(ctx, document, revision)
+
   @doc "Inserts a revision or accepts an identical existing row."
   @spec insert_or_accept_revision(BackendContext.t(), binary(), Revision.t()) ::
           :ok | {:error, ElixirDB.Error.t()}
@@ -77,6 +83,18 @@ defmodule ElixirDB.Storage.Services.Facts do
           :ok | {:error, ElixirDB.Error.t()}
   def update_winning(%BackendContext{} = ctx, document_id, winner, sequence),
     do: Access.port(ctx, :document_facts).update_winning(ctx, document_id, winner, sequence)
+
+  @doc "Updates the winning projection using an already loaded document fact."
+  @spec update_winning_for_document(BackendContext.t(), map(), Revision.t(), non_neg_integer()) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def update_winning_for_document(%BackendContext{} = ctx, document, winner, sequence),
+    do:
+      Access.port(ctx, :document_facts).update_winning_for_document(
+        ctx,
+        document,
+        winner,
+        sequence
+      )
 
   @doc "Empties a document after full history purge."
   @spec empty_document(BackendContext.t(), binary()) :: :ok | {:error, ElixirDB.Error.t()}

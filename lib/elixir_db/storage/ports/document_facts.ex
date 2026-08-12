@@ -33,10 +33,18 @@ defmodule ElixirDB.Storage.Ports.DocumentFacts do
               :ok | {:error, ElixirDB.Error.t()}
   @callback insert_revision(BackendContext.t(), binary(), Revision.t()) ::
               :ok | {:error, ElixirDB.Error.t()}
+  @callback insert_revision_for_document(BackendContext.t(), document_fact(), Revision.t()) ::
+              :ok | {:error, ElixirDB.Error.t()}
   @callback insert_or_accept_revision(BackendContext.t(), binary(), Revision.t()) ::
               :ok | {:error, ElixirDB.Error.t()}
   @callback update_winning(BackendContext.t(), binary(), Revision.t(), non_neg_integer()) ::
               :ok | {:error, ElixirDB.Error.t()}
+  @callback update_winning_for_document(
+              BackendContext.t(),
+              document_fact(),
+              Revision.t(),
+              non_neg_integer()
+            ) :: :ok | {:error, ElixirDB.Error.t()}
   @callback empty_document(BackendContext.t(), binary()) :: :ok | {:error, ElixirDB.Error.t()}
   @callback delete_history(BackendContext.t(), binary(), binary()) ::
               :ok | {:error, ElixirDB.Error.t()}

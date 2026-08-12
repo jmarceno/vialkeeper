@@ -30,6 +30,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     Capabilities,
     Changes,
     Connection,
+    Context,
     Documents,
     IndexCatalog,
     LocalRecords,
@@ -50,6 +51,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     :path,
     :conn,
     :identity,
+    :context_ref,
     storage_mode: :disk,
     retention_fault: nil,
     view_fault: nil,
@@ -64,6 +66,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
           path: binary(),
           conn: Connection.handle(),
           identity: map(),
+          context_ref: OpaqueHandle.t() | nil,
           storage_mode: storage_mode(),
           retention_fault: retention_fault(),
           view_fault: view_fault(),
@@ -91,12 +94,12 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
            ),
          {:ok, identity} <- Schema.validate(conn, storage_mode: storage_mode) do
       {:ok,
-       %__MODULE__{
+       Context.bind(%__MODULE__{
          path: path,
          conn: conn,
          identity: decode_identity(identity),
          storage_mode: storage_mode
-       }}
+       })}
     else
       false ->
         {:error, ElixirDB.Error.invalid_request("database UUID must be a UUID")}
@@ -128,6 +131,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @doc "Wraps an open SQLite adapter in an opaque backend context."
   @spec to_context(t()) :: BackendContext.t()
   def to_context(%__MODULE__{} = adapter) do
+    adapter = if is_nil(adapter.context_ref), do: Context.bind(adapter), else: adapter
+
     bundle_root =
       case adapter.path do
         ":memory:" -> ":memory:"
@@ -142,7 +147,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
     BackendContext.new(
       backend: __MODULE__,
-      backend_ref: OpaqueHandle.wrap(adapter),
+      backend_ref: adapter.context_ref,
       bundle_root: bundle_root,
       capabilities: capabilities_report(),
       identity: identity
@@ -195,19 +200,21 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     with {:ok, conn} <- Connection.open(path, mode: [:readwrite]),
          :ok <- Schema.configure(conn),
          {:ok, identity} <- Schema.validate(conn) do
-      {:ok, %__MODULE__{path: path, conn: conn, identity: decode_identity(identity)}}
+      {:ok, Context.bind(%__MODULE__{path: path, conn: conn, identity: decode_identity(identity)})}
     else
       {:error, reason} -> {:error, normalize_error(reason)}
     end
   end
 
   @impl true
-  def close(%__MODULE__{conn: conn}) do
+  def close(%__MODULE__{conn: conn, context_ref: context_ref}) do
     IndexCatalog.clear_cache(conn)
     Views.clear_cache(conn)
     QueryRunner.clear_cache(conn)
     invalidate_identity_cache(conn)
-    Connection.close(conn)
+    result = Connection.close(conn)
+    Context.release(context_ref)
+    result
   end
 
   @impl true

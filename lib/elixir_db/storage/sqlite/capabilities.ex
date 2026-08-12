@@ -8,6 +8,8 @@ defmodule ElixirDB.Storage.SQLite.Capabilities do
 
   alias ElixirDB.Storage.SQLite.Connection
 
+  @report_key {__MODULE__, :report}
+
   @doc "Fails fast when the SQLite build lacks Version 1 capabilities."
   @spec validate!() :: binary()
   def validate! do
@@ -34,6 +36,18 @@ defmodule ElixirDB.Storage.SQLite.Capabilities do
   @doc "Returns opaque SQLite capability metadata for diagnostics."
   @spec report() :: map()
   def report do
+    case :persistent_term.get(@report_key, :missing) do
+      :missing ->
+        report = load_report()
+        :persistent_term.put(@report_key, report)
+        report
+
+      report ->
+        report
+    end
+  end
+
+  defp load_report do
     with {:ok, conn} <- Connection.open(":memory:"),
          {:ok, [[sqlite_version]]} <- Connection.query(conn, "SELECT sqlite_version()"),
          {:ok, compile_options} <- Connection.query(conn, "PRAGMA compile_options") do

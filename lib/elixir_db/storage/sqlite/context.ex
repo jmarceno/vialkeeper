@@ -35,6 +35,24 @@ defmodule ElixirDB.Storage.SQLite.Context do
   def unwrap(_),
     do: {:error, ElixirDB.Error.internal_error("backend context is not a SQLite adapter")}
 
+  @doc false
+  @spec bind(Adapter.t()) :: Adapter.t()
+  def bind(%Adapter{} = adapter) do
+    handle = OpaqueHandle.wrap(adapter)
+    bound = %{adapter | context_ref: handle}
+    _ = OpaqueHandle.replace(handle, bound)
+    bound
+  end
+
+  @doc false
+  @spec release(OpaqueHandle.t() | nil) :: :ok
+  def release(%OpaqueHandle{} = handle) do
+    OpaqueHandle.drop(handle)
+    :ok
+  end
+
+  def release(nil), do: :ok
+
   @doc "Raises when `handle` cannot be resolved to a SQLite adapter."
   @spec resolve!(term()) :: Adapter.t()
   def resolve!(handle) do
