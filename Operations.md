@@ -133,7 +133,10 @@ restart. There is no runtime revocation API. Failures always return
 `unauthorized` (HTTP 401) with the same message.
 
 Remote replication to an auth-enabled target: put the raw token in the job
-endpoint as `auth_token`.
+endpoint as `auth_token`. The replication wire requires `Accept-Encoding: zstd`.
+JSON bodies use `Content-Encoding: zstd` and `x-elixirdb-uncompressed-length`.
+Generic HTTP compression is disabled on the listener so public `/v1` JSON is
+never auto-compressed.
 
 ---
 

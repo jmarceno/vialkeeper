@@ -318,7 +318,10 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
           @forbidden_trusted,
           fn ->
             assert {:ok, %{status: 200}} =
-                     Req.get(server.base_url <> "/v1/databases/#{uuid}/replication/identity")
+                     ElixirDB.TestReplicationWire.request(
+                       :get,
+                       server.base_url <> "/v1/databases/#{uuid}/replication/identity"
+                     )
           end
         )
       end)

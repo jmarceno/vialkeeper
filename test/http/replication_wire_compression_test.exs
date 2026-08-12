@@ -83,6 +83,7 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
     assert {:ok, response} =
              Req.post(base_url <> "/v1/databases/#{uuid}/documents/put",
                json: %{"id" => "public", "body" => %{"ok" => true}},
+               headers: [{"accept-encoding", "zstd"}],
                decode_body: false,
                compressed: false
              )

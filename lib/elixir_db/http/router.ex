@@ -21,10 +21,12 @@ defmodule ElixirDB.HTTP.Router do
   alias ElixirDB.Observability.Dashboard
   alias ElixirDB.Observability.Instrumentation.HTTP
   alias ElixirDB.WebUI.Router, as: WebUIRouter
-  # Authentication runs before route matching on every request, so it is the
-  # single chokepoint for all `/v1` traffic (AUTH-001) and unauthenticated
-  # probes cannot learn which routes exist. The Web UI shell/assets may pass
+
+  # Replication JSON compression is path-scoped and does not authorize. Auth
+  # remains the chokepoint for `/v1` traffic (AUTH-001); unauthenticated probes
+  # cannot learn which routes exist. The Web UI shell/assets may pass
   # anonymously when enabled; fragment and action routes remain protected.
+  plug(ElixirDB.HTTP.ReplicationWirePlug)
   plug(ElixirDB.HTTP.AuthPlug)
   plug(:match)
   plug(:dispatch)

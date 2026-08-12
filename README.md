@@ -442,6 +442,12 @@ Control: `GET …/replications`, `…/:job_id`, `…/start`, `…/cancel`,
 `…/enable`, `…/disable`, `DELETE …/:job_id`. Continuous enabled jobs resume
 after restart. One-shot jobs end in `completed` or `failed`.
 
+Remote peer HTTP (`/v1/databases/:uuid/replication/…`) sends Zstandard-compressed
+JSON (`Content-Encoding: zstd`, `x-elixirdb-uncompressed-length`). Public document
+and job APIs stay uncompressed JSON even when a client sends `Accept-Encoding: zstd`.
+Attachment bytes use `application/vnd.elixirdb.blob-representation` without HTTP
+`Content-Encoding`.
+
 **Elixir:** `ElixirDB.Replication.JobManager` (`put/2`, `start/2`, …) and
 `ElixirDB.Replication`.
 
@@ -582,7 +588,7 @@ one host are rejected. Full procedures:
 ```sh
 mix deps.get
 mix check.fast    # while iterating
-mix check.full    # before handoff / wave completion
+mix check.full    # before handoff
 MIX_ENV=prod mix release.build
 ```
 

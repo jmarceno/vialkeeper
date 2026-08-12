@@ -6,6 +6,7 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
   @moduletag :integration
 
   alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.TestReplicationWire
   alias ElixirDB.TestServer
 
   test "registration rejects unknown fields" do
@@ -114,8 +115,27 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
     ]
 
     for {method, route, body} <- cases do
-      assert {:ok, %{status: 400, body: resp}} =
-               Req.request(method: method, url: server.base_url <> route, json: body)
+      {opts, decode} =
+        if TestReplicationWire.wire_path?(route) do
+          encoded = TestReplicationWire.encode!(body)
+
+          {[
+             method: method,
+             url: server.base_url <> route,
+             body: encoded.body,
+             headers: TestReplicationWire.json_headers(encoded),
+             decode_body: false,
+             compressed: false
+           ], fn headers, raw -> TestReplicationWire.decode_response(headers, raw) end}
+        else
+          {[method: method, url: server.base_url <> route, json: body],
+           fn _headers, body ->
+             body
+           end}
+        end
+
+      assert {:ok, %{status: 400, headers: headers, body: raw}} = Req.request(opts)
+      resp = decode.(headers, raw)
 
       assert resp["error"]["code"] == "invalid_request",
              "#{method} #{route} expected invalid_request, got #{inspect(resp)}"

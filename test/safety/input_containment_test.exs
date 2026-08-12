@@ -76,13 +76,33 @@ defmodule ElixirDB.Safety.InputContainmentTest do
   end
 
   defp extract_error(conn) do
-    {:ok, %{"error" => error}} = decode(conn.resp_body)
+    payload = response_payload(conn)
+
+    error =
+      case payload do
+        %{"error" => error} when is_map(error) ->
+          error
+
+        body when is_binary(body) ->
+          {:ok, %{"error" => error}} = decode(body)
+          error
+      end
 
     assert is_map(error) and is_binary(error["code"]),
-           "expected a typed error envelope, got: #{inspect(conn.resp_body)}"
+           "expected a typed error envelope, got: #{inspect(payload)}"
 
     assert_catalog_alive()
     error
+  end
+
+  defp response_payload(conn) do
+    encoding = conn |> Plug.Conn.get_resp_header("content-encoding") |> List.first()
+
+    if is_binary(encoding) and String.contains?(encoding, "zstd") do
+      ElixirDB.TestReplicationWire.decode_response(conn.resp_headers, conn.resp_body)
+    else
+      conn.resp_body
+    end
   end
 
   # ==========================================================================
@@ -415,6 +435,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
 
       conn =
         Plug.Test.conn(:get, "/v1/databases/#{uuid}/replication/checkpoints/#{huge}", "")
+        |> Plug.Conn.put_req_header("accept-encoding", "zstd")
         |> Plug.Conn.put_req_header("content-type", "application/json")
         |> Router.call([])
 
@@ -425,6 +446,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
     test "NUL-bearing replication_id path returns a typed 400", %{uuid: uuid} do
       assert_typed_error(
         Plug.Test.conn(:get, "/v1/databases/#{uuid}/replication/checkpoints/a%00b", "")
+        |> Plug.Conn.put_req_header("accept-encoding", "zstd")
         |> Plug.Conn.put_req_header("content-type", "application/json")
         |> Router.call([]),
         400

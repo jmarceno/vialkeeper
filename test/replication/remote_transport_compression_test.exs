@@ -34,7 +34,7 @@ defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
       )
 
     on_exit(fn ->
-      _ = Agent.stop(captured)
+      if Process.alive?(captured), do: Agent.stop(captured)
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
       ElixirDB.TempDatabase.cleanup(absolute)
@@ -92,11 +92,12 @@ defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
     assert {:ok, %{blob: digest, length: logical}} = Attachments.upload_stream(uuid, [payload])
     {:ok, bundle_root} = DatabaseCatalog.bundle_root(uuid)
     assert {:ok, stat} = FilesystemStore.stat(bundle_root, digest)
-    assert stat.encoding in [:compressed, :zstd]
+    assert stat.encoding == :zstd
     assert encoded_payload_length(bundle_root, digest, stat) < logical
 
     assert {:ok, response} =
              Req.get(base_url <> "/v1/databases/#{uuid}/replication/blobs/#{digest}",
+               headers: [{"accept-encoding", "zstd"}],
                decode_body: false,
                compressed: false
              )

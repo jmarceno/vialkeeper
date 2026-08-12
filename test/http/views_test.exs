@@ -172,7 +172,10 @@ defmodule ElixirDB.HTTP.ViewsTest do
              )
 
     assert {:ok, %{status: 200, body: %{"data" => %{"current_sequence" => target}}}} =
-             Req.get(server.base_url <> "/v1/databases/#{uuid}/replication/identity")
+             ElixirDB.TestReplicationWire.request(
+               :get,
+               server.base_url <> "/v1/databases/#{uuid}/replication/identity"
+             )
 
     assert {:ok, %{status: 200, body: %{"data" => %{"results" => stale_results}}}} =
              Req.post(server.base_url <> "/v1/databases/#{uuid}/views/#{view_id}/query",

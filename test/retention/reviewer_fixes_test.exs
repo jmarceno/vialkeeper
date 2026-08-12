@@ -270,9 +270,10 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
       {:ok, db} = open_db("reviewer-http-install")
 
       {:ok, %{status: 200, body: page}} =
-        Req.post(
+        ElixirDB.TestReplicationWire.request(
+          :post,
           server.base_url <> "/v1/databases/#{db.database_uuid}/replication/boundaries",
-          json: %{}
+          %{}
         )
 
       install_body =
@@ -282,10 +283,11 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
         })
 
       assert {:ok, %{status: 200}} =
-               Req.post(
+               ElixirDB.TestReplicationWire.request(
+                 :post,
                  server.base_url <>
                    "/v1/databases/#{db.database_uuid}/replication/boundaries/install",
-                 json: install_body
+                 install_body
                )
     end
 
@@ -313,14 +315,16 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
       }
 
       assert {:ok, %{status: 200}} =
-               Req.put(
+               ElixirDB.TestReplicationWire.request(
+                 :put,
                  server.base_url <>
                    "/v1/databases/#{db.database_uuid}/replication/peers/#{peer_uuid}",
-                 json: body
+                 body
                )
 
       assert {:ok, %{status: 200, body: fetched}} =
-               Req.get(
+               ElixirDB.TestReplicationWire.request(
+                 :get,
                  server.base_url <>
                    "/v1/databases/#{db.database_uuid}/replication/peers/#{peer_uuid}"
                )
@@ -349,10 +353,11 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
       }
 
       assert {:ok, %{status: 400}} =
-               Req.put(
+               ElixirDB.TestReplicationWire.request(
+                 :put,
                  server.base_url <>
                    "/v1/databases/#{db.database_uuid}/replication/peers/#{peer_uuid}",
-                 json: body
+                 body
                )
     end
   end
@@ -496,10 +501,11 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
       }
 
       assert {:ok, %{status: 400}} =
-               Req.put(
+               ElixirDB.TestReplicationWire.request(
+                 :put,
                  server.base_url <>
                    "/v1/databases/#{db.database_uuid}/replication/checkpoints/repl-test",
-                 json: body
+                 body
                )
     end
 

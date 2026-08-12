@@ -133,7 +133,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
   end
 
   test "query contracts expose extended predicates, plan metadata, and explain fields" do
-    path = "contract-query-wave4-#{System.unique_integer([:positive])}.elixirdb"
+    path = "contract-query-#{System.unique_integer([:positive])}.elixirdb"
     created = request(:post, "/v1/databases", %{"path" => path})
     assert created.status == 201
 

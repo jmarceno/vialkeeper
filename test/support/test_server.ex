@@ -20,7 +20,8 @@ defmodule ElixirDB.TestServer do
       plug: {__MODULE__.HookPlug, {plug, request_hook}},
       scheme: :http,
       ip: ip,
-      port: port
+      port: port,
+      http_options: [compress: false]
     ]
 
     case Bandit.start_link(bandit_opts) do

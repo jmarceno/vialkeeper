@@ -51,13 +51,14 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
 
     {:ok, bundle} = DatabaseCatalog.bundle_root(source_uuid)
     assert {:ok, stat} = FilesystemStore.stat(bundle, digest)
-    assert stat.encoding in [:compressed, :zstd]
+    assert stat.encoding == :zstd
     payload_length = encoded_payload_length(bundle, digest, stat)
     assert payload_length < logical
 
     assert {:ok, response} =
              Req.get(
                base_url <> "/v1/databases/#{source_uuid}/replication/blobs/#{digest}",
+               headers: [{"accept-encoding", "zstd"}],
                decode_body: false,
                compressed: false
              )

@@ -1,4 +1,4 @@
-defmodule ElixirDB.HTTP.RetentionWave3Test do
+defmodule ElixirDB.HTTP.RetentionTest do
   @moduledoc "Covers HTTP retention identity and handshake behavior."
 
   use ExUnit.Case, async: false
@@ -20,7 +20,10 @@ defmodule ElixirDB.HTTP.RetentionWave3Test do
     on_exit(fn -> cleanup(uuid, path) end)
 
     {:ok, %{status: 200, body: body}} =
-      Req.get(server.base_url <> "/v1/databases/#{uuid}/replication/identity")
+      ElixirDB.TestReplicationWire.request(
+        :get,
+        server.base_url <> "/v1/databases/#{uuid}/replication/identity"
+      )
 
     data = body["data"]
 
@@ -144,7 +147,11 @@ defmodule ElixirDB.HTTP.RetentionWave3Test do
     on_exit(fn -> cleanup(uuid, path) end)
 
     {:ok, %{status: 200, body: body}} =
-      Req.post(server.base_url <> "/v1/databases/#{uuid}/replication/boundaries", json: %{})
+      ElixirDB.TestReplicationWire.request(
+        :post,
+        server.base_url <> "/v1/databases/#{uuid}/replication/boundaries",
+        %{}
+      )
 
     data = body["data"]
 

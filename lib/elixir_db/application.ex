@@ -86,6 +86,12 @@ defmodule ElixirDB.Application do
   defp http_server_child_spec(listener) do
     tls = Application.get_env(:elixir_db, :tls, [])
 
+    # Disable Bandit's generic content-encoding negotiation. OTP/Bandit would
+    # otherwise zstd-compress any JSON response when the client sends
+    # Accept-Encoding: zstd, which would double-compress replication JSON and
+    # compress public APIs.
+    http_options = [compress: false]
+
     if Keyword.get(tls, :enabled, false) do
       root = ElixirDB.HostConfig.database_root()
 
@@ -93,11 +99,18 @@ defmodule ElixirDB.Application do
       keyfile = ElixirDB.HostConfig.resolve_path(root, tls[:keyfile])
 
       Bandit.child_spec(
-        [plug: ElixirDB.HTTP.Router, scheme: :https, certfile: certfile, keyfile: keyfile] ++
-          listener
+        [
+          plug: ElixirDB.HTTP.Router,
+          scheme: :https,
+          certfile: certfile,
+          keyfile: keyfile,
+          http_options: http_options
+        ] ++ listener
       )
     else
-      Bandit.child_spec([plug: ElixirDB.HTTP.Router, scheme: :http] ++ listener)
+      Bandit.child_spec(
+        [plug: ElixirDB.HTTP.Router, scheme: :http, http_options: http_options] ++ listener
+      )
     end
   end
 end

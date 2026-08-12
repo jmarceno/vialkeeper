@@ -102,12 +102,15 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
   } do
     digest = sha256_hex("missing-wire")
 
-    assert {:ok, %{status: 404, body: body}} =
+    assert {:ok, %{status: 404, headers: headers, body: body}} =
              Req.get(base_url <> "/v1/databases/#{uuid}/replication/blobs/#{digest}",
-               decode_body: true
+               headers: [{"accept-encoding", "zstd"}],
+               decode_body: false,
+               compressed: false
              )
 
-    assert body["error"]["code"] == "attachment_blob_not_found"
+    decoded = ElixirDB.TestReplicationWire.decode_response(headers, body)
+    assert decoded["error"]["code"] == "attachment_blob_not_found"
   end
 
   test "Attachments helpers stay equivalent to LocalEndpoint", %{uuid: uuid, endpoint: endpoint} do

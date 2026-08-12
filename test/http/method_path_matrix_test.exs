@@ -13,6 +13,7 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Runtime.AttachmentCoordinator
   alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.TestReplicationWire
   alias ElixirDB.TestServer
 
   test "API-010 through API-015 method/path matrix over Bandit+Req" do
@@ -296,20 +297,48 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   end
 
   defp http!(server, method, path, nil) do
+    headers =
+      if TestReplicationWire.wire_path?(path), do: TestReplicationWire.accept_headers(), else: []
+
     assert {:ok, response} =
-             Req.request(method: method, url: server.base_url <> path, decode_body: false)
+             Req.request(
+               method: method,
+               url: server.base_url <> path,
+               headers: headers,
+               decode_body: false,
+               compressed: false
+             )
 
     %{status: response.status, headers: response.headers, body: decode_body(response)}
   end
 
   defp http!(server, method, path, body) when is_binary(body) do
+    headers =
+      if TestReplicationWire.wire_path?(path) do
+        digest = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
+        length = Integer.to_string(byte_size(body))
+
+        TestReplicationWire.accept_headers() ++
+          [
+            {"content-type", "application/vnd.elixirdb.blob-representation"},
+            {"content-length", length},
+            {"x-elixirdb-blob-format-version", "1"},
+            {"x-elixirdb-blob-encoding", "raw"},
+            {"x-elixirdb-blob-logical-length", length},
+            {"x-elixirdb-blob-payload-sha256", digest}
+          ]
+      else
+        [{"content-type", "application/octet-stream"}]
+      end
+
     assert {:ok, response} =
              Req.request(
                method: method,
                url: server.base_url <> path,
                body: body,
-               headers: [{"content-type", "application/octet-stream"}],
-               decode_body: false
+               headers: headers,
+               decode_body: false,
+               compressed: false
              )
 
     %{status: response.status, headers: response.headers, body: decode_body(response)}
@@ -319,7 +348,21 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
     if String.contains?(path, "/query/stream") do
       http_query_stream!(server, path, body)
     else
-      opts = [method: method, url: server.base_url <> path, json: body, decode_body: false]
+      opts =
+        if TestReplicationWire.wire_path?(path) do
+          encoded = TestReplicationWire.encode!(body)
+
+          [
+            method: method,
+            url: server.base_url <> path,
+            body: encoded.body,
+            headers: TestReplicationWire.json_headers(encoded),
+            decode_body: false,
+            compressed: false
+          ]
+        else
+          [method: method, url: server.base_url <> path, json: body, decode_body: false]
+        end
 
       opts =
         if String.contains?(path, "/changes/stream"),
@@ -394,10 +437,17 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
   defp decode_body(%{headers: headers, body: body}) do
     content_type = header(headers, "content-type") || ""
+    encoding = header(headers, "content-encoding") || ""
 
     cond do
       content_type =~ "ndjson" ->
         body
+
+      content_type =~ "blob-representation" ->
+        body
+
+      is_binary(body) and body != "" and encoding =~ "zstd" ->
+        TestReplicationWire.decode_response(headers, body)
 
       is_binary(body) and body != "" ->
         case StrictDecoder.decode(body) do
@@ -410,12 +460,22 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
     end
   end
 
+  defp header(headers, name) when is_map(headers) do
+    Enum.find_value(headers, fn {key, value} ->
+      if String.downcase(to_string(key)) == name, do: header_value(value)
+    end)
+  end
+
   defp header(headers, name) do
     Enum.find_value(headers, fn
-      {key, value} -> if String.downcase(to_string(key)) == name, do: to_string(value)
+      {key, value} -> if String.downcase(to_string(key)) == name, do: header_value(value)
       _ -> nil
     end)
   end
+
+  defp header_value(value) when is_binary(value), do: value
+  defp header_value([value | _]) when is_binary(value), do: value
+  defp header_value(value), do: to_string(value)
 
   defp assert_status!(method, path, response, status) when is_integer(status) do
     assert response.status == status,
@@ -455,7 +515,9 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   defp assert_replication_blob_get(response, expected_bytes) do
     assert response.status == 200
     content_type = header(response.headers, "content-type") || ""
-    assert content_type =~ "octet-stream"
+    assert content_type =~ "application/vnd.elixirdb.blob-representation"
+    encoding = header(response.headers, "content-encoding")
+    assert encoding in [nil, "", "identity"]
     assert is_binary(response.body)
     assert response.body == expected_bytes
   end

@@ -161,6 +161,7 @@ defmodule ElixirDB.Contract.FixturesTest do
     assert Enum.any?(replication, &(&1["id"] == "transferred-revision"))
     assert Enum.any?(replication, &(&1["id"] == "boundary-page-response"))
     assert Enum.any?(replication, &(&1["id"] == "diff-revisions-response"))
+    assert Enum.any?(replication, &(&1["id"] == "compressed-json-headers"))
   end
 
   test "replication ID fixtures match ElixirDB.Replication.Id (REPL-006)" do

@@ -61,6 +61,16 @@
     }
   },
   {
+    "id": "compressed-json-headers",
+    "description": "Required HTTP headers for non-empty remote replication JSON",
+    "headers": {
+      "content-type": "application/json",
+      "content-encoding": "zstd",
+      "accept-encoding": "zstd",
+      "x-elixirdb-uncompressed-length": "canonical-non-negative-integer"
+    }
+  },
+  {
     "id": "transferred-revision",
     "description": "REPL-016 transferred revision wire shape",
     "shape": {

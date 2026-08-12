@@ -3,11 +3,15 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   use Plug.Router
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.Checkpoint
-  alias ElixirDB.HTTP.{Request, Response}
+  alias ElixirDB.HTTP.{BodyReader, Request, Response}
   alias ElixirDB.HTTP.Schemas
   alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Replication.Wire
   alias ElixirDB.Runtime.DatabaseCatalog
+  alias Plug.Conn.Utils
+
+  plug(:require_zstd_accept_encoding)
+  plug(:reject_unexpected_get_delete_body)
   plug(:match)
   plug(:dispatch)
 
@@ -391,6 +395,72 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
       {:ok, _, conn} -> conn
       {:more, _, conn} -> discard_request_body(conn)
       {:error, _} -> conn
+    end
+  end
+
+  defp require_zstd_accept_encoding(conn, _opts) do
+    if accepts_zstd?(conn) do
+      conn
+    else
+      conn
+      |> Response.error(ElixirDB.Error.invalid_request("accept-encoding must include zstd"))
+      |> Plug.Conn.halt()
+    end
+  end
+
+  defp reject_unexpected_get_delete_body(conn, _opts) do
+    if conn.method in ["GET", "DELETE"] do
+      case BodyReader.reject_bodyless_payload(conn) do
+        {:ok, conn} ->
+          conn
+
+        {:error, error} ->
+          conn
+          |> Response.error(error)
+          |> Plug.Conn.halt()
+      end
+    else
+      conn
+    end
+  end
+
+  defp accepts_zstd?(conn) do
+    conn
+    |> Plug.Conn.get_req_header("accept-encoding")
+    |> Enum.any?(&header_accepts_zstd?/1)
+  end
+
+  defp header_accepts_zstd?(header) when is_binary(header) do
+    header
+    |> Utils.list()
+    |> Enum.any?(&coding_accepts_zstd?/1)
+  end
+
+  defp coding_accepts_zstd?(token) when is_binary(token) do
+    case String.split(token, ";", parts: 2) do
+      [coding] ->
+        String.downcase(String.trim(coding)) == "zstd"
+
+      [coding, params] ->
+        String.downcase(String.trim(coding)) == "zstd" and quality(params) > 0
+    end
+  end
+
+  defp quality(params) do
+    params
+    |> String.split(";")
+    |> Enum.find_value(1.0, fn part ->
+      case part |> String.trim() |> String.downcase() |> String.split("=", parts: 2) do
+        ["q", value] -> parse_q(value)
+        _ -> nil
+      end
+    end)
+  end
+
+  defp parse_q(value) do
+    case Float.parse(String.trim(value)) do
+      {q, ""} when q > 0 and q <= 1 -> q
+      _ -> 0.0
     end
   end
 

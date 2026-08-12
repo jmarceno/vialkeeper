@@ -27,19 +27,25 @@ defmodule ElixirDB.Replication.AuthTokenTransportTest do
     defp send_capture(conn) do
       auth = Plug.Conn.get_req_header(conn, "authorization") |> List.first()
 
-      body =
-        JSON.encode!(%{
-          "captured_authorization" => auth,
-          "database_uuid" => "11111111-1111-4111-8111-111111111111",
-          "current_sequence" => 0,
-          "replication_protocol_major" => 1,
-          "revision_algorithm_version" => 1,
-          "canonicalization_version" => 1
-        })
+      payload = %{
+        "captured_authorization" => auth,
+        "database_uuid" => "11111111-1111-4111-8111-111111111111",
+        "current_sequence" => 0,
+        "replication_protocol_major" => 1,
+        "revision_algorithm_version" => 1,
+        "canonicalization_version" => 1
+      }
+
+      {:ok, encoded} = ElixirDB.Replication.WireCompression.encode_json(payload, 65_536)
 
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, body)
+      |> Plug.Conn.put_resp_header("content-encoding", "zstd")
+      |> Plug.Conn.put_resp_header(
+        "x-elixirdb-uncompressed-length",
+        Integer.to_string(encoded.uncompressed_length)
+      )
+      |> Plug.Conn.send_resp(200, encoded.body)
     end
   end
 
@@ -53,7 +59,8 @@ defmodule ElixirDB.Replication.AuthTokenTransportTest do
         plug: CapturePlug,
         scheme: :http,
         ip: {127, 0, 0, 1},
-        port: 0
+        port: 0,
+        http_options: [compress: false]
       )
 
     port = port_of(pid)

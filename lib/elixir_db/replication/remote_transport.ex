@@ -1,25 +1,18 @@
 defmodule ElixirDB.Replication.RemoteTransport do
   @moduledoc "Executes authenticated HTTP requests and lazy response streams for remote replication."
 
-  alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.Error
   alias ElixirDB.Observability.Tracer
   alias ElixirDB.Replication.BlobRepresentationStream
+  alias ElixirDB.Replication.WireCompression
 
   def request(base_url, method, path, body \\ nil, auth_token \\ nil) do
-    # Inject the current trace context into outgoing replication requests so a
-    # push job's trace spans both the local worker and the remote server
-    # The noop propagator (no SDK) returns the headers unchanged.
-    options = request_options(base_url, method, path, body, auth_token)
-
-    timeout = ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
-
-    # Carry the trace context into the timeout-enforcement task so the Finch
-    # telemetry-bridge span for this request parents under the replication
-    # trace; without it the span would be a parentless root.
-    otel_ctx = OpenTelemetry.Ctx.get_current()
-
-    task = request_task(options, otel_ctx)
-    handle_task_result(Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill))
+    with {:ok, options} <- request_options(base_url, method, path, body, auth_token) do
+      timeout = ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
+      otel_ctx = OpenTelemetry.Ctx.get_current()
+      task = request_task(options, otel_ctx)
+      handle_task_result(Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill))
+    end
   end
 
   @doc """
@@ -38,7 +31,8 @@ defmodule ElixirDB.Replication.RemoteTransport do
         decode_body: false,
         compressed: false,
         headers: [
-          {"accept", BlobRepresentationStream.media_type()}
+          {"accept", BlobRepresentationStream.media_type()},
+          {"accept-encoding", "zstd"}
           | auth_headers(auth_token) ++ trace_headers()
         ]
       )
@@ -51,10 +45,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
         open_stream_error(status, body, result)
 
       {:error, reason} ->
-        {:error,
-         ElixirDB.Error.database_unavailable("remote endpoint request failed", %{
-           cause: inspect(reason)
-         })}
+        transport_error(reason)
     end
   end
 
@@ -62,7 +53,8 @@ defmodule ElixirDB.Replication.RemoteTransport do
   PUTs a blob representation as `application/vnd.elixirdb.blob-representation`.
 
   Runs in the calling process so a body sourced from `open_stream/3` remains
-  valid. Expects a JSON success envelope. Does not JSON-encode the blob body.
+  valid. Expects a compressed JSON success envelope. Does not JSON-encode the
+  blob body and does not set Content-Encoding on the blob payload.
   """
   @spec put_stream(
           binary(),
@@ -78,29 +70,28 @@ defmodule ElixirDB.Replication.RemoteTransport do
       stream_base_options(base_url, :put, path)
       |> Keyword.merge(
         body: stream.body,
-        decode_body: true,
+        decode_body: false,
         compressed: false,
         headers:
-          [{"accept", "application/json"} | BlobRepresentationStream.response_headers(stream)] ++
-            auth ++ trace
+          [
+            {"accept", "application/json"},
+            {"accept-encoding", "zstd"}
+            | BlobRepresentationStream.response_headers(stream)
+          ] ++ auth ++ trace
       )
 
     case Req.request(options) do
       {:ok, %{status: status} = result} when status in 200..299 ->
-        if valid_success_response?(result),
-          do: :ok,
-          else: invalid_response_error()
+        case decode_wire_json(result) do
+          {:ok, _body} -> :ok
+          {:error, _} = error -> error
+        end
 
-      {:ok, %{status: status, body: response} = result} ->
-        if response_size(result) <= max_response_bytes(),
-          do: {:error, decode_error(status, response)},
-          else: {:error, ElixirDB.Error.payload_too_large("remote endpoint response is too large")}
+      {:ok, %{status: status} = result} ->
+        {:error, error_response(status, result)}
 
       {:error, reason} ->
-        {:error,
-         ElixirDB.Error.database_unavailable("remote endpoint request failed", %{
-           cause: inspect(reason)
-         })}
+        transport_error(reason)
     end
   end
 
@@ -111,53 +102,34 @@ defmodule ElixirDB.Replication.RemoteTransport do
   end
 
   defp open_stream_error(status, body, result) do
-    decoded =
-      cond do
-        enumerable_body?(body) ->
-          consume_error_body(body)
+    binary = consume_error_body(body)
+    {:error, error_response(status, %{result | body: binary})}
+  end
 
-        is_map(body) ->
-          body
-
-        is_binary(body) ->
-          case StrictDecoder.decode(body) do
-            {:ok, map} when is_map(map) -> map
-            _ -> body
-          end
-
-        true ->
-          body
-      end
-
-    sized = %{result | body: decoded_size_body(decoded, body)}
-
-    if response_size(sized) <= max_response_bytes() do
-      {:error, decode_error(status, decoded)}
-    else
-      {:error, ElixirDB.Error.payload_too_large("remote endpoint response is too large")}
+  # Non-2xx bodies are not guaranteed to use the compressed wire encoding:
+  # intermediaries (load balancers, proxies) emit plain 5xx pages. When the
+  # body cannot be decoded as wire JSON, classify by HTTP status so 5xx stays
+  # retryable instead of surfacing as a permanent incompatibility.
+  defp error_response(status, result) do
+    case decode_wire_json(result) do
+      {:ok, response} -> decode_error(status, response)
+      {:error, _} -> decode_error(status, nil)
     end
   end
 
   defp consume_error_body(body) do
-    binary =
+    if enumerable_body?(body) do
       body
       |> Enum.to_list()
       |> IO.iodata_to_binary()
-
-    case StrictDecoder.decode(binary) do
-      {:ok, map} when is_map(map) -> map
-      _ -> binary
+    else
+      IO.iodata_to_binary(body)
     end
   rescue
     exception in [ArgumentError, ErlangError, Protocol.UndefinedError, RuntimeError] ->
       _ = exception
       ""
   end
-
-  defp decoded_size_body(decoded, _original) when is_binary(decoded), do: decoded
-  defp decoded_size_body(decoded, _original) when is_map(decoded), do: decoded
-  defp decoded_size_body(_decoded, original) when is_binary(original), do: original
-  defp decoded_size_body(_, _), do: ""
 
   defp enumerable_body?(%Req.Response.Async{}), do: true
   defp enumerable_body?(body) when is_struct(body), do: true
@@ -185,10 +157,20 @@ defmodule ElixirDB.Replication.RemoteTransport do
       retry: false,
       receive_timeout: 30_000,
       connect_options: [timeout: 5_000],
-      headers: [{"accept", "application/json"} | auth_headers ++ trace_headers]
+      decode_body: false,
+      compressed: false,
+      headers: json_request_headers(auth_headers, trace_headers)
     ]
 
     add_request_body(options, body, auth_headers, trace_headers)
+  end
+
+  defp json_request_headers(auth_headers, trace_headers) do
+    [
+      {"accept", "application/json"},
+      {"accept-encoding", "zstd"}
+      | auth_headers ++ trace_headers
+    ]
   end
 
   defp trace_headers do
@@ -196,16 +178,32 @@ defmodule ElixirDB.Replication.RemoteTransport do
     |> Enum.map(fn {key, value} -> {to_string(key), to_string(value)} end)
   end
 
-  defp add_request_body(options, nil, _auth_headers, _trace_headers), do: options
+  defp add_request_body(options, nil, _auth_headers, _trace_headers), do: {:ok, options}
 
   defp add_request_body(options, body, auth_headers, trace_headers) do
-    Keyword.merge(options,
-      json: body,
-      headers: [
-        {"accept", "application/json"},
-        {"content-type", "application/json"} | auth_headers ++ trace_headers
-      ]
-    )
+    case WireCompression.encode_json(body, decoded_limit()) do
+      {:ok, encoded} ->
+        {:ok,
+         Keyword.merge(options,
+           body: encoded.body,
+           headers: json_body_headers(encoded, auth_headers, trace_headers)
+         )}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp json_body_headers(encoded, auth_headers, trace_headers) do
+    [
+      {"accept", "application/json"},
+      {"accept-encoding", "zstd"},
+      {"content-type", "application/json"},
+      {"content-encoding", "zstd"},
+      {"x-elixirdb-uncompressed-length", Integer.to_string(encoded.uncompressed_length)},
+      {"content-length", Integer.to_string(encoded.compressed_length)}
+      | auth_headers ++ trace_headers
+    ]
   end
 
   defp request_task(options, otel_ctx) do
@@ -220,52 +218,77 @@ defmodule ElixirDB.Replication.RemoteTransport do
     end)
   end
 
-  defp handle_task_result({:ok, {:ok, %{status: status, body: response} = result}})
-       when status in 200..299 do
-    if valid_success_response?(result),
-      do: {:ok, response},
-      else: invalid_response_error()
+  defp handle_task_result({:ok, {:ok, %{status: status} = result}}) when status in 200..299 do
+    decode_wire_json(result)
   end
 
-  defp handle_task_result({:ok, {:ok, %{status: status, body: response} = result}}) do
-    if response_size(result) <= max_response_bytes(),
-      do: {:error, decode_error(status, response)},
-      else: {:error, ElixirDB.Error.payload_too_large("remote endpoint response is too large")}
+  defp handle_task_result({:ok, {:ok, %{status: status} = result}}) do
+    {:error, error_response(status, result)}
   end
 
-  defp handle_task_result({:ok, {:error, reason}}),
-    do:
-      {:error,
-       ElixirDB.Error.database_unavailable("remote endpoint request failed", %{
-         cause: inspect(reason)
-       })}
+  defp handle_task_result({:ok, {:error, reason}}), do: transport_error(reason)
 
   # SAFETY: Req.request/1 (or OpenTelemetry context handling) may exit rather
   # than return an error. Convert that exit into a typed retryable failure.
   defp handle_task_result({:exit, reason}),
     do:
       {:error,
-       ElixirDB.Error.internal_error("replication transport request failed", %{
+       Error.internal_error("replication transport request failed", %{
          cause: inspect(reason)
        })}
 
   defp handle_task_result(nil),
-    do: {:error, ElixirDB.Error.database_unavailable("remote endpoint request timed out")}
+    do: {:error, Error.database_unavailable("remote endpoint request timed out")}
 
-  defp valid_success_response?(result),
-    do: response_size(result) <= max_response_bytes() and accepted_content_type?(result)
+  defp decode_wire_json(result) do
+    body = result.body
+    headers = result.headers
+    decoded_limit = decoded_limit()
+    encoded_limit = WireCompression.encoded_limit(decoded_limit)
 
-  defp invalid_response_error do
-    {:error, ElixirDB.Error.database_unavailable("remote endpoint returned an invalid response")}
+    cond do
+      not is_binary(body) ->
+        {:error, incompatible_response()}
+
+      byte_size(body) > encoded_limit ->
+        {:error, Error.payload_too_large("remote endpoint response is too large")}
+
+      true ->
+        case WireCompression.decode_json(body,
+               decoded_limit: decoded_limit,
+               headers: headers,
+               expect: :map
+             ) do
+          {:ok, value} ->
+            {:ok, value}
+
+          {:error, %Error{code: :payload_too_large} = error} ->
+            {:error, error}
+
+          {:error, _error} ->
+            {:error, incompatible_response()}
+        end
+    end
+  end
+
+  defp incompatible_response do
+    Error.replication_incompatible("remote endpoint returned an incompatible replication response")
+  end
+
+  defp transport_error(reason) do
+    {:error,
+     Error.database_unavailable("remote endpoint request failed", %{
+       cause: inspect(reason)
+     })}
   end
 
   defp decode_error(_status, %{"error" => error}) when is_map(error) do
     code =
-      ElixirDB.Error.registry()
+      Error.registry()
       |> Map.keys()
       |> Enum.find(:internal_error, &(Atom.to_string(&1) == error["code"]))
 
-    ElixirDB.Error.new(code, error["message"] || "remote request failed", error["details"] || %{},
+    Error.new(code, error["message"] || "remote request failed", error["details"] || %{},
       retryable: error["retryable"] || false
     )
   rescue
@@ -280,42 +303,17 @@ defmodule ElixirDB.Replication.RemoteTransport do
       RuntimeError,
       UndefinedFunctionError
     ] ->
-      ElixirDB.Error.database_unavailable("remote endpoint returned an invalid error")
+      Error.database_unavailable("remote endpoint returned an invalid error")
   end
 
   defp decode_error(status, _),
     do:
-      ElixirDB.Error.new(:internal_error, "remote endpoint returned HTTP #{status}", %{},
+      Error.new(:internal_error, "remote endpoint returned HTTP #{status}", %{},
         retryable: status >= 500
       )
 
-  defp max_response_bytes,
+  defp decoded_limit,
     do: ElixirDB.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
-
-  defp response_size(%{body: body}) when is_binary(body), do: byte_size(body)
-
-  defp response_size(%{body: body}),
-    do: byte_size(IO.iodata_to_binary(JSON.encode_to_iodata!(body)))
-
-  defp accepted_content_type?(%{headers: headers}) do
-    headers
-    |> Enum.find_value(fn
-      {key, value} when key in ["content-type", "Content-Type"] -> value
-      _ -> nil
-    end)
-    |> content_type_header()
-    |> case do
-      nil -> true
-      value -> String.starts_with?(value, "application/json")
-    end
-  end
-
-  defp accepted_content_type?(_), do: true
-
-  defp content_type_header(nil), do: nil
-  defp content_type_header(value) when is_binary(value), do: value
-  defp content_type_header([value | _]) when is_binary(value), do: value
-  defp content_type_header(_), do: nil
 
   defp auth_headers(nil), do: []
   defp auth_headers(token) when is_binary(token), do: [{"authorization", "Bearer " <> token}]
