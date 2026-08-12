@@ -133,6 +133,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   @spec main([binary()]) :: :ok
   def main(argv) do
     options = parse_options(argv)
+    configure_runtime_root()
     {:ok, _started} = Application.ensure_all_started(:elixir_db)
 
     config = benchmark_config(options)
@@ -159,6 +160,16 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
     write_report(report, output)
     print_summary(report, output)
     :ok
+  end
+
+  defp configure_runtime_root do
+    case System.get_env("ELIXIR_DB_ROOT") do
+      root when is_binary(root) and root != "" ->
+        Application.put_env(:elixir_db, :database_root, Path.expand(root))
+
+      _ ->
+        :ok
+    end
   end
 
   defp parse_options(argv) do
@@ -1166,10 +1177,12 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 
   defp runtime_metadata do
+    runtime = ElixirDB.Diagnostics.runtime()
+
     %{
       "elixir" => System.version(),
       "otp" => :erlang.system_info(:otp_release) |> to_string(),
-      "sqlite" => ElixirDB.Diagnostics.runtime() |> Map.get(:sqlite),
+      "sqlite" => get_in(runtime, [:backend, :sqlite]),
       "schedulers_online" => :erlang.system_info(:schedulers_online),
       "os" => :os.type() |> inspect()
     }
