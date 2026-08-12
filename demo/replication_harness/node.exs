@@ -23,6 +23,7 @@ defmodule ElixirDB.ReplicationHarness.Node do
   @poll_interval 100
 
   def main([mode]) when mode in ["web", "cli"] do
+    configure_runtime!()
     {:ok, _} = Application.ensure_all_started(:elixir_db)
 
     case mode do
@@ -32,6 +33,14 @@ defmodule ElixirDB.ReplicationHarness.Node do
   end
 
   def main(_), do: raise("usage: mix run demo/replication_harness/node.exs web|cli")
+
+  defp configure_runtime! do
+    root = System.fetch_env!("ELIXIR_DB_ROOT") |> Path.expand()
+    port = System.fetch_env!("ELIXIR_DB_PORT") |> String.to_integer()
+
+    Application.put_env(:elixir_db, :database_root, root)
+    Application.put_env(:elixir_db, :listener, ip: {127, 0, 0, 1}, port: port)
+  end
 
   defp web_node do
     server_url = server_url()
