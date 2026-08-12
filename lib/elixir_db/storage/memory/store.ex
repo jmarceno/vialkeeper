@@ -637,7 +637,8 @@ defmodule ElixirDB.Storage.Memory.Store do
       {:error, ElixirDB.Error.invalid_request("memory backend snapshot is invalid")}
     end
   rescue
-    _ -> {:error, ElixirDB.Error.invalid_request("memory backend snapshot is invalid")}
+    _exception in [ArgumentError, BadMapError, KeyError, MatchError] ->
+      {:error, ElixirDB.Error.invalid_request("memory backend snapshot is invalid")}
   end
 
   defp migrate_state(state) do

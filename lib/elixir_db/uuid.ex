@@ -1,5 +1,5 @@
 defmodule ElixirDB.UUID do
-  @moduledoc false
+  @moduledoc "UUID generation and deterministic document-history identifiers."
 
   @spec v4() :: binary()
   def v4 do

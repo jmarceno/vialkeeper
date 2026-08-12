@@ -49,7 +49,7 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
     with {:ok, adapter} <- Context.unwrap(context),
          state = Store.get(adapter.store),
          {:ok, revision} <- Store.find_revision(state, document_id, revision_id) do
-      walk_ancestors(state, document_id, revision.parent_revision, MapSet.new(), [])
+      walk_ancestors(state, document_id, revision.parent_revision, %{}, [])
     else
       {:error, reason} -> {:error, Errors.normalize(reason)}
     end
@@ -209,10 +209,17 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
   defp normalize_ok({:ok, :ok}), do: :ok
   defp normalize_ok({:error, reason}), do: {:error, Errors.normalize(reason)}
 
+  @spec walk_ancestors(
+          Store.state(),
+          binary(),
+          binary() | nil,
+          %{optional(binary()) => true},
+          [Revision.t()]
+        ) :: {:ok, [Revision.t()]} | {:error, ElixirDB.Error.t()}
   defp walk_ancestors(_state, _document_id, nil, _seen, acc), do: {:ok, Enum.reverse(acc)}
 
   defp walk_ancestors(state, document_id, revision_id, seen, acc) do
-    if MapSet.member?(seen, revision_id) do
+    if Map.has_key?(seen, revision_id) do
       {:error, ElixirDB.Error.integrity_violation("revision ancestry cycle detected")}
     else
       case Store.find_revision(state, document_id, revision_id) do
@@ -221,7 +228,7 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
             state,
             document_id,
             revision.parent_revision,
-            MapSet.put(seen, revision_id),
+            Map.put(seen, revision_id, true),
             [revision | acc]
           )
 

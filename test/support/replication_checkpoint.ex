@@ -1,5 +1,5 @@
 defmodule ElixirDB.TestReplicationCheckpoint do
-  @moduledoc false
+  @moduledoc "Test support for seeding and inspecting replication checkpoints."
 
   alias ElixirDB.Replication.LocalEndpoint
   alias ElixirDB.Runtime.DatabaseCatalog

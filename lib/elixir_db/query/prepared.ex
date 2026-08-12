@@ -1,5 +1,5 @@
 defmodule ElixirDB.Query.Prepared do
-  @moduledoc false
+  @moduledoc "Opaque wrapper for a normalized query request held by query callers."
 
   @enforce_keys [:data]
   defstruct [:data]

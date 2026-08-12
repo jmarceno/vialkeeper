@@ -1,5 +1,5 @@
 defmodule ElixirDB.Storage.SQLite.Connection do
-  @moduledoc false
+  @moduledoc "Private SQLite connection and statement execution primitives."
   alias ElixirDB.Storage.SQLite.Statements
   alias Exqlite.Sqlite3
 

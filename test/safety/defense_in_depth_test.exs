@@ -73,7 +73,10 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
 
       # Poison database A with a malformed command shape. The owner's normalize/1 maps
       # unknown shapes to a typed invalid_request (no crash); either way the net holds.
-      _poisoned = DatabaseCatalog.command(uuid_a, {:command, :get_document, :not_a_map})
+      for command <- [:get_document, :get_revision, :read_changes] do
+        assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+                 DatabaseCatalog.command(uuid_a, {:command, command, :not_a_map})
+      end
 
       # The catalog must still be alive and database B must still respond normally.
       assert_catalog_alive()

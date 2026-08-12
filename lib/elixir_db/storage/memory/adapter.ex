@@ -7,12 +7,13 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   callbacks. Unsupported Adapter callbacks return typed errors.
   """
   @behaviour ElixirDB.Storage.Adapter
+  use ElixirDB.Storage.AdapterFacade
 
   alias ElixirDB.MapAccess
   alias ElixirDB.Query.{Normalizer, SubscriptionRequest}
-  alias ElixirDB.Revisions.Winner
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.RequestValidation
+  alias ElixirDB.Storage.Results
 
   alias ElixirDB.Storage.Memory.{
     AttachmentMetadata,
@@ -82,7 +83,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     config = MapAccess.get(options, :config, ElixirDB.Config.defaults())
     initial_derived = MapAccess.get(options, :initial_derived_view)
 
-    with :ok <- validate_uuid(uuid),
+    with :ok <- RequestValidation.validate_uuid(uuid),
          {:ok, bounded_config} <- ElixirDB.Config.merge_and_bound(config),
          :ok <- File.mkdir_p(path),
          identity <- build_identity(uuid, bounded_config, options),
@@ -143,7 +144,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
          {:ok, revision} <-
            DocumentFacts.find_revision(context, document_id, doc.winning_revision),
          {:ok, leaves} <- DocumentFacts.list_leaves(context, document_id) do
-      {:ok, document_result(doc, revision, leaves)}
+      {:ok, Results.document_map(doc, revision, leaves)}
     else
       :missing_document ->
         {:error, ElixirDB.Error.document_not_found("document does not exist")}
@@ -165,7 +166,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     with {:ok, doc} <- DocumentFacts.find_document(context, document_id),
          {:ok, doc} <- require_document(doc),
          {:ok, revision} <- DocumentFacts.find_revision(context, document_id, revision_id) do
-      {:ok, document_result(doc, revision, [])}
+      {:ok, Results.document_map(doc, revision, [])}
     else
       :missing_document ->
         {:error, ElixirDB.Error.document_not_found("document does not exist")}
@@ -207,12 +208,12 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     since = MapAccess.get(request, :since, 0)
     limit = MapAccess.get(request, :limit, 100)
 
-    with :ok <- validate_non_negative_integer(since, "since"),
-         :ok <- validate_positive_integer(limit, "limit"),
+    with :ok <- RequestValidation.validate_non_negative_integer(since, "since"),
+         :ok <- RequestValidation.validate_positive_integer(limit, "limit"),
          {:ok, identity} <- identity(adapter),
-         :ok <- validate_changes_since_floor(since, identity),
+         :ok <- RequestValidation.validate_changes_since_floor(since, identity),
          :ok <-
-           validate_changes_limit(
+           RequestValidation.validate_changes_limit(
              limit,
              get_in(identity, [:config, "changes", "max_batch"])
            ) do
@@ -239,94 +240,12 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   def clear_pending_local_causal(%__MODULE__{} = adapter, peer),
     do: ChangeLog.clear_pending_local_causal(to_context(adapter), peer)
 
-  @impl true
-  def retention_state(%__MODULE__{} = adapter),
-    do: Services.retention_state(to_context(adapter))
-
-  @impl true
-  def list_peer_positions(%__MODULE__{} = adapter),
-    do: Services.list_peer_positions(to_context(adapter))
-
-  @impl true
-  def put_peer_position_cas(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Services.put_peer_position_cas(to_context(adapter), request)
-
-  def put_peer_position_cas(_adapter, _request),
-    do: {:error, ElixirDB.Error.invalid_request("peer position request must be an object")}
-
-  @impl true
-  def read_boundary_pages(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Services.read_boundary_pages(to_context(adapter), request)
-
-  def read_boundary_pages(_adapter, _request),
-    do: {:error, ElixirDB.Error.invalid_request("boundary page request must be an object")}
-
-  @impl true
-  def install_boundary_pages(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Services.install_boundary_pages(to_context(adapter), request)
-
-  def install_boundary_pages(_adapter, _request),
-    do: {:error, ElixirDB.Error.invalid_request("boundary page request must be an object")}
-
-  @impl true
-  def compact_retention(%__MODULE__{} = adapter, request \\ %{}) when is_map(request),
-    do: Services.compact_retention(to_context(adapter), request)
-
-  @doc "Diffs revision leaves via `ElixirDB.Storage.Services` (not an Adapter callback)."
-  def diff_revisions(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Services.diff_revisions(to_context(adapter), request)
-
-  def diff_revisions(_adapter, _request),
-    do: {:error, ElixirDB.Error.invalid_request("revision diff request must be an object")}
-
-  @doc "Loads revision chains via `ElixirDB.Storage.Services` (not an Adapter callback)."
-  def get_revision_chains(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Services.get_revision_chains(to_context(adapter), request)
-
-  def get_revision_chains(_adapter, _request),
-    do: {:error, ElixirDB.Error.invalid_request("revision chain request must be an object")}
-
   @doc "Imports revision chains via `ElixirDB.Storage.Services` (not an Adapter callback)."
   def import_revision_chains(%__MODULE__{} = adapter, request) when is_map(request),
     do: Services.import_revision_chains(to_context(adapter), request)
 
   def import_revision_chains(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("revision import request must be an object")}
-
-  @impl true
-  def protect_pending_blob(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Services.protect_pending_blob(to_context(adapter), request)
-
-  @impl true
-  def remove_pending_blob_protection(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Services.remove_pending_blob_protection(to_context(adapter), request)
-
-  @impl true
-  def resolve_attachment_ticket(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Services.resolve_attachment_ticket(to_context(adapter), request)
-
-  def resolve_attachment_ticket(_adapter, _request),
-    do: {:error, ElixirDB.Error.invalid_request("attachment ticket request must be an object")}
-
-  @impl true
-  def resolve_blob_metadata(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Services.resolve_blob_metadata(to_context(adapter), request)
-
-  def resolve_blob_metadata(_adapter, _request),
-    do: {:error, ElixirDB.Error.invalid_request("blob metadata request must be an object")}
-
-  @impl true
-  def list_live_attachment_digests(%__MODULE__{} = adapter, request) when is_map(request),
-    do: Services.list_live_attachment_digests(to_context(adapter), request)
-
-  def list_live_attachment_digests(_adapter, _request),
-    do: {:error, ElixirDB.Error.invalid_request("live attachment digest request must be an object")}
-
-  @impl true
-  def cleanup_expired_pending_blobs(%__MODULE__{} = adapter, request \\ %{})
-      when is_map(request) do
-    Services.cleanup_expired_pending_blobs(to_context(adapter), request)
-  end
 
   @impl true
   def execute_query(%__MODULE__{} = adapter, request) when is_map(request) do
@@ -362,81 +281,6 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   def explain_query(_adapter, _request),
     do: {:error, ElixirDB.Error.invalid_request("query explanation must be an object")}
 
-  @impl true
-  def list_views(%__MODULE__{} = adapter), do: Services.list_views(to_context(adapter))
-
-  @impl true
-  def create_view(%__MODULE__{} = adapter, definition),
-    do: Services.create_view(to_context(adapter), definition)
-
-  @impl true
-  def delete_view(%__MODULE__{} = adapter, view_id),
-    do: Services.delete_view(to_context(adapter), view_id)
-
-  @impl true
-  def view_state(%__MODULE__{} = adapter, view_id),
-    do: Services.view_state(to_context(adapter), view_id)
-
-  @impl true
-  def apply_view_batch(%__MODULE__{} = adapter, request),
-    do: Services.apply_view_batch(to_context(adapter), request)
-
-  @impl true
-  def begin_view_rebuild(%__MODULE__{} = adapter, request),
-    do: Services.begin_view_rebuild(to_context(adapter), request)
-
-  @impl true
-  def append_view_rebuild_page(%__MODULE__{} = adapter, request),
-    do: Services.append_view_rebuild_page(to_context(adapter), request)
-
-  @impl true
-  def finish_view_rebuild(%__MODULE__{} = adapter, request),
-    do: Services.finish_view_rebuild(to_context(adapter), request)
-
-  @impl true
-  def query_view(%__MODULE__{} = adapter, request),
-    do: Services.query_view(to_context(adapter), request)
-
-  @impl true
-  def read_winning_documents_page(%__MODULE__{} = adapter, request),
-    do: Services.read_winning_documents_page(to_context(adapter), request)
-
-  @impl true
-  def get_derived_view(%__MODULE__{} = adapter),
-    do: Services.get_derived_view(to_context(adapter))
-
-  @impl true
-  def set_derived_enabled(%__MODULE__{} = adapter, request),
-    do: Services.set_derived_enabled(to_context(adapter), request)
-
-  @impl true
-  def list_derived_sources(%__MODULE__{} = adapter),
-    do: Services.list_derived_sources(to_context(adapter))
-
-  @impl true
-  def set_derived_source_error(%__MODULE__{} = adapter, request),
-    do: Services.set_derived_source_error(to_context(adapter), request)
-
-  @impl true
-  def apply_derived_source_batch(%__MODULE__{} = adapter, request),
-    do: Services.apply_derived_source_batch(to_context(adapter), request)
-
-  @impl true
-  def begin_derived_source_rebuild(%__MODULE__{} = adapter, request),
-    do: Services.begin_derived_source_rebuild(to_context(adapter), request)
-
-  @impl true
-  def apply_derived_rebuild_page(%__MODULE__{} = adapter, request),
-    do: Services.apply_derived_rebuild_page(to_context(adapter), request)
-
-  @impl true
-  def prune_derived_rebuild_stale_page(%__MODULE__{} = adapter, request),
-    do: Services.prune_derived_rebuild_stale_page(to_context(adapter), request)
-
-  @impl true
-  def finish_derived_source_rebuild(%__MODULE__{} = adapter, request),
-    do: Services.finish_derived_source_rebuild(to_context(adapter), request)
-
   @doc "Wraps an open Memory adapter in an opaque backend context."
   @spec to_context(t()) :: BackendContext.t()
   def to_context(%__MODULE__{} = adapter) do
@@ -451,7 +295,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
       backend: __MODULE__,
       backend_ref: OpaqueHandle.wrap(adapter),
       bundle_root: adapter.root,
-      capabilities: %{sql: false, engine: "memory"},
+      capabilities: %{engine: "memory"},
       identity: identity
     )
   end
@@ -515,35 +359,6 @@ defmodule ElixirDB.Storage.Memory.Adapter do
 
   defp require_document(nil), do: :missing_document
   defp require_document(doc), do: {:ok, doc}
-
-  defp document_result(doc, revision, leaves) do
-    result = %{
-      id: doc.document_id,
-      revision: revision.revision_id,
-      deleted: revision.deleted,
-      body: revision.body,
-      sequence: doc.update_sequence,
-      attachments: revision.attachments || %{}
-    }
-
-    if leaves == [],
-      do: result,
-      else: Map.put(result, :conflicts, Winner.conflicts(leaves, revision))
-  end
-
-  defp validate_uuid(uuid), do: RequestValidation.validate_uuid(uuid)
-
-  defp validate_non_negative_integer(value, label),
-    do: RequestValidation.validate_non_negative_integer(value, label)
-
-  defp validate_positive_integer(value, label),
-    do: RequestValidation.validate_positive_integer(value, label)
-
-  defp validate_changes_limit(limit, database_max),
-    do: RequestValidation.validate_changes_limit(limit, database_max)
-
-  defp validate_changes_since_floor(since, identity),
-    do: RequestValidation.validate_changes_since_floor(since, identity)
 
   defp unsupported(operation) do
     {:error, ElixirDB.Error.invalid_request("memory backend does not implement #{operation}")}

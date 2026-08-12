@@ -540,8 +540,6 @@ defmodule ElixirDB.Storage.SQLite.Views do
   defp map_get(map, "revision_id"), do: MapAccess.get(map, :revision_id)
   defp map_get(map, key) when is_binary(key), do: Map.get(map, key)
 
-  defp normalize_error(%ElixirDB.Error{} = error), do: error
-
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
 end

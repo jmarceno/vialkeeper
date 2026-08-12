@@ -1,5 +1,5 @@
 defmodule ElixirDB.Replication.WorkerSupervisor do
-  @moduledoc false
+  @moduledoc "Dynamic supervisor for per-database replication workers."
   use DynamicSupervisor
 
   def start_link(_args \\ []), do: DynamicSupervisor.start_link(__MODULE__, [], name: __MODULE__)

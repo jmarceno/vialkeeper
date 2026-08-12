@@ -1,4 +1,5 @@
 defmodule ElixirDB.Storage.BoundaryGuardTest do
+  @moduledoc "Tests storage-boundary classification, composition, and leak scanning."
   use ExUnit.Case, async: true
 
   alias ElixirDB.Storage.{
@@ -88,7 +89,7 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
     assert BackendContext.backend(context) == Adapter
     assert BackendContext.bundle_root(context) == Path.expand(root)
     assert is_map(context.capabilities)
-    assert context.capabilities.sql == false
+    refute Map.has_key?(context.capabilities, :sql)
 
     source = File.read!("lib/elixir_db/storage/sentinel/adapter.ex")
     refute source =~ "Exqlite"

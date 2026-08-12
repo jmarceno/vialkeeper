@@ -3,8 +3,8 @@ defmodule ElixirDB.Storage.BoundaryGuard do
   Static physical-reference guard for the storage boundary.
 
   Scans repository text for SQLite/Exqlite/SQL physical markers outside
-  `ElixirDB.Storage.PhysicalAllowlist`. Findings are evidence for Wave 0 and
-  later cleanup; they are not silently discarded.
+  `ElixirDB.Storage.PhysicalAllowlist`. Findings are returned to the caller so
+  every exception is explicit and reviewable.
   """
 
   alias ElixirDB.Storage.PhysicalAllowlist
@@ -44,8 +44,8 @@ defmodule ElixirDB.Storage.BoundaryGuard do
   Scans the repository for physical markers outside the allowlist.
 
   Returns findings sorted by path and line. Product documentation at the repo
-  root (`README.md`, `Operations.md`) is included so Wave 7 can clear those
-  product-model leaks deliberately.
+  root (`README.md`, `Operations.md`) is included so product-model leaks are
+  checked together with source code.
   """
   @spec scan(binary()) :: [finding()]
   def scan(root \\ File.cwd!()) when is_binary(root) do

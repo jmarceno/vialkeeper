@@ -7,12 +7,15 @@ defmodule ElixirDB.Storage.SQLite.IndexFacade do
       alias ElixirDB.Storage.SQLite.{Adapter, Connection, Indexes}
 
       @doc false
+      @spec create(Adapter.t(), map()) :: {:ok, map()} | {:error, Error.t()}
       def create(adapter, definition),
         do: Adapter.create_index(adapter, definition)
 
+      @spec delete(Adapter.t(), binary()) :: {:ok, map()} | {:error, Error.t()}
       def delete(adapter, id),
         do: Adapter.delete_index(adapter, id)
 
+      @spec rebuild(Adapter.t(), binary()) :: {:ok, map()} | {:error, Error.t()}
       def rebuild(adapter, id),
         do: Adapter.rebuild_index(adapter, id)
 

@@ -1,3 +1,3 @@
 defmodule ElixirDB.Replication.WorkerRegistry do
-  @moduledoc false
+  @moduledoc "Registry name reserved for replication worker processes."
 end

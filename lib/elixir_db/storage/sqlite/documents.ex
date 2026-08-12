@@ -9,7 +9,7 @@ defmodule ElixirDB.Storage.SQLite.Documents do
 
   alias ElixirDB.Domain.Revision
   alias ElixirDB.JSON.Canonical
-  alias ElixirDB.Revisions.Winner
+  alias ElixirDB.Storage.Results
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.Connection
   alias ElixirDB.Storage.SQLite.TermBlob
@@ -182,18 +182,7 @@ defmodule ElixirDB.Storage.SQLite.Documents do
   """
   @spec to_result(map(), Revision.t(), [Revision.t()]) :: map()
   def to_result(doc, %Revision{} = revision, leaves) do
-    result = %{
-      id: doc.document_id,
-      revision: revision.revision_id,
-      deleted: revision.deleted,
-      body: revision.body,
-      sequence: doc.update_sequence,
-      attachments: revision.attachments || %{}
-    }
-
-    if leaves == [],
-      do: result,
-      else: Map.put(result, :conflicts, Winner.conflicts(leaves, revision))
+    Results.document_map(doc, revision, leaves)
   end
 
   defp normalize_error(reason),

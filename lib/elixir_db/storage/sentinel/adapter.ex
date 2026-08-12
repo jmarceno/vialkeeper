@@ -91,7 +91,7 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
     options = normalize_options(options)
     uuid = MapAccess.get(options, :database_uuid, ElixirDB.UUID.v4())
 
-    with :ok <- validate_uuid(uuid),
+    with :ok <- RequestValidation.validate_uuid(uuid),
          :ok <- ensure_root(path),
          :ok <- write_marker(path, uuid) do
       {:ok, build(path, uuid)}
@@ -131,7 +131,7 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
 
   @doc "Returns opaque sentinel capability metadata."
   @spec capabilities_report() :: map()
-  def capabilities_report, do: %{engine: "sentinel", sql: false}
+  def capabilities_report, do: %{engine: "sentinel"}
 
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.OpaqueHandle
@@ -143,7 +143,7 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
       backend: __MODULE__,
       backend_ref: OpaqueHandle.wrap(adapter),
       bundle_root: adapter.root,
-      capabilities: %{sql: false, engine: "sentinel"},
+      capabilities: %{engine: "sentinel"},
       identity: adapter.identity
     )
   end
@@ -191,8 +191,6 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
   defp normalize_options(options) when is_map(options), do: options
   defp normalize_options(_), do: %{}
 
-  defp validate_uuid(uuid), do: RequestValidation.validate_uuid(uuid)
-
   defp ensure_root(path) do
     case File.mkdir_p(path) do
       :ok ->
@@ -227,7 +225,7 @@ defmodule ElixirDB.Storage.Sentinel.Adapter do
     case File.read(path) do
       {:ok, uuid} ->
         uuid = String.trim(uuid)
-        with :ok <- validate_uuid(uuid), do: {:ok, uuid}
+        with :ok <- RequestValidation.validate_uuid(uuid), do: {:ok, uuid}
 
       {:error, _} ->
         {:error, ElixirDB.Error.invalid_request("sentinel backend marker is missing")}

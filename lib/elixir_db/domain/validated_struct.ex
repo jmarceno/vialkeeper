@@ -1,5 +1,5 @@
 defmodule ElixirDB.Domain.ValidatedStruct do
-  @moduledoc false
+  @moduledoc "Small validation-to-struct construction helper for domain types."
 
   @spec build(module(), map(), (map() -> nil | ElixirDB.Error.t())) ::
           {:ok, struct()} | {:error, ElixirDB.Error.t()}

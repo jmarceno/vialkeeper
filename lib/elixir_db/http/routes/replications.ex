@@ -1,5 +1,5 @@
 defmodule ElixirDB.HTTP.Routes.Replications do
-  @moduledoc false
+  @moduledoc "HTTP routes for durable replication-job management."
   use Plug.Router
   alias ElixirDB.HTTP.{Request, Response, Schemas}
   alias ElixirDB.Replication.JobManager

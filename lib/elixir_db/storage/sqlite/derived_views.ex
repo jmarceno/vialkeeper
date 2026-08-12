@@ -578,8 +578,6 @@ defmodule ElixirDB.Storage.SQLite.DerivedViews do
   defp nullable_blob(nil), do: nil
   defp nullable_blob(value), do: TermBlob.bind(value)
 
-  defp normalize_error(%ElixirDB.Error{} = error), do: error
-
   defp normalize_error(reason),
     do:
       ElixirDB.Error.internal_error("derived sqlite persistence failed", %{cause: inspect(reason)})

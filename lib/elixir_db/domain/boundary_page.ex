@@ -91,7 +91,8 @@ defmodule ElixirDB.Domain.BoundaryPage do
   Source-qualified boundary record key using NUL separators.
 
   Document IDs may contain `:` or `/`; NUL cannot appear in UTF-8 document IDs
-  or UUID text, so backends share this encoding without SQL coupling.
+  or UUID text, so every backend can share this encoding without relying on
+  its own key or query representation.
   """
   @spec record_key(binary(), binary(), binary()) :: binary()
   def record_key(source_database_uuid, document_id, history_id)

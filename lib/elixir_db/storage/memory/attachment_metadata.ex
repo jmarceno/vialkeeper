@@ -17,9 +17,9 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
 
   @impl true
   def resolve_attachment_ticket(%BackendContext{} = context, request) when is_map(request) do
-    document_id = MapAccess.get(request, :document_id) || MapAccess.get(request, :id)
-    revision_id = MapAccess.get(request, :revision_id) || MapAccess.get(request, :revision)
-    name = MapAccess.get(request, :attachment_name) || MapAccess.get(request, :name)
+    document_id = MapAccess.get_first(request, [:document_id, :id])
+    revision_id = MapAccess.get_first(request, [:revision_id, :revision])
+    name = MapAccess.get_first(request, [:attachment_name, :name])
 
     with {:ok, adapter} <- Context.unwrap(context),
          {:ok, name} <- Manifest.validate_name(name),
@@ -28,14 +28,14 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
          {:ok, entry} <-
            load_attachment_entry(Store.get(adapter.store), document_id, resolved_revision, name) do
       identity = Store.identity(adapter.store)
-      bundle_root = BackendContext.bundle_root(context) || adapter.root
+      bundle_root = BackendContext.bundle_root(context)
 
       Ticket.build(
         identity.database_uuid,
         bundle_root,
-        MapAccess.get(entry, :digest),
-        MapAccess.get(entry, :length) || MapAccess.get(entry, :logical_size),
-        MapAccess.get(entry, :content_type),
+        entry.digest,
+        entry.length,
+        entry.content_type,
         document_id,
         resolved_revision,
         name
@@ -127,11 +127,12 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
   end
 
   defp require_logical_size(row) do
-    size = MapAccess.get(row, :logical_size) || MapAccess.get(row, :length)
+    size = MapAccess.get_first(row, [:logical_size, :length])
 
-    if is_integer(size) and size >= 0,
-      do: {:ok, size},
-      else: {:error, ElixirDB.Error.invalid_request("logical_size must be a non-negative integer")}
+    case RequestValidation.validate_non_negative_integer(size, "logical_size") do
+      :ok -> {:ok, size}
+      {:error, error} -> {:error, error}
+    end
   end
 
   defp update_pending(store, fun) when is_function(fun, 1) do
@@ -154,9 +155,9 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
   defp load_attachment_entry(state, document_id, revision_id, name) do
     case Store.find_revision(state, document_id, revision_id) do
       {:ok, revision} ->
-        attachments = revision.attachments || %{}
+        attachments = revision.attachments
 
-        case Map.get(attachments, name) || Map.get(attachments, to_string(name)) do
+        case Map.get(attachments, name) do
           nil ->
             {:error, ElixirDB.Error.attachment_not_found("attachment not found")}
 
@@ -207,22 +208,22 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
   end
 
   defp find_digest_in_revision({_id, %{revision: revision}}, digest) do
-    (revision.attachments || %{})
+    revision.attachments
     |> Enum.find_value(&digest_size_if_match(&1, digest))
   end
 
   defp digest_size_if_match({_name, entry}, digest) do
-    if (MapAccess.get(entry, :digest) || MapAccess.get(entry, "digest")) == digest do
-      {:ok, MapAccess.get(entry, :length) || MapAccess.get(entry, :logical_size)}
+    if entry.digest == digest do
+      {:ok, entry.length}
     end
   end
 
   defp retained_digests(state) do
     Enum.flat_map(state.revisions, fn {_doc, by_rev} ->
       Enum.flat_map(by_rev, fn {_id, %{revision: revision}} ->
-        (revision.attachments || %{})
+        revision.attachments
         |> Map.values()
-        |> Enum.map(&(MapAccess.get(&1, :digest) || MapAccess.get(&1, "digest")))
+        |> Enum.map(& &1.digest)
         |> Enum.filter(&is_binary/1)
       end)
     end)
@@ -242,7 +243,7 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
       digest_in_revisions?(state, digest) ->
         {:cont, :ok}
 
-      is_binary(root) and File.dir?(root) ->
+      File.dir?(root) ->
         case RequestValidation.verify_blob(root, digest, logical_size) do
           :ok -> {:cont, :ok}
           {:error, _} = error -> {:halt, error}
@@ -261,14 +262,14 @@ defmodule ElixirDB.Storage.Memory.AttachmentMetadata do
   defp digest_in_revisions?(state, digest) do
     Enum.any?(state.revisions, fn {_doc, by_rev} ->
       Enum.any?(by_rev, fn {_id, %{revision: revision}} ->
-        attachment_digest_match?(revision.attachments || %{}, digest)
+        attachment_digest_match?(revision.attachments, digest)
       end)
     end)
   end
 
   defp attachment_digest_match?(attachments, digest) do
     Enum.any?(attachments, fn {_name, entry} ->
-      (MapAccess.get(entry, :digest) || MapAccess.get(entry, "digest")) == digest
+      entry.digest == digest
     end)
   end
 end

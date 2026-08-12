@@ -30,34 +30,54 @@ defmodule ElixirDB.Storage.Services.Retention do
          {:ok, peers} <- Facts.list_peer_positions(context),
          {:ok, boundaries} <-
            Facts.list_boundaries(context, source_database_uuid: meta.database_uuid),
-         {:ok, maintenance_counter} <- Facts.maintenance_counter(context),
+         mode <- runtime_retention_mode(meta.config),
          frontier <-
            Frontier.compute(
              RetentionService.compute_frontier_input(
                meta,
                peers,
-               RetentionService.retention_mode(meta.config),
+               mode,
                now
              )
            ),
          {:ok, plan_docs} <- Facts.list_compaction_documents(context, frontier.candidate_floor) do
-      case RetentionService.decide_compaction(
-             meta,
-             peers,
-             boundaries,
-             plan_docs,
-             meta.config,
-             now
-           ) do
-        {:noop, stats} ->
-          {:ok, stats}
+      decision = decide_compaction(meta, peers, boundaries, plan_docs, mode, now)
 
-        {:apply, frontier, plan, effect_meta} ->
-          apply_compaction(context, meta, frontier, plan, effect_meta, maintenance_counter)
+      apply_compaction_decision(context, meta, decision)
+    end
+  end
 
-        {:error, _} = error ->
-          error
-      end
+  @spec decide_compaction(
+          RetentionService.meta(),
+          list(),
+          list(),
+          list(),
+          :disabled | :stable_frontier,
+          DateTime.t()
+        ) ::
+          {:noop, map()}
+          | {:apply, map(), term(), RetentionService.effect_meta()}
+          | {:error, ElixirDB.Error.t()}
+  defp decide_compaction(meta, peers, boundaries, plan_docs, mode, now) do
+    :erlang.apply(
+      RetentionService,
+      :decide_compaction_with_mode,
+      [meta, peers, boundaries, plan_docs, meta.config, mode, now]
+    )
+  end
+
+  @spec apply_compaction_decision(BackendContext.t(), RetentionService.meta(), term()) ::
+          {:ok, map()} | {:error, ElixirDB.Error.t()}
+  defp apply_compaction_decision(context, meta, decision) do
+    case decision do
+      {:noop, stats} ->
+        {:ok, stats}
+
+      {:apply, apply_frontier, plan, effect_meta} ->
+        apply_compaction(context, meta, apply_frontier, plan, effect_meta)
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -201,7 +221,7 @@ defmodule ElixirDB.Storage.Services.Retention do
 
   defp maybe_begin_boundary_install(_context, %{replace: false, install_id: _install_id}), do: :ok
 
-  defp apply_compaction(context, meta, frontier, plan, effect_meta, _maintenance_counter) do
+  defp apply_compaction(context, meta, frontier, plan, effect_meta) do
     with :ok <- Facts.apply_compaction_effect(context, effect_meta) do
       {:ok,
        RetentionService.apply_stats(
@@ -214,6 +234,8 @@ defmodule ElixirDB.Storage.Services.Retention do
     end
   end
 
+  @spec load_meta(BackendContext.t()) ::
+          {:ok, RetentionService.meta()} | {:error, ElixirDB.Error.t()}
   defp load_meta(%BackendContext{} = context) do
     case Access.port(context, :lifecycle).identity(context) do
       {:ok, identity} when is_map(identity) ->
@@ -249,6 +271,14 @@ defmodule ElixirDB.Storage.Services.Retention do
   end
 
   defp retention_fault_check(_), do: :ok
+
+  @spec runtime_retention_mode(map()) :: :disabled | :stable_frontier
+  defp runtime_retention_mode(config) when is_map(config) do
+    case get_in(config, ["retention", "mode"]) do
+      "stable_frontier" -> :stable_frontier
+      _ -> :disabled
+    end
+  end
 
   defp peer_uuid_from_value(%{"peer_database_uuid" => uuid}), do: uuid
   defp peer_uuid_from_value(%{peer_database_uuid: uuid}), do: uuid

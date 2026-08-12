@@ -206,9 +206,6 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
       Executor.no_post_filter?(plan, request)
   end
 
-  defp structured_candidate_rows(_adapter, nil, _scan),
-    do: {:error, ElixirDB.Error.invalid_index_hint("planned index no longer exists", %{})}
-
   defp structured_candidate_rows(adapter, selected, scan) do
     with {:ok, {where, params}} <- structured_candidate_query(selected, scan) do
       Connection.query(
@@ -248,18 +245,14 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
   end
 
   defp structured_candidate_query(selected, scan) do
-    if is_nil(selected) do
-      {:error, ElixirDB.Error.invalid_index_hint("planned index no longer exists", %{})}
-    else
-      cache_key = {selected["index_id"], selected["definition_digest"], selected["fields"], scan}
+    cache_key = {selected["index_id"], selected["definition_digest"], selected["fields"], scan}
 
-      StrictCache.memoize(
-        :query_candidate_sql,
-        cache_key,
-        @candidate_query_cache_limit,
-        fn -> structured_candidate_query_for_index(selected, scan) end
-      )
-    end
+    StrictCache.memoize(
+      :query_candidate_sql,
+      cache_key,
+      @candidate_query_cache_limit,
+      fn -> structured_candidate_query_for_index(selected, scan) end
+    )
   end
 
   defp structured_candidate_query_for_index(selected, scan) do

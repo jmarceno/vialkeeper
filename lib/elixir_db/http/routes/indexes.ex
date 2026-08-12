@@ -1,5 +1,5 @@
 defmodule ElixirDB.HTTP.Routes.Indexes do
-  @moduledoc false
+  @moduledoc "HTTP routes for logical index management."
   use Plug.Router
   alias ElixirDB.HTTP.{Request, Response, Schemas}
 

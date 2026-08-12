@@ -1,5 +1,5 @@
 defmodule ElixirDB.Replication.CheckpointReconciler do
-  @moduledoc false
+  @moduledoc "Pure checkpoint reconciliation decisions for replication catch-up."
 
   alias ElixirDB.MapAccess
 

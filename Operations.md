@@ -531,7 +531,7 @@ owns an ad-hoc federated request).
 | `replication_already_running` | Worker exclusivity on same job id |
 | `history_truncated` | Changes cursor behind retention floor |
 
-Backend exception names and SQL text are not public. Use the envelope:
+Backend exception names and engine query text are not public. Use the envelope:
 `code`, `message`, `retryable`, `details`.
 
 ---

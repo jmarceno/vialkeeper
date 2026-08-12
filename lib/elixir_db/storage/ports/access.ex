@@ -27,6 +27,28 @@ defmodule ElixirDB.Storage.Ports.Access do
     end
   end
 
+  @doc "Returns true when the backend exposes an implementation for `family`."
+  @spec available?(BackendContext.t(), atom()) :: boolean()
+  def available?(%BackendContext{} = context, family) when is_atom(family) do
+    backend = BackendContext.backend(context)
+
+    cond do
+      function_exported?(backend, :port_modules, 0) ->
+        Map.has_key?(backend.port_modules(), family)
+
+      function_exported?(backend, :port, 1) ->
+        try do
+          _ = backend.port(family)
+          true
+        rescue
+          KeyError -> false
+        end
+
+      true ->
+        false
+    end
+  end
+
   @doc "Returns true when `context` backend advertises port composition."
   @spec port_backend?(BackendContext.t()) :: boolean()
   def port_backend?(%BackendContext{} = context) do

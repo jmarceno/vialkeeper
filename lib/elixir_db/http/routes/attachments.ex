@@ -1,5 +1,5 @@
 defmodule ElixirDB.HTTP.Routes.Attachments do
-  @moduledoc false
+  @moduledoc "HTTP routes for attachment upload, metadata, and download operations."
   use Plug.Router
 
   alias ElixirDB.Attachments

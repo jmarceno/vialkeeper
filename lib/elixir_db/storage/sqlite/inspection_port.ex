@@ -40,10 +40,11 @@ defmodule ElixirDB.Storage.SQLite.InspectionPort do
   @impl true
   def validate_capabilities!, do: Capabilities.validate!()
 
-  defp bundle_root(%{storage_mode: :memory}), do: nil
-
-  defp bundle_root(%{path: path}) when is_binary(path),
-    do: Path.dirname(Path.expand(path))
-
-  defp bundle_root(_), do: nil
+  defp bundle_root(adapter) do
+    case {Map.get(adapter, :storage_mode), Map.get(adapter, :path)} do
+      {:memory, _path} -> nil
+      {_mode, path} when is_binary(path) -> Path.dirname(Path.expand(path))
+      _ -> nil
+    end
+  end
 end

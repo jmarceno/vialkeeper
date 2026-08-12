@@ -7,7 +7,9 @@ defmodule ElixirDB.Storage.Results do
   this parent module.
   """
 
+  alias ElixirDB.Domain.Revision
   alias ElixirDB.MapAccess
+  alias ElixirDB.Revisions.Winner
 
   defmodule GetDocument do
     @moduledoc false
@@ -55,6 +57,24 @@ defmodule ElixirDB.Storage.Results do
 
   def ok(value), do: {:ok, value}
   def error(%ElixirDB.Error{} = error), do: {:error, error}
+
+  @doc "Builds the shared logical document result map from document and revision facts."
+  @spec document_map(map(), Revision.t(), [Revision.t()]) :: map()
+  def document_map(document, %Revision{} = revision, leaves)
+      when is_map(document) and is_list(leaves) do
+    result = %{
+      id: MapAccess.get(document, :document_id),
+      revision: revision.revision_id,
+      deleted: revision.deleted,
+      body: revision.body,
+      sequence: MapAccess.get(document, :update_sequence),
+      attachments: revision.attachments || %{}
+    }
+
+    if leaves == [],
+      do: result,
+      else: Map.put(result, :conflicts, Winner.conflicts(leaves, revision))
+  end
 
   @doc """
   Builds a GetDocument result from a shaped document map (adapter `to_result`).

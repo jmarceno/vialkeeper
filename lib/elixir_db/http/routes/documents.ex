@@ -1,5 +1,5 @@
 defmodule ElixirDB.HTTP.Routes.Documents do
-  @moduledoc false
+  @moduledoc "HTTP routes for document reads, writes, conflicts, and imports."
   use Plug.Router
   alias ElixirDB.HTTP.{Request, Response, Schemas}
 

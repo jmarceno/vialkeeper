@@ -75,9 +75,8 @@ defmodule ElixirDB.DerivedView.Engine do
     {:ok, :idempotent}
   end
 
-  def validate_batch_cursor(source, _expected, through)
-      when is_map(source) and is_integer(through) and source.checkpoint_sequence == through and
-             not (through == 0 and is_nil(source.history_epoch)) do
+  def validate_batch_cursor(%{checkpoint_sequence: through} = source, _expected, through)
+      when is_integer(through) and (through != 0 or not is_nil(source.history_epoch)) do
     {:ok, :idempotent}
   end
 

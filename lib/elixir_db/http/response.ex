@@ -1,5 +1,5 @@
 defmodule ElixirDB.HTTP.Response do
-  @moduledoc false
+  @moduledoc "Builds stable JSON responses and error envelopes for HTTP routes."
   import Plug.Conn
 
   alias ElixirDB.MapAccess

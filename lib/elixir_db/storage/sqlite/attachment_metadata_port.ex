@@ -52,8 +52,8 @@ defmodule ElixirDB.Storage.SQLite.AttachmentMetadataPort do
   @impl true
   def verify_physical_digests(%BackendContext{} = context, digests) when is_list(digests) do
     with {:ok, adapter} <- Context.unwrap(context) do
-      case adapter do
-        %{storage_mode: :memory} ->
+      case Map.get(adapter, :storage_mode) do
+        :memory ->
           :ok
 
         _ ->
@@ -65,19 +65,19 @@ defmodule ElixirDB.Storage.SQLite.AttachmentMetadataPort do
   defp verify_digests_on_disk(adapter, digests) do
     root = digest_root(adapter)
 
-    if is_nil(root) do
-      :ok
-    else
-      verify_each_digest(root, digests)
+    case root do
+      nil -> :ok
+      root when is_binary(root) -> verify_each_digest(root, digests)
     end
   end
 
-  defp digest_root(%{storage_mode: :memory}), do: nil
-
-  defp digest_root(%{path: path}) when is_binary(path),
-    do: Path.dirname(Path.expand(path))
-
-  defp digest_root(_), do: nil
+  defp digest_root(adapter) do
+    case {Map.get(adapter, :storage_mode), Map.get(adapter, :path)} do
+      {:memory, _path} -> nil
+      {_mode, path} when is_binary(path) -> Path.dirname(Path.expand(path))
+      _ -> nil
+    end
+  end
 
   defp verify_each_digest(root, digests) do
     Enum.reduce_while(digests, :ok, fn {digest, logical_size}, :ok ->

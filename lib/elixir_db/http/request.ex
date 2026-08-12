@@ -1,7 +1,7 @@
 defmodule ElixirDB.HTTP.Request do
   alias ElixirDB.HTTP.BodyReader
   alias ElixirDB.HTTP.Response
-  @moduledoc false
+  @moduledoc "Shared request-body and path-parameter helpers for HTTP routes."
 
   @doc """
   Reads the request body and invokes `fun.(body, conn)`.

@@ -21,6 +21,7 @@ defmodule ElixirDB.Storage.Ports do
   * `:index_candidates` — logical index definitions and candidate retrieval
   * `:view_state` — view definition/state/row fact persistence and range scans
   * `:derived_state` — derived metadata, cursors, contribution/group fact maps
+  * `:replication_jobs` — durable replication-job definitions and state
   * `:attachment_metadata` — manifests, pending protection, reachability
   * `:inspection` — normalized integrity snapshots and capability probes
 
@@ -41,6 +42,7 @@ defmodule ElixirDB.Storage.Ports do
     :index_candidates,
     :view_state,
     :derived_state,
+    :replication_jobs,
     :attachment_metadata,
     :inspection
   ]
@@ -65,6 +67,7 @@ defmodule ElixirDB.Storage.Ports do
     index_candidates: ElixirDB.Storage.Ports.IndexCandidates,
     view_state: ElixirDB.Storage.Ports.ViewState,
     derived_state: ElixirDB.Storage.Ports.DerivedState,
+    replication_jobs: ElixirDB.Storage.Ports.ReplicationJobs,
     attachment_metadata: ElixirDB.Storage.Ports.AttachmentMetadata,
     inspection: ElixirDB.Storage.Ports.Inspection
   }

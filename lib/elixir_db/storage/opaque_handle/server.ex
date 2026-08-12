@@ -1,5 +1,12 @@
 defmodule ElixirDB.Storage.OpaqueHandle.Server do
-  @moduledoc false
+  @moduledoc """
+  Private process backing `ElixirDB.Storage.OpaqueHandle`.
+
+  The server stores payloads in a private ETS table and authorizes unwrap,
+  replacement, and deletion requests from backend context modules. It is an
+  implementation detail of the storage boundary and is not a general-purpose
+  term registry.
+  """
   use GenServer
 
   @allowed_callers [

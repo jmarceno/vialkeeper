@@ -1,5 +1,5 @@
 defmodule ElixirDB.Storage.SQLite.Meta do
-  @moduledoc false
+  @moduledoc "SQLite metadata-row loading and normalized identity persistence helpers."
 
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Storage.SQLite.Connection

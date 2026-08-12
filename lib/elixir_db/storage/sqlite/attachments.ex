@@ -321,8 +321,6 @@ defmodule ElixirDB.Storage.SQLite.Attachments do
   defp bundle_root(sqlite_path) when is_binary(sqlite_path),
     do: Path.dirname(Path.expand(sqlite_path))
 
-  defp normalize_error(%ElixirDB.Error{} = error), do: error
-
   defp normalize_error(reason),
     do: ElixirDB.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
 end

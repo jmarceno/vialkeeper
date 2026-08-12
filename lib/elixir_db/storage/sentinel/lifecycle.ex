@@ -33,5 +33,5 @@ defmodule ElixirDB.Storage.Sentinel.Lifecycle do
   def capabilities(%BackendContext{capabilities: capabilities}) when is_map(capabilities),
     do: capabilities
 
-  def capabilities(_), do: %{engine: "sentinel", sql: false}
+  def capabilities(_), do: %{engine: "sentinel"}
 end

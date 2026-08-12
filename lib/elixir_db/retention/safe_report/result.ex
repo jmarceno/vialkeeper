@@ -1,5 +1,5 @@
 defmodule ElixirDB.Retention.SafeReport.Result do
-  @moduledoc false
+  @moduledoc "Result value describing whether a safe peer report advanced."
 
   @enforce_keys [:safe_source_sequence, :advanced, :reason]
   defstruct [:safe_source_sequence, :advanced, :reason]

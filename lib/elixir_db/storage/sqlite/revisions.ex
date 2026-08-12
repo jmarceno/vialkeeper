@@ -126,11 +126,18 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
           {:ok, [Revision.t()]} | {:error, ElixirDB.Error.t()}
   def load_ancestors(conn, doc_key, revision_id)
       when is_integer(doc_key) and is_binary(revision_id) do
-    walk_ancestors(conn, doc_key, revision_id, MapSet.new(), [])
+    walk_ancestors(conn, doc_key, revision_id, %{}, [])
   end
 
+  @spec walk_ancestors(
+          Connection.handle(),
+          integer(),
+          binary(),
+          %{optional(binary()) => true},
+          [Revision.t()]
+        ) :: {:ok, [Revision.t()]} | {:error, ElixirDB.Error.t()}
   defp walk_ancestors(conn, doc_key, revision_id, seen, acc) do
-    if MapSet.member?(seen, revision_id) do
+    if Map.has_key?(seen, revision_id) do
       {:error, ElixirDB.Error.integrity_violation("revision ancestry cycle detected")}
     else
       continue_ancestors(conn, doc_key, revision_id, seen, acc)
@@ -156,7 +163,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
               conn,
               doc_key,
               parent,
-              MapSet.put(seen, revision.revision_id),
+              Map.put(seen, revision.revision_id, true),
               [parent_revision | acc]
             )
 

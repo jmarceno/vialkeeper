@@ -1,5 +1,5 @@
 defmodule ElixirDB.Storage.SQLite.Checkpoints do
-  @moduledoc false
+  @moduledoc "SQLite checkpoint-record validation and canonical encoding helpers."
 
   alias ElixirDB.Domain.Checkpoint
   alias ElixirDB.MapAccess

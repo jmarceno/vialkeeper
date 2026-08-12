@@ -1,5 +1,5 @@
 defmodule ElixirDB.JSON.StrictDecoder.Legacy do
-  @moduledoc false
+  @moduledoc "Compatibility JSON decoder for callers that provide explicit limits."
 
   alias ElixirDB.JSON.StrictDecoder
 

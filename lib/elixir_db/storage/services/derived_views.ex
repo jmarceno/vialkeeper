@@ -459,10 +459,7 @@ defmodule ElixirDB.Storage.Services.DerivedViews do
 
   defp live_body_matches?(%{winning_deleted: false, body: body}, body_json)
        when not is_nil(body) do
-    case Canonical.encode(body) do
-      {:ok, ^body_json} -> true
-      _ -> false
-    end
+    match?({:ok, ^body_json}, Canonical.encode(body))
   end
 
   defp live_body_matches?(_document, _body_json), do: false

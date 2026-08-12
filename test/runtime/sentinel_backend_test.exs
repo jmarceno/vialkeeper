@@ -35,4 +35,28 @@ defmodule ElixirDB.Runtime.SentinelBackendTest do
     assert :ok = DatabaseCatalog.close(uuid)
     assert :ok = DatabaseCatalog.unregister(uuid)
   end
+
+  test "owner returns typed unsupported errors for missing storage capabilities" do
+    relative = "sentinel-unsupported-#{System.unique_integer([:positive])}.elixirdb"
+
+    assert {:ok, identity} = DatabaseCatalog.create(relative)
+    uuid = identity.database_uuid || identity["database_uuid"]
+
+    on_exit(fn ->
+      _ = DatabaseCatalog.close(uuid)
+      _ = DatabaseCatalog.unregister(uuid)
+    end)
+
+    for command <- [
+          {:command, :get_document, %{document_id: "missing"}},
+          {:command, :read_changes, %{}},
+          {:command, :execute_query, %{}},
+          {:command, :compact_retention, %{}},
+          {:command, :resolve_blob_metadata, %{digest: String.duplicate("a", 64)}},
+          {:command, :list_views, %{}}
+        ] do
+      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+               DatabaseCatalog.command(uuid, command)
+    end
+  end
 end

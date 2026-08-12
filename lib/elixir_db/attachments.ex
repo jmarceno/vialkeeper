@@ -205,8 +205,9 @@ defmodule ElixirDB.Attachments do
   Reclaims unreachable attachment blobs under the exclusive GC barrier.
 
   Short owner calls collect the live digest set and clean expired pending rows;
-  physical deletes and tmp cleanup run outside SQLite/owner admission. GC metadata
-  work uses the maintenance admission class.
+  physical deletes and temporary-file cleanup run after metadata work and
+  outside owner admission. GC metadata work uses the maintenance admission
+  class.
   """
   @spec gc(binary()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
   def gc(uuid) when is_binary(uuid) do

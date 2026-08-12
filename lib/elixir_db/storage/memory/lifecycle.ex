@@ -51,7 +51,7 @@ defmodule ElixirDB.Storage.Memory.Lifecycle do
   @impl true
   def capabilities(%BackendContext{} = context) do
     case Context.unwrap(context) do
-      {:ok, _adapter} -> %{sql: false, engine: "memory"}
+      {:ok, _adapter} -> %{engine: "memory"}
       {:error, _} -> %{}
     end
   end

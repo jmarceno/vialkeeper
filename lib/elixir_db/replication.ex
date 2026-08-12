@@ -538,7 +538,10 @@ defmodule ElixirDB.Replication do
         |> Map.put(:imported, imported)
         |> Map.put(
           :installed_source_compaction_epoch,
-          get(page, :compaction_epoch) || context.installed_source_compaction_epoch
+          max(
+            context.installed_source_compaction_epoch,
+            get(page, :compaction_epoch) || 0
+          )
         )
         |> Map.put(
           :boundaries_installed_through,

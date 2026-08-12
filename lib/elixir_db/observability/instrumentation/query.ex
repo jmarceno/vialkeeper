@@ -7,8 +7,7 @@ defmodule ElixirDB.Observability.Instrumentation.Query do
 
   Query execute is recorded from shared query services so every backend emits
   the same product signal. Index build is recorded at the backend index
-  create/rebuild entry (currently the SQLite adapter) because index DDL stays
-  backend-owned.
+  create/rebuild entry because physical index construction stays backend-owned.
   """
 
   alias ElixirDB.Observability.{Meters, Tracer}

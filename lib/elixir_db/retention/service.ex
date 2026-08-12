@@ -17,7 +17,7 @@ defmodule ElixirDB.Retention.Service do
           required(:retention_floor_sequence) => non_neg_integer(),
           required(:compaction_epoch) => non_neg_integer(),
           optional(:retention_boundary_digest) => binary() | nil,
-          optional(:config) => map()
+          required(:config) => map()
         }
 
   @type effect_meta :: %{
@@ -67,8 +67,34 @@ defmodule ElixirDB.Retention.Service do
   def decide_compaction(meta, peers, boundaries, plan_input_docs, config, now)
       when is_map(meta) and is_list(peers) and is_list(boundaries) and is_list(plan_input_docs) and
              is_map(config) do
+    decide_compaction_with_mode(
+      meta,
+      peers,
+      boundaries,
+      plan_input_docs,
+      config,
+      retention_mode(config),
+      now
+    )
+  end
+
+  @doc "Decides compaction using a caller-provided normalized retention mode."
+  @spec decide_compaction_with_mode(
+          meta(),
+          [PeerPosition.t()],
+          [map()],
+          [map()],
+          map(),
+          :disabled | :stable_frontier,
+          DateTime.t()
+        ) ::
+          {:noop, map()}
+          | {:apply, map(), CompactionPlan.t(), effect_meta()}
+          | {:error, ElixirDB.Error.t()}
+  def decide_compaction_with_mode(meta, peers, boundaries, plan_input_docs, config, mode, now)
+      when is_map(meta) and is_list(peers) and is_list(boundaries) and is_list(plan_input_docs) and
+             is_map(config) and mode in [:disabled, :stable_frontier] do
     now_ms = DateTime.to_unix(now, :millisecond)
-    mode = retention_mode(config)
     frontier = Frontier.compute(compute_frontier_input(meta, peers, mode, now))
 
     plan =

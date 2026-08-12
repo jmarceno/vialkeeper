@@ -4,7 +4,7 @@ defmodule ElixirDB.Storage.Ports.DocumentFacts do
 
   Fact-level reads and writes only. Product workflows such as local mutation,
   conflict resolution, and import orchestration belong in shared services
-  (later waves), not in this port.
+  rather than in this port.
   """
 
   alias ElixirDB.Domain.Revision

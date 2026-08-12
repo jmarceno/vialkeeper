@@ -2,8 +2,8 @@ defmodule ElixirDB.Integrity.Rules do
   @moduledoc """
   Shared logical integrity rules over a normalized storage snapshot.
 
-  Physical engine probes (PRAGMA, table presence, filesystem blobs) remain
-  backend-owned and are reported separately as backend details.
+  Engine-specific probes and external blob checks remain backend-owned and are
+  reported separately as backend details.
   """
 
   alias ElixirDB.Domain.{BoundaryPage, Checkpoint, PeerPosition, RetentionBoundary}

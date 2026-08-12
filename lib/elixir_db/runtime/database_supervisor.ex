@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.DatabaseSupervisor do
-  @moduledoc false
+  @moduledoc "Dynamic supervisor for database runtime processes."
   use DynamicSupervisor
 
   def start_link(_args \\ []), do: DynamicSupervisor.start_link(__MODULE__, [], name: __MODULE__)

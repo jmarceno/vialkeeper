@@ -1,6 +1,6 @@
 defmodule ElixirDB.HTTP.BodyReader do
   alias ElixirDB.JSON.StrictDecoder
-  @moduledoc false
+  @moduledoc "Reads and validates bounded JSON request bodies at the HTTP boundary."
 
   @doc """
   Reads and decodes a Version 1 JSON request body.

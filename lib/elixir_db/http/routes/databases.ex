@@ -1,5 +1,5 @@
 defmodule ElixirDB.HTTP.Routes.Databases do
-  @moduledoc false
+  @moduledoc "HTTP routes for database lifecycle and registration operations."
   use Plug.Router
   alias ElixirDB.HTTP.{Request, Response}
   alias ElixirDB.HTTP.Schemas

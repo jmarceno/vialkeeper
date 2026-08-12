@@ -2,8 +2,8 @@
 
 ElixirDB is a revisioned JSON document database that runs as one Elixir OTP
 application. Each database is a portable `.elixirdb` bundle on disk. Clients
-talk JSON over HTTP `/v1`, or call Elixir modules in-process. Clients never
-send SQL.
+talk JSON over HTTP `/v1`, or call Elixir modules in-process. Clients submit
+structured requests rather than backend engine commands.
 
 ```text
 Your app  ──HTTP /v1──►  ElixirDB host
@@ -46,7 +46,7 @@ Deploy, auth, TLS, copy/move, leases, and host limits: see
 
 ## What it does not do
 
-- No client SQL or raw full-text query syntax.
+- No client engine query language or raw full-text query syntax.
 - No CouchDB / PouchDB wire compatibility.
 - No automatic adoption of bundles dropped under the root (you must register).
 - No multi-database transactions or live federation streams.

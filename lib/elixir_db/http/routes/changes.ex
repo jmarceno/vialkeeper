@@ -1,5 +1,5 @@
 defmodule ElixirDB.HTTP.Routes.Changes do
-  @moduledoc false
+  @moduledoc "HTTP routes for change paging and change streaming."
   use Plug.Router
   alias ElixirDB.Changes.Request, as: ChangesRequest
   alias ElixirDB.HTTP.{Request, Response}

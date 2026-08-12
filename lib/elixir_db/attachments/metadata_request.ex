@@ -2,8 +2,8 @@ defmodule ElixirDB.Attachments.MetadataRequest do
   @moduledoc """
   Shared request decoding for attachment metadata operations.
 
-  Pure helpers used by Memory and SQLite attachment-metadata ports so digest,
-  paging, and revision-resolution rules stay identical across backends.
+  Pure helpers used by attachment-metadata ports so digest, paging, and
+  revision-resolution rules stay identical across backends.
   """
 
   alias ElixirDB.Attachments.Manifest

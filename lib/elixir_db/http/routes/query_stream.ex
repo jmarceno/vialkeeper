@@ -1,5 +1,5 @@
 defmodule ElixirDB.HTTP.Routes.QueryStream do
-  @moduledoc false
+  @moduledoc "HTTP handler for streaming query subscription events."
 
   alias ElixirDB.HTTP.{Request, Response}
   alias ElixirDB.HTTP.Schemas

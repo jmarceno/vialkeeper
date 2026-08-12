@@ -3,8 +3,8 @@ defmodule ElixirDB.Query.Predicate do
   Canonical, storage-neutral query predicate values.
 
   This module deliberately has no knowledge of HTTP, indexes, SQLite, or
-  database processes.  It is the semantic vocabulary shared by query
-  normalization and later query execution waves.
+  database processes. It is the semantic vocabulary shared by query
+  normalization and execution.
   """
 
   alias ElixirDB.Query.Regex, as: QueryRegex

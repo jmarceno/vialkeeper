@@ -1,5 +1,5 @@
 defmodule ElixirDB.TestRevisionId do
-  @moduledoc false
+  @moduledoc "Test helper for calculating revisions with shared fixture history IDs."
 
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.RevisionFixtures

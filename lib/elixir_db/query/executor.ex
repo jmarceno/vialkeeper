@@ -2,10 +2,11 @@ defmodule ElixirDB.Query.Executor do
   @moduledoc """
   Shared query execution after candidate retrieval.
 
-  Owns deadline handling, bookmark-plan validation, selector post-filtering,
+  Owns deadline handling, bookmark validation, selector post-filtering,
   full-text authoritative matching, canonical ordering, cursors, projection,
   limit/has-more assembly, and public explain shaping. Candidate gathering stays
-  behind storage ports; this module never assumes SQL, rowids, or scan order.
+  behind storage ports; this module never assumes an engine query language,
+  physical identifiers, or scan order.
   """
 
   alias ElixirDB.MapAccess
@@ -178,6 +179,7 @@ defmodule ElixirDB.Query.Executor do
     limit = page_limit(request, identity)
     selected_metadata = selected_metadata(plan)
     page_source = Enum.take(ordered, limit)
+    index_bindings = Plan.index_bindings(plan)
 
     %{
       results: projected,
@@ -190,8 +192,8 @@ defmodule ElixirDB.Query.Executor do
       index_digest: selected_metadata.definition_digest,
       plan_kind: plan.kind,
       plan_digest: plan.digest,
-      index_bindings: Plan.index_bindings(plan),
-      selected_indexes: Enum.map(Plan.index_bindings(plan), & &1.index_id),
+      index_bindings: index_bindings,
+      selected_indexes: Enum.map(index_bindings, & &1.index_id),
       last_ordering_key:
         Ordering.ordering_key(List.last(page_source), MapAccess.get(request, :sort, []))
     }

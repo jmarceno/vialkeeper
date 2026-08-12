@@ -1,5 +1,5 @@
 defmodule ElixirDB.Attachments.Compression do
-  @moduledoc false
+  @moduledoc "Streaming Zstandard helpers for attachment payloads."
 
   @zstd_buffer 64 * 1024
   @level 1

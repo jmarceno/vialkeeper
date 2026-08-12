@@ -34,7 +34,7 @@ defmodule ElixirDB.Storage.Memory.Inspection do
   end
 
   @impl true
-  def capabilities_report, do: %{sql: false, engine: "memory"}
+  def capabilities_report, do: %{engine: "memory"}
 
   @impl true
   def validate_capabilities!, do: :ok

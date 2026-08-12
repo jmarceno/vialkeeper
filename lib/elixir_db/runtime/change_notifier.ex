@@ -1,5 +1,5 @@
 defmodule ElixirDB.Runtime.ChangeNotifier do
-  @moduledoc false
+  @moduledoc "Per-database change and maintenance notification process."
   use GenServer
   alias ElixirDB.Runtime.ChildSpec
 
