@@ -462,6 +462,35 @@ Operator details (job states, transfer limits, peer auth):
 
 ---
 
+## Shadow databases (application view)
+
+A shadow is a generation-fenced, read-only materialization of one ordinary
+source database. The source stores the desired shadow definition and reports
+redacted desired/observed state; enabling or changing a definition is
+asynchronous and returns `202`.
+
+```typescript
+await putJson(`/v1/databases/${sourceUuid}/shadow`, {
+  enabled: true,
+  location: "worker-a",
+  attachment_location: "/srv/elixirdb/cas",
+});
+
+const status = await getJson(`/v1/databases/${sourceUuid}/shadow`);
+```
+
+The source API accepts only ordinary source databases. Generations and
+operation IDs fence replacement and cleanup, and status never exposes bearer
+tokens or managed storage paths. Public shadow reads are admitted only after
+the worker reports the exact generation ready; the worker control plane is
+authenticated separately from the ordinary public API and uses the bounded
+Zstandard JSON wire.
+
+Operator configuration and the worker lifecycle are documented in
+[Operations.md](Operations.md#shadow-control-and-workers).
+
+---
+
 ## Cross-database federation
 
 Query several **distinct ordinary** database UUIDs in one request. No writes,
@@ -582,6 +611,8 @@ one host are rejected. Full procedures:
 | Attachments | `…/attachments/upload`, `…/attachments/get` |
 | Views | `…/views`, `…/views/:id/{rebuild,query}` |
 | Replications | `…/replications` (+ start/cancel/enable/disable) |
+| Shadows | `…/shadow` (desired state and redacted status) |
+| Shadow control | `/v1/control-plane/capabilities`, generation provision/inspect/destroy/read routes |
 | Federation | `/v1/federation/query`, `/v1/federation/saved-queries` |
 | Materialized | `/v1/materialized-views` (+ refresh/rebuild/enable/disable) |
 | Maintenance | `…/integrity-check`, `…/compact` |

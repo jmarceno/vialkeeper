@@ -446,6 +446,49 @@ What replicates vs what stays local: see [README.md](README.md#replication-appli
 
 ---
 
+## Shadow control and workers
+
+Shadow control is disabled by default. A source host can manage a
+generation-fenced read-only shadow through its source-side
+`/v1/databases/:uuid/shadow` route when `[shadow_controller].enabled = true`.
+The request is asynchronous: `PUT` persists desired state and queues local
+reconciliation, while `GET` returns redacted desired/observed state. The
+source route accepts only ordinary source databases and does not expose
+tokens or managed filesystem paths.
+
+The worker side is configured independently:
+
+```toml
+[shadow_worker]
+enabled = true
+storage_root = "shadows"                 # relative to the database root
+control_token_digests = ["<sha256-digest>"]
+allowed_attachment_roots = ["/srv/elixirdb/cas"]
+allowed_source_origins = ["https://source.example"]
+```
+
+`control_token_digests` authenticates only `/v1/control-plane/...`; it is
+intentionally separate from `[auth].tokens`. The control plane accepts and
+returns bounded Zstandard JSON frames, and its routes are not part of the
+ordinary public shadow API. Managed bundles are derived from the exact source
+UUID, shadow UUID, and generation; the worker keeps a journal and validates
+that the bundle path remains beneath `storage_root` before inspect or destroy.
+
+For a remote worker, add a named `[[shadow_controller.location]]` with
+`kind = "remote"`, `control_base_url`, `control_bearer_token`,
+`control_timeout_ms`, and `read_timeout_ms`. Local locations omit remote
+fields. The source's `source_base_url` and `source_bearer_token` are used for
+source-side worker operations and must be kept as secrets. Attachment roots
+are existing external CAS directories; ElixirDB does not copy them into the
+shadow bundle.
+
+The worker lifecycle is `bootstrapping` until a later replication proof marks
+the exact generation ready. A failed or incompatible control request leaves
+the source route unready and never makes a partially provisioned generation
+public.
+
+---
+
 ## Live subscriptions (ops)
 
 `POST /v1/databases/:uuid/query/stream` (NDJSON). Host ceilings:

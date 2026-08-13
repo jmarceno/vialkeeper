@@ -9,8 +9,11 @@ defmodule ElixirDB.Shadow.Supervisor do
     children = [
       {ElixirDB.Shadow.Registry, opts},
       {ElixirDB.Shadow.RouteTable, opts},
+      {Registry, keys: :unique, name: ElixirDB.Shadow.ControllerRegistry},
       {ElixirDB.Shadow.ControllerSupervisor, opts},
-      {ElixirDB.Shadow.ControlTaskSupervisor, opts}
+      {ElixirDB.Shadow.ControlTaskSupervisor, opts},
+      {ElixirDB.Shadow.WorkerRegistry, opts},
+      {ElixirDB.Shadow.WorkerSupervisor, opts}
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)

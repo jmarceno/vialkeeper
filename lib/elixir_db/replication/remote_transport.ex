@@ -8,8 +8,22 @@ defmodule ElixirDB.Replication.RemoteTransport do
   alias ElixirDB.Replication.WireCompression
 
   def request(base_url, method, path, body \\ nil, auth_token \\ nil) do
-    with {:ok, options} <- request_options(base_url, method, path, body, auth_token) do
-      timeout = ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
+    request(
+      base_url,
+      method,
+      path,
+      body,
+      auth_token,
+      ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
+    )
+  end
+
+  @doc "Executes a request with an explicit bounded receive timeout."
+  @spec request(binary(), atom(), binary(), map() | nil, binary() | nil, pos_integer()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def request(base_url, method, path, body, auth_token, timeout)
+      when is_integer(timeout) and timeout > 0 do
+    with {:ok, options} <- request_options(base_url, method, path, body, auth_token, timeout) do
       otel_ctx = OpenTelemetry.Ctx.get_current()
       task = request_task(options, otel_ctx)
       handle_task_result(Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill))
@@ -153,7 +167,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
     ]
   end
 
-  defp request_options(base_url, method, path, body, auth_token) do
+  defp request_options(base_url, method, path, body, auth_token, timeout) do
     trace_headers = trace_headers()
     auth_headers = auth_headers(auth_token)
 
@@ -161,8 +175,8 @@ defmodule ElixirDB.Replication.RemoteTransport do
       method: method,
       url: String.trim_trailing(base_url, "/") <> path,
       retry: false,
-      receive_timeout: 30_000,
-      connect_options: [timeout: 5_000],
+      receive_timeout: timeout,
+      connect_options: [timeout: min(timeout, 5_000)],
       decode_body: false,
       compressed: false,
       headers: json_request_headers(auth_headers, trace_headers)

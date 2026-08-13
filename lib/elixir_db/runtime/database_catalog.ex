@@ -924,13 +924,29 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp close_runtime(uuid) do
     # Prefer checking external close blockers before begin_close. Active
     # replication remains a hard blocker; callers must disable jobs first.
-    with :ok <- DerivedViewManager.ensure_closable(uuid),
+    with :ok <- ensure_kind_closeable(uuid),
          false <- JobManager.active?(uuid),
          :ok <- drain_admission(uuid) do
       close_runtime_after_admission_drain(uuid)
     else
       true ->
         {:error, ElixirDB.Error.database_not_closable("database has active replication jobs")}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp ensure_kind_closeable(uuid) do
+    case DatabaseOwner.command_with_context(
+           uuid,
+           CommandContext.shadow_control(shadow_database_uuid: uuid),
+           {:command, :identity, %{}}
+         ) do
+      {:ok, identity} ->
+        if identity_kind(identity) == :shadow,
+          do: :ok,
+          else: DerivedViewManager.ensure_closable(uuid)
 
       {:error, _} = error ->
         error

@@ -39,17 +39,11 @@ defmodule ElixirDB.HTTP.AuthPlug do
       public_web_ui_request?(conn) ->
         conn
 
-      Keyword.get(auth, :enabled, false) ->
-        token_digests = Keyword.get(auth, :token_digests, [])
+      control_plane_request?(conn) ->
+        authenticate(conn, control_token_digests())
 
-        with [header | _] <- get_req_header(conn, "authorization"),
-             token when is_binary(token) <- extract_bearer(header),
-             digest <- digest(token),
-             true <- matches_any?(digest, token_digests) do
-          conn
-        else
-          _ -> unauthorized(conn)
-        end
+      Keyword.get(auth, :enabled, false) ->
+        authenticate(conn, Keyword.get(auth, :token_digests, []))
 
       true ->
         conn
@@ -63,6 +57,11 @@ defmodule ElixirDB.HTTP.AuthPlug do
       conn.method in ["GET", "HEAD"] and
       public_web_ui_path?(conn.request_path)
   end
+
+  @doc false
+  @spec control_plane_request?(Plug.Conn.t()) :: boolean()
+  def control_plane_request?(conn),
+    do: String.starts_with?(conn.request_path, "/v1/control-plane")
 
   defp public_web_ui_path?("/ui"), do: true
   defp public_web_ui_path?("/ui/"), do: true
@@ -98,6 +97,22 @@ defmodule ElixirDB.HTTP.AuthPlug do
     Enum.any?(token_digests, fn configured ->
       is_binary(configured) and Plug.Crypto.secure_compare(digest, configured)
     end)
+  end
+
+  defp control_token_digests do
+    worker = Application.get_env(:elixir_db, :shadow_worker, [])
+    Keyword.get(worker, :control_token_digests, [])
+  end
+
+  defp authenticate(conn, token_digests) do
+    with [header | _] <- get_req_header(conn, "authorization"),
+         token when is_binary(token) <- extract_bearer(header),
+         digest <- digest(token),
+         true <- matches_any?(digest, token_digests) do
+      conn
+    else
+      _ -> unauthorized(conn)
+    end
   end
 
   defp unauthorized(conn) do

@@ -1,6 +1,6 @@
 defmodule ElixirDB.HTTP.ReplicationWirePlug do
   @moduledoc """
-  Registers response compression for remote replication JSON.
+  Registers response compression for remote replication and shadow control JSON.
 
   Path-scoped to `/v1/databases/<segment>/replication` without validating the
   database UUID. Does not read or decompress the request body; authorization
@@ -45,6 +45,9 @@ defmodule ElixirDB.HTTP.ReplicationWirePlug do
   @spec wire_path?(binary()) :: boolean()
   def wire_path?(path) when is_binary(path) do
     case String.split(path, "/", parts: 6) do
+      ["", "v1", "control-plane" | _rest] ->
+        true
+
       ["", "v1", "databases", segment, "replication"] when segment != "" ->
         true
 
