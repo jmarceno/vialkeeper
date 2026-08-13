@@ -64,7 +64,7 @@ defmodule ElixirDB.Storage.SQLite.Transaction do
         ) :: {:ok, term()} | {:error, ElixirDB.Error.t()}
   def run_snapshot_on_adapter(%Adapter{conn: conn} = adapter, fun) when is_function(fun, 1) do
     if Process.get({@snapshot_key, conn}) do
-      {:error, ElixirDB.Error.internal_error("nested read snapshot is not allowed")}
+      fun.(adapter)
     else
       Process.put({@snapshot_key, conn}, true)
 

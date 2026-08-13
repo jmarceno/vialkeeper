@@ -362,15 +362,17 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def get_document(%__MODULE__{} = adapter, request) when is_map(request) do
-    document_id = MapAccess.get(request, :document_id)
-    revision_id = MapAccess.get(request, :revision)
-    include_conflicts = MapAccess.get(request, :include_conflicts, false)
+    Transaction.run_snapshot_on_adapter(adapter, fn snap ->
+      document_id = MapAccess.get(request, :document_id)
+      revision_id = MapAccess.get(request, :revision)
+      include_conflicts = MapAccess.get(request, :include_conflicts, false)
 
-    if is_nil(revision_id) and not include_conflicts do
-      winner_get(adapter, document_id)
-    else
-      lookup_document(adapter, document_id, revision_id, include_conflicts)
-    end
+      if is_nil(revision_id) and not include_conflicts do
+        winner_get(snap, document_id)
+      else
+        lookup_document(snap, document_id, revision_id, include_conflicts)
+      end
+    end)
   end
 
   def get_document(_adapter, _request),
@@ -378,13 +380,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def get_revision(%__MODULE__{} = adapter, request) when is_map(request) do
-    document_id = MapAccess.get(request, :document_id)
-    revision_id = MapAccess.get(request, :revision_id)
+    Transaction.run_snapshot_on_adapter(adapter, fn snap ->
+      document_id = MapAccess.get(request, :document_id)
+      revision_id = MapAccess.get(request, :revision_id)
 
-    with {:ok, doc} <- Documents.find(adapter.conn, document_id),
-         {:ok, revision} <- Revisions.find(adapter.conn, doc.doc_key, revision_id) do
-      {:ok, Documents.to_result(doc, revision, [])}
-    end
+      with {:ok, doc} <- Documents.find(snap.conn, document_id),
+           {:ok, revision} <- Revisions.find(snap.conn, doc.doc_key, revision_id) do
+        {:ok, Documents.to_result(doc, revision, [])}
+      end
+    end)
   end
 
   def get_revision(_adapter, _request),
