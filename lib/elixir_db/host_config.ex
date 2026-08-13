@@ -249,9 +249,13 @@ defmodule ElixirDB.HostConfig do
   end
 
   defp parse(contents) do
-    case Toml.decode(contents) do
-      {:ok, map} when is_map(map) -> {:ok, map}
-      {:error, reason} -> {:error, "host.toml parse error: #{inspect(reason)}"}
+    if String.valid?(contents) do
+      case Toml.decode(contents) do
+        {:ok, map} when is_map(map) -> {:ok, map}
+        {:error, reason} -> {:error, "host.toml parse error: #{inspect(reason)}"}
+      end
+    else
+      {:error, "host.toml parse error: contents are not valid UTF-8"}
     end
   end
 

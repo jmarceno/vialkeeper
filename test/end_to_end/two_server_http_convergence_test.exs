@@ -18,7 +18,18 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   alias ElixirDB.Replication.Id
   alias ElixirDB.Replication.JobManager
   alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.TestReplicationWire
   alias ElixirDB.TestServer
+
+  @replay_header_names [
+    "accept",
+    "accept-encoding",
+    "content-type",
+    "content-encoding",
+    "x-elixirdb-uncompressed-length",
+    "content-length"
+  ]
+
   @tag :slow
   test "two Bandit servers converge over remote wire across mid-replication restart" do
     root = ElixirDB.Config.database_root()
@@ -744,6 +755,109 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   end
 
   @tag :slow
+  test "replaying an imported revision batch is idempotent and preserves convergence" do
+    {:ok, captures} = Agent.start_link(fn -> [] end)
+
+    capture_import = fn request ->
+      if request.method == "POST" and
+           String.ends_with?(request.path, "/replication/revisions/put") do
+        Agent.update(captures, &[request | &1])
+      end
+    end
+
+    {server_a, server_b, a_uuid, b_uuid} =
+      start_server_pair!("e2e-import-replay", request_body_hook: capture_import)
+
+    revisions =
+      for n <- 1..3, into: %{} do
+        id = "replay-#{n}"
+        assert {:ok, %{"revision" => revision}} = put_document!(server_a, a_uuid, id, %{"n" => n})
+        {id, revision}
+      end
+
+    assert {:ok, %{"job_id" => job_id}} =
+             put_replication_job!(server_a, a_uuid, %{
+               "persist" => true,
+               "mode" => "one_shot",
+               "direction" => "push",
+               "enabled" => true,
+               "endpoint" => %{
+                 "kind" => "remote",
+                 "database_uuid" => b_uuid,
+                 "base_url" => server_b.base_url
+               }
+             })
+
+    start_job!(a_uuid, job_id)
+    await_job_state(a_uuid, job_id, :completed)
+
+    for {id, revision} <- revisions do
+      wait_for_document!(server_b, b_uuid, id, revision, %{
+        "n" => id |> String.replace_prefix("replay-", "") |> String.to_integer()
+      })
+    end
+
+    assert {:ok, replication_id} = Id.calculate(a_uuid, b_uuid, "push", "one_shot")
+    source_sequence = source_sequence!(a_uuid)
+    await_checkpoint(a_uuid, replication_id, source_sequence)
+    await_checkpoint(b_uuid, replication_id, source_sequence)
+    assert_leaf_sets_equal!(a_uuid, b_uuid)
+
+    assert [captured | _] = captures |> Agent.get(&Enum.reverse/1)
+    replay_headers = replay_headers!(captured.headers, captured.body)
+    observable_before = replay_observable_state!(server_b, a_uuid, b_uuid, replication_id)
+    assert map_size(observable_before.target.documents) == 3
+
+    assert {:ok, replay_response} =
+             Req.post(server_b.base_url <> captured.path,
+               body: captured.body,
+               headers: replay_headers,
+               decode_body: false,
+               compressed: false,
+               retry: false
+             )
+
+    replay_body =
+      TestReplicationWire.decode_response(replay_response.headers, replay_response.body)
+
+    assert replay_response.status == 200
+
+    assert %{
+             "data" => %{
+               "documents_changed" => 0,
+               "revisions_inserted" => 0
+             }
+           } = replay_body
+
+    assert replay_observable_state!(server_b, a_uuid, b_uuid, replication_id) ==
+             observable_before
+
+    assert_leaf_sets_equal!(a_uuid, b_uuid)
+
+    assert {:ok, %{"revision" => later_revision}} =
+             put_document!(server_a, a_uuid, "after-replay", %{"n" => 4})
+
+    assert {:ok, %{"job_id" => later_job_id}} =
+             put_replication_job!(server_a, a_uuid, %{
+               "persist" => true,
+               "mode" => "one_shot",
+               "direction" => "push",
+               "enabled" => true,
+               "endpoint" => %{
+                 "kind" => "remote",
+                 "database_uuid" => b_uuid,
+                 "base_url" => server_b.base_url
+               }
+             })
+
+    start_job!(a_uuid, later_job_id)
+    await_job_state(a_uuid, later_job_id, :completed)
+    wait_for_document!(server_b, b_uuid, "after-replay", later_revision, %{"n" => 4})
+    assert b_uuid |> public_documents!(server_b) |> map_size() == 4
+    assert_leaf_sets_equal!(a_uuid, b_uuid)
+  end
+
+  @tag :slow
   test "one-shot remote pull preserves raw and zstd representations byte for byte" do
     {server_a, server_b, a_uuid, b_uuid} = start_server_pair!("e2e-repr")
 
@@ -892,7 +1006,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     assert blob_file_bytes!(b_uuid, digest) == original
   end
 
-  defp start_server_pair!(prefix_base) do
+  defp start_server_pair!(prefix_base, server_b_opts \\ []) do
     root = ElixirDB.Config.database_root()
     prefix = "#{prefix_base}-#{System.unique_integer([:positive])}"
     a_path = prefix <> "-a.elixirdb"
@@ -903,7 +1017,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     end
 
     server_a = TestServer.start_supervised!()
-    server_b = TestServer.start_supervised!()
+    server_b = TestServer.start_supervised!(server_b_opts)
     a_uuid = create_database!(server_a, a_path)
     b_uuid = create_database!(server_b, b_path)
 
@@ -1057,6 +1171,92 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
       other ->
         other
     end
+  end
+
+  defp replay_observable_state!(server, source_uuid, target_uuid, replication_id) do
+    target_changes = changes_results!(target_uuid)
+
+    %{
+      source_checkpoint: checkpoint_record!(source_uuid, replication_id),
+      target: %{
+        documents: public_documents!(target_uuid, server, target_changes),
+        current_sequence: source_sequence!(target_uuid),
+        leaves: leaf_map(target_changes),
+        checkpoint: checkpoint_record!(target_uuid, replication_id)
+      }
+    }
+  end
+
+  defp checkpoint_record!(uuid, replication_id) do
+    assert {:ok, %{version: record_version, value: value} = record} =
+             DatabaseCatalog.command(
+               uuid,
+               {:command, :get_local_record, "checkpoints", replication_id}
+             )
+
+    assert is_integer(record_version) and record_version > 0
+    assert MapAccess.get(value, :replication_id) == replication_id
+    assert is_integer(MapAccess.get(value, :checkpoint_version))
+    assert is_integer(MapAccess.get(value, :source_sequence))
+    assert is_list(MapAccess.get(value, :history))
+    assert is_binary(MapAccess.get(value, :source_history_epoch))
+    assert is_integer(MapAccess.get(value, :source_compaction_epoch))
+    assert is_integer(MapAccess.get(value, :safe_source_sequence))
+    assert is_integer(MapAccess.get(value, :installed_source_compaction_epoch))
+    record
+  end
+
+  defp public_documents!(uuid, server, changes \\ nil) do
+    changes = changes || changes_results!(uuid)
+
+    changes
+    |> Enum.map(&MapAccess.get(&1, :document_id))
+    |> Enum.sort()
+    |> Map.new(fn id ->
+      assert {:ok, %{status: 200, body: %{"data" => document}}} =
+               Req.post(server.base_url <> "/v1/databases/#{uuid}/documents/get",
+                 json: %{"id" => id, "include_conflicts" => true}
+               )
+
+      assert %{
+               "id" => ^id,
+               "revision" => revision,
+               "deleted" => deleted,
+               "body" => body,
+               "sequence" => sequence,
+               "attachments" => attachments,
+               "conflicts" => conflicts
+             } = document
+
+      assert is_binary(revision)
+      assert is_boolean(deleted)
+      assert is_nil(body) or is_map(body)
+      assert is_integer(sequence)
+      assert is_map(attachments)
+      assert is_list(conflicts)
+      {id, document}
+    end)
+  end
+
+  defp replay_headers!(headers, body) do
+    replay_headers =
+      Enum.map(@replay_header_names, fn name ->
+        assert [value] =
+                 for(
+                   {key, value} <- headers,
+                   String.downcase(to_string(key)) == name,
+                   do: value
+                 )
+
+        {name, value}
+      end)
+
+    assert {"content-encoding", "zstd"} in replay_headers
+    assert {"accept-encoding", "zstd"} in replay_headers
+
+    assert {"content-length", Integer.to_string(byte_size(body))} in replay_headers
+    assert byte_size(body) > 0
+    replay_headers
   end
 
   defp assert_leaf_sets_equal!(source_uuid, target_uuid) do

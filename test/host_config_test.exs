@@ -5,9 +5,11 @@ defmodule ElixirDB.HostConfigTest do
   and the template/defaults drift test.
   """
   use ExUnit.Case, async: false
+  use ExUnitProperties
 
   alias ElixirDB.Federation.SavedQueries
   alias ElixirDB.HostConfig
+  alias ElixirDB.TestSupport.GarbageGenerators
 
   # SHA-256 digest of a known token, used by auth round-trip cases.
   @known_token "deadbeef" <> String.duplicate("00", 28)
@@ -62,6 +64,60 @@ defmodule ElixirDB.HostConfigTest do
 
     assert {:ok, _} = HostConfig.load_from(nested)
     assert File.exists?(Path.join(nested, "host.toml"))
+  end
+
+  test "non-UTF-8 host.toml returns an error", %{dir: dir} do
+    write_config(dir, <<255, 254, 253, 0>>)
+
+    assert {:error, message} = HostConfig.load_from(dir)
+    assert is_binary(message)
+  end
+
+  test "truncated TOML returns an error", %{dir: dir} do
+    write_config(dir, "[listener]\nip = \"127.0.0.1")
+
+    assert {:error, message} = HostConfig.load_from(dir)
+    assert is_binary(message)
+  end
+
+  test "scalar listener returns a field error", %{dir: dir} do
+    write_config(dir, "listener = \"127.0.0.1:4000\"\n")
+
+    assert {:error, message} = HostConfig.load_from(dir)
+    assert String.contains?(message, "[listener] must be a table")
+  end
+
+  test "empty host.toml applies compiled defaults", %{dir: dir} do
+    write_config(dir, "")
+
+    assert {:ok, config} = HostConfig.load_from(dir)
+    assert {:ok, defaults} = HostConfig.load_from(Path.join(dir, "template-defaults"))
+    assert config == defaults
+  end
+
+  test "host.toml directory returns a read error", %{dir: dir} do
+    assert :ok = File.mkdir(host_toml(dir))
+
+    assert {:error, message} = HostConfig.load_from(dir)
+    assert is_binary(message)
+    assert String.contains?(message, "cannot read")
+  end
+
+  @tag :slow
+  property "mutated shipped host.toml never raises and preserves the result contract", %{dir: dir} do
+    template =
+      :code.priv_dir(:elixir_db)
+      |> Path.join("host.toml")
+      |> File.read!()
+
+    check all(contents <- GarbageGenerators.mutated_binary(template), max_runs: 100) do
+      write_config(dir, contents)
+
+      case HostConfig.load_from(dir) do
+        {:ok, config} -> assert Keyword.keyword?(config)
+        {:error, message} -> assert is_binary(message)
+      end
+    end
   end
 
   test "default load yields loopback listener and disabled auth/tls", %{dir: dir} do

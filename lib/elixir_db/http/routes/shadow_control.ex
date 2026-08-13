@@ -6,6 +6,7 @@ defmodule ElixirDB.HTTP.Routes.ShadowControl do
   alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Shadow.{Protocol, Worker}
 
+  @max_generation Protocol.max_generation()
   @provision_fields ~w(source_uuid shadow_uuid generation operation_id attachment_store_type attachment_location specification_digest source_base_url source_bearer_token)
   @read_fields ~w(source_uuid shadow_uuid generation operation_id id document_id revision include_conflicts requests name)
 
@@ -143,8 +144,11 @@ defmodule ElixirDB.HTTP.Routes.ShadowControl do
 
   defp parse_generation(value) when is_binary(value) do
     case Integer.parse(value) do
-      {generation, ""} when generation > 0 -> {:ok, generation}
-      _ -> {:error, ElixirDB.Error.invalid_request("shadow generation must be positive")}
+      {generation, ""} when generation > 0 and generation <= @max_generation ->
+        {:ok, generation}
+
+      _ ->
+        {:error, ElixirDB.Error.invalid_request("shadow generation must be positive")}
     end
   end
 

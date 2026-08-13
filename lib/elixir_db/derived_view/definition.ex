@@ -36,7 +36,8 @@ defmodule ElixirDB.DerivedView.Definition do
   def normalize(definition, opts \\ [])
 
   def normalize(definition, opts) when is_map(definition) and is_list(opts) do
-    with :ok <- Normalizer.validate_key_collisions(definition),
+    with :ok <- validate_plain_data(definition),
+         :ok <- Normalizer.validate_key_collisions(definition),
          definition <- stringify_keys(definition),
          :ok <- known_fields(definition),
          :ok <- validate_version(Map.get(definition, "version", 1)),
@@ -121,6 +122,29 @@ defmodule ElixirDB.DerivedView.Definition do
       else:
         {:error,
          ElixirDB.Error.invalid_request("materialized view definition contains an unknown field")}
+  end
+
+  defp validate_plain_data(value) when is_struct(value),
+    do:
+      {:error,
+       ElixirDB.Error.invalid_request("materialized view definition must contain JSON data")}
+
+  defp validate_plain_data(value) when is_map(value) do
+    value
+    |> :maps.values()
+    |> validate_plain_values()
+  end
+
+  defp validate_plain_data(value) when is_list(value), do: validate_plain_values(value)
+  defp validate_plain_data(_value), do: :ok
+
+  defp validate_plain_values(values) do
+    Enum.reduce_while(values, :ok, fn value, :ok ->
+      case validate_plain_data(value) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp validate_version(1), do: :ok
