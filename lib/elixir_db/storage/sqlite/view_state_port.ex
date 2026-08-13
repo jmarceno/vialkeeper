@@ -13,7 +13,8 @@ defmodule ElixirDB.Storage.SQLite.ViewStatePort do
 
   @impl true
   def list_views(%BackendContext{} = context) do
-    with {:ok, adapter} <- Context.unwrap(context), do: Errors.wrap(Views.list(adapter.conn))
+    with {:ok, adapter} <- Context.unwrap(context),
+         do: Errors.wrap(Views.list(adapter.conn, cache: not adapter.reader?))
   end
 
   @impl true

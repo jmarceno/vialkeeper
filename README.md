@@ -590,7 +590,9 @@ Public errors use stable codes (`revision_conflict`, `database_overloaded`,
 Host ceilings live in `host.toml` `[limits]`. Per-database config
 (`GET`/`PUT /v1/databases/:uuid/config`) can only be **more** restrictive.
 Common caps: document size, query results, changes batch, attachment size,
-subscription membership, view counts.
+subscription membership, view counts. Open disk databases serve classified
+reads from a bounded snapshot pool (`read_pool_size` / `read_queue_limit`);
+writes stay on one owner connection.
 
 When a limit is hit you typically see `resource_limit`, `payload_too_large`,
 `database_overloaded`, `subscription_overloaded`, or

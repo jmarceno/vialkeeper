@@ -8,7 +8,7 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder, Stringify}
   alias ElixirDB.MapAccess
-  alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, StructuredIndexes}
+  alias ElixirDB.Storage.SQLite.{Connection, FullTextIndexes, ProcessResultCache, StructuredIndexes}
 
   @list_cache_key :elixir_db_sqlite_index_catalog
   @ready_cache_key :elixir_db_sqlite_ready_index_catalog
@@ -18,38 +18,38 @@ defmodule ElixirDB.Storage.SQLite.IndexCatalog do
   Lists all logical index definitions with adapter metadata attached.
   """
   @spec list(Connection.handle()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
-  def list(conn) do
-    case Process.get({@list_cache_key, conn}) do
-      {:ok, _indexes} = cached ->
-        cached
+  def list(conn),
+    do: ProcessResultCache.fetch({@list_cache_key, conn}, true, fn -> load_list(conn) end)
 
-      nil ->
-        result =
-          case Connection.query(
-                 conn,
-                 "SELECT index_id, definition_json, definition_digest, lifecycle_state, adapter_metadata_json FROM index_definitions ORDER BY index_id"
-               ) do
-            {:ok, rows} ->
-              {:ok,
-               Enum.map(rows, fn [id, json, digest_value, state, metadata_json] ->
-                 definition = decode_json!(json)
-                 metadata = decode_json!(metadata_json)
+  @spec list(Connection.handle(), keyword()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
+  def list(conn, opts) when is_list(opts) do
+    ProcessResultCache.fetch({@list_cache_key, conn}, Keyword.get(opts, :cache, true), fn ->
+      load_list(conn)
+    end)
+  end
 
-                 definition
-                 |> Map.merge(%{
-                   "index_id" => id,
-                   "definition_digest" => digest_value,
-                   "lifecycle_state" => state,
-                   "_metadata" => metadata
-                 })
-               end)}
+  defp load_list(conn) do
+    case Connection.query(
+           conn,
+           "SELECT index_id, definition_json, definition_digest, lifecycle_state, adapter_metadata_json FROM index_definitions ORDER BY index_id"
+         ) do
+      {:ok, rows} ->
+        {:ok,
+         Enum.map(rows, fn [id, json, digest_value, state, metadata_json] ->
+           definition = decode_json!(json)
+           metadata = decode_json!(metadata_json)
 
-            {:error, reason} ->
-              {:error, normalize_error(reason)}
-          end
+           definition
+           |> Map.merge(%{
+             "index_id" => id,
+             "definition_digest" => digest_value,
+             "lifecycle_state" => state,
+             "_metadata" => metadata
+           })
+         end)}
 
-        if match?({:ok, _}, result), do: Process.put({@list_cache_key, conn}, result)
-        result
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
     end
   end
 

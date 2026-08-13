@@ -1193,12 +1193,6 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
           {:error, :not_found} ->
             stop_read_pool_process(uuid)
-
-          {:error, reason} ->
-            {:error,
-             ElixirDB.Error.internal_error("database read pool shutdown failed during close", %{
-               cause: inspect(reason)
-             })}
         end
 
       nil ->

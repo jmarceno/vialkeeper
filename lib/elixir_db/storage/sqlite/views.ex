@@ -9,39 +9,36 @@ defmodule ElixirDB.Storage.SQLite.Views do
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.MapAccess
-  alias ElixirDB.Storage.SQLite.{Connection, TermBlob}
+  alias ElixirDB.Storage.SQLite.{Connection, ProcessResultCache, TermBlob}
   alias ElixirDB.UUID
   alias ElixirDB.View.KeyCodec
 
   @list_cache_key :elixir_db_sqlite_view_catalog
 
   @spec list(Connection.handle()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
-  def list(conn) do
-    case Process.get({@list_cache_key, conn}) do
-      {:ok, _views} = cached ->
-        cached
+  @spec list(Connection.handle(), keyword()) :: {:ok, [map()]} | {:error, ElixirDB.Error.t()}
+  def list(conn, opts \\ []) when is_list(opts) do
+    ProcessResultCache.fetch({@list_cache_key, conn}, Keyword.get(opts, :cache, true), fn ->
+      load_list(conn)
+    end)
+  end
 
-      nil ->
-        result =
-          case Connection.query(
-                 conn,
-                 """
-                 SELECT d.view_id, d.name, d.definition_json, d.definition_digest, d.created_at,
-                        s.active_generation, s.building_generation, s.indexed_through, s.status, s.last_error_code
-                 FROM view_definitions AS d
-                 JOIN view_state AS s ON s.view_id = d.view_id
-                 ORDER BY d.name
-                 """
-               ) do
-            {:ok, rows} ->
-              {:ok, Enum.map(rows, &view_list_entry/1)}
+  defp load_list(conn) do
+    case Connection.query(
+           conn,
+           """
+           SELECT d.view_id, d.name, d.definition_json, d.definition_digest, d.created_at,
+                  s.active_generation, s.building_generation, s.indexed_through, s.status, s.last_error_code
+           FROM view_definitions AS d
+           JOIN view_state AS s ON s.view_id = d.view_id
+           ORDER BY d.name
+           """
+         ) do
+      {:ok, rows} ->
+        {:ok, Enum.map(rows, &view_list_entry/1)}
 
-            {:error, reason} ->
-              {:error, normalize_error(reason)}
-          end
-
-        if match?({:ok, _}, result), do: Process.put({@list_cache_key, conn}, result)
-        result
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
     end
   end
 

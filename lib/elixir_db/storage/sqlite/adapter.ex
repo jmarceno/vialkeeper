@@ -537,7 +537,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   @impl true
-  def list_indexes(%__MODULE__{conn: conn}), do: IndexCatalog.list(conn)
+  def list_indexes(%__MODULE__{conn: conn} = adapter),
+    do: IndexCatalog.list(conn, cache: not adapter.reader?)
 
   @impl true
   def execute_query(%__MODULE__{} = adapter, request) when is_map(request) do

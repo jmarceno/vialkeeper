@@ -4,7 +4,6 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
 
   alias ElixirDB.Eventual
   alias ElixirDB.Query.Subscriptions
-  alias ElixirDB.Replication.LocalEndpoint
 
   alias ElixirDB.Runtime.{
     AdmissionModel,
@@ -459,23 +458,47 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
   defp spawn_real_path_request!(uuid, :foreground) do
     {:ok, _} =
       Task.start(fn ->
-        _ = DatabaseCatalog.command(uuid, {:command, :identity, %{}})
+        _ =
+          DatabaseCatalog.command(
+            uuid,
+            {:command, :put,
+             %{
+               document_id: "fg-#{System.unique_integer([:positive])}",
+               body: %{"n" => 1}
+             }}
+          )
       end)
   end
 
   defp spawn_real_path_request!(uuid, :subscription) do
     {:ok, _} =
       Task.start(fn ->
-        _ = DatabaseCatalog.command_as(uuid, :subscription, {:command, :identity, %{}})
+        _ =
+          DatabaseCatalog.command_as(
+            uuid,
+            :subscription,
+            {:command, :put,
+             %{
+               document_id: "sub-#{System.unique_integer([:positive])}",
+               body: %{"n" => 1}
+             }}
+          )
       end)
   end
 
   defp spawn_real_path_request!(uuid, :replication) do
-    {:ok, endpoint} = LocalEndpoint.new(uuid)
-
     {:ok, _} =
       Task.start(fn ->
-        _ = LocalEndpoint.identity(endpoint)
+        _ =
+          DatabaseCatalog.command_as(
+            uuid,
+            :replication,
+            {:command, :put,
+             %{
+               document_id: "repl-#{System.unique_integer([:positive])}",
+               body: %{"n" => 1}
+             }}
+          )
       end)
   end
 
@@ -984,14 +1007,21 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
                     ^foreground_victim},
                    5_000
 
-    # Real replication helper path (LocalEndpoint → command_as :replication), not a
-    # synthetic execute_owner(:replication) probe.
-    {:ok, endpoint} = LocalEndpoint.new(uuid)
-
+    # Real replication catalog path (command_as :replication). Identity is a
+    # classified read and no longer occupies the writer scheduler.
     replication_helper =
       spawn(fn ->
         try do
-          _ = LocalEndpoint.identity(endpoint)
+          _ =
+            DatabaseCatalog.command_as(
+              uuid,
+              :replication,
+              {:command, :put,
+               %{
+                 document_id: "repl-#{System.unique_integer([:positive])}",
+                 body: %{"n" => 1}
+               }}
+            )
         catch
           :exit, _ -> :ok
         end

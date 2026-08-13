@@ -24,7 +24,7 @@ defmodule ElixirDB.Runtime.ReadPoolSupervisor do
   def start_link({uuid, pool_size, queue_limit}),
     do: Supervisor.start_link(__MODULE__, {uuid, pool_size, queue_limit}, name: via(uuid))
 
-  def via(uuid),
+  defp via(uuid),
     do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:read_pool_supervisor, uuid}}}
 
   @impl true

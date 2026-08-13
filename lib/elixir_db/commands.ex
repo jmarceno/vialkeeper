@@ -487,6 +487,7 @@ defmodule ElixirDB.Commands do
   def normalize({:command, :delete_index, index_id}), do: %DeleteIndex{index_id: index_id}
   def normalize({:command, :rebuild_index, index_id}), do: %RebuildIndex{index_id: index_id}
   def normalize({:command, :query, request}), do: %ExecuteQuery{request: request}
+  def normalize({:command, :execute_query, request}), do: %ExecuteQuery{request: request}
 
   def normalize({:command, :execute_subscription_snapshot, request}),
     do: %ExecuteSubscriptionSnapshot{request: request}

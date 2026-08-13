@@ -82,10 +82,10 @@ defmodule ElixirDB.Runtime.ReadPool do
 
   @spec enabled?(binary()) :: boolean()
   def enabled?(uuid) when is_binary(uuid) do
-    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid}) do
-      [{_pid, :enabled}] -> true
-      _ -> false
-    end
+    match?(
+      [{_pid, :enabled}],
+      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid})
+    )
   end
 
   @spec execute(binary(), ServiceClass.t(), term(), Deadline.t()) :: term() | {:error, Error.t()}

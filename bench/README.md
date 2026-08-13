@@ -50,8 +50,35 @@ dataset. They are trend evidence, not portable hardware-independent promises.
 - `index_build`: measure structured-index creation while deleting the index
   outside the timed region.
 - `indexed_query`: measure a query using an existing structured index.
+- `concurrent_point_read`: **opt-in** catalog-path point reads (not part of
+  `--scenario all`). Disk only. Measures 1/2/4/8 concurrent readers, each with
+  and without a steady writer, through `DatabaseCatalog` so the snapshot read
+  pool is on the timed path. Report rows are named
+  `concurrent_point_read.rN` and `concurrent_point_read.rN+writer`. Throughput
+  is total gets in the sample; p95 and the existing dirty-scheduler / `msacc`
+  fields are included.
+- `multi_writer`: **opt-in** catalog-path puts (not part of `--scenario all`).
+  Disk only. Measures 1/2/4/8 concurrent writer clients, each issuing
+  `--reads` puts per sample. `multi_writer.independent.wN` uses one database
+  per client (independent databases stay concurrent). `multi_writer.shared.wN`
+  uses N clients on one database (one writer permit serializes them). Product
+  still admits one writer at a time per database.
 
-Use `--scenario bulk_write,indexed_query` to select a subset. `--mode disk`
+```sh
+MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
+  --mode disk \
+  --scenario concurrent_point_read \
+  --output output/benchmarks/concurrent-point-read.json
+```
+
+```sh
+MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
+  --mode disk \
+  --scenario multi_writer \
+  --output output/benchmarks/multi-writer.json
+```
+
+Use `--scenario bulk_write,indexed_query` to select a sequential subset. `--mode disk`
 uses a unique temporary durable artifact and cleans up companion recovery
 files. `--mode memory` uses a fresh in-memory backend connection for each
 case. The memory numbers are an I/O-independent lower bound for adapter work;

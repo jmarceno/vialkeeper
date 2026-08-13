@@ -56,8 +56,10 @@ defmodule ElixirDB.Runtime.SentinelBackendTest do
           {:command, :resolve_blob_metadata, %{digest: String.duplicate("a", 64)}},
           {:command, :list_views, %{}}
         ] do
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
-               DatabaseCatalog.command(uuid, command)
+      result = DatabaseCatalog.command(uuid, command)
+
+      assert match?({:error, %ElixirDB.Error{code: :invalid_request}}, result),
+             "sentinel #{inspect(command)} => #{inspect(result)}"
     end
   end
 end

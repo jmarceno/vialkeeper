@@ -6,6 +6,7 @@ defmodule ElixirDB.Runtime.ShadowBinding do
   from their own snapshot, not from the writer process.
   """
 
+  alias ElixirDB.DatabaseKind
   alias ElixirDB.Error
   alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.CommandContext

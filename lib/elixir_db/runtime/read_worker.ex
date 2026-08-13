@@ -12,6 +12,7 @@ defmodule ElixirDB.Runtime.ReadWorker do
   alias ElixirDB.MapAccess
 
   alias ElixirDB.Runtime.{
+    ChildSpec,
     DatabaseCommandPolicy,
     DatabaseOwner,
     DatabaseReadDispatch,
@@ -27,13 +28,9 @@ defmodule ElixirDB.Runtime.ReadWorker do
   @type args :: {binary(), pos_integer()}
 
   def child_spec({uuid, index} = arg) when is_binary(uuid) and is_integer(index) and index > 0 do
-    %{
-      id: {:read_worker, uuid, index},
-      start: {__MODULE__, :start_link, [arg]},
-      restart: :permanent,
-      type: :worker,
-      shutdown: ElixirDB.Config.shutdown_timeout()
-    }
+    {:read_worker, uuid, index}
+    |> ChildSpec.worker({__MODULE__, :start_link, [arg]}, :permanent)
+    |> Map.put(:shutdown, ElixirDB.Config.shutdown_timeout())
   end
 
   def start_link({uuid, index}) when is_binary(uuid) and is_integer(index) and index > 0 do

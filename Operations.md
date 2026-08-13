@@ -357,8 +357,12 @@ orphans — rerun GC after recovery.
 
 ## Admission and fairness
 
-Each open database has one bounded admission scheduler in front of its single
-owning `DatabaseOwner`. At most one owner permit is active per database.
+Each open disk database has a bounded snapshot read pool beside the single
+writer. Classified reads use up to `read_pool_size` readonly connections
+(FIFO, extra waits capped by `read_queue_limit`). Writes and exclusive work
+still go through one `DatabaseAdmission` permit onto `DatabaseOwner`. Exclusive
+commands (compact, integrity, rebuild, live-digest, blob cleanup, close) drain
+in-flight snapshots first.
 
 | Class | Typical work |
 | ----- | ------------ |
@@ -367,9 +371,9 @@ owning `DatabaseOwner`. At most one owner permit is active per database.
 | `replication` | Local revision / checkpoint work for jobs |
 | `maintenance` | Compact-retention and background maintenance |
 
-`[admission]` sets positive service weights and reserved queue slots.
-Scheduling is deterministic weighted round-robin (FIFO inside a class).
-Total active+queued work is capped by `[limits] admission_limit`.
+`[admission]` sets positive service weights and reserved queue slots for
+**writer** work. Scheduling is deterministic weighted round-robin (FIFO inside
+a class). Total active+queued writer work is capped by `[limits] admission_limit`.
 
 Slow attachment streams, network blob transfers, long waits, and heartbeats
 do **not** hold an owner permit after their short metadata step.
@@ -592,6 +596,8 @@ Host ceilings: `max_materialized_view_sources`,
 Important `[limits]` keys (see `priv/host.toml` for defaults):
 
 - `admission_limit` — active + queued owner ops per open DB
+- `read_pool_size` — concurrent snapshot readers per open disk DB (`1..32`, default `4`)
+- `read_queue_limit` — queued classified reads waiting for a reader (`1..4096`, default `128`)
 - `max_open_databases`, `max_replication_workers`
 - Replication chain-fetch / blob-transfer / batch / in-flight-byte ceilings
 - Live-subscription and local-view ceilings
@@ -610,7 +616,7 @@ owns an ad-hoc federated request).
 | `unauthorized` | Missing / wrong bearer token |
 | `database_in_use` | Lease held / second owner |
 | `database_not_closable` | Active work / continuous dependency |
-| `database_overloaded` | Owner admission saturated |
+| `database_overloaded` | Owner admission or snapshot read-pool queue is full |
 | `subscription_overloaded` | Live subscription / buffer saturated |
 | `attachment_overloaded` | Attachment read/write/GC saturated |
 | `view_not_found` / `view_name_conflict` | Local view lifecycle |

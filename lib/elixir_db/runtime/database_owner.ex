@@ -191,13 +191,17 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   end
 
   defp dispatch_command(%CommandContext{} = context, command, from, state) do
-    normalized = Commands.normalize(command)
+    case Commands.normalize(command) do
+      %_{} = normalized ->
+        with :ok <- DatabaseCommandPolicy.authorize(database_kind(state), context, normalized),
+             :ok <- ShadowBinding.check(database_kind(state), state.context, context, state.uuid) do
+          handle_command(normalized, from, state)
+        else
+          {:error, %ElixirDB.Error{} = error} -> {:reply, {:error, error}, state}
+        end
 
-    with :ok <- DatabaseCommandPolicy.authorize(database_kind(state), context, normalized),
-         :ok <- ShadowBinding.check(database_kind(state), state.context, context, state.uuid) do
-      handle_command(normalized, from, state)
-    else
-      {:error, %ElixirDB.Error{} = error} -> {:reply, {:error, error}, state}
+      other ->
+        handle_owner_command(other, from, state)
     end
   end
 
@@ -207,8 +211,6 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
       _ -> handle_owner_command(command, from, state)
     end
   end
-
-  defp handle_command(command, from, state), do: handle_owner_command(command, from, state)
 
   defp handle_owner_command(%Commands.UpdateConfig{request: request}, _from, state) do
     case Services.update_config(state.context, request) do
