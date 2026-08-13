@@ -98,7 +98,10 @@ defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
 
     blocker =
       Task.async(fn ->
-        DatabaseCatalog.command(uuid_a, {:command, :identity, %{}})
+        DatabaseCatalog.command(
+          uuid_a,
+          {:command, :put, %{document_id: "block", body: %{"n" => 1}}}
+        )
       end)
 
     assert_receive {^gate_ref, :before_begin, blocker_executor}, 2_000
@@ -109,7 +112,11 @@ defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
       Enum.map(queued_classes, fn class ->
         Task.async(fn ->
           result =
-            DatabaseCatalog.command_as(uuid_a, class, {:command, :identity, %{}})
+            DatabaseCatalog.command_as(
+              uuid_a,
+              class,
+              {:command, :put, %{document_id: "q-#{class}", body: %{"n" => 1}}}
+            )
 
           send(parent, {:a_ran, class})
           result

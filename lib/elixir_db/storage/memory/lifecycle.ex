@@ -55,4 +55,10 @@ defmodule ElixirDB.Storage.Memory.Lifecycle do
       {:error, _} -> %{}
     end
   end
+
+  @impl true
+  def open_reader(%BackendContext{}), do: {:error, :unsupported_readers}
+
+  @impl true
+  def close_reader(%BackendContext{} = context), do: close(context)
 end

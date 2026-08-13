@@ -10,9 +10,15 @@ defmodule ElixirDB.Benchmarks.Runner do
 
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.Observability.Instrumentation.{Changes, Database}
+  alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Storage.SQLite.Adapter
+  alias ElixirDB.View.Manager
 
   @scenarios [:bulk_write, :point_read, :changes_read, :index_build, :indexed_query]
+  @catalog_scenarios [:concurrent_point_read, :multi_writer]
+  @allowed_scenarios @scenarios ++ @catalog_scenarios
+  @concurrent_reader_counts [1, 2, 4, 8]
+  @multi_writer_counts [1, 2, 4, 8]
   @modes [:disk, :memory]
   @span_names [
     "elixir_db.database.command",
@@ -47,8 +53,10 @@ defmodule ElixirDB.Benchmarks.Runner do
       scenarios = parse_scenarios(options[:scenario])
 
       results =
-        for mode <- modes, scenario <- scenarios do
-          run_case(mode, scenario, config)
+        for mode <- modes,
+            scenario <- scenarios,
+            result <- List.wrap(run_case(mode, scenario, config)) do
+          result
         end
 
       report = %{
@@ -210,7 +218,7 @@ defmodule ElixirDB.Benchmarks.Runner do
 
   defp parse_scenarios(nil), do: @scenarios
   defp parse_scenarios("all"), do: @scenarios
-  defp parse_scenarios(value), do: parse_atoms(value, @scenarios, "scenario")
+  defp parse_scenarios(value), do: parse_atoms(value, @allowed_scenarios, "scenario")
 
   defp parse_atoms(value, allowed, label) do
     atoms =
@@ -227,6 +235,21 @@ defmodule ElixirDB.Benchmarks.Runner do
     end
   rescue
     ArgumentError -> Mix.raise("unknown #{label} #{inspect(value)}")
+  end
+
+  defp run_case(:memory, :concurrent_point_read, _config), do: []
+  defp run_case(:memory, :multi_writer, _config), do: []
+
+  defp run_case(:disk, :concurrent_point_read, config) do
+    for reader_count <- @concurrent_reader_counts, writer? <- [false, true] do
+      run_concurrent_point_read(reader_count, writer?, config)
+    end
+  end
+
+  defp run_case(:disk, :multi_writer, config) do
+    for writer_count <- @multi_writer_counts, shared? <- [false, true] do
+      run_multi_writer(writer_count, shared?, config)
+    end
   end
 
   defp run_case(mode, scenario, config) do
@@ -268,6 +291,254 @@ defmodule ElixirDB.Benchmarks.Runner do
         "scenario_metadata" => scenario_metadata
       })
     end)
+  end
+
+  defp run_concurrent_point_read(reader_count, writer?, config) do
+    reset_observability()
+
+    with_catalog_database(fn uuid ->
+      seed_catalog_documents(uuid, config["dataset_size"], config["batch_size"])
+      reset_observability()
+
+      dataset_size = config["dataset_size"]
+      read_count = config["read_count"]
+      ids = 0..(dataset_size - 1) |> Enum.map(&"seed-#{&1}") |> List.to_tuple()
+      operation_count = reader_count * read_count
+
+      operation = fn token ->
+        run_concurrent_sample(uuid, ids, dataset_size, read_count, reader_count, writer?, token)
+      end
+
+      memory_before = :erlang.memory(:total)
+
+      {{samples, _last_result}, runtime_sample} =
+        with_runtime_sample(fn ->
+          measure(operation, &noop_cleanup/1, config["warmup"], config["iterations"])
+        end)
+
+      memory_after = :erlang.memory(:total)
+      flush_metrics()
+
+      result = summarize_samples(samples, operation_count)
+      scenario_name = concurrent_scenario_name(reader_count, writer?)
+
+      Map.merge(result, %{
+        "scenario" => scenario_name,
+        "storage_mode" => "disk",
+        "operation_count" => operation_count,
+        "dataset_size" => dataset_size,
+        "warmup" => config["warmup"],
+        "iterations" => config["iterations"],
+        "memory_before_bytes" => memory_before,
+        "memory_after_bytes" => memory_after,
+        "memory_delta_bytes" => memory_after - memory_before,
+        "sqlite" => %{},
+        "observability" => observability_metadata(),
+        "runtime_sample" => runtime_sample,
+        "scenario_metadata" => %{
+          "path" => "catalog",
+          "reader_count" => reader_count,
+          "steady_writer" => writer?,
+          "read_count" => read_count
+        }
+      })
+    end)
+  end
+
+  defp run_concurrent_sample(
+         uuid,
+         ids,
+         dataset_size,
+         read_count,
+         reader_count,
+         writer?,
+         token
+       ) do
+    flag = :atomics.new(1, [])
+    :atomics.put(flag, 1, 1)
+
+    writer_task =
+      if writer? do
+        Task.async(fn -> steady_writer_loop(uuid, token, flag) end)
+      end
+
+    readers =
+      Enum.map(1..reader_count, fn reader_index ->
+        Task.async(fn ->
+          concurrent_reader_work(uuid, ids, dataset_size, read_count, reader_index)
+        end)
+      end)
+
+    Enum.each(Task.await_many(readers, 60_000), fn
+      {:ok, _} -> :ok
+      other -> Mix.raise("concurrent point read failed: #{inspect(other)}")
+    end)
+
+    :atomics.put(flag, 1, 0)
+    if writer_task, do: Task.await(writer_task, 60_000)
+
+    {:ok, reader_count * read_count}
+  end
+
+  defp concurrent_reader_work(uuid, ids, dataset_size, read_count, reader_index) do
+    start = rem(reader_index * read_count, dataset_size)
+
+    Enum.each(0..(read_count - 1), fn offset ->
+      id = elem(ids, rem(start + offset, dataset_size))
+      assert_ok!(ElixirDB.Documents.get(uuid, %{id: id}), :concurrent_point_read)
+    end)
+
+    {:ok, read_count}
+  end
+
+  defp steady_writer_loop(uuid, token, flag) do
+    write_until_stopped(uuid, token, flag, 0)
+  end
+
+  defp write_until_stopped(uuid, token, flag, n) do
+    if :atomics.get(flag, 1) == 1 do
+      id = "writer-#{phase_name(token)}-#{token_number(token)}-#{n}"
+      body = %{"category" => "note", "priority" => rem(n, 100), "title" => "Writer #{n}"}
+      assert_ok!(ElixirDB.Documents.put(uuid, %{id: id, body: body}), :concurrent_writer)
+      write_until_stopped(uuid, token, flag, n + 1)
+    else
+      :ok
+    end
+  end
+
+  defp concurrent_scenario_name(reader_count, true),
+    do: "concurrent_point_read.r#{reader_count}+writer"
+
+  defp concurrent_scenario_name(reader_count, false),
+    do: "concurrent_point_read.r#{reader_count}"
+
+  defp run_multi_writer(writer_count, shared?, config) do
+    reset_observability()
+
+    with_catalog_databases(if(shared?, do: 1, else: writer_count), fn uuids ->
+      reset_observability()
+
+      write_count = config["read_count"]
+      operation_count = writer_count * write_count
+      targets = if shared?, do: List.duplicate(hd(uuids), writer_count), else: uuids
+
+      operation = fn token ->
+        run_multi_writer_sample(targets, write_count, token)
+      end
+
+      memory_before = :erlang.memory(:total)
+
+      {{samples, _last_result}, runtime_sample} =
+        with_runtime_sample(fn ->
+          measure(operation, &noop_cleanup/1, config["warmup"], config["iterations"])
+        end)
+
+      memory_after = :erlang.memory(:total)
+      flush_metrics()
+
+      result = summarize_samples(samples, operation_count)
+
+      Map.merge(result, %{
+        "scenario" => multi_writer_scenario_name(writer_count, shared?),
+        "storage_mode" => "disk",
+        "operation_count" => operation_count,
+        "dataset_size" => config["dataset_size"],
+        "warmup" => config["warmup"],
+        "iterations" => config["iterations"],
+        "memory_before_bytes" => memory_before,
+        "memory_after_bytes" => memory_after,
+        "memory_delta_bytes" => memory_after - memory_before,
+        "sqlite" => %{},
+        "observability" => observability_metadata(),
+        "runtime_sample" => runtime_sample,
+        "scenario_metadata" => %{
+          "path" => "catalog",
+          "writer_count" => writer_count,
+          "shared_database" => shared?,
+          "write_count" => write_count
+        }
+      })
+    end)
+  end
+
+  defp run_multi_writer_sample(uuids, write_count, token) do
+    writers =
+      uuids
+      |> Enum.with_index(1)
+      |> Enum.map(fn {uuid, writer_index} ->
+        Task.async(fn -> multi_writer_work(uuid, write_count, writer_index, token) end)
+      end)
+
+    Enum.each(Task.await_many(writers, 60_000), fn
+      {:ok, _} -> :ok
+      other -> Mix.raise("multi writer sample failed: #{inspect(other)}")
+    end)
+
+    {:ok, length(uuids) * write_count}
+  end
+
+  defp multi_writer_work(uuid, write_count, writer_index, token) do
+    Enum.each(0..(write_count - 1), fn n ->
+      id = "mw-#{writer_index}-#{phase_name(token)}-#{token_number(token)}-#{n}"
+      body = %{"category" => "note", "priority" => rem(n, 100), "title" => "Writer #{n}"}
+      assert_result!(ElixirDB.Documents.put(uuid, %{id: id, body: body}), :multi_writer)
+    end)
+
+    {:ok, write_count}
+  end
+
+  defp multi_writer_scenario_name(writer_count, true),
+    do: "multi_writer.shared.w#{writer_count}"
+
+  defp multi_writer_scenario_name(writer_count, false),
+    do: "multi_writer.independent.w#{writer_count}"
+
+  defp with_catalog_databases(count, fun) when is_integer(count) and count > 0 do
+    uuids = Enum.map(1..count, fn _ -> open_catalog_benchmark_database() end)
+
+    try do
+      fun.(uuids)
+    after
+      Enum.each(uuids, &close_catalog_benchmark_database/1)
+    end
+  end
+
+  defp open_catalog_benchmark_database do
+    relative = "bench-catalog-#{System.unique_integer([:positive])}.elixirdb"
+
+    case DatabaseCatalog.create(relative) do
+      {:ok, identity} ->
+        uuid = identity.database_uuid
+        assert_ok!(DatabaseCatalog.open(uuid), :catalog_open)
+        :ok = Manager.await_resumed(uuid)
+        uuid
+
+      {:error, error} ->
+        Mix.raise("could not create catalog benchmark database: #{inspect(error)}")
+    end
+  end
+
+  defp close_catalog_benchmark_database(uuid) do
+    _ = DatabaseCatalog.close(uuid)
+    _ = DatabaseCatalog.unregister(uuid)
+    :ok
+  end
+
+  defp with_catalog_database(fun) do
+    with_catalog_databases(1, fn [uuid] -> fun.(uuid) end)
+  end
+
+  defp seed_catalog_documents(uuid, count, batch_size) do
+    0..(count - 1)
+    |> Enum.map(&catalog_put_operation("seed-#{&1}", &1))
+    |> Enum.chunk_every(batch_size)
+    |> Enum.each(fn operations ->
+      assert_ok!(ElixirDB.Documents.bulk_write(uuid, operations), :catalog_seed)
+    end)
+  end
+
+  defp catalog_put_operation(id, value) do
+    %{type: :put, id: id, body: put_operation(id, value).body}
   end
 
   defp with_adapter(:memory, fun) do
@@ -814,7 +1085,9 @@ defmodule ElixirDB.Benchmarks.Runner do
 
     Options:
       --mode disk|memory|both        Storage mode (default: both)
-      --scenario NAME|all             Comma-separated scenario list (default: all)
+      --scenario NAME|all             Comma-separated sequential scenarios (default: all)
+                                      concurrent_point_read and multi_writer are opt-in
+                                      catalog-path scenarios
       --iterations N                  Measured samples (default: 15)
       --warmup N                      Warmup samples excluded from results (default: 3)
       --dataset N                     Seeded documents (default: 500)

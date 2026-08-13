@@ -64,19 +64,7 @@ defmodule ElixirDB.Storage.Services do
   @spec get_document(BackendContext.t(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def get_document(%BackendContext{} = context, request) when is_map(request) do
-    with_port(context, :document_facts, fn ->
-      document_id = MapAccess.get(request, :document_id)
-      requested_revision = MapAccess.get(request, :revision)
-      include_conflicts = MapAccess.get(request, :include_conflicts, false)
-
-      with :ok <- validate_identifier(document_id, "document_id"),
-           {:ok, document} <- Facts.find_document(context, document_id),
-           {:ok, document} <- require_document(document),
-           {:ok, revision} <- selected_revision(context, document, requested_revision),
-           {:ok, leaves} <- maybe_document_leaves(context, document_id, include_conflicts) do
-        {:ok, Results.document_map(document, revision, leaves)}
-      end
-    end)
+    Transaction.run_snapshot(context, &load_document(&1, request))
   end
 
   def get_document(%BackendContext{}, _request),
@@ -86,18 +74,7 @@ defmodule ElixirDB.Storage.Services do
   @spec get_revision(BackendContext.t(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def get_revision(%BackendContext{} = context, request) when is_map(request) do
-    with_port(context, :document_facts, fn ->
-      document_id = MapAccess.get(request, :document_id)
-      revision_id = MapAccess.get(request, :revision_id)
-
-      with :ok <- validate_identifier(document_id, "document_id"),
-           :ok <- validate_identifier(revision_id, "revision_id"),
-           {:ok, document} <- Facts.find_document(context, document_id),
-           {:ok, document} <- require_document(document),
-           {:ok, revision} <- Facts.find_revision(context, document_id, revision_id) do
-        {:ok, Results.document_map(document, revision, [])}
-      end
-    end)
+    Transaction.run_snapshot(context, &load_revision(&1, request))
   end
 
   def get_revision(%BackendContext{}, _request),
@@ -713,6 +690,37 @@ defmodule ElixirDB.Storage.Services do
       {:error, _} = error ->
         error
     end
+  end
+
+  defp load_document(%BackendContext{} = snap, request) do
+    with_port(snap, :document_facts, fn ->
+      document_id = MapAccess.get(request, :document_id)
+      requested_revision = MapAccess.get(request, :revision)
+      include_conflicts = MapAccess.get(request, :include_conflicts, false)
+
+      with :ok <- validate_identifier(document_id, "document_id"),
+           {:ok, document} <- Facts.find_document(snap, document_id),
+           {:ok, document} <- require_document(document),
+           {:ok, revision} <- selected_revision(snap, document, requested_revision),
+           {:ok, leaves} <- maybe_document_leaves(snap, document_id, include_conflicts) do
+        {:ok, Results.document_map(document, revision, leaves)}
+      end
+    end)
+  end
+
+  defp load_revision(%BackendContext{} = snap, request) do
+    with_port(snap, :document_facts, fn ->
+      document_id = MapAccess.get(request, :document_id)
+      revision_id = MapAccess.get(request, :revision_id)
+
+      with :ok <- validate_identifier(document_id, "document_id"),
+           :ok <- validate_identifier(revision_id, "revision_id"),
+           {:ok, document} <- Facts.find_document(snap, document_id),
+           {:ok, document} <- require_document(document),
+           {:ok, revision} <- Facts.find_revision(snap, document_id, revision_id) do
+        {:ok, Results.document_map(document, revision, [])}
+      end
+    end)
   end
 
   defp validate_identifier(value, _label) when is_binary(value) and value != "", do: :ok

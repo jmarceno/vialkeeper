@@ -33,4 +33,10 @@ defmodule ElixirDB.Runtime.Deadline do
   def genserver_call_timeout?(:timeout), do: true
   def genserver_call_timeout?({:timeout, {GenServer, :call, _}}), do: true
   def genserver_call_timeout?(_), do: false
+
+  @spec no_process_exit?(term()) :: boolean()
+  def no_process_exit?(:noproc), do: true
+  def no_process_exit?({:noproc, _details}), do: true
+  def no_process_exit?({{:noproc, _details}, _call}), do: true
+  def no_process_exit?(_reason), do: false
 end

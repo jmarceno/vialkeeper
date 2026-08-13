@@ -2,7 +2,7 @@ defmodule ElixirDB.Runtime.SentinelBackendTest do
   @moduledoc "Proves the runtime can create/open/close/identify via a non-SQL backend."
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.Runtime.{DatabaseCatalog, ReadPool}
   alias ElixirDB.Storage.Sentinel.Adapter
 
   setup do
@@ -31,6 +31,7 @@ defmodule ElixirDB.Runtime.SentinelBackendTest do
     assert opened.database_uuid == uuid
     assert {:ok, info} = DatabaseCatalog.info(uuid)
     assert info.database_uuid == uuid
+    refute ReadPool.enabled?(uuid)
 
     assert :ok = DatabaseCatalog.close(uuid)
     assert :ok = DatabaseCatalog.unregister(uuid)
@@ -55,8 +56,10 @@ defmodule ElixirDB.Runtime.SentinelBackendTest do
           {:command, :resolve_blob_metadata, %{digest: String.duplicate("a", 64)}},
           {:command, :list_views, %{}}
         ] do
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
-               DatabaseCatalog.command(uuid, command)
+      result = DatabaseCatalog.command(uuid, command)
+
+      assert match?({:error, %ElixirDB.Error{code: :invalid_request}}, result),
+             "sentinel #{inspect(command)} => #{inspect(result)}"
     end
   end
 end

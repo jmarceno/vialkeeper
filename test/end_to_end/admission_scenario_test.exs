@@ -39,6 +39,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     AttachmentCoordinator,
     DatabaseAdmission,
     DatabaseCatalog,
+    ReadPool,
     RetentionScheduler
   }
 
@@ -64,6 +65,8 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
       AdmissionScenario.uninstall_test_hook()
       Application.delete_env(:elixir_db, :admitted_command_sync)
       Application.delete_env(:elixir_db, :admitted_command_owner_body_sync)
+      Application.delete_env(:elixir_db, :read_pool_sync)
+      Application.delete_env(:elixir_db, :read_pool_owner_body_sync)
       Application.delete_env(:elixir_db, :subscription_execute_snapshot_sync)
       Application.delete_env(:elixir_db, :subscription_hub_pause_reads)
       Application.delete_env(:elixir_db, :admission_test_hook)
@@ -510,10 +513,12 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     client =
       spawn(fn ->
         _result =
-          Subscriptions.open(
+          DatabaseAdmission.execute_owner(
             uuid,
-            %{"query" => %{"selector" => %{"/type" => "task"}}, "heartbeat_ms" => 100},
-            self()
+            :subscription,
+            fn -> :subscription_waiter end,
+            30_000,
+            :identity
           )
       end)
 
@@ -584,33 +589,35 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     :ok =
       Application.put_env(
         :elixir_db,
-        :admitted_command_sync,
+        :read_pool_sync,
         {parent, before_gate, uuid, :execute_subscription_snapshot}
       )
 
     :ok =
       Application.put_env(
         :elixir_db,
-        :admitted_command_owner_body_sync,
+        :read_pool_owner_body_sync,
         {parent, body_gate, uuid, :execute_subscription_snapshot}
       )
 
     send(sub, {:go, snapshot_gate})
     Application.delete_env(:elixir_db, :subscription_execute_snapshot_sync)
 
-    snap_executor =
-      await_subscription_snapshot_at_owner_body!(hook_ref, before_gate, body_gate, sub)
+    snap_executor = await_subscription_snapshot_at_read_body!(before_gate, body_gate)
 
     Process.exit(client, :kill)
     client_mon = Process.monitor(client)
     assert_receive {:DOWN, ^client_mon, :process, ^client, _}, 2_000
 
-    assert {:ok, stats_mid} = DatabaseAdmission.stats(uuid)
-    assert stats_mid.total_occupancy == 1
-    assert stats_mid.active_class == :subscription
+    assert {:ok, admission} = DatabaseAdmission.stats(uuid)
+    assert admission.total_occupancy == 0
+    assert admission.active_class == nil
+
+    assert {:ok, %{active: active}} = ReadPool.stats(uuid)
+    assert active >= 1
 
     send(snap_executor, {:go, body_gate})
-    Application.delete_env(:elixir_db, :admitted_command_owner_body_sync)
+    Application.delete_env(:elixir_db, :read_pool_owner_body_sync)
     Application.delete_env(:elixir_db, :subscription_hub_pause_reads)
 
     AdmissionScenario.await_stats(uuid, &(&1.total_occupancy == 0 and &1.active_class == nil),
@@ -618,47 +625,23 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     )
 
     Eventual.eventually(
-      fn -> not Process.alive?(sub) and Subscriptions.count(uuid) == 0 end,
+      fn ->
+        case ReadPool.stats(uuid) do
+          {:ok, %{active: 0}} -> not Process.alive?(sub) and Subscriptions.count(uuid) == 0
+          _ -> false
+        end
+      end,
       timeout: 5_000,
       message: "live subscription was not cleaned after client disconnect"
     )
   end
 
-  defp await_subscription_snapshot_at_owner_body!(hook_ref, before_gate, body_gate, sub) do
-    receive do
-      {^hook_ref, :enqueued, snap_ref, :subscription, :execute_subscription_snapshot, ^sub} ->
-        assert_receive {^hook_ref, :granted, ^snap_ref, :subscription,
-                        :execute_subscription_snapshot},
-                       10_000
-
-        assert_receive {^before_gate, :before_begin, snap_executor}, 5_000
-        send(snap_executor, {:go, before_gate})
-        Application.delete_env(:elixir_db, :admitted_command_sync)
-        assert_receive {^body_gate, :owner_body, ^snap_executor}, 5_000
-        snap_executor
-
-      {^hook_ref, :enqueued, _request_ref, :subscription, probe_op, _caller}
-      when probe_op != :execute_subscription_snapshot ->
-        # Competing hub reads are not gated; let them complete and keep waiting.
-        await_subscription_snapshot_at_owner_body!(hook_ref, before_gate, body_gate, sub)
-
-      {^hook_ref, :granted, _request_ref, :subscription, probe_op}
-      when probe_op != :execute_subscription_snapshot ->
-        await_subscription_snapshot_at_owner_body!(hook_ref, before_gate, body_gate, sub)
-
-      {_probe_ref, :admission_grant, :subscription, probe_op}
-      when probe_op != :execute_subscription_snapshot ->
-        await_subscription_snapshot_at_owner_body!(hook_ref, before_gate, body_gate, sub)
-
-      {^hook_ref, :enqueued, _request_ref, :subscription, :execute_subscription_snapshot,
-       other_caller} ->
-        flunk(
-          "expected execute_subscription_snapshot caller #{inspect(sub)}, got #{inspect(other_caller)}"
-        )
-    after
-      10_000 ->
-        flunk("timed out waiting for live subscription snapshot admission")
-    end
+  defp await_subscription_snapshot_at_read_body!(before_gate, body_gate) do
+    assert_receive {^before_gate, :before_begin, snap_executor}, 10_000
+    send(snap_executor, {:go, before_gate})
+    Application.delete_env(:elixir_db, :read_pool_sync)
+    assert_receive {^body_gate, :owner_body, ^snap_executor}, 5_000
+    snap_executor
   end
 
   defp flush_admission_mailbox!(hook_ref) do
@@ -891,7 +874,10 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     a_blocker =
       Task.async(fn ->
-        DatabaseCatalog.command(a_uuid, {:command, :identity, %{}})
+        DatabaseCatalog.command(
+          a_uuid,
+          {:command, :put, %{document_id: "a-block", body: %{"n" => 1}}}
+        )
       end)
 
     assert_receive {^a_gate, :before_begin, a_executor}, 2_000
@@ -899,7 +885,11 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     a_waiters =
       for class <- [:subscription, :replication, :maintenance, :foreground] do
         Task.async(fn ->
-          DatabaseCatalog.command_as(a_uuid, class, {:command, :identity, %{}})
+          DatabaseCatalog.command_as(
+            a_uuid,
+            class,
+            {:command, :put, %{document_id: "a-q-#{class}", body: %{"n" => 1}}}
+          )
         end)
       end
 
@@ -927,14 +917,20 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     b_blocker =
       Task.async(fn ->
-        DatabaseCatalog.command(b_uuid, {:command, :identity, %{}})
+        DatabaseCatalog.command(
+          b_uuid,
+          {:command, :put, %{document_id: "b-block", body: %{"n" => 1}}}
+        )
       end)
 
     assert_receive {^b_gate, :before_begin, b_executor}, 5_000
 
     b_waiter =
       Task.async(fn ->
-        DatabaseCatalog.command(b_uuid, {:command, :identity, %{}})
+        DatabaseCatalog.command(
+          b_uuid,
+          {:command, :put, %{document_id: "b-wait", body: %{"n" => 1}}}
+        )
       end)
 
     AdmissionScenario.await_stats(b_uuid, &(&1.total_occupancy >= 1 and &1.queued_foreground >= 1),
@@ -1000,7 +996,11 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     replication_during_close =
       Task.async(fn ->
-        DatabaseCatalog.command_as(uuid, :replication, {:command, :identity, %{}})
+        DatabaseCatalog.command_as(
+          uuid,
+          :replication,
+          {:command, :put, %{document_id: "repl-close", body: %{"n" => 1}}}
+        )
       end)
 
     AdmissionScenario.await_stats(

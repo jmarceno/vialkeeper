@@ -12,8 +12,11 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     AttachmentCoordinator,
     ChangeNotifier,
     CommandContext,
+    CommandIO,
     DatabaseCommandPolicy,
-    RetentionScheduler
+    DatabaseReadDispatch,
+    RetentionScheduler,
+    ShadowBinding
   }
 
   alias ElixirDB.Storage.Registry, as: StorageRegistry
@@ -67,6 +70,20 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
       [{pid, _}] -> GenServer.call(pid, :sync, timeout)
       [] -> :ok
+    end
+  end
+
+  @doc """
+  Returns the writer's opaque backend context so a reader worker can open its
+  own readonly connection. The context is a capability token for path and
+  identity; callers must not reuse the writer connection.
+  """
+  @spec reader_source(binary()) ::
+          {:ok, ElixirDB.Storage.BackendContext.t()} | {:error, ElixirDB.Error.t()}
+  def reader_source(uuid) when is_binary(uuid) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
+      [{pid, _}] -> GenServer.call(pid, :reader_source)
+      [] -> {:error, ElixirDB.Error.database_closed("database owner is not running")}
     end
   end
 
@@ -150,6 +167,8 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   @impl true
   def handle_call(:sync, _from, state), do: {:reply, :ok, state}
 
+  def handle_call(:reader_source, _from, state), do: {:reply, {:ok, state.context}, state}
+
   def handle_call({:command_context, %CommandContext{} = context, command}, from, state) do
     dispatch_command(context, command, from, state)
   end
@@ -160,7 +179,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     kind, reason ->
       Logger.error("database owner command raised",
         kind: kind,
-        reason: inspect(reason)
+        reason: Exception.format(kind, reason, __STACKTRACE__)
       )
 
       {:reply,
@@ -172,73 +191,28 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   end
 
   defp dispatch_command(%CommandContext{} = context, command, from, state) do
-    normalized = Commands.normalize(command)
-
-    with :ok <- DatabaseCommandPolicy.authorize(database_kind(state), context, normalized),
-         :ok <- bind_shadow_context(state, context) do
-      handle_command(normalized, from, state)
-    else
-      {:error, %ElixirDB.Error{} = error} -> {:reply, {:error, error}, state}
-    end
-  end
-
-  defp bind_shadow_context(state, context) do
-    case database_kind(state) do
-      :shadow -> match_shadow_binding(state, context)
-      _ -> :ok
-    end
-  end
-
-  defp match_shadow_binding(_state, %CommandContext{class: :public}), do: :ok
-
-  defp match_shadow_binding(state, context) do
-    case Services.shadow_metadata(state.context) do
-      {:ok, metadata} when is_map(metadata) ->
-        if shadow_context_matches?(context, metadata, state.uuid) do
-          :ok
+    case Commands.normalize(command) do
+      %_{} = normalized ->
+        with :ok <- DatabaseCommandPolicy.authorize(database_kind(state), context, normalized),
+             :ok <- ShadowBinding.check(database_kind(state), state.context, context, state.uuid) do
+          handle_command(normalized, from, state)
         else
-          {:error,
-           ElixirDB.Error.shadow_identity_conflict(
-             "shadow command context does not match durable metadata"
-           )}
+          {:error, %ElixirDB.Error{} = error} -> {:reply, {:error, error}, state}
         end
 
-      {:ok, nil} ->
-        {:error, ElixirDB.Error.shadow_incompatible("shadow metadata is missing")}
-
-      {:error, _} = error ->
-        error
+      other ->
+        handle_owner_command(other, from, state)
     end
   end
 
-  defp shadow_context_matches?(%CommandContext{class: :shadow_control} = context, metadata, uuid) do
-    uuid_field(metadata, :shadow_database_uuid) == uuid and
-      (is_nil(context.shadow_database_uuid) or context.shadow_database_uuid == uuid) and
-      optional_field_matches?(
-        context.source_database_uuid,
-        uuid_field(metadata, :source_database_uuid)
-      ) and
-      optional_field_matches?(context.generation, MapAccess.get(metadata, :generation)) and
-      optional_field_matches?(context.operation_id, uuid_field(metadata, :operation_id))
+  defp handle_command(%module{} = command, from, state) do
+    case Map.get(CommandIO.classes(), module) do
+      :read -> reply(DatabaseReadDispatch.run(state.context, command), state)
+      _ -> handle_owner_command(command, from, state)
+    end
   end
 
-  defp shadow_context_matches?(context, metadata, uuid) do
-    context.shadow_database_uuid == uuid and
-      context.shadow_database_uuid == uuid_field(metadata, :shadow_database_uuid) and
-      context.source_database_uuid == uuid_field(metadata, :source_database_uuid) and
-      context.generation == MapAccess.get(metadata, :generation) and
-      context.operation_id == uuid_field(metadata, :operation_id)
-  end
-
-  defp optional_field_matches?(nil, _expected), do: true
-  defp optional_field_matches?(value, expected), do: value == expected
-
-  defp uuid_field(metadata, key), do: MapAccess.get(metadata, key)
-
-  defp handle_command(%Commands.Identity{}, _from, state),
-    do: reply(Services.identity(state.context), state)
-
-  defp handle_command(%Commands.UpdateConfig{request: request}, _from, state) do
+  defp handle_owner_command(%Commands.UpdateConfig{request: request}, _from, state) do
     case Services.update_config(state.context, request) do
       {:ok, config} = ok ->
         RetentionScheduler.reschedule(state.uuid)
@@ -250,16 +224,10 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     end
   end
 
-  defp handle_command(%Commands.IntegrityCheck{request: request}, _from, state),
+  defp handle_owner_command(%Commands.IntegrityCheck{request: request}, _from, state),
     do: reply(Services.integrity_check(state.context, request), state)
 
-  defp handle_command(%Commands.GetDocument{request: request}, _from, state),
-    do: reply(wrap_get(Services.get_document(state.context, request)), state)
-
-  defp handle_command(%Commands.GetRevision{request: request}, _from, state),
-    do: reply(wrap_get(Services.get_revision(state.context, request)), state)
-
-  defp handle_command(%Commands.PutDocument{request: request}, _from, state),
+  defp handle_owner_command(%Commands.PutDocument{request: request}, _from, state),
     do:
       writable_mutation(state, fn ->
         mutate(
@@ -270,7 +238,7 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
         )
       end)
 
-  defp handle_command(%Commands.DeleteDocument{request: request}, _from, state),
+  defp handle_owner_command(%Commands.DeleteDocument{request: request}, _from, state),
     do:
       writable_mutation(state, fn ->
         mutate(
@@ -281,28 +249,19 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
         )
       end)
 
-  defp handle_command(%Commands.BulkWrite{request: request}, _from, state),
+  defp handle_owner_command(%Commands.BulkWrite{request: request}, _from, state),
     do:
       writable_mutation(state, fn ->
         mutate(Services.apply_bulk_mutation(state.context, request), state)
       end)
 
-  defp handle_command(%Commands.ResolveConflict{request: request}, _from, state),
+  defp handle_owner_command(%Commands.ResolveConflict{request: request}, _from, state),
     do:
       writable_mutation(state, fn ->
         mutate(Services.resolve_conflict(state.context, request), state)
       end)
 
-  defp handle_command(%Commands.ReadChanges{request: request}, _from, state),
-    do: reply(wrap_changes(Services.read_changes(state.context, request)), state)
-
-  defp handle_command(%Commands.DiffRevisions{request: request}, _from, state),
-    do: reply(Services.diff_revisions(state.context, request), state)
-
-  defp handle_command(%Commands.GetRevisionChains{request: request}, _from, state),
-    do: reply(Services.get_revision_chains(state.context, request), state)
-
-  defp handle_command(
+  defp handle_owner_command(
          %Commands.ImportRevisionChains{request: request},
          _from,
          state
@@ -312,170 +271,102 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
            mutate(Services.import_revision_chains(state.context, request), state)
          end)
 
-  defp handle_command(
-         %Commands.GetLocalRecord{namespace: namespace, key: key},
-         _from,
-         state
-       ),
-       do: reply(Services.get_local_record(state.context, namespace, key), state)
-
-  defp handle_command(%Commands.GetCheckpoint{replication_id: id}, _from, state),
-    do: reply(Services.get_local_record(state.context, "checkpoints", id), state)
-
-  defp handle_command(%Commands.PutLocalRecord{request: request}, _from, state),
+  defp handle_owner_command(%Commands.PutLocalRecord{request: request}, _from, state),
     do: reply(Services.put_local_record_cas(state.context, request), state)
 
-  defp handle_command(%Commands.PutCheckpoint{request: request}, _from, state),
+  defp handle_owner_command(%Commands.PutCheckpoint{request: request}, _from, state),
     do: reply(Services.put_local_record_cas(state.context, request), state)
 
-  defp handle_command(%Commands.ListIndexes{}, _from, state),
-    do: reply(Services.list_indexes(state.context), state)
-
-  defp handle_command(%Commands.CreateIndex{request: request}, _from, state),
+  defp handle_owner_command(%Commands.CreateIndex{request: request}, _from, state),
     do: reply(Services.create_index(state.context, request), state)
 
-  defp handle_command(%Commands.DeleteIndex{index_id: index_id}, _from, state),
+  defp handle_owner_command(%Commands.DeleteIndex{index_id: index_id}, _from, state),
     do: reply(Services.delete_index(state.context, index_id), state)
 
-  defp handle_command(%Commands.RebuildIndex{index_id: index_id}, _from, state),
+  defp handle_owner_command(%Commands.RebuildIndex{index_id: index_id}, _from, state),
     do: reply(Services.rebuild_index(state.context, index_id), state)
 
-  defp handle_command(%Commands.ExecuteQuery{request: request}, _from, state),
-    do: reply(Services.execute_public_query(state.context, request), state)
-
-  defp handle_command(%Commands.ExecuteSubscriptionSnapshot{request: request}, _from, state),
-    do: reply(Services.execute_public_subscription_snapshot(state.context, request), state)
-
-  defp handle_command(%Commands.GetRevisionsBatch{requests: requests}, _from, state),
-    do: reply(Services.get_revisions_batch(state.context, requests), state)
-
-  defp handle_command(%Commands.ExplainQuery{request: request}, _from, state),
-    do: reply(Services.explain_public_query(state.context, request), state)
-
-  defp handle_command(%Commands.ListJobs{}, _from, state),
-    do: reply(Services.list_replication_jobs(state.context), state)
-
-  defp handle_command(%Commands.PutJob{request: request}, _from, state),
+  defp handle_owner_command(%Commands.PutJob{request: request}, _from, state),
     do: reply(Services.put_replication_job(state.context, request), state)
 
-  defp handle_command(%Commands.DeleteJob{job_id: job_id}, _from, state),
+  defp handle_owner_command(%Commands.DeleteJob{job_id: job_id}, _from, state),
     do: reply(Services.delete_replication_job(state.context, job_id), state)
 
-  defp handle_command(%Commands.CompactRetention{request: request}, _from, state),
+  defp handle_owner_command(%Commands.CompactRetention{request: request}, _from, state),
     do: compact(request, state)
 
-  defp handle_command(%Commands.RetentionStatus{}, _from, state),
-    do: reply(Services.retention_state(state.context), state)
-
-  defp handle_command(%Commands.ListPeerPositions{}, _from, state),
-    do: reply(Services.list_peer_positions(state.context), state)
-
-  defp handle_command(%Commands.PutPeerPositionCas{request: request}, _from, state),
+  defp handle_owner_command(%Commands.PutPeerPositionCas{request: request}, _from, state),
     do: reply(Services.put_peer_position_cas(state.context, request), state)
 
-  defp handle_command(%Commands.ReadBoundaryPages{request: request}, _from, state),
-    do: reply(Services.read_boundary_pages(state.context, request), state)
-
-  defp handle_command(%Commands.InstallBoundaryPages{request: request}, _from, state),
+  defp handle_owner_command(%Commands.InstallBoundaryPages{request: request}, _from, state),
     do: reply(Services.install_boundary_pages(state.context, request), state)
 
-  defp handle_command(
-         %Commands.HasLocalOriginChanges{peer_database_uuid: peer_database_uuid},
-         _from,
-         state
-       ),
-       do: reply(Services.has_local_origin_changes?(state.context, peer_database_uuid), state)
-
-  defp handle_command(
+  defp handle_owner_command(
          %Commands.ClearPendingLocalCausal{peer_database_uuid: peer_database_uuid},
          _from,
          state
        ),
        do: reply(Services.clear_pending_local_causal(state.context, peer_database_uuid), state)
 
-  defp handle_command(%Commands.ResolveAttachmentTicket{request: request}, _from, state),
-    do: reply(Services.resolve_attachment_ticket(state.context, request), state)
-
-  defp handle_command(%Commands.ResolveBlobMetadata{request: request}, _from, state),
-    do: reply(Services.resolve_blob_metadata(state.context, request), state)
-
-  defp handle_command(%Commands.ProtectPendingBlob{request: request}, _from, state),
+  defp handle_owner_command(%Commands.ProtectPendingBlob{request: request}, _from, state),
     do: reply(Services.protect_pending_blob(state.context, request), state)
 
-  defp handle_command(%Commands.RemovePendingBlobProtection{request: request}, _from, state),
+  defp handle_owner_command(%Commands.RemovePendingBlobProtection{request: request}, _from, state),
     do: reply(Services.remove_pending_blob_protection(state.context, request), state)
 
-  defp handle_command(%Commands.ListLiveAttachmentDigests{request: request}, _from, state),
+  defp handle_owner_command(%Commands.ListLiveAttachmentDigests{request: request}, _from, state),
     do: reply(Services.list_live_attachment_digests(state.context, request), state)
 
-  defp handle_command(%Commands.CleanupExpiredPendingBlobs{request: request}, _from, state),
+  defp handle_owner_command(%Commands.CleanupExpiredPendingBlobs{request: request}, _from, state),
     do: reply(Services.cleanup_expired_pending_blobs(state.context, request), state)
 
-  defp handle_command(%Commands.ListViews{}, _from, state),
-    do: reply(Services.list_views(state.context), state)
-
-  defp handle_command(%Commands.CreateView{request: request}, _from, state),
+  defp handle_owner_command(%Commands.CreateView{request: request}, _from, state),
     do: reply(Services.create_view(state.context, request), state)
 
-  defp handle_command(%Commands.DeleteView{view_id: view_id}, _from, state),
+  defp handle_owner_command(%Commands.DeleteView{view_id: view_id}, _from, state),
     do: reply(Services.delete_view(state.context, view_id), state)
 
-  defp handle_command(%Commands.ViewState{view_id: view_id}, _from, state),
-    do: reply(Services.view_state(state.context, view_id), state)
-
-  defp handle_command(%Commands.ApplyViewBatch{request: request}, _from, state),
+  defp handle_owner_command(%Commands.ApplyViewBatch{request: request}, _from, state),
     do: reply(Services.apply_view_batch(state.context, request), state)
 
-  defp handle_command(%Commands.BeginViewRebuild{request: request}, _from, state),
+  defp handle_owner_command(%Commands.BeginViewRebuild{request: request}, _from, state),
     do: reply(Services.begin_view_rebuild(state.context, request), state)
 
-  defp handle_command(%Commands.AppendViewRebuildPage{request: request}, _from, state),
+  defp handle_owner_command(%Commands.AppendViewRebuildPage{request: request}, _from, state),
     do: reply(Services.append_view_rebuild_page(state.context, request), state)
 
-  defp handle_command(%Commands.FinishViewRebuild{request: request}, _from, state),
+  defp handle_owner_command(%Commands.FinishViewRebuild{request: request}, _from, state),
     do: reply(Services.finish_view_rebuild(state.context, request), state)
 
-  defp handle_command(%Commands.QueryView{request: request}, _from, state),
-    do: reply(Services.query_view(state.context, request), state)
-
-  defp handle_command(%Commands.ReadWinningDocumentsPage{request: request}, _from, state),
-    do: reply(Services.read_winning_documents_page(state.context, request), state)
-
-  defp handle_command(%Commands.GetDerivedView{}, _from, state),
-    do: reply(Services.get_derived_view(state.context), state)
-
-  defp handle_command(%Commands.SetDerivedEnabled{request: request}, _from, state),
+  defp handle_owner_command(%Commands.SetDerivedEnabled{request: request}, _from, state),
     do: set_derived_enabled(request, state)
 
-  defp handle_command(%Commands.ListDerivedSources{}, _from, state),
-    do: reply(Services.list_derived_sources(state.context), state)
-
-  defp handle_command(%Commands.SetDerivedSourceError{request: request}, _from, state),
+  defp handle_owner_command(%Commands.SetDerivedSourceError{request: request}, _from, state),
     do: reply(Services.set_derived_source_error(state.context, request), state)
 
-  defp handle_command(%Commands.ApplyDerivedSourceBatch{request: request}, _from, state),
+  defp handle_owner_command(%Commands.ApplyDerivedSourceBatch{request: request}, _from, state),
     do: mutate(Services.apply_derived_source_batch(state.context, request), state)
 
-  defp handle_command(%Commands.BeginDerivedSourceRebuild{request: request}, _from, state),
+  defp handle_owner_command(%Commands.BeginDerivedSourceRebuild{request: request}, _from, state),
     do: reply(Services.begin_derived_source_rebuild(state.context, request), state)
 
-  defp handle_command(%Commands.ApplyDerivedRebuildPage{request: request}, _from, state),
+  defp handle_owner_command(%Commands.ApplyDerivedRebuildPage{request: request}, _from, state),
     do: mutate(Services.apply_derived_rebuild_page(state.context, request), state)
 
-  defp handle_command(
+  defp handle_owner_command(
          %Commands.PruneDerivedRebuildStalePage{request: request},
          _from,
          state
        ),
        do: mutate(Services.prune_derived_rebuild_stale_page(state.context, request), state)
 
-  defp handle_command(%Commands.FinishDerivedSourceRebuild{request: request}, _from, state),
+  defp handle_owner_command(%Commands.FinishDerivedSourceRebuild{request: request}, _from, state),
     do: reply(Services.finish_derived_source_rebuild(state.context, request), state)
 
-  defp handle_command(%Commands.Close{}, _from, state),
+  defp handle_owner_command(%Commands.Close{}, _from, state),
     do: {:stop, :shutdown, :ok, state}
 
-  defp handle_command(_unknown, _from, state),
+  defp handle_owner_command(_unknown, _from, state),
     do: {:reply, {:error, ElixirDB.Error.invalid_request("unknown database command")}, state}
 
   defp set_derived_enabled(request, state) do
@@ -590,20 +481,10 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp mutate({:error, _} = result, state), do: {:reply, result, state}
   defp reply(result, state), do: {:reply, result, state}
 
-  defp wrap_get({:ok, map}) when is_map(map),
-    do: {:ok, Results.get_document(map)}
-
-  defp wrap_get(other), do: other
-
   defp wrap_put({:ok, map}) when is_map(map),
     do: {:ok, Results.put_document(map)}
 
   defp wrap_put(other), do: other
-
-  defp wrap_changes({:ok, map}) when is_map(map),
-    do: {:ok, Results.read_changes(map)}
-
-  defp wrap_changes(other), do: other
 
   defp writable_mutation(state, fun) do
     case database_kind(state) do

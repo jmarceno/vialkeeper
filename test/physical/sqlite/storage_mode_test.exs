@@ -32,6 +32,8 @@ defmodule ElixirDB.StorageAdapter.MemoryModeTest do
 
     assert {:error, %ElixirDB.Error{code: :document_not_found}} =
              Adapter.get_document(second, %{document_id: "memory-only"})
+
+    assert {:error, :unsupported_readers} = Adapter.open_reader(first)
   end
 
   test "rejects invalid SQLite storage mode/path combinations" do

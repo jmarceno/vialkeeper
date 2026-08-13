@@ -23,6 +23,41 @@ defmodule ElixirDB.Storage.SQLite.Schema do
     end
   end
 
+  @doc """
+  Configures a readonly snapshot connection.
+
+  Does not set journal_mode or synchronous; the writer connection already owns
+  those. Sets query_only so the handle cannot mutate the file.
+  """
+  @spec configure_reader(Connection.handle()) :: :ok | {:error, term()}
+  def configure_reader(conn) do
+    with :ok <- Connection.execute(conn, "PRAGMA query_only = ON"),
+         :ok <- Connection.execute(conn, "PRAGMA foreign_keys = ON"),
+         :ok <- Connection.execute(conn, "PRAGMA locking_mode = NORMAL"),
+         :ok <- Connection.execute(conn, "PRAGMA trusted_schema = OFF"),
+         :ok <- Connection.execute(conn, cache_size_sql()) do
+      Connection.execute(conn, temp_store_sql())
+    end
+  end
+
+  @spec read_database_uuid(Connection.handle()) ::
+          {:ok, binary()} | {:error, ElixirDB.Error.t()}
+  def read_database_uuid(conn) do
+    case Connection.query(conn, "SELECT database_uuid FROM db_meta WHERE id = 1") do
+      {:ok, [[uuid]]} when is_binary(uuid) ->
+        {:ok, uuid}
+
+      {:ok, _} ->
+        {:error, ElixirDB.Error.unsupported_format("SQLite file has no ElixirDB metadata")}
+
+      {:error, reason} ->
+        {:error,
+         ElixirDB.Error.unsupported_format("SQLite schema validation failed", %{
+           cause: inspect(reason)
+         })}
+    end
+  end
+
   @spec create(Connection.handle(), binary(), binary(), keyword()) ::
           :ok | {:error, ElixirDB.Error.t()}
   def create(conn, database_uuid, config_json, opts \\ []) do

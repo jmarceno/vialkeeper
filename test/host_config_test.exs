@@ -76,6 +76,8 @@ defmodule ElixirDB.HostConfigTest do
     limits = Keyword.get(config, :host_limits) |> Map.new()
     assert limits[:max_document_bytes] == 1_048_576
     assert limits[:admission_limit] == 128
+    assert limits[:read_pool_size] == 4
+    assert limits[:read_queue_limit] == 128
     assert limits[:max_replication_concurrent_chain_fetches] == 32
     assert limits[:max_replication_concurrent_blob_transfers] == 32
     assert limits[:max_replication_transfer_bytes_in_flight] == 4_294_967_296
@@ -129,6 +131,12 @@ defmodule ElixirDB.HostConfigTest do
     write_config(dir, "[limits]\nmax_open_databases = 0\n")
     assert {:error, msg} = HostConfig.load_from(dir)
     assert String.contains?(msg, "max_open_databases")
+  end
+
+  test "read_pool_size outside 1..32 is named in the error", %{dir: dir} do
+    write_config(dir, "[limits]\nread_pool_size = 64\n")
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert String.contains?(msg, "read_pool_size")
   end
 
   test "partial limits override still validates admission against default admission_limit", %{

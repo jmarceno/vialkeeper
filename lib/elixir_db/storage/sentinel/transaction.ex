@@ -18,4 +18,9 @@ defmodule ElixirDB.Storage.Sentinel.Transaction do
       {:error, _} = error -> error
     end
   end
+
+  @impl true
+  def run_snapshot(%BackendContext{} = context, fun) when is_function(fun, 1) do
+    run(context, fun)
+  end
 end

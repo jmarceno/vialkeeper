@@ -39,6 +39,8 @@ defmodule ElixirDB.HostConfig do
     "max_replication_concurrent_blob_transfers" => 32,
     "max_replication_transfer_bytes_in_flight" => 4_294_967_296,
     "admission_limit" => 128,
+    "read_pool_size" => 4,
+    "read_queue_limit" => 128,
     "max_json_nesting_depth" => 100,
     "max_attachment_bytes" => 4_294_967_296,
     "max_concurrent_attachment_reads" => 1024,
@@ -76,6 +78,8 @@ defmodule ElixirDB.HostConfig do
     "max_replication_concurrent_blob_transfers" => :max_replication_concurrent_blob_transfers,
     "max_replication_transfer_bytes_in_flight" => :max_replication_transfer_bytes_in_flight,
     "admission_limit" => :admission_limit,
+    "read_pool_size" => :read_pool_size,
+    "read_queue_limit" => :read_queue_limit,
     "max_json_nesting_depth" => :max_json_nesting_depth,
     "max_attachment_bytes" => :max_attachment_bytes,
     "max_concurrent_attachment_reads" => :max_concurrent_attachment_reads,
@@ -374,6 +378,16 @@ defmodule ElixirDB.HostConfig do
 
   defp validate_limit_entry(key, value) when not is_integer(value),
     do: {:halt, {:error, "host.toml: limits.#{key} must be an integer"}}
+
+  defp validate_limit_entry("read_pool_size", value) when value in 1..32, do: {:cont, :ok}
+
+  defp validate_limit_entry("read_pool_size", _),
+    do: {:halt, {:error, "host.toml: limits.read_pool_size must be an integer 1..32"}}
+
+  defp validate_limit_entry("read_queue_limit", value) when value in 1..4096, do: {:cont, :ok}
+
+  defp validate_limit_entry("read_queue_limit", _),
+    do: {:halt, {:error, "host.toml: limits.read_queue_limit must be an integer 1..4096"}}
 
   defp validate_limit_entry(key, value) when value <= 0,
     do: {:halt, {:error, "host.toml: limits.#{key} must be positive"}}

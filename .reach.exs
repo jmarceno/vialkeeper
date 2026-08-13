@@ -41,6 +41,7 @@
       "ElixirDB.Storage.BoundaryGuard",
       "ElixirDB.Storage.Registry",
       "ElixirDB.Storage.Transaction",
+      "ElixirDB.Storage.Lifecycle",
       "ElixirDB.Storage.RequestValidation",
       "ElixirDB.Storage.ContextRef",
       "ElixirDB.Storage.Sentinel",

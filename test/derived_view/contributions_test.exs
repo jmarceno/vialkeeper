@@ -431,6 +431,13 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
       |> deep_merge(overrides)
 
     {:ok, identity} = MaterializedViews.create(request)
+
+    {:ok, _} =
+      DatabaseCatalog.command(
+        identity.database_uuid,
+        {:command, :set_derived_enabled, %{enabled: false}}
+      )
+
     bundle = Path.join(ElixirDB.Config.database_root(), identity.database_path)
     {:ok, identity, bundle}
   end

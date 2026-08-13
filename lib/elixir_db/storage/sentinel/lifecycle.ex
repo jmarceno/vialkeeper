@@ -34,4 +34,10 @@ defmodule ElixirDB.Storage.Sentinel.Lifecycle do
     do: capabilities
 
   def capabilities(_), do: %{engine: "sentinel"}
+
+  @impl true
+  def open_reader(%BackendContext{}), do: {:error, :unsupported_readers}
+
+  @impl true
+  def close_reader(%BackendContext{} = context), do: close(context)
 end

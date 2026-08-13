@@ -47,6 +47,21 @@ Do not copy an active crash-recoverable bundle piecemeal: keep
 `database.sqlite3` together with any live `-wal` and `-shm` files until
 recovery finishes. Reopening a crashed bundle replays the WAL automatically.
 
+## Open WAL and snapshot readers
+
+While a disk database is open, the writer connection uses WAL and
+`synchronous=FULL`. Classified product reads open additional readonly
+connections (`query_only`) against the same artifact; each logical read holds
+one deferred snapshot. Memory SQLite and the in-process memory backend do not
+open extra connections.
+
+Close order is drain in-flight snapshots, close readers, checkpoint the writer
+(`wal_checkpoint(TRUNCATE)`), close the writer, then remove empty `-wal`/`-shm`
+sidecars. Exclusive commands (compact, integrity, rebuild, live-digest, blob
+cleanup) drain snapshots before the writer runs, then resume the reader pool.
+Runtime code never names sidecar files; this backend document does because it
+owns the artifact.
+
 ## Integrity probes
 
 Product integrity rules run over normalized domain facts. The SQLite backend

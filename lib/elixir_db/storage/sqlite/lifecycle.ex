@@ -31,4 +31,18 @@ defmodule ElixirDB.Storage.SQLite.Lifecycle do
       {:error, _} -> %{}
     end
   end
+
+  @impl true
+  def open_reader(%BackendContext{} = context) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      case Adapter.open_reader(adapter) do
+        {:ok, reader} -> {:ok, Adapter.to_context(reader)}
+        {:error, :unsupported_readers} -> {:error, :unsupported_readers}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def close_reader(%BackendContext{} = context), do: close(context)
 end

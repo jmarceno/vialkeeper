@@ -12,10 +12,12 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     CatalogIndex,
     ChangeNotifier,
     CommandContext,
+    CommandIO,
     DatabaseAdmission,
     DatabaseOwner,
     DatabaseRuntimeSupervisor,
     Deadline,
+    ReadPool,
     RegistrationManifest
   }
 
@@ -152,12 +154,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
     with :ok <- ensure_command_target_internal(uuid, :infinity) do
       Database.command(uuid, {:command_context, context, command}, fn ->
-        DatabaseAdmission.execute_with_deadline(
-          uuid,
-          class,
-          {:command_context, context, command},
-          :infinity
-        )
+        route_command(uuid, class, {:command_context, context, command}, :infinity)
       end)
     end
   end
@@ -169,12 +166,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
     with :ok <- ensure_command_target_internal(uuid, deadline_ms) do
       Database.command(uuid, {:command_context, context, command}, fn ->
-        DatabaseAdmission.execute_with_deadline(
-          uuid,
-          class,
-          {:command_context, context, command},
-          deadline_ms
-        )
+        route_command(uuid, class, {:command_context, context, command}, deadline_ms)
       end)
     end
   end
@@ -224,7 +216,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   def command_with_deadline(uuid, command, deadline) when is_binary(uuid) do
     with :ok <- ensure_command_target(uuid, deadline) do
       Database.command(uuid, command, fn ->
-        DatabaseAdmission.execute_with_deadline(uuid, :foreground, command, deadline)
+        route_command(uuid, :foreground, command, deadline)
       end)
     end
   end
@@ -237,7 +229,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   def command_as(uuid, class, command, :infinity) when is_binary(uuid) do
     with :ok <- ensure_command_target(uuid, :infinity) do
       Database.command(uuid, command, fn ->
-        DatabaseAdmission.execute_with_deadline(uuid, class, command, :infinity)
+        route_command(uuid, class, command, :infinity)
       end)
     end
   end
@@ -248,7 +240,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
     with :ok <- ensure_command_target(uuid, deadline_ms) do
       Database.command(uuid, command, fn ->
-        DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline_ms)
+        route_command(uuid, class, command, deadline_ms)
       end)
     end
   end
@@ -596,6 +588,29 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       %{reason: :deadline_exhausted},
       retryable: true
     )
+  end
+
+  defp route_command(uuid, class, command, deadline) do
+    case {command_io_class(command), ReadPool.enabled?(uuid)} do
+      {:read, true} -> ReadPool.execute(uuid, class, command, deadline)
+      {:exclusive, true} -> exclusive_command(uuid, class, command, deadline)
+      _ -> DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
+    end
+  end
+
+  defp exclusive_command(uuid, class, command, deadline) do
+    ReadPool.with_quiesce(uuid, deadline, fn ->
+      DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
+    end)
+  end
+
+  defp command_io_class({:command_context, _authority, inner}), do: command_io_class(inner)
+
+  defp command_io_class(command) do
+    case ElixirDB.Commands.normalize(command) do
+      %module{} -> Map.get(CommandIO.classes(), module, :write)
+      _ -> :write
+    end
   end
 
   # SAFETY: final catch-all net for handle_call clauses that touch the adapter. An
@@ -1009,6 +1024,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     # replication remains a hard blocker; callers must disable jobs first.
     with :ok <- ensure_kind_closeable(uuid),
          false <- JobManager.active?(uuid),
+         :ok <- drain_read_pool(uuid),
          :ok <- drain_admission(uuid) do
       close_runtime_after_admission_drain(uuid)
     else
@@ -1038,7 +1054,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   defp close_runtime_after_admission_drain(uuid) do
     try do
-      with :ok <- close_external_services(uuid) do
+      with :ok <- close_external_services(uuid),
+           :ok <- stop_read_pool(uuid) do
         stop_owner(uuid)
         stop_runtime_supervisor(uuid)
       end
@@ -1150,6 +1167,64 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       :ok -> :ok
       {:error, %ElixirDB.Error{code: :database_closed}} -> :ok
       {:error, _} = error -> error
+    end
+  end
+
+  defp drain_read_pool(uuid) do
+    case ReadPool.begin_close(uuid) do
+      :ok -> ReadPool.close_readers(uuid)
+      {:error, %ElixirDB.Error{code: :database_closed}} -> :ok
+      {:error, _} = error -> error
+    end
+  catch
+    :exit, reason ->
+      {:error,
+       ElixirDB.Error.internal_error("database read pool drain failed during close", %{
+         cause: inspect(reason)
+       })}
+  end
+
+  defp stop_read_pool(uuid) do
+    case runtime_pid(uuid) do
+      pid when is_pid(pid) ->
+        case Supervisor.terminate_child(pid, {:read_pool_supervisor, uuid}) do
+          :ok ->
+            delete_read_pool_child(pid, uuid)
+
+          {:error, :not_found} ->
+            stop_read_pool_process(uuid)
+        end
+
+      nil ->
+        stop_read_pool_process(uuid)
+    end
+  end
+
+  defp delete_read_pool_child(runtime, uuid) do
+    case Supervisor.delete_child(runtime, {:read_pool_supervisor, uuid}) do
+      :ok ->
+        :ok
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         ElixirDB.Error.internal_error("database read pool shutdown failed during close", %{
+           cause: inspect(reason)
+         })}
+    end
+  end
+
+  defp stop_read_pool_process(uuid) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool_supervisor, uuid}) do
+      [{pid, _}] ->
+        if Process.alive?(pid),
+          do: Supervisor.stop(pid, :shutdown, ElixirDB.Config.shutdown_timeout()),
+          else: :ok
+
+      [] ->
+        :ok
     end
   end
 

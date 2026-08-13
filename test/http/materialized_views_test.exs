@@ -60,18 +60,38 @@ defmodule ElixirDB.HTTP.MaterializedViewsTest do
 
     assert Eventual.eventually(
              fn ->
-               case Req.post(
-                      server.base_url <> "/v1/databases/#{derived_uuid}/documents/get",
-                      json: %{"id" => map_id(source_uuid, "one")}
-                    ) do
-                 {:ok, %{status: 200, body: %{"data" => %{"body" => %{"value" => 7}}}}} ->
-                   true
+               generated_id = map_id(source_uuid, "one")
 
-                 _ ->
-                   false
-               end
+               document_ready? =
+                 case Req.post(
+                        server.base_url <> "/v1/databases/#{derived_uuid}/documents/get",
+                        json: %{"id" => generated_id}
+                      ) do
+                   {:ok, %{status: 200, body: %{"data" => %{"body" => %{"value" => 7}}}}} ->
+                     true
+
+                   _ ->
+                     false
+                 end
+
+               checkpoint_ready? =
+                 case Req.get(server.base_url <> "/v1/materialized-views/#{derived_uuid}") do
+                   {:ok,
+                    %{
+                      status: 200,
+                      body: %{
+                        "data" => %{"sources" => [%{"checkpoint_sequence" => 1} | _]}
+                      }
+                    }} ->
+                     true
+
+                   _ ->
+                     false
+                 end
+
+               document_ready? and checkpoint_ready?
              end,
-             message: "HTTP materializer did not generate the mapped document"
+             message: "HTTP materializer did not generate the mapped document and checkpoint"
            )
 
     assert {:ok, %{status: 200, body: %{"data" => detail}}} =

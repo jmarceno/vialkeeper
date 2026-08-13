@@ -54,6 +54,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     :identity,
     :context_ref,
     storage_mode: :disk,
+    reader?: false,
     retention_fault: nil,
     view_fault: nil,
     derived_fault: nil
@@ -69,6 +70,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
           identity: map(),
           context_ref: OpaqueHandle.t() | nil,
           storage_mode: storage_mode(),
+          reader?: boolean(),
           retention_fault: retention_fault(),
           view_fault: view_fault(),
           derived_fault: derived_fault()
@@ -194,6 +196,37 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   @spec transaction_port() :: module()
   def transaction_port, do: Transaction
 
+  @doc """
+  Opens a readonly snapshot connection against the same disk file as `adapter`.
+
+  Memory databases return `:unsupported_readers` because `:memory:` handles are
+  private to a connection.
+  """
+  @spec open_reader(t()) ::
+          {:ok, t()} | {:error, :unsupported_readers} | {:error, ElixirDB.Error.t()}
+  def open_reader(%__MODULE__{storage_mode: :memory}), do: {:error, :unsupported_readers}
+
+  def open_reader(%__MODULE__{storage_mode: :disk, path: path, identity: writer_identity})
+      when is_binary(path) and path != ":memory:" do
+    with {:ok, conn} <- Connection.open(path, mode: [:readonly]),
+         :ok <- Schema.configure_reader(conn),
+         {:ok, uuid} <- Schema.read_database_uuid(conn),
+         :ok <- match_reader_uuid(uuid, writer_identity) do
+      {:ok,
+       Context.bind(%__MODULE__{
+         path: path,
+         conn: conn,
+         identity: writer_identity,
+         storage_mode: :disk,
+         reader?: true
+       })}
+    else
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  def open_reader(_adapter), do: {:error, :unsupported_readers}
+
   @doc false
   @spec invalidate_identity_cache(Connection.handle()) :: term()
   def invalidate_identity_cache(conn), do: Process.delete({@identity_cache_key, conn})
@@ -222,10 +255,14 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     result
   end
 
+  defp checkpoint_on_close(%__MODULE__{reader?: true}), do: :ok
+
   defp checkpoint_on_close(%__MODULE__{storage_mode: :disk, conn: conn}),
     do: Connection.checkpoint(conn)
 
   defp checkpoint_on_close(_adapter), do: :ok
+
+  defp remove_empty_sidecars(%__MODULE__{reader?: true}), do: :ok
 
   defp remove_empty_sidecars(%__MODULE__{storage_mode: :disk, path: path})
        when is_binary(path) and path != ":memory:" do
@@ -242,6 +279,10 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   defp remove_empty_sidecars(_adapter), do: :ok
 
   @impl true
+  def identity(%__MODULE__{reader?: true, conn: conn, identity: identity}) do
+    read_identity_metadata(conn, identity)
+  end
+
   def identity(%__MODULE__{conn: conn, identity: identity}) do
     case Process.get({@identity_cache_key, conn}) do
       {:ok, _cached_identity} = cached ->
@@ -328,7 +369,9 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     if is_nil(revision_id) and not include_conflicts do
       winner_get(adapter, document_id)
     else
-      lookup_document(adapter, document_id, revision_id, include_conflicts)
+      Transaction.run_snapshot_on_adapter(adapter, fn snap ->
+        lookup_document(snap, document_id, revision_id, include_conflicts)
+      end)
     end
   end
 
@@ -337,13 +380,15 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def get_revision(%__MODULE__{} = adapter, request) when is_map(request) do
-    document_id = MapAccess.get(request, :document_id)
-    revision_id = MapAccess.get(request, :revision_id)
+    Transaction.run_snapshot_on_adapter(adapter, fn snap ->
+      document_id = MapAccess.get(request, :document_id)
+      revision_id = MapAccess.get(request, :revision_id)
 
-    with {:ok, doc} <- Documents.find(adapter.conn, document_id),
-         {:ok, revision} <- Revisions.find(adapter.conn, doc.doc_key, revision_id) do
-      {:ok, Documents.to_result(doc, revision, [])}
-    end
+      with {:ok, doc} <- Documents.find(snap.conn, document_id),
+           {:ok, revision} <- Revisions.find(snap.conn, doc.doc_key, revision_id) do
+        {:ok, Documents.to_result(doc, revision, [])}
+      end
+    end)
   end
 
   def get_revision(_adapter, _request),
@@ -492,7 +537,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   @impl true
-  def list_indexes(%__MODULE__{conn: conn}), do: IndexCatalog.list(conn)
+  def list_indexes(%__MODULE__{conn: conn} = adapter),
+    do: IndexCatalog.list(conn, cache: not adapter.reader?)
 
   @impl true
   def execute_query(%__MODULE__{} = adapter, request) when is_map(request) do
@@ -749,7 +795,25 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
     |> Map.put(:retention_mode, get_in(config, ["retention", "mode"]) || "disabled")
   end
 
+  defp normalize_error(:unsupported_readers), do: :unsupported_readers
   defp normalize_error(reason), do: Errors.normalize(reason)
+
+  defp match_reader_uuid(uuid, identity) when is_map(identity) do
+    expected = MapAccess.get(identity, :database_uuid)
+
+    if uuid == expected do
+      :ok
+    else
+      {:error,
+       ElixirDB.Error.database_unavailable(
+         "database UUID mismatch",
+         ElixirDB.Error.identity_mismatch_details(:uuid_mismatch, expected, uuid)
+       )}
+    end
+  end
+
+  defp match_reader_uuid(_uuid, _identity),
+    do: {:error, ElixirDB.Error.internal_error("writer identity is missing")}
 
   defp storage_mode(path, options) do
     requested =

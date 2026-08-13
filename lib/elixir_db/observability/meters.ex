@@ -15,6 +15,7 @@ defmodule ElixirDB.Observability.Meters do
   | `elixir_db.database.command.duration` | histogram |
   | `elixir_db.database.overload.count` | counter |
   | `elixir_db.database.admission.wait` | histogram |
+  | `elixir_db.database.read_pool.quiesce.duration` | histogram |
   | `elixir_db.database.compact.count` | counter |
   | `elixir_db.database.compact.duration` | histogram |
   | `elixir_db.changes.read.duration` | histogram |
@@ -52,6 +53,7 @@ defmodule ElixirDB.Observability.Meters do
     {:"elixir_db.database.command.duration", :histogram},
     {:"elixir_db.database.overload.count", :counter},
     {:"elixir_db.database.admission.wait", :histogram},
+    {:"elixir_db.database.read_pool.quiesce.duration", :histogram},
     {:"elixir_db.database.compact.count", :counter},
     {:"elixir_db.database.compact.duration", :histogram},
     {:"elixir_db.changes.read.duration", :histogram},

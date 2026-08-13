@@ -499,7 +499,7 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
           GenServer.call(pid, message, timeout)
         catch
           :exit, reason ->
-            if no_process_exit?(reason) do
+            if Deadline.no_process_exit?(reason) do
               {:error, closed_error()}
             else
               exit(reason)
@@ -510,11 +510,6 @@ defmodule ElixirDB.Runtime.DatabaseAdmission do
         {:error, closed_error()}
     end
   end
-
-  defp no_process_exit?(:noproc), do: true
-  defp no_process_exit?({:noproc, _details}), do: true
-  defp no_process_exit?({{:noproc, _details}, _call}), do: true
-  defp no_process_exit?(_reason), do: false
 
   defp handle_acquire(request_ref, class, deadline_ms, mode, trace_context, from, state, probe_op) do
     cond do
