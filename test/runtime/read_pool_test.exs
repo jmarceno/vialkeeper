@@ -1,6 +1,7 @@
 defmodule ElixirDB.Runtime.ReadPoolTest do
   @moduledoc """
-  FIFO occupancy and overflow for the snapshot read pool (plan §4.12, §4.13).
+  FIFO occupancy and overflow for the snapshot read pool: bounded capacity,
+  overload errors, and close draining active snapshots before teardown.
   """
   use ExUnit.Case, async: false
 
@@ -60,7 +61,7 @@ defmodule ElixirDB.Runtime.ReadPoolTest do
         end
       end,
       timeout: 2_000,
-      message: "plan §4.12: expected one active snapshot before enqueue"
+      message: "expected one active snapshot before enqueue"
     )
 
     waiter =
@@ -76,7 +77,7 @@ defmodule ElixirDB.Runtime.ReadPoolTest do
         end
       end,
       timeout: 2_000,
-      message: "plan §4.12: occupancy must include the queued waiter"
+      message: "occupancy must include the queued waiter"
     )
 
     assert {:error, %ElixirDB.Error{code: :database_overloaded}} =
@@ -103,7 +104,7 @@ defmodule ElixirDB.Runtime.ReadPoolTest do
     child_ids = Enum.map(Supervisor.which_children(runtime), &elem(&1, 0))
 
     assert {:read_pool_supervisor, uuid} in child_ids,
-           "plan §11: expected read pool supervisor child, got #{inspect(child_ids)}"
+           "expected read pool supervisor child, got #{inspect(child_ids)}"
 
     assert :ok = DatabaseCatalog.close(uuid)
 
@@ -113,12 +114,12 @@ defmodule ElixirDB.Runtime.ReadPoolTest do
     assert [] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_worker, uuid, 1})
 
     refute File.exists?(sqlite <> "-wal"),
-           "plan §4.8: expected WAL sidecar gone after close"
+           "expected WAL sidecar gone after close"
 
     shm = sqlite <> "-shm"
 
     refute File.exists?(shm),
-           "plan §4.8: expected SHM sidecar gone after close, stat=#{inspect(File.stat(shm))}"
+           "expected SHM sidecar gone after close, stat=#{inspect(File.stat(shm))}"
   end
 
   test "close fails queued readers then drains the active snapshot", %{uuid: uuid} do
@@ -147,7 +148,7 @@ defmodule ElixirDB.Runtime.ReadPoolTest do
         end
       end,
       timeout: 2_000,
-      message: "plan §4.8: close drain requires a queued reader"
+      message: "close drain requires a queued reader"
     )
 
     closer = Task.async(fn -> DatabaseCatalog.close(uuid) end)

@@ -125,25 +125,28 @@ defmodule ElixirDB.Runtime.ReadPool do
     end
   end
 
-  @spec quiesce(binary(), Deadline.t()) :: :ok | {:error, Error.t()}
-  def quiesce(uuid, :infinity) when is_binary(uuid), do: do_quiesce(uuid, :infinity)
+  @spec quiesce(binary(), reference(), Deadline.t()) :: :ok | {:error, Error.t()}
+  def quiesce(uuid, token, :infinity) when is_binary(uuid) and is_reference(token),
+    do: do_quiesce(uuid, token, :infinity)
 
-  def quiesce(uuid, deadline_ms) when is_binary(uuid) and is_integer(deadline_ms) do
-    do_quiesce(uuid, deadline_ms)
+  def quiesce(uuid, token, deadline_ms)
+      when is_binary(uuid) and is_reference(token) and is_integer(deadline_ms) do
+    do_quiesce(uuid, token, deadline_ms)
   end
 
-  @spec resume(binary()) :: :ok | {:error, Error.t()}
-  def resume(uuid) when is_binary(uuid) do
+  @spec resume(binary(), reference()) :: :ok | {:error, Error.t()}
+  def resume(uuid, token) when is_binary(uuid) and is_reference(token) do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid}) do
-      [{_pid, _}] -> call(uuid, :resume, 5_000)
+      [{_pid, _}] -> call(uuid, {:resume, token}, 5_000)
       [] -> :ok
     end
   end
 
   @spec with_quiesce(binary(), Deadline.t(), (-> term())) :: term() | {:error, Error.t()}
   def with_quiesce(uuid, deadline, fun) when is_binary(uuid) and is_function(fun, 0) do
+    token = make_ref()
     started = System.monotonic_time()
-    result = quiesce(uuid, deadline)
+    result = quiesce(uuid, token, deadline)
 
     DatabaseInstrumentation.read_pool_quiesce(
       uuid,
@@ -155,11 +158,14 @@ defmodule ElixirDB.Runtime.ReadPool do
         try do
           fun.()
         after
-          _ = resume(uuid)
+          _ = resume(uuid, token)
         end
 
       {:error, _} = error ->
-        _ = resume(uuid)
+        # A timed-out quiesce may still have registered the token in the pool
+        # (its reply was dropped); same-sender ordering guarantees this resume
+        # lands after that quiesce. Resuming an unknown token is a no-op.
+        _ = resume(uuid, token)
         error
     end
   end
@@ -181,7 +187,7 @@ defmodule ElixirDB.Runtime.ReadPool do
        worker_monitors: %{},
        closing?: false,
        close_from: nil,
-       quiesce_count: 0,
+       quiesce_tokens: %{},
        quiesce_froms: []
      }}
   end
@@ -205,30 +211,27 @@ defmodule ElixirDB.Runtime.ReadPool do
     end
   end
 
-  def handle_call(:quiesce, from, state) do
-    state = %{state | quiesce_count: state.quiesce_count + 1}
+  def handle_call({:quiesce, token}, from, state) do
+    # The caller is monitored so a killed exclusive cannot leave the pool
+    # paused forever (an untrappable exit skips the caller's resume).
+    monitor_ref = Process.monitor(caller_pid(from))
+    state = %{state | quiesce_tokens: Map.put(state.quiesce_tokens, token, monitor_ref)}
 
     if map_size(state.busy) == 0 do
       {:reply, :ok, state}
     else
-      {:noreply, %{state | quiesce_froms: [from | state.quiesce_froms]}}
+      {:noreply, %{state | quiesce_froms: [{token, from} | state.quiesce_froms]}}
     end
   end
 
-  def handle_call(:resume, _from, state) do
-    count = max(state.quiesce_count - 1, 0)
-    state = %{state | quiesce_count: count}
+  def handle_call({:resume, token}, _from, state) do
+    state = clear_quiesce_token(state, token)
     {:reply, :ok, maybe_resume_grants(state)}
   end
 
   def handle_call(:close_readers, _from, state) do
-    pids = worker_pids(state)
-
-    Enum.each(pids, fn pid ->
-      if Process.alive?(pid) do
-        GenServer.call(pid, :close_reader, ElixirDB.Config.shutdown_timeout())
-      end
-    end)
+    timeout = ElixirDB.Config.shutdown_timeout()
+    Enum.each(worker_pids(state), &close_worker_reader(&1, timeout))
 
     {:reply, :ok, state}
   end
@@ -241,7 +244,7 @@ defmodule ElixirDB.Runtime.ReadPool do
         queued: queued_count(state),
         workers: worker_count(state),
         closing?: state.closing?,
-        quiescing?: state.quiesce_count > 0
+        quiescing?: map_size(state.quiesce_tokens) > 0
       }}, state}
   end
 
@@ -293,10 +296,15 @@ defmodule ElixirDB.Runtime.ReadPool do
 
   @impl true
   def handle_info({:DOWN, monitor_ref, :process, pid, _reason}, state) do
-    if Map.has_key?(state.worker_monitors, monitor_ref) do
-      {:noreply, worker_down(state, monitor_ref, pid)}
-    else
-      {:noreply, caller_down(state, monitor_ref, pid)}
+    cond do
+      Map.has_key?(state.worker_monitors, monitor_ref) ->
+        {:noreply, worker_down(state, monitor_ref, pid)}
+
+      quiesce_monitor?(state, monitor_ref) ->
+        {:noreply, quiesce_caller_down(state, monitor_ref)}
+
+      true ->
+        {:noreply, caller_down(state, monitor_ref, pid)}
     end
   end
 
@@ -356,14 +364,14 @@ defmodule ElixirDB.Runtime.ReadPool do
     end
   end
 
-  defp do_quiesce(uuid, deadline_ms) do
+  defp do_quiesce(uuid, token, deadline_ms) do
     if Deadline.exhausted?(deadline_ms) do
       {:error, deadline_error()}
     else
       case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid}) do
         [{_pid, _}] ->
           try do
-            call(uuid, :quiesce, Deadline.call_timeout(deadline_ms))
+            call(uuid, {:quiesce, token}, Deadline.call_timeout(deadline_ms))
           catch
             :exit, reason -> translate_exit(reason)
           end
@@ -385,6 +393,16 @@ defmodule ElixirDB.Runtime.ReadPool do
       true ->
         Process.demonitor(waiter.monitor_ref, [:flush])
         DatabaseInstrumentation.overload(state.uuid)
+
+        DatabaseInstrumentation.read_pool_wait(
+          state.uuid,
+          waiter.class,
+          :rejected,
+          0,
+          queued_count(state),
+          0
+        )
+
         GenServer.reply(waiter.from, {:error, overloaded_error()})
         state
     end
@@ -411,6 +429,7 @@ defmodule ElixirDB.Runtime.ReadPool do
     }
 
     record_wait(state.uuid, waiter, :granted, queued_count(state))
+    DatabaseInstrumentation.read_pool_active(state.uuid, 1)
     probe_grant(waiter.class, waiter.probe_op)
     GenServer.cast(worker_pid, {:run, job})
 
@@ -418,6 +437,8 @@ defmodule ElixirDB.Runtime.ReadPool do
   end
 
   defp enqueue(state, %Waiter{} = waiter) do
+    DatabaseInstrumentation.read_pool_queued(state.uuid, 1)
+
     %{
       state
       | waiters: :queue.in(waiter.request_ref, state.waiters),
@@ -431,11 +452,12 @@ defmodule ElixirDB.Runtime.ReadPool do
         recycle_worker(state, worker_pid)
 
       {%Job{} = active, busy} ->
+        DatabaseInstrumentation.read_pool_active(state.uuid, -1)
+        probe_release(active.probe_op)
+
         unless active.cancelled? do
           GenServer.reply(active.from, result)
         end
-
-        probe_release(active.probe_op)
 
         %{state | busy: busy}
         |> recycle_worker(worker_pid)
@@ -486,6 +508,7 @@ defmodule ElixirDB.Runtime.ReadPool do
             pop_waiter(%{state | waiters: waiters, waiting_by_ref: waiting_by_ref})
 
           {%Waiter{} = waiter, waiting_by_ref} ->
+            DatabaseInstrumentation.read_pool_queued(state.uuid, -1)
             {waiter, %{state | waiters: waiters, waiting_by_ref: waiting_by_ref}}
         end
     end
@@ -521,6 +544,7 @@ defmodule ElixirDB.Runtime.ReadPool do
           )
         end
 
+        DatabaseInstrumentation.read_pool_active(state.uuid, -1)
         probe_release(job.probe_op)
 
         %{state | busy: busy}
@@ -533,6 +557,7 @@ defmodule ElixirDB.Runtime.ReadPool do
     case waiter_by_monitor(state, monitor_ref) do
       %Waiter{} = waiter ->
         Process.demonitor(monitor_ref, [:flush])
+        record_wait(state.uuid, waiter, :cancelled, queued_count(state))
         remove_waiter(state, waiter.request_ref)
 
       nil ->
@@ -544,6 +569,7 @@ defmodule ElixirDB.Runtime.ReadPool do
     case Map.get(state.waiting_by_ref, request_ref) do
       %Waiter{} = waiter ->
         Process.demonitor(waiter.monitor_ref, [:flush])
+        record_wait(state.uuid, waiter, :cancelled, queued_count(state))
         remove_waiter(state, request_ref)
 
       nil ->
@@ -569,6 +595,10 @@ defmodule ElixirDB.Runtime.ReadPool do
       GenServer.reply(waiter.from, {:error, closed_error()})
     end)
 
+    if map_size(state.waiting_by_ref) > 0 do
+      DatabaseInstrumentation.read_pool_queued(state.uuid, -map_size(state.waiting_by_ref))
+    end
+
     %{state | waiters: :queue.new(), waiting_by_ref: %{}}
   end
 
@@ -586,9 +616,9 @@ defmodule ElixirDB.Runtime.ReadPool do
 
   defp maybe_finish_close(state), do: state
 
-  defp maybe_finish_quiesce(state)
-       when state.quiesce_count > 0 and map_size(state.busy) == 0 do
-    Enum.each(state.quiesce_froms, &GenServer.reply(&1, :ok))
+  defp maybe_finish_quiesce(%{quiesce_froms: [_ | _] = froms} = state)
+       when map_size(state.busy) == 0 do
+    Enum.each(froms, fn {_token, from} -> GenServer.reply(from, :ok) end)
     %{state | quiesce_froms: []}
   end
 
@@ -598,7 +628,39 @@ defmodule ElixirDB.Runtime.ReadPool do
     if paused?(state), do: state, else: grant_loop(state)
   end
 
-  defp paused?(state), do: state.closing? or state.quiesce_count > 0
+  defp clear_quiesce_token(state, token) do
+    case Map.pop(state.quiesce_tokens, token) do
+      {nil, _tokens} ->
+        state
+
+      {monitor_ref, tokens} ->
+        Process.demonitor(monitor_ref, [:flush])
+
+        %{
+          state
+          | quiesce_tokens: tokens,
+            quiesce_froms: Enum.reject(state.quiesce_froms, fn {t, _from} -> t == token end)
+        }
+    end
+  end
+
+  defp quiesce_monitor?(state, monitor_ref) do
+    Enum.any?(state.quiesce_tokens, fn {_token, ref} -> ref == monitor_ref end)
+  end
+
+  defp quiesce_caller_down(state, monitor_ref) do
+    {token, _ref} =
+      Enum.find(state.quiesce_tokens, fn {_token, ref} -> ref == monitor_ref end)
+
+    %{
+      state
+      | quiesce_tokens: Map.delete(state.quiesce_tokens, token),
+        quiesce_froms: Enum.reject(state.quiesce_froms, fn {t, _from} -> t == token end)
+    }
+    |> maybe_resume_grants()
+  end
+
+  defp paused?(state), do: state.closing? or map_size(state.quiesce_tokens) > 0
 
   defp maybe_disable(state) do
     if :queue.is_empty(state.idle) and map_size(state.busy) == 0,
@@ -623,6 +685,8 @@ defmodule ElixirDB.Runtime.ReadPool do
     waiters =
       :queue.filter(fn queued_ref -> queued_ref != request_ref end, state.waiters)
 
+    DatabaseInstrumentation.read_pool_queued(state.uuid, -1)
+
     %{state | waiters: waiters, waiting_by_ref: Map.delete(state.waiting_by_ref, request_ref)}
   end
 
@@ -643,6 +707,21 @@ defmodule ElixirDB.Runtime.ReadPool do
 
   defp worker_pids(state) do
     :queue.to_list(state.idle) ++ Map.keys(state.busy)
+  end
+
+  defp close_worker_reader(pid, timeout) do
+    # A worker may die between the liveness check and the call; its exit is
+    # already handled by the DOWN monitor, so close failure here is benign.
+    if Process.alive?(pid) do
+      try do
+        GenServer.call(pid, :close_reader, timeout)
+      catch
+        :exit, reason ->
+          if Deadline.genserver_call_timeout?(reason), do: exit(reason), else: :ok
+      end
+    end
+
+    :ok
   end
 
   defp busy_ref?(state, request_ref) do
@@ -677,7 +756,22 @@ defmodule ElixirDB.Runtime.ReadPool do
     end
   end
 
-  defp record_wait(_uuid, _waiter, _outcome, _depth_at_grant), do: :ok
+  defp record_wait(uuid, %Waiter{} = waiter, outcome, queue_depth_at_grant) do
+    DatabaseInstrumentation.read_pool_wait(
+      uuid,
+      waiter.class,
+      outcome,
+      wait_duration_native(waiter.enqueued_at_ms, System.monotonic_time(:millisecond)),
+      waiter.queue_depth_at_enqueue,
+      queue_depth_at_grant
+    )
+  end
+
+  defp wait_duration_native(enqueued_at_ms, now_ms)
+       when is_integer(enqueued_at_ms) and is_integer(now_ms) do
+    wait_ms = max(0, now_ms - enqueued_at_ms)
+    System.convert_time_unit(wait_ms, :millisecond, :native)
+  end
 
   defp caller_pid({pid, _tag}) when is_pid(pid), do: pid
 

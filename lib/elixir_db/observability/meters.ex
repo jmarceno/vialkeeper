@@ -15,6 +15,9 @@ defmodule ElixirDB.Observability.Meters do
   | `elixir_db.database.command.duration` | histogram |
   | `elixir_db.database.overload.count` | counter |
   | `elixir_db.database.admission.wait` | histogram |
+  | `elixir_db.database.read_pool.wait` | histogram |
+  | `elixir_db.database.read_pool.active` | updown counter |
+  | `elixir_db.database.read_pool.queued` | updown counter |
   | `elixir_db.database.read_pool.quiesce.duration` | histogram |
   | `elixir_db.database.compact.count` | counter |
   | `elixir_db.database.compact.duration` | histogram |
@@ -53,6 +56,9 @@ defmodule ElixirDB.Observability.Meters do
     {:"elixir_db.database.command.duration", :histogram},
     {:"elixir_db.database.overload.count", :counter},
     {:"elixir_db.database.admission.wait", :histogram},
+    {:"elixir_db.database.read_pool.wait", :histogram},
+    {:"elixir_db.database.read_pool.active", :updown_counter},
+    {:"elixir_db.database.read_pool.queued", :updown_counter},
     {:"elixir_db.database.read_pool.quiesce.duration", :histogram},
     {:"elixir_db.database.compact.count", :counter},
     {:"elixir_db.database.compact.duration", :histogram},
@@ -91,7 +97,7 @@ defmodule ElixirDB.Observability.Meters do
   ]
 
   @doc "Returns the instrument catalog declared by this module."
-  @spec instruments() :: [{atom(), :counter | :histogram}]
+  @spec instruments() :: [{atom(), :counter | :histogram | :updown_counter}]
   def instruments, do: @instruments
 
   @doc "Increments the named counter by 1 with allow-listed `attrs`."
@@ -133,6 +139,26 @@ defmodule ElixirDB.Observability.Meters do
     end
   end
 
+  @doc "Adds `value` (positive or negative) to the named up-down counter."
+  @spec updown_add(atom(), integer(), keyword()) :: :ok
+  def updown_add(name, value, attrs \\ [])
+
+  def updown_add(name, value, attrs)
+      when is_atom(name) and is_integer(value) and is_list(attrs) do
+    if metrics_enabled?() do
+      case instrument(name, :updown_counter) do
+        nil ->
+          :ok
+
+        instrument ->
+          ctx = OpenTelemetry.Ctx.get_current()
+          :otel_updown_counter.add(ctx, instrument, value, Attributes.build(attrs))
+      end
+    else
+      :ok
+    end
+  end
+
   defp metrics_enabled?,
     do: Application.get_env(:opentelemetry_experimental, :readers, []) not in [[], nil]
 
@@ -156,6 +182,7 @@ defmodule ElixirDB.Observability.Meters do
           case kind do
             :counter -> :otel_meter.create_counter(meter, name, opts)
             :histogram -> :otel_meter.create_histogram(meter, name, opts)
+            :updown_counter -> :otel_meter.create_updown_counter(meter, name, opts)
           end
         catch
           # No SDK running; meter provider unavailable. Emission is a no-op.

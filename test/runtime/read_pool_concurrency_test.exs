@@ -1,6 +1,6 @@
 defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
   @moduledoc """
-  Concurrent snapshot reads overlap each other and a writer (plan §5).
+  Concurrent snapshot reads overlap each other and a concurrent writer.
   """
   use ExUnit.Case, async: false
 
@@ -60,10 +60,10 @@ defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
     releases = drain_releases(probe)
 
     assert Enum.count_until(grants, 2) == 2,
-           "plan §4.4: expected two read-pool grants before either snapshot finished, got #{inspect(grants)}"
+           "expected two read-pool grants before either snapshot finished, got #{inspect(grants)}"
 
     assert releases == [],
-           "plan §4.4: no snapshot should release before the sync gate opens, got #{inspect(releases)}"
+           "no snapshot should release before the sync gate opens, got #{inspect(releases)}"
 
     assert {:ok, %{revision: later}} =
              ElixirDB.Documents.put(uuid, %{id: "doc", if_revision: rev, body: %{"n" => 2}})
@@ -81,7 +81,7 @@ defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
         Enum.count_until(releases, 2) == 2
       end,
       timeout: 2_000,
-      message: "plan §4.4: both snapshots should release after the gate opens"
+      message: "both snapshots should release after the gate opens"
     )
   end
 

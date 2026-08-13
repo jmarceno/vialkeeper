@@ -77,12 +77,16 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   Returns the writer's opaque backend context so a reader worker can open its
   own readonly connection. The context is a capability token for path and
   identity; callers must not reuse the writer connection.
+
+  The timeout is the lifecycle-grade default because a worker restart can race
+  a long writer commit; a short call timeout would silently shrink the pool.
   """
-  @spec reader_source(binary()) ::
+  @spec reader_source(binary(), timeout()) ::
           {:ok, ElixirDB.Storage.BackendContext.t()} | {:error, ElixirDB.Error.t()}
-  def reader_source(uuid) when is_binary(uuid) do
+  def reader_source(uuid, timeout \\ ElixirDB.Config.shutdown_timeout())
+      when is_binary(uuid) do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
-      [{pid, _}] -> GenServer.call(pid, :reader_source)
+      [{pid, _}] -> GenServer.call(pid, :reader_source, timeout)
       [] -> {:error, ElixirDB.Error.database_closed("database owner is not running")}
     end
   end

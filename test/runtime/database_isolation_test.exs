@@ -1,9 +1,7 @@
 defmodule ElixirDB.Runtime.DatabaseIsolationTest do
   @moduledoc """
-  Gap D3: independent database isolation.
-
-  Killing one database runtime must not prevent a sibling database from serving reads,
-  and must not leak documents or sequences across databases.
+  Independent database runtime isolation: killing one runtime must not prevent
+  a sibling from serving reads or leak documents and sequences across databases.
   """
   use ExUnit.Case, async: false
 
@@ -11,6 +9,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
 
   alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.{AdmissionPolicy, DatabaseCatalog}
+  alias ElixirDB.View.Manager
 
   setup do
     a_rel = "iso-a-#{System.unique_integer([:positive])}.elixirdb"
@@ -63,6 +62,8 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
   test "killing one database runtime leaves sibling reads intact", %{a: uuid_a, b: uuid_b} do
     assert {:ok, _} = DatabaseCatalog.open(uuid_a)
     assert {:ok, _} = DatabaseCatalog.open(uuid_b)
+    assert :ok = Manager.await_resumed(uuid_a)
+    assert :ok = Manager.await_resumed(uuid_b)
 
     assert {:ok, %{revision: rev_a}} =
              ElixirDB.Documents.put(uuid_a, %{id: "a-doc", body: %{"side" => "a"}})
@@ -81,7 +82,20 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
 
     owner_a = pids_for({:owner, uuid_a})
     pool_a = pids_for({:read_pool, uuid_a})
-    worker_a = pids_for({:read_worker, uuid_a, 1})
+
+    workers_a =
+      1..32
+      |> Enum.flat_map(&pids_for({:read_worker, uuid_a, &1}))
+
+    runtime_children_a =
+      runtime_a
+      |> Supervisor.which_children()
+      |> Enum.flat_map(fn
+        {_id, pid, _type, _modules} when is_pid(pid) -> [pid]
+        _child -> []
+      end)
+
+    victim_processes = Enum.uniq(owner_a ++ pool_a ++ workers_a ++ runtime_children_a)
 
     assert runtime_a != runtime_b
     assert Process.alive?(runtime_a)
@@ -95,10 +109,10 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
 
     ElixirDB.Eventual.eventually(
       fn ->
-        Enum.all?(owner_a ++ pool_a ++ worker_a, fn pid -> not Process.alive?(pid) end)
+        Enum.all?(victim_processes, fn pid -> not Process.alive?(pid) end)
       end,
       timeout: 2_000,
-      message: "plan §4.9: killed runtime must not leave owner or reader processes behind"
+      message: "killed runtime must not leave owner or reader processes behind"
     )
 
     assert_sibling_admission_ready(uuid_b)

@@ -117,6 +117,19 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
 
   @admission_outcomes [:granted, :rejected, :cancelled, :closed]
 
+  defguardp valid_wait_measurement(
+              uuid,
+              class,
+              outcome,
+              duration,
+              queue_depth_at_enqueue,
+              queue_depth_at_grant
+            )
+            when is_binary(uuid) and is_atom(class) and outcome in @admission_outcomes and
+                   is_integer(duration) and duration >= 0 and
+                   is_integer(queue_depth_at_enqueue) and queue_depth_at_enqueue >= 0 and
+                   is_integer(queue_depth_at_grant) and queue_depth_at_grant >= 0
+
   @doc """
   Records `elixir_db.database.admission.wait` for one admission-queue outcome.
 
@@ -132,10 +145,14 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
           non_neg_integer()
         ) :: :ok
   def admission_wait(uuid, class, outcome, duration, queue_depth_at_enqueue, queue_depth_at_grant)
-      when is_binary(uuid) and is_atom(class) and outcome in @admission_outcomes and
-             is_integer(duration) and duration >= 0 and is_integer(queue_depth_at_enqueue) and
-             queue_depth_at_enqueue >= 0 and is_integer(queue_depth_at_grant) and
-             queue_depth_at_grant >= 0 do
+      when valid_wait_measurement(
+             uuid,
+             class,
+             outcome,
+             duration,
+             queue_depth_at_enqueue,
+             queue_depth_at_grant
+           ) do
     Meters.record(:"elixir_db.database.admission.wait", duration,
       db_uuid: uuid,
       admission_class: class,
@@ -154,6 +171,50 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
   def read_pool_quiesce(uuid, duration)
       when is_binary(uuid) and is_integer(duration) and duration >= 0 do
     Meters.record(:"elixir_db.database.read_pool.quiesce.duration", duration, db_uuid: uuid)
+  end
+
+  @doc """
+  Records `elixir_db.database.read_pool.wait` for one read-pool queue outcome.
+
+  `duration` is a native monotonic-time delta. Depth attributes are bounded by
+  the host read queue limit.
+  """
+  @spec read_pool_wait(
+          binary(),
+          atom(),
+          :granted | :rejected | :cancelled | :closed,
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer()
+        ) :: :ok
+  def read_pool_wait(uuid, class, outcome, duration, queue_depth_at_enqueue, queue_depth_at_grant)
+      when valid_wait_measurement(
+             uuid,
+             class,
+             outcome,
+             duration,
+             queue_depth_at_enqueue,
+             queue_depth_at_grant
+           ) do
+    Meters.record(:"elixir_db.database.read_pool.wait", duration,
+      db_uuid: uuid,
+      admission_class: class,
+      outcome: outcome,
+      queue_depth_at_enqueue: queue_depth_at_enqueue,
+      queue_depth_at_grant: queue_depth_at_grant
+    )
+  end
+
+  @doc "Adjusts `elixir_db.database.read_pool.active` (running snapshots) by `delta`."
+  @spec read_pool_active(binary(), integer()) :: :ok
+  def read_pool_active(uuid, delta) when is_binary(uuid) and is_integer(delta) do
+    Meters.updown_add(:"elixir_db.database.read_pool.active", delta, db_uuid: uuid)
+  end
+
+  @doc "Adjusts `elixir_db.database.read_pool.queued` (waiting reads) by `delta`."
+  @spec read_pool_queued(binary(), integer()) :: :ok
+  def read_pool_queued(uuid, delta) when is_binary(uuid) and is_integer(delta) do
+    Meters.updown_add(:"elixir_db.database.read_pool.queued", delta, db_uuid: uuid)
   end
 
   @doc """

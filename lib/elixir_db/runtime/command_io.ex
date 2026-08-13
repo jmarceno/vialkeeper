@@ -83,13 +83,13 @@ defmodule ElixirDB.Runtime.CommandIO do
                Commands.Close
              ])
 
+  @classes @read
+           |> Map.new(&{&1, :read})
+           |> Map.merge(Map.new(@write, &{&1, :write}))
+           |> Map.merge(Map.new(@exclusive, &{&1, :exclusive}))
+
   @spec classes() :: %{module() => class()}
-  def classes do
-    %{}
-    |> put_class(@read, :read)
-    |> put_class(@write, :write)
-    |> put_class(@exclusive, :exclusive)
-  end
+  def classes, do: @classes
 
   @spec classify(struct()) :: class()
   def classify(%module{}) do
@@ -99,9 +99,5 @@ defmodule ElixirDB.Runtime.CommandIO do
       module in @exclusive -> :exclusive
       true -> raise ArgumentError, "unclassified command #{inspect(module)}"
     end
-  end
-
-  defp put_class(acc, modules, class) do
-    Enum.reduce(modules, acc, fn module, map -> Map.put(map, module, class) end)
   end
 end

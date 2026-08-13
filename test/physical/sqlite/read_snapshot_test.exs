@@ -1,5 +1,5 @@
 defmodule ElixirDB.StorageAdapter.ReadSnapshotTest do
-  @moduledoc "Covers deferred snapshot isolation for concurrent writers. plan §8.2"
+  @moduledoc "Covers deferred snapshot isolation for concurrent writers."
   use ExUnit.Case, async: true
 
   @moduletag :sqlite_physical

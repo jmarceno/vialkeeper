@@ -1,5 +1,5 @@
 defmodule ElixirDB.StorageAdapter.ReadPoolConnectionTest do
-  @moduledoc "Covers readonly SQLite snapshot connections. plan §8.1"
+  @moduledoc "Covers readonly SQLite snapshot connections."
   use ExUnit.Case, async: true
 
   @moduletag :sqlite_physical

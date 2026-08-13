@@ -658,6 +658,7 @@ not block the hot path.
 | Database command | `elixir_db.database.command` | `….command.duration` |
 | Admission overload | — | `elixir_db.database.overload.count` |
 | Admission wait | — | `elixir_db.database.admission.wait` |
+| Read pool occupancy / wait / exclusive drain | — | `elixir_db.database.read_pool.active`, `….queued`, `….wait`, `….quiesce.duration` |
 | Changes read | `elixir_db.changes.read` | `….duration` |
 | Query execute | `elixir_db.query.execute` | `….duration` |
 | Index build | `elixir_db.index.build` | `….duration` |

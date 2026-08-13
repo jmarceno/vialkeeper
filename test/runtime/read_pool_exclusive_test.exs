@@ -1,6 +1,7 @@
 defmodule ElixirDB.Runtime.ReadPoolExclusiveTest do
   @moduledoc """
-  Exclusive commands drain snapshots before the owner body runs (plan §4.7, §6.3).
+  Exclusive commands drain active snapshots and hold the pool quiesced before
+  the owner body runs, so no reader overlaps exclusive IO.
   """
   use ExUnit.Case, async: false
 
@@ -78,7 +79,7 @@ defmodule ElixirDB.Runtime.ReadPoolExclusiveTest do
         end
       end,
       timeout: 2_000,
-      message: "plan §4.7: exclusive must hold the pool quiesced with no active snapshots"
+      message: "exclusive must hold the pool quiesced with no active snapshots"
     )
 
     waiter =
@@ -94,17 +95,66 @@ defmodule ElixirDB.Runtime.ReadPoolExclusiveTest do
         end
       end,
       timeout: 2_000,
-      message: "plan §5: a get queued during exclusive waits until exclusive releases"
+      message: "a get queued during exclusive waits until exclusive releases"
     )
 
     grants_during_exclusive = drain_grants(probe)
 
     assert grants_during_exclusive == [],
-           "plan §6.3: no snapshot grant mid-exclusive, got #{inspect(grants_during_exclusive)}"
+           "no snapshot grant may happen mid-exclusive, got #{inspect(grants_during_exclusive)}"
 
     send(owner, {:go, owner_gate})
     assert {:ok, _} = Task.await(exclusive, 10_000)
     assert {:ok, %{id: "doc"}} = Task.await(waiter, 5_000)
+  end
+
+  test "killed exclusive caller releases the pool quiesce", %{uuid: uuid} do
+    assert {:ok, _} = ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+
+    gate = make_ref()
+    Application.put_env(:elixir_db, :read_pool_sync, {self(), gate, uuid})
+
+    holder =
+      Task.async(fn ->
+        ElixirDB.Documents.get(uuid, %{id: "doc"})
+      end)
+
+    assert_receive {^gate, :before_begin, worker}, 2_000
+
+    {:ok, exclusive_pid} =
+      Task.start(fn ->
+        DatabaseCatalog.command(uuid, {:command, :integrity_check, %{}})
+      end)
+
+    Eventual.eventually(
+      fn ->
+        case ReadPool.stats(uuid) do
+          {:ok, %{quiescing?: true}} -> true
+          _ -> false
+        end
+      end,
+      timeout: 2_000,
+      message: "exclusive should be waiting for the active snapshot to drain"
+    )
+
+    Process.exit(exclusive_pid, :kill)
+
+    Application.delete_env(:elixir_db, :read_pool_sync)
+    send(worker, {:go, gate})
+    assert {:ok, %{id: "doc"}} = Task.await(holder, 5_000)
+
+    Eventual.eventually(
+      fn ->
+        case ReadPool.stats(uuid) do
+          {:ok, %{active: 0, queued: 0, quiescing?: false}} -> true
+          _ -> false
+        end
+      end,
+      timeout: 2_000,
+      message: "killed exclusive must not leave the pool quiesced"
+    )
+
+    assert {:ok, %{id: "doc"}} = ElixirDB.Documents.get(uuid, %{id: "doc"})
   end
 
   defp drain_grants(ref, acc \\ []) do
