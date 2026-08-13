@@ -362,17 +362,17 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def get_document(%__MODULE__{} = adapter, request) when is_map(request) do
-    Transaction.run_snapshot_on_adapter(adapter, fn snap ->
-      document_id = MapAccess.get(request, :document_id)
-      revision_id = MapAccess.get(request, :revision)
-      include_conflicts = MapAccess.get(request, :include_conflicts, false)
+    document_id = MapAccess.get(request, :document_id)
+    revision_id = MapAccess.get(request, :revision)
+    include_conflicts = MapAccess.get(request, :include_conflicts, false)
 
-      if is_nil(revision_id) and not include_conflicts do
-        winner_get(snap, document_id)
-      else
+    if is_nil(revision_id) and not include_conflicts do
+      winner_get(adapter, document_id)
+    else
+      Transaction.run_snapshot_on_adapter(adapter, fn snap ->
         lookup_document(snap, document_id, revision_id, include_conflicts)
-      end
-    end)
+      end)
+    end
   end
 
   def get_document(_adapter, _request),

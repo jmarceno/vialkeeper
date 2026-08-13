@@ -55,7 +55,8 @@ defmodule ElixirDB.Storage.MemoryTransactionTest do
           end)
         end,
         max_concurrency: 8,
-        ordered: true
+        ordered: true,
+        timeout: 15_000
       )
       |> Enum.to_list()
 

@@ -32,6 +32,15 @@ defmodule ElixirDB.Storage.SQLite.Connection do
     end
   end
 
+  @doc """
+  Runs parameterless control SQL without the prepared-statement cache.
+
+  Transaction `BEGIN`/`COMMIT`/`ROLLBACK` must not be cached prepared
+  statements; SQLite treats those as connection state changes.
+  """
+  @spec exec(handle(), binary()) :: :ok | {:error, term()}
+  def exec(conn, sql) when is_binary(sql), do: Sqlite3.execute(conn, sql)
+
   @spec query(handle(), iodata(), list()) :: {:ok, [list()]} | {:error, term()}
   def query(conn, sql, params \\ []), do: run(conn, sql, params, true)
 

@@ -2,8 +2,9 @@ defmodule ElixirDB.Storage.Memory.Transaction do
   @moduledoc """
   Memory implementation of the storage transaction port.
 
-  Serializes callbacks per store, snapshots state before running `fun`, and
-  restores the snapshot on errors or exceptions.
+  Write transactions serialize callbacks per store, copy state before running
+  `fun`, and restore that copy on errors. Read snapshots take the same lock
+  without copying; snapshot bodies must not mutate the store.
   """
   @behaviour ElixirDB.Storage.Ports.Transaction
 
@@ -20,23 +21,27 @@ defmodule ElixirDB.Storage.Memory.Transaction do
 
   @impl true
   def run_snapshot(%BackendContext{} = context, fun) when is_function(fun, 1) do
-    run(context, fun)
+    with {:ok, adapter} <- Context.unwrap(context) do
+      trans_result(:global.trans({__MODULE__, adapter.store}, fn -> fun.(context) end))
+    end
   end
 
   defp run_locked(adapter, context, fun) do
-    case :global.trans({__MODULE__, adapter.store}, fn ->
-           execute(adapter, context, Store.get(adapter.store), fun)
-         end) do
-      {:aborted, reason} ->
-        {:error,
-         ElixirDB.Error.internal_error("memory transaction could not acquire its lock", %{
-           cause: inspect(reason)
-         })}
-
-      result ->
-        result
-    end
+    trans_result(
+      :global.trans({__MODULE__, adapter.store}, fn ->
+        execute(adapter, context, Store.get(adapter.store), fun)
+      end)
+    )
   end
+
+  defp trans_result({:aborted, reason}) do
+    {:error,
+     ElixirDB.Error.internal_error("memory transaction could not acquire its lock", %{
+       cause: inspect(reason)
+     })}
+  end
+
+  defp trans_result(result), do: result
 
   defp execute(adapter, context, snapshot, fun) do
     case fun.(context) do

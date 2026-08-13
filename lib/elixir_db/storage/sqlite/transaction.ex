@@ -86,56 +86,53 @@ defmodule ElixirDB.Storage.SQLite.Transaction do
   end
 
   defp execute_transaction(%Adapter{conn: conn} = adapter, fun, begin_sql, invalidate_cache?) do
-    case SQLite.trace_sqlite_phase(:transaction_begin, fn ->
-           Connection.execute(conn, begin_sql)
-         end) do
+    trace? = begin_sql == "BEGIN IMMEDIATE"
+
+    case control(conn, begin_sql, :transaction_begin, trace?) do
       :ok ->
-        transaction_body(adapter, fun, invalidate_cache?)
+        transaction_body(adapter, fun, invalidate_cache?, trace?)
 
       {:error, reason} ->
         {:error, Errors.normalize(reason)}
     end
   end
 
-  defp transaction_body(%Adapter{conn: conn} = adapter, fun, invalidate_cache?) do
+  defp transaction_body(%Adapter{conn: conn} = adapter, fun, invalidate_cache?, trace?) do
     case fun.(adapter) do
       {:ok, value} ->
-        commit_transaction(conn, value, invalidate_cache?)
+        commit_transaction(conn, value, invalidate_cache?, trace?)
 
       {:error, error} ->
-        _ =
-          SQLite.trace_sqlite_phase(:transaction_rollback, fn ->
-            Connection.execute(conn, "ROLLBACK")
-          end)
-
+        _ = control(conn, "ROLLBACK", :transaction_rollback, trace?)
         maybe_invalidate(conn, invalidate_cache?)
         {:error, Errors.normalize(error)}
     end
   end
 
-  defp commit_transaction(conn, value, invalidate_cache?) do
-    case SQLite.trace_sqlite_phase(:transaction_commit, fn ->
-           Connection.execute(conn, "COMMIT")
-         end) do
+  defp commit_transaction(conn, value, invalidate_cache?, trace?) do
+    case control(conn, "COMMIT", :transaction_commit, trace?) do
       :ok ->
         maybe_invalidate(conn, invalidate_cache?)
         {:ok, value}
 
       {:error, reason} ->
+        _ = control(conn, "ROLLBACK", :transaction_rollback, trace?)
         maybe_invalidate(conn, invalidate_cache?)
         {:error, Errors.normalize(reason)}
     end
   end
 
+  defp control(conn, sql, phase, true) do
+    SQLite.trace_sqlite_phase(phase, fn -> Connection.exec(conn, sql) end)
+  end
+
+  defp control(conn, sql, _phase, false), do: Connection.exec(conn, sql)
+
   defp maybe_invalidate(conn, true), do: Adapter.invalidate_identity_cache(conn)
   defp maybe_invalidate(_conn, false), do: :ok
 
   defp rollback_and_reraise(conn, exception, stacktrace) do
-    _ =
-      SQLite.trace_sqlite_phase(:transaction_rollback, fn ->
-        Connection.execute(conn, "ROLLBACK")
-      end)
-
+    _ = Connection.exec(conn, "ROLLBACK")
     Adapter.invalidate_identity_cache(conn)
     reraise exception, stacktrace
   end
