@@ -9,6 +9,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   alias ElixirDB.Runtime.{
     AttachmentCoordinator,
+    CatalogIndex,
     ChangeNotifier,
     CommandContext,
     DatabaseAdmission,
@@ -51,15 +52,10 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   @doc "Returns whether an ordinary source is currently open for public routing."
   @spec ordinary_open?(binary()) :: boolean()
   def ordinary_open?(uuid) when is_binary(uuid) do
-    case list() do
-      {:ok, entries} ->
-        Enum.any?(entries, fn entry ->
-          entry.database_uuid == uuid and entry.database_kind == :ordinary and entry.state == :open
-        end)
-
-      _ ->
-        false
-    end
+    match?(
+      [{_pid, :ordinary}],
+      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+    )
   end
 
   def info(uuid) do
@@ -101,18 +97,31 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   def ensure_command_target(uuid, :infinity) when is_binary(uuid) do
-    GenServer.call(__MODULE__, {:ensure_command_target, uuid}, :infinity)
+    case catalog_index_target(uuid, false) do
+      :open -> :ok
+      :closing -> {:error, ElixirDB.Error.database_closed("database is closing")}
+      :miss -> GenServer.call(__MODULE__, {:ensure_command_target, uuid}, :infinity)
+    end
   end
 
   def ensure_command_target(uuid, deadline_ms) when is_binary(uuid) do
     if Deadline.exhausted?(deadline_ms) do
       {:error, command_deadline_error()}
     else
-      GenServer.call(
-        __MODULE__,
-        {:ensure_command_target, uuid},
-        Deadline.call_timeout(deadline_ms)
-      )
+      case catalog_index_target(uuid, false) do
+        :open ->
+          :ok
+
+        :closing ->
+          {:error, ElixirDB.Error.database_closed("database is closing")}
+
+        :miss ->
+          GenServer.call(
+            __MODULE__,
+            {:ensure_command_target, uuid},
+            Deadline.call_timeout(deadline_ms)
+          )
+      end
     end
   catch
     :exit, :timeout ->
@@ -170,18 +179,42 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
-  defp ensure_command_target_internal(uuid, :infinity),
-    do: GenServer.call(__MODULE__, {:ensure_command_target, uuid, true}, :infinity)
+  defp ensure_command_target_internal(uuid, :infinity) do
+    case catalog_index_target(uuid, true) do
+      :open -> :ok
+      :closing -> {:error, ElixirDB.Error.database_closed("database is closing")}
+      :miss -> GenServer.call(__MODULE__, {:ensure_command_target, uuid, true}, :infinity)
+    end
+  end
 
   defp ensure_command_target_internal(uuid, deadline_ms) do
     if Deadline.exhausted?(deadline_ms) do
       {:error, command_deadline_error()}
     else
-      GenServer.call(
-        __MODULE__,
-        {:ensure_command_target, uuid, true},
-        Deadline.call_timeout(deadline_ms)
-      )
+      case catalog_index_target(uuid, true) do
+        :open ->
+          :ok
+
+        :closing ->
+          {:error, ElixirDB.Error.database_closed("database is closing")}
+
+        :miss ->
+          GenServer.call(
+            __MODULE__,
+            {:ensure_command_target, uuid, true},
+            Deadline.call_timeout(deadline_ms)
+          )
+      end
+    end
+  end
+
+  defp catalog_index_target(uuid, allow_shadow) do
+    case CatalogIndex.fetch(uuid) do
+      {:ok, :shadow, :open} when allow_shadow -> :open
+      {:ok, :shadow, :open} -> :miss
+      {:ok, _kind, :open} -> :open
+      {:ok, _kind, :closing} -> :closing
+      :error -> :miss
     end
   end
 
@@ -224,6 +257,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   def init(_) do
     root = ElixirDB.Config.database_root()
     :ok = File.mkdir_p(root)
+    :ok = CatalogIndex.setup()
     state = %{root: root, entries: load_entries(), close_operations: %{}}
     Process.send_after(self(), :resume_registered_jobs, 0)
     {:ok, state}
@@ -425,6 +459,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
           [] ->
             drop_source_shadow_route(uuid, state)
             disable_source_shadow(uuid)
+            CatalogIndex.delete(uuid)
             next = %{state | entries: Map.delete(state.entries, uuid)}
             unregister_entry(next, state)
 
@@ -490,6 +525,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   @impl true
   def handle_call({:close, uuid}, from, state) do
     drop_source_shadow_route(uuid, state)
+    CatalogIndex.mark_closing(uuid)
 
     case Map.get(state.close_operations, uuid) do
       waiters when is_list(waiters) ->
@@ -504,6 +540,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
             {:noreply, %{state | close_operations: Map.put(state.close_operations, uuid, [from])}}
 
           {:error, reason} ->
+            restore_open_index(uuid, state)
+
             {:reply,
              {:error,
               ElixirDB.Error.internal_error("database close could not be scheduled", %{
@@ -589,6 +627,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
       {waiters, operations} ->
         Enum.each(waiters, &GenServer.reply(&1, result))
+        finalize_close_index(uuid, result, state)
         {:noreply, %{state | close_operations: operations}}
     end
   end
@@ -652,6 +691,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       [{_pid, _}] ->
         case ensure_derived_manager(uuid, entry) do
           :ok ->
+            index_open(uuid, entry)
+
             {:ok, %{database_uuid: uuid, runtime_state: :open},
              mark_status(state, uuid, :registered)}
 
@@ -708,6 +749,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp finish_database_runtime_start(state, uuid, entry) do
     case ensure_derived_manager(uuid, entry) do
       :ok ->
+        index_open(uuid, entry)
         {:ok, %{database_uuid: uuid, runtime_state: :open}, mark_status(state, uuid, :registered)}
 
       {:error, reason} ->
@@ -846,6 +888,26 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp safe_path(_, _),
     do: {:error, ElixirDB.Error.invalid_request("database path must be relative")}
 
+  defp index_open(uuid, entry) do
+    CatalogIndex.put_open(uuid, Map.get(entry, :database_kind, :ordinary))
+  end
+
+  defp restore_open_index(uuid, state) do
+    case Map.get(state.entries, uuid) do
+      nil ->
+        CatalogIndex.delete(uuid)
+
+      entry ->
+        case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
+          [{_pid, _}] -> index_open(uuid, entry)
+          [] -> CatalogIndex.delete(uuid)
+        end
+    end
+  end
+
+  defp finalize_close_index(uuid, :ok, _state), do: CatalogIndex.delete(uuid)
+  defp finalize_close_index(uuid, _result, state), do: restore_open_index(uuid, state)
+
   defp entry_status(entry) do
     state =
       case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, entry.uuid}) do
@@ -976,17 +1038,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   defp close_runtime_after_admission_drain(uuid) do
     try do
-      with :ok <- close_external_services(uuid),
-           runtime when not is_nil(runtime) <- runtime_pid(uuid) do
-        if Process.alive?(runtime),
-          do: Supervisor.stop(runtime, :shutdown, ElixirDB.Config.shutdown_timeout()),
-          else: :ok
-      else
-        nil ->
-          :ok
-
-        {:error, _} = error ->
-          error
+      with :ok <- close_external_services(uuid) do
+        stop_owner(uuid)
+        stop_runtime_supervisor(uuid)
       end
     catch
       :exit, reason ->
@@ -996,6 +1050,30 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
          })}
     end
     |> abort_close_on_error(uuid)
+  end
+
+  defp stop_owner(uuid) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
+      [{pid, _}] ->
+        if Process.alive?(pid),
+          do: GenServer.stop(pid, :shutdown, ElixirDB.Config.shutdown_timeout()),
+          else: :ok
+
+      [] ->
+        :ok
+    end
+  end
+
+  defp stop_runtime_supervisor(uuid) do
+    case runtime_pid(uuid) do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid),
+          do: Supervisor.stop(pid, :shutdown, ElixirDB.Config.shutdown_timeout()),
+          else: :ok
+
+      nil ->
+        :ok
+    end
   end
 
   defp abort_close_on_error({:error, _} = error, uuid) do

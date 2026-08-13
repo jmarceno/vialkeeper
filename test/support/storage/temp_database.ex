@@ -45,9 +45,9 @@ defmodule ElixirDB.TempDatabase do
   @doc """
   Removes a database bundle directory and SQLite companion files when present.
 
-  SQLite may leave rollback journals behind after an interrupted process. Tests
-  must remove those sidecars explicitly so a later test cannot inherit stale
-  recovery state from another scenario.
+  SQLite may leave `-wal`, `-shm`, or `-journal` files behind after an
+  interrupted process. Tests must remove those sidecars explicitly so a later
+  test cannot inherit stale recovery state from another scenario.
   """
   @spec cleanup(binary()) :: :ok
   def cleanup(bundle_path) when is_binary(bundle_path) do

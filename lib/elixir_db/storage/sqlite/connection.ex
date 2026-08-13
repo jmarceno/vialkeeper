@@ -38,14 +38,34 @@ defmodule ElixirDB.Storage.SQLite.Connection do
   @spec pragma(handle(), binary()) :: {:ok, [list()]} | {:error, term()}
   def pragma(conn, statement), do: query(conn, "PRAGMA " <> statement)
 
+  @doc """
+  Checkpoints a disk WAL into the main database file and truncates the sidecar.
+
+  Closed portable bundles must not retain `-wal`/`-shm` files. Memory databases
+  and non-WAL connections treat a checkpoint error as a no-op.
+  """
+  @spec checkpoint(handle()) :: :ok
+  def checkpoint(conn) do
+    Statements.release_all(conn)
+
+    case query(conn, "PRAGMA wal_checkpoint(TRUNCATE)") do
+      {:ok, _} -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
   defp run(conn, sql, params, collect_rows) do
     sql = IO.iodata_to_binary(sql)
 
-    with {:ok, statement} <- Statements.checkout(conn, sql),
+    with {:ok, statement, origin} <- Statements.checkout(conn, sql),
+         :ok <- maybe_reset_statement(statement, origin),
          :ok <- Sqlite3.bind(statement, params) do
       step(conn, statement, collect_rows, [])
     end
   end
+
+  defp maybe_reset_statement(_statement, :new), do: :ok
+  defp maybe_reset_statement(statement, :cached), do: Sqlite3.reset(statement)
 
   defp step(conn, statement, collect_rows, rows) do
     case Sqlite3.step(conn, statement) do

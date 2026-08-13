@@ -23,12 +23,20 @@ defmodule ElixirDB.Observability.SQLiteProbeTest do
   end
 
   test "document and bulk-write probes cover the measured write path", %{adapter: adapter} do
-    assert {:ok, _} = put_document(adapter, "read-doc", 1)
+    assert {:ok, %{revision: revision}} = put_document(adapter, "read-doc", 1)
 
     TestExporter.reset()
 
     assert {:ok, %{body: %{"value" => 1}}} =
              Adapter.get_document(adapter, %{document_id: "read-doc"})
+
+    assert [_] = TestExporter.spans_named("elixir_db.sqlite.document.lookup")
+    assert [] = TestExporter.spans_named("elixir_db.sqlite.revision.lookup")
+
+    TestExporter.reset()
+
+    assert {:ok, %{body: %{"value" => 1}}} =
+             Adapter.get_document(adapter, %{document_id: "read-doc", revision: revision})
 
     assert [_] = TestExporter.spans_named("elixir_db.sqlite.document.lookup")
     assert [_] = TestExporter.spans_named("elixir_db.sqlite.revision.lookup")

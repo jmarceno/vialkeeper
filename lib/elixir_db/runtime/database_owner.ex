@@ -24,9 +24,27 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
     do: start_link({uuid, bundle, nil})
 
   def start_link({uuid, %DatabaseBundle{} = bundle, expected_kind}),
-    do: GenServer.start_link(__MODULE__, {uuid, bundle, expected_kind}, name: via(uuid))
+    do:
+      GenServer.start_link(__MODULE__, {uuid, bundle, expected_kind},
+        name: via(uuid, expected_kind || :ordinary)
+      )
 
-  def via(uuid), do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}}}
+  def child_spec({uuid, bundle}), do: child_spec({uuid, bundle, nil})
+
+  def child_spec({uuid, _bundle, _kind} = arg) do
+    %{
+      id: {:database_owner, uuid},
+      start: {__MODULE__, :start_link, [arg]},
+      restart: :transient,
+      type: :worker,
+      shutdown: ElixirDB.Config.shutdown_timeout()
+    }
+  end
+
+  def via(uuid), do: via(uuid, nil)
+
+  def via(uuid, kind),
+    do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}, kind}}
 
   def command(uuid, command, timeout \\ 30_000) do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
@@ -89,6 +107,11 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
           |> Map.put(:bundle_root, DatabaseBundle.root(bundle))
           |> Map.put(:identity, identity)
           |> Map.put(:capabilities, backend_capabilities(backend))
+
+        _ =
+          Registry.update_value(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}, fn _ ->
+            actual_kind || :ordinary
+          end)
 
         {:ok, %{uuid: uuid, bundle: bundle, context: context}}
 

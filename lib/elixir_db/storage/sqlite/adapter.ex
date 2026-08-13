@@ -210,15 +210,36 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
   end
 
   @impl true
-  def close(%__MODULE__{conn: conn, context_ref: context_ref}) do
+  def close(%__MODULE__{conn: conn, context_ref: context_ref} = adapter) do
     IndexCatalog.clear_cache(conn)
     Views.clear_cache(conn)
     QueryRunner.clear_cache(conn)
     invalidate_identity_cache(conn)
+    checkpoint_on_close(adapter)
     result = Connection.close(conn)
+    remove_empty_sidecars(adapter)
     Context.release(context_ref)
     result
   end
+
+  defp checkpoint_on_close(%__MODULE__{storage_mode: :disk, conn: conn}),
+    do: Connection.checkpoint(conn)
+
+  defp checkpoint_on_close(_adapter), do: :ok
+
+  defp remove_empty_sidecars(%__MODULE__{storage_mode: :disk, path: path})
+       when is_binary(path) and path != ":memory:" do
+    Enum.each(["-wal", "-shm"], fn suffix ->
+      sidecar = path <> suffix
+
+      case File.stat(sidecar) do
+        {:ok, %{size: 0}} -> File.rm(sidecar)
+        _ -> :ok
+      end
+    end)
+  end
+
+  defp remove_empty_sidecars(_adapter), do: :ok
 
   @impl true
   def identity(%__MODULE__{conn: conn, identity: identity}) do
@@ -300,26 +321,14 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def get_document(%__MODULE__{} = adapter, request) when is_map(request) do
-    with {:ok, doc} <-
-           SQLite.trace_sqlite_phase(:document_lookup, fn ->
-             Documents.find(adapter.conn, MapAccess.get(request, :document_id))
-           end),
-         {:ok, revision} <-
-           SQLite.trace_sqlite_phase(:revision_lookup, fn ->
-             choose_revision(adapter, doc, MapAccess.get(request, :revision))
-           end) do
-      include_conflicts = MapAccess.get(request, :include_conflicts, false)
+    document_id = MapAccess.get(request, :document_id)
+    revision_id = MapAccess.get(request, :revision)
+    include_conflicts = MapAccess.get(request, :include_conflicts, false)
 
-      leaves =
-        if include_conflicts do
-          SQLite.trace_sqlite_phase(:document_leaves, fn ->
-            Revisions.leaves(adapter.conn, doc.doc_key)
-          end)
-        else
-          []
-        end
-
-      {:ok, Documents.to_result(doc, revision, leaves)}
+    if is_nil(revision_id) and not include_conflicts do
+      winner_get(adapter, document_id)
+    else
+      lookup_document(adapter, document_id, revision_id, include_conflicts)
     end
   end
 
@@ -618,6 +627,49 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   defp transaction(%__MODULE__{} = adapter, fun) when is_function(fun, 0) do
     Transaction.run_on_adapter(adapter, fn _tx_adapter -> fun.() end)
+  end
+
+  defp winner_get(adapter, document_id) do
+    SQLite.trace_sqlite_phase(:document_lookup, fn ->
+      case Documents.load_winner(adapter.conn, document_id) do
+        {:ok, nil} ->
+          {:error, ElixirDB.Error.document_not_found("document not found")}
+
+        {:ok, {:deleted, winning_revision}} ->
+          {:error,
+           ElixirDB.Error.document_not_found("document is deleted", %{
+             winning_revision: winning_revision
+           })}
+
+        {:ok, result} when is_map(result) ->
+          {:ok, result}
+
+        {:error, _} = error ->
+          error
+      end
+    end)
+  end
+
+  defp lookup_document(adapter, document_id, revision_id, include_conflicts) do
+    with {:ok, doc} <-
+           SQLite.trace_sqlite_phase(:document_lookup, fn ->
+             Documents.find(adapter.conn, document_id)
+           end),
+         {:ok, revision} <-
+           SQLite.trace_sqlite_phase(:revision_lookup, fn ->
+             choose_revision(adapter, doc, revision_id)
+           end) do
+      leaves =
+        if include_conflicts do
+          SQLite.trace_sqlite_phase(:document_leaves, fn ->
+            Revisions.leaves(adapter.conn, doc.doc_key)
+          end)
+        else
+          []
+        end
+
+      {:ok, Documents.to_result(doc, revision, leaves)}
+    end
   end
 
   defp choose_revision(_adapter, nil, _revision),

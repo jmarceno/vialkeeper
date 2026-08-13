@@ -33,17 +33,16 @@ defmodule ElixirDB.Storage.SQLite.Changes do
   def allocate_sequences(_conn, 0), do: {:ok, []}
 
   def allocate_sequences(conn, count) when is_integer(count) and count > 0 do
-    with :ok <-
-           Connection.execute(
-             conn,
-             "UPDATE db_meta SET current_sequence = current_sequence + ? WHERE id = 1",
-             [count]
-           ),
-         {:ok, [[sequence]]} <-
-           Connection.query(conn, "SELECT current_sequence FROM db_meta WHERE id = 1") do
-      {:ok, Enum.to_list((sequence - count + 1)..sequence)}
-    else
-      {:error, reason} -> {:error, normalize_error(reason)}
+    case Connection.query(
+           conn,
+           "UPDATE db_meta SET current_sequence = current_sequence + ? WHERE id = 1 RETURNING current_sequence",
+           [count]
+         ) do
+      {:ok, [[sequence]]} ->
+        {:ok, Enum.to_list((sequence - count + 1)..sequence)}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
     end
   end
 

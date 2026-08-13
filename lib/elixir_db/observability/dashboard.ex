@@ -438,6 +438,8 @@ defmodule ElixirDB.Observability.Dashboard do
       "memory_bytes" => Keyword.get(memory, :total, 0),
       "run_queue" => run_queue,
       "schedulers_online" => schedulers,
+      "dirty_cpu_schedulers_online" => :erlang.system_info(:dirty_cpu_schedulers_online),
+      "dirty_io_schedulers" => :erlang.system_info(:dirty_io_schedulers),
       "process_count" => :erlang.system_info(:process_count),
       "replication_workers" => safe_registry_count(ElixirDB.Replication.WorkerRegistry),
       "registered_databases" => databases.registered,

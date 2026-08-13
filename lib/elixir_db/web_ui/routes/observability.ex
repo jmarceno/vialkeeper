@@ -15,6 +15,8 @@ defmodule ElixirDB.WebUI.Routes.Observability do
     "memory_bytes",
     "run_queue",
     "schedulers_online",
+    "dirty_cpu_schedulers_online",
+    "dirty_io_schedulers",
     "process_count",
     "replication_workers",
     "registered_databases",

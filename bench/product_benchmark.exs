@@ -242,8 +242,10 @@ defmodule ElixirDB.Benchmarks.Runner do
 
       memory_before = :erlang.memory(:total)
 
-      {samples, _last_result} =
-        measure(operation, cleanup, config["warmup"], config["iterations"])
+      {{samples, _last_result}, runtime_sample} =
+        with_runtime_sample(fn ->
+          measure(operation, cleanup, config["warmup"], config["iterations"])
+        end)
 
       memory_after = :erlang.memory(:total)
       flush_metrics()
@@ -262,6 +264,7 @@ defmodule ElixirDB.Benchmarks.Runner do
         "memory_delta_bytes" => memory_after - memory_before,
         "sqlite" => sqlite_metadata(adapter),
         "observability" => observability_metadata(),
+        "runtime_sample" => runtime_sample,
         "scenario_metadata" => scenario_metadata
       })
     end)
@@ -343,13 +346,13 @@ defmodule ElixirDB.Benchmarks.Runner do
   defp scenario_operation(adapter, uuid, :point_read, config) do
     dataset_size = config["dataset_size"]
     read_count = config["read_count"]
-    ids = Enum.map(0..(dataset_size - 1), &"seed-#{&1}")
+    ids = 0..(dataset_size - 1) |> Enum.map(&"seed-#{&1}") |> List.to_tuple()
 
     operation = fn token ->
       start = rem(token_number(token) * read_count, dataset_size)
 
       Enum.each(0..(read_count - 1), fn offset ->
-        id = Enum.at(ids, rem(start + offset, dataset_size))
+        id = elem(ids, rem(start + offset, dataset_size))
 
         result =
           observable_command(uuid, {:command, :get_document, %{id: id}}, fn ->
@@ -512,7 +515,9 @@ defmodule ElixirDB.Benchmarks.Runner do
     %{
       "journal_mode" => pragma_value(adapter, "journal_mode"),
       "synchronous" => pragma_value(adapter, "synchronous"),
-      "locking_mode" => pragma_value(adapter, "locking_mode")
+      "locking_mode" => pragma_value(adapter, "locking_mode"),
+      "cache_size" => pragma_value(adapter, "cache_size"),
+      "temp_store" => pragma_value(adapter, "temp_store")
     }
   end
 
@@ -669,9 +674,107 @@ defmodule ElixirDB.Benchmarks.Runner do
       "otp" => :erlang.system_info(:otp_release) |> to_string(),
       "sqlite" => ElixirDB.Diagnostics.runtime().backend,
       "schedulers_online" => :erlang.system_info(:schedulers_online),
+      "dirty_cpu_schedulers_online" => :erlang.system_info(:dirty_cpu_schedulers_online),
+      "dirty_io_schedulers" => :erlang.system_info(:dirty_io_schedulers),
       "os" => :os.type() |> inspect()
     }
   end
+
+  defp with_runtime_sample(fun) do
+    wall_before = scheduler_wall_snapshot()
+    start_msacc()
+    result = fun.()
+    msacc = take_msacc()
+    wall_after = scheduler_wall_snapshot()
+
+    {result,
+     %{
+       "msacc" => msacc,
+       "scheduler_wall_time" => scheduler_wall_delta(wall_before, wall_after)
+     }}
+  end
+
+  defp start_msacc do
+    _ = Application.ensure_all_started(:runtime_tools)
+
+    case Code.ensure_loaded(:msacc) do
+      {:module, _} ->
+        _ = apply(:msacc, :stop, [])
+        _ = apply(:msacc, :reset, [])
+        _ = apply(:msacc, :start, [])
+        :ok
+
+      _ ->
+        :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp take_msacc do
+    case Code.ensure_loaded(:msacc) do
+      {:module, _} ->
+        stats = apply(:msacc, :stats, [])
+        _ = apply(:msacc, :stop, [])
+        summarize_msacc(stats)
+
+      _ ->
+        %{}
+    end
+  rescue
+    _ -> %{}
+  end
+
+  defp summarize_msacc(stats) when is_list(stats) do
+    totals =
+      Enum.reduce(stats, %{}, fn sample, acc ->
+        type = sample[:type] || sample.type
+        system = sample[:system] || 0
+        realtime = sample[:realtime] || 0
+        key = type |> to_string()
+
+        acc
+        |> Map.update(key <> "_system", system, &(&1 + system))
+        |> Map.update(key <> "_realtime", realtime, &(&1 + realtime))
+      end)
+
+    Map.merge(totals, %{
+      "dirty_cpu_system" => Map.get(totals, "dirty_cpu_system", 0),
+      "normal_system" => Map.get(totals, "normal_system", 0),
+      "gc_system" => Map.get(totals, "gc_system", 0)
+    })
+  end
+
+  defp summarize_msacc(_), do: %{}
+
+  defp scheduler_wall_snapshot do
+    _ = :erlang.system_flag(:scheduler_wall_time, true)
+    :erlang.statistics(:scheduler_wall_time)
+  rescue
+    _ -> []
+  end
+
+  defp scheduler_wall_delta(before, after_sample)
+       when is_list(before) and is_list(after_sample) do
+    before_map = Map.new(before, fn {id, active, total} -> {id, {active, total}} end)
+
+    {active, total} =
+      Enum.reduce(after_sample, {0, 0}, fn {id, active_after, total_after},
+                                           {active_acc, total_acc} ->
+        {active_before, total_before} = Map.get(before_map, id, {0, 0})
+        {active_acc + (active_after - active_before), total_acc + (total_after - total_before)}
+      end)
+
+    percent =
+      if total > 0, do: Float.round(active * 100 / total, 2), else: 0.0
+
+    %{
+      "active_percent" => percent,
+      "schedulers_sampled" => length(after_sample)
+    }
+  end
+
+  defp scheduler_wall_delta(_before, _after), do: %{}
 
   defp git_revision do
     case System.cmd("git", ["rev-parse", "HEAD"], stderr_to_stdout: true) do

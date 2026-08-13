@@ -7,13 +7,26 @@ defmodule ElixirDB.Storage.SQLite.Documents do
   adapter.
   """
 
+  alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Domain.Revision
-  alias ElixirDB.JSON.Canonical
+  alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.Storage.Results
   alias ElixirDB.Storage.SQLite.Adapter
   alias ElixirDB.Storage.SQLite.Connection
   alias ElixirDB.Storage.SQLite.TermBlob
   alias Exqlite.Sqlite3
+
+  @winner_body_term_cache_limit 256
+
+  @winner_sql """
+  SELECT d.document_id, d.winning_revision, d.winning_body_json, d.winning_body_term,
+         d.winning_deleted, d.update_sequence,
+         a.attachment_name, a.blob_digest, a.logical_size, a.content_type
+  FROM documents AS d
+  LEFT JOIN revision_attachments AS a
+    ON a.doc_key = d.doc_key AND a.revision_id = d.winning_revision
+  WHERE d.document_id = ?
+  """
   @doc false
   def get(adapter, request), do: Adapter.get_document(adapter, request)
 
@@ -49,6 +62,32 @@ defmodule ElixirDB.Storage.SQLite.Documents do
 
       {:ok, []} ->
         {:ok, nil}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  @doc """
+  Loads the materialized winner and attachment manifest in one query.
+
+  Used by the common get-document path that does not request a historical
+  revision or conflict leaves. The documents row is the winner; the revisions
+  table is not consulted.
+  """
+  @spec load_winner(Connection.handle(), binary() | nil) ::
+          {:ok, nil | {:deleted, binary() | nil} | map()}
+          | {:error, ElixirDB.Error.t()}
+  def load_winner(_conn, nil),
+    do: {:error, ElixirDB.Error.invalid_request("document_id is required")}
+
+  def load_winner(conn, document_id) when is_binary(document_id) do
+    case Connection.query(conn, @winner_sql, [document_id]) do
+      {:ok, []} ->
+        {:ok, nil}
+
+      {:ok, rows} ->
+        winner_from_rows(rows)
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
@@ -233,4 +272,75 @@ defmodule ElixirDB.Storage.SQLite.Documents do
       update_sequence: sequence
     }
   end
+
+  defp winner_from_rows(
+         [
+           [document_id, winning, body_json, body_term, deleted, sequence | _]
+           | _
+         ] = rows
+       ) do
+    cond do
+      deleted == 1 ->
+        {:ok, {:deleted, winning}}
+
+      is_nil(winning) ->
+        {:ok, nil}
+
+      true ->
+        with {:ok, attachments} <- winner_attachments(rows),
+             {:ok, body} <- winner_body(body_json, body_term) do
+          {:ok,
+           %{
+             id: document_id,
+             revision: winning,
+             deleted: false,
+             body: body,
+             sequence: sequence,
+             attachments: attachments
+           }}
+        end
+    end
+  end
+
+  defp winner_body(body_json, body_term) when is_binary(body_json) do
+    case TermBlob.decode_with_cache(
+           body_term,
+           body_json,
+           :winner_body_term,
+           @winner_body_term_cache_limit
+         ) do
+      {:ok, value} ->
+        {:ok, value}
+
+      {:fallback, _reason} ->
+        StrictDecoder.decode(body_json)
+    end
+  end
+
+  defp winner_body(_body_json, _body_term),
+    do: {:error, ElixirDB.Error.integrity_violation("winning document body is missing")}
+
+  defp winner_attachments(rows) do
+    rows
+    |> Enum.flat_map(&attachment_from_winner_row/1)
+    |> Map.new()
+    |> Manifest.normalize()
+  end
+
+  defp attachment_from_winner_row([
+         _id,
+         _winning,
+         _json,
+         _term,
+         _deleted,
+         _sequence,
+         name,
+         digest,
+         logical_size,
+         content_type | _
+       ])
+       when not is_nil(name),
+       do: [{name, Manifest.entry(digest, logical_size, content_type)}]
+
+  defp attachment_from_winner_row(_row), do: []
 end

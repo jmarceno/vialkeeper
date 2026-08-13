@@ -1,13 +1,13 @@
 defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
   @moduledoc """
-  Crash recovery with a hot rollback journal (DELETE mode).
+  Crash recovery with a hot write-ahead log.
 
   Limitation (documented): fully mid-mutation SIGKILL of an in-BEAM Adapter owner
   during `apply_local_mutation` is not exercised here — that path shares the test
   VM and is hard to interrupt atomically without racing the commit. Instead this
   test SIGKILLs a child OS process that opened the same file via
   `ElixirDB.Storage.SQLite.Adapter.open/1` and held an in-flight SQLite write,
-  leaving a real `-journal` beside an ElixirDB-shaped database. Catalog reopen
+  leaving a real `-wal` beside an ElixirDB-shaped database. Catalog reopen
   must recover, preserve the preimage committed document, then prove portability.
   """
   use ExUnit.Case, async: false
@@ -18,14 +18,14 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
   alias ElixirDB.Runtime.DatabaseCatalog
 
   @tag :slow
-  test "SIGKILL of Adapter-holding child leaves -journal; reopen recovers; then portable" do
+  test "SIGKILL of Adapter-holding child leaves -wal; reopen recovers; then portable" do
     root = ElixirDB.Config.database_root()
     File.mkdir_p!(root)
 
     rel = "e2e-hot-journal-#{System.unique_integer([:positive])}.elixirdb"
     abs = Path.join(root, rel)
     sqlite = ElixirDB.TempDatabase.sqlite_path(abs)
-    journal = sqlite <> "-journal"
+    wal = sqlite <> "-wal"
     copy_rel = String.replace_suffix(rel, ".elixirdb", "-copy.elixirdb")
     copy_abs = Path.join(root, copy_rel)
 
@@ -48,16 +48,16 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
 
     assert :ok = DatabaseCatalog.close(uuid)
 
-    # Project default is rollback-journal DELETE — no WAL sidecars when closed.
+    # Closed bundles checkpoint WAL sidecars away for ordinary OS copy.
     refute File.exists?(sqlite <> "-wal")
     refute File.exists?(sqlite <> "-shm")
-    refute File.exists?(journal)
+    refute File.exists?(sqlite <> "-journal")
 
     holder = hold_hot_journal_via_adapter!(sqlite)
     on_exit(fn -> reap_holder(holder) end)
 
-    assert File.exists?(journal)
-    assert File.stat!(journal).size > 0
+    assert File.exists?(wal)
+    assert File.stat!(wal).size > 0
 
     # Brutal OS kill — no SQLite cleanup / rollback from the writer process.
     if holder_alive?(holder.pid) do
@@ -65,9 +65,9 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     end
 
     wait_until(fn -> not holder_alive?(holder.pid) end, "writer process did not die")
-    assert File.exists?(journal), "hot -journal must survive SIGKILL of the writer"
+    assert File.exists?(wal), "hot -wal must survive SIGKILL of the writer"
 
-    # Reopen recovers through SQLite hot-journal playback.
+    # Reopen recovers through SQLite WAL playback.
     assert {:ok, _} = DatabaseCatalog.open(uuid)
 
     assert {:ok, %{revision: ^revision, body: %{"committed" => true}}} =
@@ -81,7 +81,7 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     assert {:ok, %{ok: true}} =
              DatabaseCatalog.command(uuid, {:command, :integrity_check, %{}})
 
-    # Touched write clears any empty leftover journal file after recovery.
+    # Touched write clears leftover WAL files after recovery and checkpoint.
     assert {:ok, %{revision: post}} =
              ElixirDB.Documents.put(uuid, %{
                id: "after-recovery",
@@ -89,7 +89,7 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
              })
 
     assert :ok = DatabaseCatalog.close(uuid)
-    refute File.exists?(journal)
+    refute File.exists?(sqlite <> "-journal")
     refute File.exists?(sqlite <> "-wal")
 
     # Offline-portable: ordinary OS copy of the closed bundle directory.
@@ -115,7 +115,7 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     _ = File.rm(pid_file)
 
     # Child OS process opens via Adapter.open (same entry ElixirDB uses), begins a
-    # write, signals readiness while -journal exists, then sleeps until SIGKILL.
+    # write, signals readiness while -wal exists, then sleeps until SIGKILL.
     script = """
     ready = #{inspect(ready)}
     pid_file = #{inspect(pid_file)}
@@ -123,6 +123,7 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     File.write!(pid_file, System.pid())
     {:ok, _} = Application.ensure_all_started(:elixir_db)
     {:ok, adapter} = ElixirDB.Storage.SQLite.Adapter.open(path)
+    :ok = ElixirDB.Storage.SQLite.Connection.execute(adapter.conn, "PRAGMA wal_autocheckpoint=0")
     :ok = ElixirDB.Storage.SQLite.Connection.execute(adapter.conn, "BEGIN IMMEDIATE")
     :ok =
       ElixirDB.Storage.SQLite.Connection.execute(
@@ -133,6 +134,13 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
       ElixirDB.Storage.SQLite.Connection.execute(
         adapter.conn,
         "INSERT INTO __hot_journal_probe VALUES (1)"
+      )
+    :ok = ElixirDB.Storage.SQLite.Connection.execute(adapter.conn, "COMMIT")
+    :ok = ElixirDB.Storage.SQLite.Connection.execute(adapter.conn, "BEGIN IMMEDIATE")
+    :ok =
+      ElixirDB.Storage.SQLite.Connection.execute(
+        adapter.conn,
+        "INSERT INTO __hot_journal_probe VALUES (2)"
       )
     File.write!(ready, "ready")
     Process.sleep(3_600_000)
@@ -156,7 +164,7 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     )
 
     pid = String.trim(File.read!(pid_file)) |> String.to_integer()
-    assert File.exists?(sqlite_path <> "-journal")
+    assert File.exists?(sqlite_path <> "-wal")
 
     %{port: port, pid: pid, ready: ready, pid_file: pid_file}
   end

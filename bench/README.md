@@ -60,7 +60,8 @@ they do not represent durable writes or reopen/recovery behavior.
 Warmups are excluded from the report. Each sample times only the operation,
 not database creation, seeding, index setup, or cleanup. The report includes
 sample values, median/p95/p99, per-operation latency, throughput, VM memory
-before/after, backend pragmas where available, runtime metadata, and
+before/after, backend pragmas where available, runtime metadata, scheduler
+and dirty-scheduler counts, `msacc` samples for the measured region, and
 observability signals.
 
 Both runners require `--no-start` (the Mix aliases include it), then start the
@@ -100,8 +101,8 @@ percentage overhead relative to `pure_exqlite`:
 - `elixir_db_adapter` calls the public SQLite adapter operation.
 
 The scenarios are `point_read`, `bulk_write`, `changes_read`, and
-`indexed_query`. Point reads include the document, revision, and empty
-attachment-manifest lookups. Changes reads include the bounded SELECT and
+`indexed_query`. Point reads use one winning-document join (document, revision,
+and empty attachment columns). Changes reads include the bounded SELECT and
 the `has_more` probe. Indexed queries use the same structured expression index
 and predicate in the direct and connection controls.
 
@@ -136,8 +137,8 @@ The ExQLite overhead runner also emits low-cardinality SQLite child spans when
 an OTLP endpoint is configured. They are deliberately phase-level backend
 diagnostics, not one span per SQL statement or document:
 
-- Reads: `elixir_db.sqlite.document.lookup` and
-  `elixir_db.sqlite.revision.lookup`.
+- Reads: `elixir_db.sqlite.document.lookup` (winning get) and
+  `elixir_db.sqlite.revision.lookup` (historical revision get).
 - Bulk writes: `elixir_db.sqlite.mutation.bulk.prepare` and
   `elixir_db.sqlite.mutation.bulk.finalize`.
 - Changes: `elixir_db.sqlite.changes.identity`, `.fetch`, `.decode`, and

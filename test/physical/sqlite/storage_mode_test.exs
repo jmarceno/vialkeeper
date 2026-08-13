@@ -45,4 +45,32 @@ defmodule ElixirDB.StorageAdapter.MemoryModeTest do
 
     ElixirDB.TempDatabase.cleanup(path)
   end
+
+  test "disk databases use WAL and drop sidecars on close" do
+    {:ok, bundle} = ElixirDB.TempDatabase.create(prefix: "elixirdb-disk-wal")
+    sqlite = ElixirDB.TempDatabase.sqlite_path(bundle)
+
+    assert {:ok, adapter} = Adapter.create(sqlite, %{storage_mode: :disk})
+
+    on_exit(fn ->
+      _ = Adapter.close(adapter)
+      ElixirDB.TempDatabase.cleanup(bundle)
+    end)
+
+    assert adapter.storage_mode == :disk
+    assert {:ok, [["wal"]]} = Connection.pragma(adapter.conn, "journal_mode")
+    assert {:ok, [[2]]} = Connection.pragma(adapter.conn, "synchronous")
+
+    assert {:ok, _} =
+             Adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "wal-doc",
+               body: %{"value" => 1}
+             })
+
+    assert :ok = Adapter.close(adapter)
+    refute File.exists?(sqlite <> "-wal")
+    refute File.exists?(sqlite <> "-shm")
+    refute File.exists?(sqlite <> "-journal")
+  end
 end

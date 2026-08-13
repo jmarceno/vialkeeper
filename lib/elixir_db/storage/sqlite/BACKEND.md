@@ -38,9 +38,14 @@ Safe recovery:
 
 ## Offline copy
 
-Copy the complete closed `.elixirdb` directory. Ignore `.lease`. Do not copy
-an active crash-recoverable bundle piecemeal: keep the SQLite rollback journal
-with `database.sqlite3` until recovery finishes.
+Copy the complete closed `.elixirdb` directory. Ignore `.lease`. Close
+checkpoints the write-ahead log into `database.sqlite3` and removes empty
+`-wal`/`-shm` sidecars, so a clean closed bundle is a single database file
+plus `blobs/` and `tmp/`.
+
+Do not copy an active crash-recoverable bundle piecemeal: keep
+`database.sqlite3` together with any live `-wal` and `-shm` files until
+recovery finishes. Reopening a crashed bundle replays the WAL automatically.
 
 ## Integrity probes
 

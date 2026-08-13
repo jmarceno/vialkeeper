@@ -68,7 +68,17 @@ defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
     assert [] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
 
     assert :ok = DatabaseCatalog.ensure_command_target(uuid)
-    assert [{_pid, _}] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+
+    assert [{_pid, :ordinary}] =
+             Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+  end
+
+  test "ordinary_open? reads owner registry metadata without listing the catalog", %{
+    uuid_a: uuid
+  } do
+    assert DatabaseCatalog.ordinary_open?(uuid)
+    assert :ok = DatabaseCatalog.close(uuid)
+    refute DatabaseCatalog.ordinary_open?(uuid)
   end
 
   test "command_as routes through the requested admission class", %{uuid_a: uuid} do

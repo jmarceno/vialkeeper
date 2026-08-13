@@ -16,8 +16,10 @@ defmodule ElixirDB.Storage.SQLite.Schema do
     with :ok <- Connection.execute(conn, journal_mode_sql(storage_mode)),
          :ok <- Connection.execute(conn, synchronous_sql(storage_mode)),
          :ok <- Connection.execute(conn, "PRAGMA foreign_keys = ON"),
-         :ok <- Connection.execute(conn, "PRAGMA locking_mode = NORMAL") do
-      Connection.execute(conn, "PRAGMA trusted_schema = OFF")
+         :ok <- Connection.execute(conn, "PRAGMA locking_mode = NORMAL"),
+         :ok <- Connection.execute(conn, "PRAGMA trusted_schema = OFF"),
+         :ok <- Connection.execute(conn, cache_size_sql()) do
+      Connection.execute(conn, temp_store_sql())
     end
   end
 
@@ -631,14 +633,19 @@ defmodule ElixirDB.Storage.SQLite.Schema do
 
   defp valid_uuid?(_), do: false
 
-  defp journal_mode_sql(:disk), do: "PRAGMA journal_mode = DELETE"
+  defp journal_mode_sql(:disk), do: "PRAGMA journal_mode = WAL"
   defp journal_mode_sql(:memory), do: "PRAGMA journal_mode = MEMORY"
 
-  defp synchronous_sql(:disk), do: "PRAGMA synchronous = EXTRA"
+  defp synchronous_sql(:disk), do: "PRAGMA synchronous = FULL"
   defp synchronous_sql(:memory), do: "PRAGMA synchronous = NORMAL"
 
+  # 64 MiB page cache. Negative values are KiB, independent of page size.
+  defp cache_size_sql, do: "PRAGMA cache_size = -65536"
+
+  defp temp_store_sql, do: "PRAGMA temp_store = MEMORY"
+
   defp valid_storage_pragmas?(:disk, journal_mode, synchronous, locking_mode, trusted_schema) do
-    String.downcase(to_string(journal_mode)) == "delete" and synchronous in [3, "3"] and
+    String.downcase(to_string(journal_mode)) == "wal" and synchronous in [2, "2"] and
       String.downcase(to_string(locking_mode)) == "normal" and trusted_schema in [0, "0"]
   end
 

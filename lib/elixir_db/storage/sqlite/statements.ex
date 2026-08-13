@@ -11,18 +11,18 @@ defmodule ElixirDB.Storage.SQLite.Statements do
 
   @type handle :: reference()
 
-  @spec checkout(handle(), binary()) :: {:ok, reference()} | {:error, term()}
+  @spec checkout(handle(), binary()) :: {:ok, reference(), :new | :cached} | {:error, term()}
   def checkout(conn, sql) when is_binary(sql) do
     cache = Process.get({@cache_key, conn}, %{})
 
     case Map.fetch(cache, sql) do
       {:ok, statement} ->
-        {:ok, statement}
+        {:ok, statement, :cached}
 
       :error ->
         with {:ok, statement} <- Sqlite3.prepare(conn, sql) do
           Process.put({@cache_key, conn}, Map.put(cache, sql, statement))
-          {:ok, statement}
+          {:ok, statement, :new}
         end
     end
   end

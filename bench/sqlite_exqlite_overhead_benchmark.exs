@@ -41,25 +41,14 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   @default_read_count 100
   @query_limit 50
 
-  @document_select_sql """
-  SELECT doc_key, document_id, winning_revision, winning_body_json,
-         winning_deleted, update_sequence
-  FROM documents
-  WHERE document_id = ?
-  """
-
-  @revision_select_sql """
-  SELECT revision_id, generation, parent_revision, history_id, digest,
-         deleted, body_json, body_term, insertion_sequence
-  FROM revisions
-  WHERE doc_key = ? AND revision_id = ?
-  """
-
-  @attachment_select_sql """
-  SELECT attachment_name, blob_digest, logical_size, content_type
-  FROM revision_attachments
-  WHERE doc_key = ? AND revision_id = ?
-  ORDER BY attachment_name
+  @winner_select_sql """
+  SELECT d.document_id, d.winning_revision, d.winning_body_json, d.winning_body_term,
+         d.winning_deleted, d.update_sequence,
+         a.attachment_name, a.blob_digest, a.logical_size, a.content_type
+  FROM documents AS d
+  LEFT JOIN revision_attachments AS a
+    ON a.doc_key = d.doc_key AND a.revision_id = d.winning_revision
+  WHERE d.document_id = ?
   """
 
   @changes_select_sql """
@@ -576,11 +565,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 
   defp raw_statements(:point_read) do
-    [
-      {:document_select, @document_select_sql},
-      {:revision_select, @revision_select_sql},
-      {:attachment_select, @attachment_select_sql}
-    ]
+    [{:winner_select, @winner_select_sql}]
   end
 
   defp raw_statements(:bulk_write) do
@@ -692,24 +677,40 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 
   defp invoke_point_read!(%__MODULE__{kind: :pure_exqlite, conn: conn, statements: statements}, id) do
-    [[doc_key, ^id, revision_id, _body_json, 0, _sequence]] =
-      Raw.run!(conn, statements.document_select, [id])
+    [
+      [
+        ^id,
+        _revision_id,
+        _body_json,
+        _body_term,
+        0,
+        _sequence,
+        nil,
+        _digest,
+        _logical_size,
+        _content_type
+      ]
+    ] = Raw.run!(conn, statements.winner_select, [id])
 
-    [[^revision_id, 1, nil, _history_id, _digest, 0, _revision_body, _revision_term, 0]] =
-      Raw.run!(conn, statements.revision_select, [doc_key, revision_id])
-
-    [] = Raw.run!(conn, statements.attachment_select, [doc_key, revision_id])
     :ok
   end
 
   defp invoke_point_read!(%__MODULE__{kind: :elixir_db_connection, conn: conn}, id) do
-    [[doc_key, ^id, revision_id, _body_json, 0, _sequence]] =
-      connection_query!(conn, @document_select_sql, [id])
+    [
+      [
+        ^id,
+        _revision_id,
+        _body_json,
+        _body_term,
+        0,
+        _sequence,
+        nil,
+        _digest,
+        _logical_size,
+        _content_type
+      ]
+    ] = connection_query!(conn, @winner_select_sql, [id])
 
-    [[^revision_id, 1, nil, _history_id, _digest, 0, _revision_body, _revision_term, 0]] =
-      connection_query!(conn, @revision_select_sql, [doc_key, revision_id])
-
-    [] = connection_query!(conn, @attachment_select_sql, [doc_key, revision_id])
     :ok
   end
 
