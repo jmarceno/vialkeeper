@@ -104,7 +104,7 @@ defmodule ElixirDB.Shadow.Replicator do
 
     with {:ok, profile} <- shadow_profile(request),
          {:ok, source} <- source_endpoint(request),
-         {:ok, target} <- LocalEndpoint.new(request["shadow_uuid"]),
+         {:ok, target} <- LocalEndpoint.new(request["shadow_uuid"], shadow: true),
          result <-
            Replication.one_shot_endpoints(
              source,
@@ -164,7 +164,13 @@ defmodule ElixirDB.Shadow.Replicator do
   defp maybe_mark_ready(request, {:ok, result}, opts) do
     if Keyword.get(opts, :mark_ready, false) do
       worker_opts = Keyword.get(opts, :worker_options, [])
-      _ = Worker.mark_ready(request, result_value(result, :source_sequence), worker_opts)
+
+      _ =
+        Worker.mark_ready(
+          generation_request(request),
+          result_value(result, :source_sequence),
+          worker_opts
+        )
     end
 
     :ok
@@ -180,4 +186,8 @@ defmodule ElixirDB.Shadow.Replicator do
 
   defp request_value(request, key) when is_map(request),
     do: Map.get(request, key, Map.get(request, String.to_atom(key)))
+
+  defp generation_request(request) do
+    Map.take(request, ~w(source_uuid shadow_uuid generation operation_id))
+  end
 end

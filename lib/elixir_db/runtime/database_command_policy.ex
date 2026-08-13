@@ -99,7 +99,7 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
   end
 
   defp valid_checkpoint_command?(%Commands.GetLocalRecord{namespace: namespace}),
-    do: namespace in ["shadow_checkpoints", "shadow_checkpoint"]
+    do: namespace in ["shadow_checkpoints", "shadow_checkpoint", "retention_boundary_state"]
 
   defp valid_checkpoint_command?(%Commands.PutLocalRecord{request: request}) when is_map(request) do
     Map.get(request, :namespace, Map.get(request, "namespace")) in [

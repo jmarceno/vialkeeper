@@ -108,12 +108,12 @@ defmodule ElixirDB.Shadow.ReadRouter do
 
     with {:ok, document_response} <-
            call_endpoint(snapshot, :read_document, shadow_request, opts),
-         {:ok, document, _document_watermark} <- normalize_document_response(document_response),
+         {:ok, document, document_watermark} <- normalize_document_response(document_response),
          {:ok, attachment} <- attachment_entry(document, request),
          {:ok, response} <-
            call_endpoint(snapshot, :open_attachment_representation, shadow_request, opts),
          {:ok, stream} <- logical_attachment_stream(response, attachment) do
-      {:ok, stream, stream_watermark(response)}
+      {:ok, stream, max(document_watermark, stream_watermark(response))}
     end
   end
 

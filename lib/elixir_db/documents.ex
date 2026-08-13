@@ -115,9 +115,15 @@ defmodule ElixirDB.Documents do
   defp bulk_get_primary(uuid, requests) do
     {:ok,
      Enum.map(requests, fn request ->
-       case get_primary(uuid, request) do
-         {:ok, value} -> %{ok: value}
-         {:error, error} -> %{error: ElixirDB.Error.public(error)}
+       case validate_get(request) do
+         {:ok, normalized} ->
+           case get_primary(uuid, normalized) do
+             {:ok, value} -> %{ok: value}
+             {:error, error} -> %{error: ElixirDB.Error.public(error)}
+           end
+
+         {:error, error} ->
+           %{error: ElixirDB.Error.public(error)}
        end
      end)}
   end
