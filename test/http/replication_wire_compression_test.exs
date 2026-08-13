@@ -46,6 +46,27 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
     refute identity_encoding?(response)
   end
 
+  test "bodyless replication GET rejects a request body with a compressed error", %{
+    uuid: uuid,
+    base_url: base_url
+  } do
+    assert {:ok, response} =
+             Req.get(base_url <> "/v1/databases/#{uuid}/replication/identity",
+               body: "unexpected-body",
+               headers: [{"accept-encoding", "zstd"}],
+               decode_body: false,
+               compressed: false
+             )
+
+    assert response.status == 400
+    assert json_content_type?(response)
+    assert zstd_content_encoding?(response)
+    assert zstd_magic?(response.body)
+
+    decoded = ElixirDB.TestReplicationWire.decode_response(response.headers, response.body)
+    assert decoded["error"]["code"] == "invalid_request"
+  end
+
   test "unauthorized replication JSON errors are compressed without disclosing the route", %{
     uuid: uuid,
     base_url: base_url

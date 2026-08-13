@@ -46,6 +46,31 @@ defmodule ElixirDB.Replication.WireCompression do
   def encode_json(_term, _decoded_limit),
     do: {:error, Error.invalid_request("replication JSON decoded limit is invalid")}
 
+  @doc """
+  Compresses JSON that the project encoder already produced.
+
+  Skips the term round-trip that `encode_json/2` performs; the caller
+  guarantees `json` is valid encoder output. Both byte limits are still
+  enforced.
+  """
+  @spec compress_encoded_json(iodata(), integer()) :: {:ok, encoded()} | {:error, Error.t()}
+  def compress_encoded_json(json, decoded_limit)
+      when is_integer(decoded_limit) and decoded_limit >= 0 do
+    with {:ok, json} <- bounded_body(json, decoded_limit),
+         {:ok, compressed} <- compress(json),
+         :ok <- reject_oversize(byte_size(compressed), encoded_limit(decoded_limit)) do
+      {:ok,
+       %{
+         body: compressed,
+         uncompressed_length: byte_size(json),
+         compressed_length: byte_size(compressed)
+       }}
+    end
+  end
+
+  def compress_encoded_json(_json, _decoded_limit),
+    do: {:error, Error.invalid_request("replication JSON decoded limit is invalid")}
+
   @spec decode_json(iodata(), keyword()) :: {:ok, term()} | {:error, Error.t()}
   def decode_json(compressed, opts) when is_list(opts) do
     with {:ok, decoded_limit} <- decoded_limit(opts),

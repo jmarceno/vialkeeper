@@ -77,18 +77,19 @@ defmodule ElixirDB.HTTP.ReplicationWirePlug do
     end
   end
 
+  # The response body was already JSON-encoded by ElixirDB.HTTP.Response, so
+  # it is compressed as-is instead of decoding and re-encoding the envelope.
   defp encode_response(conn) do
     limit = decoded_limit()
 
-    with {:ok, term} <- decode_resp_term(conn.resp_body),
-         {:ok, encoded} <-
-           ReplicationInstr.wire_codec(:egress, :compress, fn ->
-             WireCompression.encode_json(term, limit)
-           end) do
-      ReplicationInstr.wire_bytes(:egress, :json, :zstd, encoded.compressed_length)
-      put_compressed(conn, encoded)
-    else
-      _ ->
+    case ReplicationInstr.wire_codec(:egress, :compress, fn ->
+           WireCompression.compress_encoded_json(conn.resp_body, limit)
+         end) do
+      {:ok, encoded} ->
+        ReplicationInstr.wire_bytes(:egress, :json, :zstd, encoded.compressed_length)
+        put_compressed(conn, encoded)
+
+      {:error, _} ->
         fallback_internal_error(conn)
     end
   end
@@ -128,18 +129,6 @@ defmodule ElixirDB.HTTP.ReplicationWirePlug do
     |> put_resp_header("vary", "accept-encoding")
     |> put_resp_header("content-length", Integer.to_string(encoded.compressed_length))
     |> Map.put(:resp_body, encoded.body)
-  end
-
-  defp decode_resp_term(body) do
-    json = IO.iodata_to_binary(body)
-
-    case JSON.decode(json) do
-      {:ok, term} when is_map(term) or is_list(term) -> {:ok, term}
-      _ -> {:error, :invalid_json}
-    end
-  rescue
-    _error in [ArgumentError, ErlangError, Protocol.UndefinedError] ->
-      {:error, :invalid_json}
   end
 
   defp json_response?(conn) do

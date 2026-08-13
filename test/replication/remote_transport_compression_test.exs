@@ -59,7 +59,8 @@ defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
 
     headers = last_headers(captured, "GET")
     assert header(headers, "accept-encoding") == "zstd"
-    refute header(headers, "content-encoding") == "identity"
+    assert header(headers, "content-encoding") == nil
+    assert header(headers, "content-length") in [nil, "0"]
   end
 
   test "JSON POST bodies are zstd-compressed with canonical uncompressed-length", %{
@@ -93,7 +94,7 @@ defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
     {:ok, bundle_root} = DatabaseCatalog.bundle_root(uuid)
     assert {:ok, stat} = FilesystemStore.stat(bundle_root, digest)
     assert stat.encoding == :zstd
-    assert encoded_payload_length(bundle_root, digest, stat) < logical
+    assert encoded_payload_length(bundle_root, digest) < logical
 
     assert {:ok, response} =
              Req.get(base_url <> "/v1/databases/#{uuid}/replication/blobs/#{digest}",
@@ -107,7 +108,7 @@ defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
     assert String.starts_with?(type, "application/vnd.elixirdb.blob-representation")
     encoding = header_from_response(response, "content-encoding")
     assert encoding in [nil, "", "identity"]
-    assert header_from_response(response, "x-elixirdb-blob-encoding") in ["zstd", "compressed"]
+    assert header_from_response(response, "x-elixirdb-blob-encoding") == "zstd"
   end
 
   defp last_headers(captured, method) do
@@ -139,15 +140,9 @@ defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
   defp header_value([value | _]) when is_binary(value), do: value
   defp header_value(_), do: nil
 
-  defp encoded_payload_length(bundle, digest, stat) do
+  defp encoded_payload_length(bundle, digest) do
     prefix = String.slice(digest, 0, 2)
     blob = Path.join([bundle, "blobs", prefix, digest <> ".blob"])
-    zst = Path.join([bundle, "blobs", prefix, digest <> ".zst"])
-
-    cond do
-      File.regular?(blob) -> File.stat!(blob).size - 92
-      File.regular?(zst) -> File.stat!(zst).size - 48
-      true -> stat.physical_size
-    end
+    File.stat!(blob).size - 92
   end
 end

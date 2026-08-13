@@ -607,25 +607,30 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
     assert_receive {:ready, _}, 1_000
     assert_receive {:ready, _}, 1_000
-    send(raw_task.pid, :install)
-    send(zstd_task.pid, :install)
 
-    assert {:ok, _} = Task.await(raw_task, 5_000)
-    assert {:ok, _} = Task.await(zstd_task, 5_000)
+    # Both writers hold open temporary files; installs are ordered so "first"
+    # is deterministic and the loser's dedup path is actually exercised.
+    send(raw_task.pid, :install)
+    assert {:ok, raw_result} = Task.await(raw_task, 5_000)
+    refute raw_result.deduplicated?
 
     path = blob_path_for(bundle.root, digest)
-    assert File.regular?(path)
+    installed_bytes = File.read!(path)
+
+    send(zstd_task.pid, :install)
+    assert {:ok, zstd_result} = Task.await(zstd_task, 5_000)
+    assert zstd_result.deduplicated?
+
+    assert File.read!(path) == installed_bytes
 
     assert {:ok, {descriptor, reader}} =
              FilesystemStore.open_representation_read(bundle.root, digest)
 
     payload = collect_representation(reader)
-    assert byte_size(File.read!(path)) == descriptor.payload_length + Representation.trailer_size()
-
-    assert :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower) ==
-             descriptor.payload_sha256
-
-    assert descriptor.encoding in [:raw, :zstd]
+    assert descriptor.encoding == :raw
+    assert payload == logical
+    assert byte_size(installed_bytes) == descriptor.payload_length + Representation.trailer_size()
+    assert FilesystemStore.verify(bundle.root, digest, byte_size(logical)) == :ok
   end
 
   @tag :compressed

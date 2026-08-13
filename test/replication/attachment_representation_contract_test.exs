@@ -52,7 +52,7 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
     {:ok, bundle} = DatabaseCatalog.bundle_root(source_uuid)
     assert {:ok, stat} = FilesystemStore.stat(bundle, digest)
     assert stat.encoding == :zstd
-    payload_length = encoded_payload_length(bundle, digest, stat)
+    payload_length = encoded_payload_length(bundle, digest)
     assert payload_length < logical
 
     assert {:ok, response} =
@@ -154,14 +154,9 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
     end
   end
 
-  defp encoded_payload_length(bundle, digest, stat) do
+  defp encoded_payload_length(bundle, digest) do
     blob = Path.join([bundle, "blobs", String.slice(digest, 0, 2), digest <> ".blob"])
-
-    if File.regular?(blob) do
-      File.stat!(blob).size - 92
-    else
-      stat.physical_size
-    end
+    File.stat!(blob).size - 92
   end
 
   defp representation_file_bytes!(bundle, digest) do

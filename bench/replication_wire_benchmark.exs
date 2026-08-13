@@ -176,8 +176,8 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
         "http_json_body_bytes" => sum_kind(requests, "json"),
         "http_blob_body_bytes" => sum_kind(requests, "blob"),
         "requests" => requests,
-        "compress_us" => 0,
-        "decompress_us" => 0,
+        "compress_us" => sum_field(requests, "compress_us"),
+        "decompress_us" => sum_field(requests, "decompress_us"),
         "replication_elapsed_us" => elapsed_us,
         "source_representation_sha256" => source_repr,
         "target_representation_sha256" => target_repr,
@@ -204,6 +204,7 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
       if json? or blob? do
         req_len = header_int(conn, :req, "content-length")
         resp_len = resp_entity_bytes(conn)
+        {compress_us, decompress_us} = codec_round_trip_us(conn, blob?)
 
         Agent.update(counter, fn acc ->
           [
@@ -214,6 +215,8 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
               "request_entity_bytes" => req_len,
               "response_entity_bytes" => resp_len,
               "entity_bytes" => req_len + resp_len,
+              "compress_us" => compress_us,
+              "decompress_us" => decompress_us,
               "request_content_encoding" =>
                 List.first(Plug.Conn.get_req_header(conn, "content-encoding")),
               "response_content_encoding" =>
@@ -436,6 +439,31 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
       _ ->
         nil
     end
+  end
+
+  # Times the wire codec by round-tripping the compressed JSON entity that is
+  # actually sent, since the in-band codec calls are not observable here.
+  defp codec_round_trip_us(_conn, true), do: {0, 0}
+
+  defp codec_round_trip_us(conn, false) do
+    with "zstd" <- List.first(Plug.Conn.get_resp_header(conn, "content-encoding")),
+         compressed when is_binary(compressed) <- entity_binary(conn.resp_body),
+         {decompress_us, json} when is_binary(json) <-
+           :timer.tc(fn -> :ezstd.decompress(compressed) end),
+         {compress_us, recompressed} when is_binary(recompressed) <-
+           :timer.tc(fn -> :ezstd.compress(json, 1) end) do
+      {compress_us, decompress_us}
+    else
+      _ -> {0, 0}
+    end
+  end
+
+  defp entity_binary(body) when is_binary(body), do: body
+  defp entity_binary(body) when is_list(body), do: IO.iodata_to_binary(body)
+  defp entity_binary(_body), do: nil
+
+  defp sum_field(requests, field) do
+    Enum.reduce(requests, 0, &(Map.fetch!(&1, field) + &2))
   end
 
   defp sum_kind(requests, kind) do

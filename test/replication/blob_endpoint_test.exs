@@ -337,6 +337,71 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
              Attachments.open_blob_representation(uuid, digest)
   end
 
+  test "wire PUT rejects a logical length over the configured maximum with 413", %{
+    uuid: uuid,
+    base_url: base_url
+  } do
+    assert {:ok, _} =
+             DatabaseCatalog.command(
+               uuid,
+               {:command, :update_config, %{"attachments" => %{"max_attachment_bytes" => 8}}}
+             )
+
+    bytes = "way-over-the-configured-max"
+    digest = sha256_hex(bytes)
+
+    assert {:ok, %{status: 413, headers: response_headers, body: body}} =
+             Req.put(base_url <> "/v1/databases/#{uuid}/replication/blobs/#{digest}",
+               body: bytes,
+               headers: [{"accept-encoding", "zstd"} | valid_representation_headers(bytes, digest)],
+               decode_body: false,
+               compressed: false
+             )
+
+    decoded = ElixirDB.TestReplicationWire.decode_response(response_headers, body)
+    assert decoded["error"]["code"] == "payload_too_large"
+
+    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+             Attachments.open_blob_representation(uuid, digest)
+  end
+
+  test "wire PUT under exhausted write admission returns 429 attachment_overloaded", %{
+    uuid: uuid,
+    base_url: base_url
+  } do
+    assert {:ok, _} =
+             DatabaseCatalog.command(
+               uuid,
+               {:command, :update_config,
+                %{"attachments" => %{"max_concurrent_attachment_writes" => 1}}}
+             )
+
+    assert {:ok, token, _} = AttachmentCoordinator.acquire_write(uuid)
+
+    bytes = "blocked-by-admission"
+    digest = sha256_hex(bytes)
+
+    try do
+      assert {:ok, %{status: 429, headers: response_headers, body: body}} =
+               Req.put(base_url <> "/v1/databases/#{uuid}/replication/blobs/#{digest}",
+                 body: bytes,
+                 headers: [
+                   {"accept-encoding", "zstd"} | valid_representation_headers(bytes, digest)
+                 ],
+                 decode_body: false,
+                 compressed: false
+               )
+
+      decoded = ElixirDB.TestReplicationWire.decode_response(response_headers, body)
+      assert decoded["error"]["code"] == "attachment_overloaded"
+    after
+      assert :ok = AttachmentCoordinator.release(uuid, token)
+    end
+
+    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+             Attachments.open_blob_representation(uuid, digest)
+  end
+
   defp valid_representation_headers(bytes, digest) do
     [
       {"content-type", "application/vnd.elixirdb.blob-representation"},
