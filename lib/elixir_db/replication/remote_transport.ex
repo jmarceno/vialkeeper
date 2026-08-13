@@ -52,12 +52,15 @@ defmodule ElixirDB.Replication.RemoteTransport do
         ]
       )
 
-    request_stream(options, digest)
+    case request_stream(options, digest) do
+      {:ok, descriptor, body, _headers} -> {:ok, descriptor, body}
+      other -> other
+    end
   end
 
   @doc "Opens a lazy blob response for an authenticated JSON POST request."
   def open_post_stream(base_url, path, body, digest, auth_token \\ nil, timeout \\ nil) do
-    timeout = timeout || ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
+    timeout = timeout || ElixirDB.Config.request_timeout_ms()
 
     with {:ok, encoded} <- WireCompression.encode_json(body, decoded_limit()) do
       options =
@@ -150,7 +153,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
   defp open_stream_success(result, body, digest) do
     with {:ok, descriptor} <- BlobRepresentationStream.parse_http_headers(result.headers, digest) do
       ReplicationInstr.wire_bytes(:ingress, :blob, descriptor.encoding, descriptor.payload_length)
-      {:ok, descriptor, body}
+      {:ok, descriptor, body, result.headers}
     end
   end
 

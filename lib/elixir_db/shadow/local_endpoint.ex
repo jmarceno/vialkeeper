@@ -24,7 +24,7 @@ defmodule ElixirDB.Shadow.LocalEndpoint do
            %__MODULE__{
              worker: worker,
              worker_options: options,
-             timeout: Map.get(attrs, :timeout, 30_000)
+             timeout: Map.get(attrs, :timeout, ElixirDB.Config.request_timeout_ms())
            }},
         else: {:error, Error.invalid_request("local shadow endpoint is invalid")}
     else

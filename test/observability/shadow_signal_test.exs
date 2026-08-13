@@ -5,6 +5,7 @@ defmodule ElixirDB.Observability.ShadowSignalTest do
   @moduletag :integration
 
   alias ElixirDB.Eventual
+  alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Shadow.{ReadRouter, RouteTable}
   alias ElixirDB.Storage.Results
 
@@ -32,7 +33,16 @@ defmodule ElixirDB.Observability.ShadowSignalTest do
 
   test "records served outcome and exact-route fallback without private fields" do
     source_uuid = ElixirDB.UUID.v4()
-    on_exit(fn -> RouteTable.delete(source_uuid) end)
+    path = "shadow-signal-#{System.unique_integer([:positive])}.elixirdb"
+    assert {:ok, _} = DatabaseCatalog.create(path, %{database_uuid: source_uuid})
+    assert {:ok, _} = DatabaseCatalog.open(source_uuid)
+
+    on_exit(fn ->
+      RouteTable.delete(source_uuid)
+      _ = DatabaseCatalog.close(source_uuid)
+      _ = DatabaseCatalog.unregister(source_uuid)
+      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+    end)
 
     assert :ok =
              RouteTable.put(source_uuid, %{

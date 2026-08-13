@@ -4,11 +4,13 @@ defmodule ElixirDB.Shadow.RemoteTransport do
   alias ElixirDB.Error
   alias ElixirDB.Replication.RemoteTransport, as: ReplicationTransport
 
-  @spec request(binary(), atom(), binary(), map() | nil, binary() | nil, pos_integer()) ::
+  @spec request(binary(), atom(), binary(), map() | nil, binary() | nil, pos_integer() | nil) ::
           {:ok, map()} | {:error, Error.t()}
-  def request(base_url, method, path, body \\ nil, auth_token \\ nil, timeout \\ 30_000)
+  def request(base_url, method, path, body \\ nil, auth_token \\ nil, timeout \\ nil)
 
   def request(base_url, method, path, body, auth_token, timeout) do
+    timeout = timeout || ElixirDB.Config.request_timeout_ms()
+
     if valid_request?(base_url, method, path, body, auth_token, timeout) do
       checked_request(base_url, method, path, body, auth_token, timeout)
     else
@@ -35,6 +37,26 @@ defmodule ElixirDB.Shadow.RemoteTransport do
 
   @doc "Opens a physical attachment response from a POST control request."
   def open_stream(base_url, path, body, digest, auth_token, timeout) do
-    ReplicationTransport.open_post_stream(base_url, path, body, digest, auth_token, timeout)
+    with {:ok, descriptor, body, headers} <-
+           ReplicationTransport.open_post_stream(base_url, path, body, digest, auth_token, timeout),
+         {:ok, watermark} <- watermark_header(headers) do
+      {:ok, descriptor, body, watermark, content_type_header(headers)}
+    end
+  end
+
+  defp watermark_header(headers) do
+    value = ElixirDB.Headers.get(headers, "x-elixirdb-source-watermark")
+
+    case Integer.parse(to_string(value || "")) do
+      {watermark, ""} when watermark >= 0 -> {:ok, watermark}
+      _ -> {:error, Error.shadow_incompatible("shadow read watermark is missing")}
+    end
+  end
+
+  defp content_type_header(headers) do
+    case ElixirDB.Headers.get(headers, "x-elixirdb-attachment-content-type") do
+      value when is_binary(value) and value != "" -> value
+      _ -> "application/octet-stream"
+    end
   end
 end

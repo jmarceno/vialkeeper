@@ -15,13 +15,7 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
 
   @shadow_replication [
     Commands.Identity,
-    Commands.ReadChanges,
-    Commands.DiffRevisions,
-    Commands.GetRevisionChains,
     Commands.ImportRevisionChains,
-    Commands.GetRevisionsBatch,
-    Commands.GetCheckpoint,
-    Commands.PutCheckpoint,
     Commands.GetLocalRecord,
     Commands.PutLocalRecord,
     Commands.ReadBoundaryPages,
@@ -61,9 +55,14 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
       (command_type == Commands.GetLocalRecord and valid_shadow_state_read?(command))
   end
 
-  def allowed?(:shadow_replication, command_type, command) do
-    command_type in @shadow_replication and valid_checkpoint_command?(command)
-  end
+  def allowed?(:shadow_replication, Commands.GetLocalRecord, command),
+    do: valid_checkpoint_command?(command)
+
+  def allowed?(:shadow_replication, Commands.PutLocalRecord, command),
+    do: valid_checkpoint_command?(command)
+
+  def allowed?(:shadow_replication, command_type, _command),
+    do: command_type in @shadow_replication
 
   def allowed?(:shadow_control, command_type, _command),
     do: command_type in @shadow_control
@@ -108,7 +107,7 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
     ]
   end
 
-  defp valid_checkpoint_command?(_), do: true
+  defp valid_checkpoint_command?(_), do: false
 
   defp valid_shadow_state_read?(%Commands.GetLocalRecord{
          namespace: "shadow_state",
@@ -118,7 +117,7 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
 
   defp valid_shadow_state_read?(_), do: false
 
-  defp policy_set(:shadow_read), do: @shadow_read
+  defp policy_set(:shadow_read), do: @shadow_read ++ [Commands.GetLocalRecord]
   defp policy_set(:shadow_replication), do: @shadow_replication
   defp policy_set(:shadow_control), do: @shadow_control
 

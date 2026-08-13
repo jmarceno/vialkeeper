@@ -42,16 +42,16 @@ defmodule ElixirDB.Shadow.Worker do
 
   @spec read_document(map(), keyword(), options()) :: {:ok, term()} | {:error, Error.t()}
   def read_document(request, read_opts \\ [], opts \\ []),
-    do: call_server(opts, {:read_document, request, read_opts})
+    do: read_document_state(request, read_opts, direct_state(opts))
 
   @spec bulk_read_documents(map(), keyword(), options()) :: {:ok, term()} | {:error, Error.t()}
   def bulk_read_documents(request, read_opts \\ [], opts \\ []),
-    do: call_server(opts, {:bulk_read_documents, request, read_opts})
+    do: bulk_read_state(request, read_opts, direct_state(opts))
 
   @spec open_attachment_representation(map(), keyword(), options()) ::
           {:ok, term()} | {:error, Error.t()}
   def open_attachment_representation(request, read_opts \\ [], opts \\ []),
-    do: call_server(opts, {:open_attachment_representation, request, read_opts})
+    do: open_attachment_representation_state(request, read_opts, direct_state(opts))
 
   @doc "Marks an exact generation ready after a later replication proof."
   @spec mark_ready(map(), non_neg_integer(), options()) :: :ok | {:error, Error.t()}
@@ -60,9 +60,10 @@ defmodule ElixirDB.Shadow.Worker do
 
   @impl true
   def init(opts) do
-    root = root(opts)
-    :ok = File.mkdir_p(root)
-    {:ok, direct_state(opts)}
+    state = direct_state(opts)
+    :ok = File.mkdir_p(state.root)
+    send(self(), :recover)
+    {:ok, state}
   end
 
   @impl true
@@ -98,25 +99,25 @@ defmodule ElixirDB.Shadow.Worker do
     end
   end
 
-  def handle_call({:read_document, request, read_opts}, _from, state),
-    do: {:reply, read_document_state(request, read_opts, state), state}
-
-  def handle_call({:bulk_read_documents, request, read_opts}, _from, state),
-    do: {:reply, bulk_read_state(request, read_opts, state), state}
-
-  def handle_call({:open_attachment_representation, request, read_opts}, _from, state),
-    do: {:reply, open_attachment_representation_state(request, read_opts, state), state}
+  @impl true
+  def handle_info(:recover, state) do
+    recover_managed(state)
+    {:noreply, state}
+  end
 
   defp call_server(opts, message) do
-    case Keyword.get(opts, :server) do
-      nil ->
+    cond do
+      Keyword.has_key?(opts, :server) ->
+        GenServer.call(Keyword.fetch!(opts, :server), message, call_timeout(opts))
+
+      Keyword.has_key?(opts, :root) ->
+        direct_call(message, opts)
+
+      true ->
         case Process.whereis(__MODULE__) do
           nil -> direct_call(message, opts)
           pid -> GenServer.call(pid, message, call_timeout(opts))
         end
-
-      server ->
-        GenServer.call(server, message, call_timeout(opts))
     end
   end
 
@@ -148,17 +149,32 @@ defmodule ElixirDB.Shadow.Worker do
     end
   end
 
-  defp direct_call({:read_document, request, read_opts}, opts),
-    do: read_document_state(request, read_opts, direct_state(opts))
-
-  defp direct_call({:bulk_read_documents, request, read_opts}, opts),
-    do: bulk_read_state(request, read_opts, direct_state(opts))
-
-  defp direct_call({:open_attachment_representation, request, read_opts}, opts),
-    do: open_attachment_representation_state(request, read_opts, direct_state(opts))
-
   defp reply_mutation(_state, {:ok, result, next}, _old), do: {:reply, {:ok, result}, next}
   defp reply_mutation(_state, {:error, error}, old), do: {:reply, {:error, error}, old}
+
+  defp recover_managed(state) do
+    case read_journal(state.journal_path) do
+      {:ok, journal} ->
+        Enum.each(journal["shadows"] || [], &recover_entry(&1, state))
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp recover_entry(entry, state) when is_map(entry) do
+    request = Map.take(entry, Enum.map(@provision_fields, &Atom.to_string/1))
+
+    with :ok <- validate_managed_entry(entry, request, state),
+         {:ok, _identity} <- DatabaseCatalog.open_internal(entry["shadow_uuid"]) do
+      start_recovered_replicator(Map.put(request, "state", entry["state"]), state)
+      :ok
+    else
+      _ -> :ok
+    end
+  end
+
+  defp recover_entry(_entry, _state), do: :ok
 
   defp maybe_start_replicator(request, state) do
     auto_replicate? =
@@ -169,6 +185,14 @@ defmodule ElixirDB.Shadow.Worker do
       )
 
     if auto_replicate? and Process.whereis(WorkerSupervisor) do
+      start_recovered_replicator(request, state)
+    else
+      :ok
+    end
+  end
+
+  defp start_recovered_replicator(request, _state) do
+    if Process.whereis(WorkerSupervisor) do
       _ =
         WorkerSupervisor.start_replicator(
           request,
@@ -176,11 +200,9 @@ defmodule ElixirDB.Shadow.Worker do
           mark_ready: true,
           worker_options: [server: self()]
         )
-
-      :ok
-    else
-      :ok
     end
+
+    :ok
   end
 
   defp result_only({:ok, result, _state}), do: {:ok, result}
@@ -399,11 +421,15 @@ defmodule ElixirDB.Shadow.Worker do
              DatabaseCatalog.command_with_context(
                request["shadow_uuid"],
                context,
-               {:command, :get_document, read_command(request, document_id)}
+               {:command, :get_document, read_command(request, document_id)},
+               catalog_timeout()
              ),
-           {:ok, watermark} <- shadow_watermark(request["shadow_uuid"]) do
+           {:ok, watermark} <- shadow_watermark(request) do
         {:ok, %{document: Results.to_public(document), source_watermark: watermark}}
       end
+    else
+      :not_found -> {:error, Error.shadow_not_ready("shadow generation is not ready")}
+      {:error, _} = error -> error
     end
   end
 
@@ -424,10 +450,11 @@ defmodule ElixirDB.Shadow.Worker do
                 DatabaseCatalog.command_with_context(
                   request["shadow_uuid"],
                   context,
-                  {:command, :get_document, read_command(normalized, id)}
+                  {:command, :get_document, read_command(normalized, id)},
+                  catalog_timeout()
                 )
               end)},
-           {:ok, watermark} <- shadow_watermark(request["shadow_uuid"]) do
+           {:ok, watermark} <- shadow_watermark(request) do
         {:ok,
          %{
            results: Enum.map(results, &public_bulk_result/1),
@@ -435,6 +462,8 @@ defmodule ElixirDB.Shadow.Worker do
          }}
       end
     else
+      :not_found -> {:error, Error.shadow_not_ready("shadow generation is not ready")}
+      {:error, _} = error -> error
       nil -> {:error, Error.invalid_request("shadow bulk read requests are required")}
       _ -> {:error, Error.invalid_request("shadow bulk read requests must be an array")}
     end
@@ -452,9 +481,19 @@ defmodule ElixirDB.Shadow.Worker do
          {:ok, digest} <- attachment_digest(attachment),
          {:ok, ref} <- external_store(entry, state),
          {:ok, {descriptor, reader}} <- FilesystemStore.open_representation_read(ref, digest),
-         :ok <- Representation.validate_route_digest(digest, descriptor) do
+         :ok <- Representation.validate_route_digest(digest, descriptor),
+         {:ok, watermark} <- shadow_watermark(request),
+         {:ok, stream} <-
+           BlobRepresentationStream.new(Map.put(descriptor, :body, representation_stream(reader))) do
       {:ok,
-       BlobRepresentationStream.new!(Map.put(descriptor, :body, representation_stream(reader)))}
+       %{
+         "stream" => stream,
+         "source_watermark" => watermark,
+         "attachment" => public_attachment(attachment, digest)
+       }}
+    else
+      :not_found -> {:error, Error.shadow_not_ready("shadow generation is not ready")}
+      {:error, _} = error -> error
     end
   rescue
     exception in [ArgumentError, KeyError, FunctionClauseError] ->
@@ -462,6 +501,15 @@ defmodule ElixirDB.Shadow.Worker do
        Error.shadow_attachment_unavailable("shadow attachment read failed", %{
          cause: inspect(exception)
        })}
+  end
+
+  defp public_attachment(attachment, digest) do
+    attachment = Map.new(attachment, fn {key, value} -> {to_string(key), value} end)
+
+    %{
+      "blob" => digest,
+      "content_type" => attachment["content_type"] || "application/octet-stream"
+    }
   end
 
   defp public_bulk_result({:ok, %Results.GetDocument{} = document}),
@@ -481,7 +529,8 @@ defmodule ElixirDB.Shadow.Worker do
     case DatabaseCatalog.command_with_context(
            request["shadow_uuid"],
            shadow_read_context(request),
-           {:command, :get_document, read_command(request, document_id, false)}
+           {:command, :get_document, read_command(request, document_id, false)},
+           catalog_timeout()
          ) do
       {:ok, %Results.GetDocument{} = document} -> {:ok, document}
       {:ok, document} when is_map(document) -> {:ok, Results.get_document(document)}
@@ -530,16 +579,17 @@ defmodule ElixirDB.Shadow.Worker do
     )
   end
 
-  defp shadow_watermark(shadow_uuid) do
+  defp shadow_watermark(request) when is_map(request) do
     DatabaseCatalog.command_with_context(
-      shadow_uuid,
-      CommandContext.shadow_read(shadow_database_uuid: shadow_uuid),
-      {:command, :get_local_record, "shadow_state", "watermark"}
+      request["shadow_uuid"],
+      shadow_read_context(request),
+      {:command, :get_local_record, "shadow_state", "watermark"},
+      catalog_timeout()
     )
     |> case do
-      {:ok, nil} -> {:ok, 0}
       {:ok, %{value: value}} when is_integer(value) and value >= 0 -> {:ok, value}
       {:ok, %{"value" => value}} when is_integer(value) and value >= 0 -> {:ok, value}
+      {:ok, nil} -> {:error, Error.shadow_incompatible("shadow read watermark is missing")}
       {:ok, _} -> {:error, Error.integrity_violation("shadow watermark is invalid")}
       {:error, _} = error -> error
     end
@@ -923,7 +973,9 @@ defmodule ElixirDB.Shadow.Worker do
   end
 
   defp call_timeout(opts),
-    do: Keyword.get(opts, :timeout, ElixirDB.Config.host_limits()[:max_wait_ms] || 30_000)
+    do: Keyword.get(opts, :timeout, catalog_timeout())
+
+  defp catalog_timeout, do: ElixirDB.Config.request_timeout_ms()
 
   defp journal_path(root), do: Path.join(root, @journal_filename)
 

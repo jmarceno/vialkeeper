@@ -1011,6 +1011,26 @@ defmodule ElixirDB.Replication do
   defp target_diff(_target, %{selected: []}), do: {:ok, []}
 
   defp target_diff(target, context) do
+    if shadow_profile?(Map.get(context, :profile)) do
+      {:ok, shadow_missing_documents(context.selected)}
+    else
+      peer_target_diff(target, context)
+    end
+  end
+
+  defp shadow_missing_documents(selected) do
+    Enum.flat_map(selected, fn change ->
+      leaves = get(change, :leaf_revisions) || []
+
+      if leaves == [] do
+        []
+      else
+        [%{document_id: get(change, :document_id), leaf_revisions: leaves}]
+      end
+    end)
+  end
+
+  defp peer_target_diff(target, context) do
     source_uuid =
       context.source_identity
       |> case do

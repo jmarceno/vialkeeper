@@ -487,15 +487,18 @@ authenticated separately from the ordinary public API and uses the bounded
 Zstandard JSON wire.
 
 Once a generation is ready, eligible point, bulk, and attachment reads default
-to eventual routing. Send `x-elixirdb-read-consistency: primary` to bypass the
+to eventual routing only while the public source is an ordinary open database.
+Send `x-elixirdb-read-consistency: primary` to bypass the
 shadow explicitly. Reads are served by the exact generation snapshot when
 possible. A lagging document, revision, or attachment miss falls back to the
 source for that request and keeps the route. Transport, protocol, identity, or
-store failure falls back once, retires only that exact snapshot, and reports
+store failure falls back once, retires only that exact snapshot, notifies
+reconciliation, and reports
 `x-elixirdb-read-served-by: source`. Shadow-served responses report `shadow`
 plus the durable `x-elixirdb-source-watermark`. Attachment downloads use the
 same consistency choice and stream from the configured external CAS without
-copying attachment bytes into the shadow bundle.
+copying attachment bytes into the shadow bundle. A closed or unregistered
+source is never served from a shadow.
 
 Operator configuration and the worker lifecycle are documented in
 [Operations.md](Operations.md#shadow-control-and-workers).

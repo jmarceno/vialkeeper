@@ -6,6 +6,8 @@ defmodule ElixirDB.Shadow.ReadRouter do
   alias ElixirDB.Error
   alias ElixirDB.Observability.Instrumentation.Shadow, as: ShadowInstr
   alias ElixirDB.Replication.BlobRepresentationStream
+  alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.Shadow.Reconciler
   alias ElixirDB.Shadow.RouteTable
   alias ElixirDB.Storage.Results
 
@@ -66,13 +68,13 @@ defmodule ElixirDB.Shadow.ReadRouter do
   end
 
   defp routed_read(source_uuid, primary_result, shadow_fun) do
-    case RouteTable.get(source_uuid) do
-      {:ok, snapshot} ->
+    case {DatabaseCatalog.ordinary_open?(source_uuid), RouteTable.get(source_uuid)} do
+      {true, {:ok, snapshot}} ->
         ShadowInstr.read(source_uuid, fn ->
           serve_or_fallback(source_uuid, snapshot, primary_result, shadow_fun.(snapshot))
         end)
 
-      :not_found ->
+      _ ->
         with_meta(primary_result.(), "source")
     end
   end
@@ -84,6 +86,7 @@ defmodule ElixirDB.Shadow.ReadRouter do
     unless miss?(error) do
       ShadowInstr.fallback(source_uuid)
       _ = RouteTable.compare_delete(source_uuid, snapshot)
+      _ = Reconciler.notify_invalidation(source_uuid, snapshot)
     end
 
     with_meta(primary_result.(), "source")
@@ -108,14 +111,9 @@ defmodule ElixirDB.Shadow.ReadRouter do
   defp shadow_attachment(snapshot, request, opts) do
     shadow_request = shadow_request(snapshot, request)
 
-    with {:ok, document_response} <-
-           call_endpoint(snapshot, :read_document, shadow_request, opts),
-         {:ok, document, document_watermark} <- normalize_document_response(document_response),
-         {:ok, attachment} <- attachment_entry(document, request),
-         {:ok, response} <-
-           call_endpoint(snapshot, :open_attachment_representation, shadow_request, opts),
-         {:ok, stream} <- logical_attachment_stream(response, attachment) do
-      {:ok, stream, max(document_watermark, stream_watermark(response))}
+    with {:ok, response} <-
+           call_endpoint(snapshot, :open_attachment_representation, shadow_request, opts) do
+      normalize_attachment_response(response)
     end
   end
 
@@ -198,23 +196,43 @@ defmodule ElixirDB.Shadow.ReadRouter do
     do: {:error, Error.shadow_incompatible("shadow bulk response is invalid")}
 
   defp normalize_bulk_entries(results, watermark) do
-    normalized =
-      Enum.map(results, fn
-        %{"ok" => document} -> {:ok, document}
-        %{ok: document} -> {:ok, document}
-        {:ok, document} -> {:ok, document}
-        _ -> :error
-      end)
+    classified = Enum.map(results, &classify_bulk_entry/1)
 
-    if Enum.any?(normalized, &(&1 == :error)) do
-      {:error, Error.shadow_incompatible("shadow bulk response contains an error")}
-    else
-      {:ok, Enum.map(normalized, fn {:ok, document} -> Results.get_document(document) end),
-       watermark}
+    cond do
+      Enum.any?(classified, &match?({:protocol, _}, &1)) ->
+        {:error, Error.shadow_incompatible("shadow bulk response is invalid")}
+
+      Enum.any?(classified, &match?({:miss, _}, &1)) ->
+        {:error, Error.document_not_found("shadow bulk read missed a document")}
+
+      true ->
+        {:ok, Enum.map(classified, fn {:ok, document} -> Results.get_document(document) end),
+         watermark}
     end
   rescue
     ArgumentError -> {:error, Error.shadow_incompatible("shadow bulk response is invalid")}
   end
+
+  defp classify_bulk_entry(%{"ok" => document}), do: {:ok, document}
+  defp classify_bulk_entry(%{ok: document}), do: {:ok, document}
+  defp classify_bulk_entry({:ok, document}), do: {:ok, document}
+  defp classify_bulk_entry(%{"error" => error}), do: classify_bulk_error(error)
+  defp classify_bulk_entry(%{error: error}), do: classify_bulk_error(error)
+  defp classify_bulk_entry(_), do: {:protocol, :invalid}
+
+  defp classify_bulk_error(%Error{code: code}) when code in @miss_codes, do: {:miss, code}
+
+  defp classify_bulk_error(%{code: code}) when code in @miss_codes, do: {:miss, code}
+
+  defp classify_bulk_error(%{"code" => code})
+       when code in ["document_not_found", "revision_not_found", "attachment_not_found"],
+       do: {:miss, String.to_existing_atom(code)}
+
+  defp classify_bulk_error(%{code: code})
+       when code in ["document_not_found", "revision_not_found", "attachment_not_found"],
+       do: {:miss, String.to_existing_atom(code)}
+
+  defp classify_bulk_error(_), do: {:protocol, :error}
 
   defp require_watermark(response) when is_map(response) do
     case Map.get(response, "source_watermark", Map.get(response, :source_watermark)) do
@@ -223,15 +241,30 @@ defmodule ElixirDB.Shadow.ReadRouter do
     end
   end
 
-  defp attachment_entry(document, request) do
-    name = Map.get(request, "name", Map.get(request, :name))
-    attachments = Map.get(document, :attachments, %{}) || %{}
+  defp normalize_attachment_response(
+         %{"stream" => stream, "source_watermark" => watermark} = response
+       ) do
+    attachment = Map.get(response, "attachment", %{})
+    finish_attachment_response(stream, attachment, watermark)
+  end
 
-    case Map.get(attachments, to_string(name)) do
-      attachment when is_map(attachment) -> {:ok, attachment}
-      _ -> {:error, Error.attachment_not_found("attachment is not present in the shadow document")}
+  defp normalize_attachment_response(%{stream: stream, source_watermark: watermark} = response) do
+    attachment = Map.get(response, :attachment, %{})
+    finish_attachment_response(stream, attachment, watermark)
+  end
+
+  defp normalize_attachment_response(_),
+    do: {:error, Error.shadow_incompatible("shadow attachment response is invalid")}
+
+  defp finish_attachment_response(stream, attachment, watermark)
+       when is_integer(watermark) and watermark >= 0 do
+    with {:ok, logical} <- logical_attachment_stream(stream, attachment) do
+      {:ok, logical, watermark}
     end
   end
+
+  defp finish_attachment_response(_stream, _attachment, _watermark),
+    do: {:error, Error.shadow_incompatible("shadow read watermark is missing")}
 
   defp logical_attachment_stream(%BlobRepresentationStream{} = stream, attachment) do
     attachment = string_keys(attachment)
@@ -278,19 +311,6 @@ defmodule ElixirDB.Shadow.ReadRouter do
       {:error, Error.internal_error("shadow attachment decode failed", %{cause: error})}
   end
 
-  defp stream_watermark(response) do
-    case response do
-      %{source_watermark: watermark} when is_integer(watermark) and watermark >= 0 ->
-        watermark
-
-      %{"source_watermark" => watermark} when is_integer(watermark) and watermark >= 0 ->
-        watermark
-
-      _ ->
-        0
-    end
-  end
-
   defp consistency(opts) do
     case Keyword.get(opts, :read_consistency, :eventual) do
       value when value in [:primary, "primary"] -> :primary
@@ -308,10 +328,7 @@ defmodule ElixirDB.Shadow.ReadRouter do
        do: timeout
 
   defp endpoint_timeout(_) do
-    case ElixirDB.Config.host_limits()[:max_wait_ms] do
-      timeout when is_integer(timeout) and timeout > 0 -> timeout
-      _ -> ElixirDB.Config.shutdown_timeout()
-    end
+    ElixirDB.Config.request_timeout_ms()
   end
 
   defp string_keys(map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)

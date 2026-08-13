@@ -73,8 +73,24 @@ defmodule ElixirDB.HTTP.Routes.ShadowControl do
   post "/shadows/:source_uuid/generations/:generation/reads/attachment" do
     read_request(conn, @read_fields, fn conn, body ->
       case Worker.open_attachment_representation(body, [], []) do
-        {:ok, %BlobRepresentationStream{} = stream} -> send_representation(conn, stream)
-        {:error, error} -> Response.error(conn, error)
+        {:ok, %{"stream" => stream, "source_watermark" => watermark} = result}
+        when is_integer(watermark) and watermark >= 0 ->
+          attachment = result["attachment"] || %{}
+          content_type = attachment["content_type"] || "application/octet-stream"
+
+          conn
+          |> Plug.Conn.put_resp_header("x-elixirdb-source-watermark", Integer.to_string(watermark))
+          |> Plug.Conn.put_resp_header("x-elixirdb-attachment-content-type", content_type)
+          |> send_representation(stream)
+
+        {:ok, _} ->
+          Response.error(
+            conn,
+            ElixirDB.Error.shadow_incompatible("shadow attachment response is invalid")
+          )
+
+        {:error, error} ->
+          Response.error(conn, error)
       end
     end)
   end

@@ -68,6 +68,22 @@ defmodule ElixirDB.Shadow.RegistryTest do
              Registry.apply_observation(source_uuid, Definition.token(second), observation, name)
   end
 
+  test "orphan records are capped per source" do
+    root = temp_root()
+    name = unique_name(:shadow_registry)
+    {:ok, pid} = Registry.start_link(root: root, name: name)
+    on_exit(fn -> stop(pid, root) end)
+
+    source_uuid = ElixirDB.UUID.v4()
+
+    for generation <- 1..8 do
+      assert :ok = Registry.record_orphan(source_uuid, %{"generation" => generation}, name)
+    end
+
+    assert {:error, %{code: :resource_limit}} =
+             Registry.record_orphan(source_uuid, %{"generation" => 9}, name)
+  end
+
   defp temp_root do
     root =
       Path.join(System.tmp_dir!(), "elixirdb-shadow-registry-#{System.unique_integer([:positive])}")

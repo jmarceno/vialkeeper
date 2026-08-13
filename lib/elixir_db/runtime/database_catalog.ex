@@ -21,6 +21,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   alias ElixirDB.DatabaseBundle
   alias ElixirDB.DerivedView.Manager, as: DerivedViewManager
   alias ElixirDB.PathSafety
+  alias ElixirDB.Shadow.Reconciler
+  alias ElixirDB.Shadow.Registry, as: ShadowRegistry
+  alias ElixirDB.Shadow.RouteTable
   alias ElixirDB.Storage.Registry, as: StorageRegistry
   alias ElixirDB.View.Manager
   def start_link(_args), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
@@ -44,6 +47,20 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   def unregister(uuid), do: GenServer.call(__MODULE__, {:unregister, uuid})
   def list, do: GenServer.call(__MODULE__, :list)
+
+  @doc "Returns whether an ordinary source is currently open for public routing."
+  @spec ordinary_open?(binary()) :: boolean()
+  def ordinary_open?(uuid) when is_binary(uuid) do
+    case list() do
+      {:ok, entries} ->
+        Enum.any?(entries, fn entry ->
+          entry.database_uuid == uuid and entry.database_kind == :ordinary and entry.state == :open
+        end)
+
+      _ ->
+        false
+    end
+  end
 
   def info(uuid) do
     case GenServer.call(__MODULE__, {:info, uuid}) do
@@ -406,6 +423,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       _entry ->
         case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
           [] ->
+            drop_source_shadow_route(uuid, state)
+            disable_source_shadow(uuid)
             next = %{state | entries: Map.delete(state.entries, uuid)}
             unregister_entry(next, state)
 
@@ -470,6 +489,8 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   @impl true
   def handle_call({:close, uuid}, from, state) do
+    drop_source_shadow_route(uuid, state)
+
     case Map.get(state.close_operations, uuid) do
       waiters when is_list(waiters) ->
         {:noreply,
@@ -1077,6 +1098,34 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
        ElixirDB.Error.internal_error("database admission drain failed during close", %{
          cause: inspect(reason)
        })}
+  end
+
+  defp drop_source_shadow_route(uuid, state) do
+    case Map.get(state.entries, uuid) do
+      %{database_kind: :shadow} ->
+        :ok
+
+      _entry ->
+        case RouteTable.get(uuid) do
+          {:ok, snapshot} ->
+            _ = RouteTable.compare_delete(uuid, snapshot)
+            _ = Reconciler.notify_source_closed(uuid)
+
+          :not_found ->
+            :ok
+        end
+    end
+  end
+
+  defp disable_source_shadow(uuid) do
+    case ShadowRegistry.disable(uuid) do
+      {:ok, definition} ->
+        _ = Reconciler.enqueue(definition)
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 
   defp start_close_operation(uuid, catalog) do

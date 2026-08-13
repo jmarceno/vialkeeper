@@ -451,10 +451,16 @@ What replicates vs what stays local: see [README.md](README.md#replication-appli
 Shadow control is disabled by default. A source host can manage a
 generation-fenced read-only shadow through its source-side
 `/v1/databases/:uuid/shadow` route when `[shadow_controller].enabled = true`.
-The request is asynchronous: `PUT` persists desired state and queues local
-reconciliation, while `GET` returns redacted desired/observed state. The
-source route accepts only ordinary source databases and does not expose
-tokens or managed filesystem paths.
+The request is asynchronous: `PUT` persists desired state first, then
+removes any superseded route and queues local reconciliation, while `GET`
+returns redacted desired/observed state. Disable persists the fenced
+disabled definition before the matching route is removed. Source close
+drops only the local route and does not wait for the worker; unregister
+also converts desired state to disabled cleanup. After a host restart the
+in-memory route table starts empty and reconcilers resume from durable
+desired state when the controller is enabled. The source route accepts only
+ordinary source databases and does not expose tokens or managed filesystem
+paths.
 
 The worker side is configured independently:
 
@@ -500,8 +506,10 @@ explicit `primary` consistency, identify `source` and omit the watermark.
 
 A lagging document, revision, or attachment miss falls back the request (the
 whole original batch for bulk-get) and keeps the ready route. Transport,
-protocol, identity, or store failure falls back once and removes only the
-matching generation snapshot. Attachment reads use the external CAS as a
+protocol, identity, or store failure falls back once, removes only the
+matching generation snapshot, and asks the reconciler to re-inspect. Routing
+stays off while the source is closed or unregistered. Attachment reads use
+the external CAS as a
 read-only physical representation stream; the worker never writes or copies
 those bytes into the managed shadow bundle.
 

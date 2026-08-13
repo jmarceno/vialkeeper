@@ -151,11 +151,66 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   defp dispatch_command(%CommandContext{} = context, command, from, state) do
     normalized = Commands.normalize(command)
 
-    case DatabaseCommandPolicy.authorize(database_kind(state), context, normalized) do
-      :ok -> handle_command(normalized, from, state)
+    with :ok <- DatabaseCommandPolicy.authorize(database_kind(state), context, normalized),
+         :ok <- bind_shadow_context(state, context) do
+      handle_command(normalized, from, state)
+    else
       {:error, %ElixirDB.Error{} = error} -> {:reply, {:error, error}, state}
     end
   end
+
+  defp bind_shadow_context(state, context) do
+    case database_kind(state) do
+      :shadow -> match_shadow_binding(state, context)
+      _ -> :ok
+    end
+  end
+
+  defp match_shadow_binding(_state, %CommandContext{class: :public}), do: :ok
+
+  defp match_shadow_binding(state, context) do
+    case Services.shadow_metadata(state.context) do
+      {:ok, metadata} when is_map(metadata) ->
+        if shadow_context_matches?(context, metadata, state.uuid) do
+          :ok
+        else
+          {:error,
+           ElixirDB.Error.shadow_identity_conflict(
+             "shadow command context does not match durable metadata"
+           )}
+        end
+
+      {:ok, nil} ->
+        {:error, ElixirDB.Error.shadow_incompatible("shadow metadata is missing")}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp shadow_context_matches?(%CommandContext{class: :shadow_control} = context, metadata, uuid) do
+    uuid_field(metadata, :shadow_database_uuid) == uuid and
+      (is_nil(context.shadow_database_uuid) or context.shadow_database_uuid == uuid) and
+      optional_field_matches?(
+        context.source_database_uuid,
+        uuid_field(metadata, :source_database_uuid)
+      ) and
+      optional_field_matches?(context.generation, MapAccess.get(metadata, :generation)) and
+      optional_field_matches?(context.operation_id, uuid_field(metadata, :operation_id))
+  end
+
+  defp shadow_context_matches?(context, metadata, uuid) do
+    context.shadow_database_uuid == uuid and
+      context.shadow_database_uuid == uuid_field(metadata, :shadow_database_uuid) and
+      context.source_database_uuid == uuid_field(metadata, :source_database_uuid) and
+      context.generation == MapAccess.get(metadata, :generation) and
+      context.operation_id == uuid_field(metadata, :operation_id)
+  end
+
+  defp optional_field_matches?(nil, _expected), do: true
+  defp optional_field_matches?(value, expected), do: value == expected
+
+  defp uuid_field(metadata, key), do: MapAccess.get(metadata, key)
 
   defp handle_command(%Commands.Identity{}, _from, state),
     do: reply(Services.identity(state.context), state)

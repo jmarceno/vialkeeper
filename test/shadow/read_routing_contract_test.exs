@@ -1,6 +1,7 @@
 defmodule ElixirDB.Shadow.ReadRoutingContractTest do
   use ExUnit.Case, async: false
 
+  alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Shadow.{ReadRouter, RouteTable}
   alias ElixirDB.Storage.Results
 
@@ -47,6 +48,16 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
        }}
     end
 
+    def bulk_read_documents(%__MODULE__{mode: :miss}, _request, _timeout, _opts) do
+      {:ok,
+       %{
+         "results" => [
+           %{"error" => %{"code" => "document_not_found", "message" => "document not found"}}
+         ],
+         "source_watermark" => 9
+       }}
+    end
+
     def bulk_read_documents(%__MODULE__{mode: :error}, _request, _timeout, _opts),
       do: {:error, ElixirDB.Error.database_unavailable("probe unavailable")}
 
@@ -56,8 +67,16 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
 
   setup do
     source_uuid = ElixirDB.UUID.v4()
+    path = "shadow-route-#{System.unique_integer([:positive])}.elixirdb"
+    assert {:ok, _} = DatabaseCatalog.create(path, %{database_uuid: source_uuid})
+    assert {:ok, _} = DatabaseCatalog.open(source_uuid)
 
-    on_exit(fn -> RouteTable.delete(source_uuid) end)
+    on_exit(fn ->
+      RouteTable.delete(source_uuid)
+      _ = DatabaseCatalog.close(source_uuid)
+      _ = DatabaseCatalog.unregister(source_uuid)
+      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+    end)
 
     {:ok, source_uuid: source_uuid}
   end
@@ -138,6 +157,37 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
              )
 
     assert {:ok, %{endpoint: %ProbeEndpoint{mode: :miss}}} = RouteTable.get(source_uuid)
+  end
+
+  test "a bulk miss falls back the original batch and keeps the ready route", %{
+    source_uuid: source_uuid
+  } do
+    put_route(source_uuid, %ProbeEndpoint{mode: :miss})
+
+    assert {:ok, [%{ok: %Results.GetDocument{}}], %{served_by: "source"}} =
+             ReadRouter.bulk_get(source_uuid, [%{id: "doc"}],
+               read_consistency: :eventual,
+               primary: fn requests ->
+                 assert requests == [%{id: "doc"}]
+                 {:ok, [%{ok: Results.get_document(%{id: "doc", revision: "rev", body: %{}})}]}
+               end
+             )
+
+    assert {:ok, %{endpoint: %ProbeEndpoint{mode: :miss}}} = RouteTable.get(source_uuid)
+  end
+
+  test "a closed source is never served from a ready shadow route", %{source_uuid: source_uuid} do
+    put_route(source_uuid, %ProbeEndpoint{mode: :ok})
+    assert :ok = DatabaseCatalog.close(source_uuid)
+
+    assert {:ok, %Results.GetDocument{body: %{served: :source}}, %{served_by: "source"}} =
+             ReadRouter.get(source_uuid, %{id: "doc"},
+               read_consistency: :eventual,
+               primary: fn _ ->
+                 {:ok,
+                  Results.get_document(%{id: "doc", revision: "rev", body: %{served: :source}})}
+               end
+             )
   end
 
   defp put_route(source_uuid, endpoint) do

@@ -46,7 +46,28 @@ defmodule ElixirDB.Shadow.CommandPolicyTest do
              DatabaseCommandPolicy.authorize(
                :shadow,
                context,
+               %Commands.PutLocalRecord{
+                 request: %{
+                   namespace: "shadow_checkpoints",
+                   key: "source",
+                   expected_version: 0,
+                   value: %{}
+                 }
+               }
+             )
+
+    assert {:error, %Error{code: :shadow_command_forbidden}} =
+             DatabaseCommandPolicy.authorize(
+               :shadow,
+               context,
                %Commands.PutCheckpoint{request: %{namespace: "checkpoints", key: "source"}}
+             )
+
+    assert {:error, %Error{code: :shadow_command_forbidden}} =
+             DatabaseCommandPolicy.authorize(
+               :shadow,
+               context,
+               %Commands.ReadChanges{request: %{}}
              )
 
     assert {:error, %Error{code: :shadow_command_forbidden}} =
@@ -76,6 +97,9 @@ defmodule ElixirDB.Shadow.CommandPolicyTest do
     assert MapSet.new(Map.keys(policy)) == MapSet.new(Commands.command_types())
     assert Enum.all?(policy, fn {_command, classes} -> is_list(classes) end)
     assert policy[Commands.PutDocument] == []
+    assert policy[Commands.ReadChanges] == []
+    assert policy[Commands.DiffRevisions] == []
+    assert policy[Commands.PutCheckpoint] == []
     assert :shadow_replication in policy[Commands.ImportRevisionChains]
   end
 end

@@ -105,7 +105,13 @@ defmodule ElixirDB.Shadow.Replicator do
 
     with {:ok, profile} <- shadow_profile(request),
          {:ok, source} <- source_endpoint(request),
-         {:ok, target} <- LocalEndpoint.new(request["shadow_uuid"], shadow: true),
+         {:ok, target} <-
+           LocalEndpoint.new(request["shadow_uuid"],
+             shadow: true,
+             source_database_uuid: request["source_uuid"],
+             generation: request["generation"],
+             operation_id: request["operation_id"]
+           ),
          result <-
            Replication.one_shot_endpoints(
              source,

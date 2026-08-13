@@ -67,6 +67,15 @@ defmodule ElixirDB.Config do
   def shutdown_timeout,
     do: Application.get_env(:elixir_db, :shutdown_timeout, 30_000)
 
+  @doc "Bounded request/control timeout from host limits, never a guessed constant."
+  @spec request_timeout_ms() :: pos_integer()
+  def request_timeout_ms do
+    case host_limits()[:max_wait_ms] do
+      timeout when is_integer(timeout) and timeout > 0 -> timeout
+      _ -> shutdown_timeout()
+    end
+  end
+
   @spec database_root() :: binary()
   def database_root,
     do: Application.get_env(:elixir_db, :database_root, Path.expand("data", File.cwd!()))

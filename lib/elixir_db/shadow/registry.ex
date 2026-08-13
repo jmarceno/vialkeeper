@@ -9,6 +9,7 @@ defmodule ElixirDB.Shadow.Registry do
 
   @version 1
   @default_name __MODULE__
+  @max_orphans 8
 
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, @default_name)
@@ -71,11 +72,15 @@ defmodule ElixirDB.Shadow.Registry do
   end
 
   def handle_call({:put_desired, %Definition{} = definition}, _from, state) do
-    with :ok <- ensure_integrity(state) do
-      case persist_definition(state, definition) do
-        {:ok, next} -> {:reply, {:ok, definition}, next}
-        {:error, error} -> {:reply, {:error, error}, state}
-      end
+    case ensure_integrity(state) do
+      :ok ->
+        case persist_definition(state, definition) do
+          {:ok, next} -> {:reply, {:ok, definition}, next}
+          {:error, error} -> {:reply, {:error, error}, state}
+        end
+
+      {:error, error} ->
+        {:reply, {:error, error}, state}
     end
   end
 
@@ -110,9 +115,13 @@ defmodule ElixirDB.Shadow.Registry do
     entry = Map.get(state.sources, source_uuid, empty_entry())
     orphans = Enum.uniq([orphan | entry.orphans])
 
-    case persist_sources(state, Map.put(state.sources, source_uuid, %{entry | orphans: orphans})) do
-      {:ok, next} -> {:reply, :ok, next}
-      {:error, error} -> {:reply, {:error, error}, state}
+    if length(orphans) > @max_orphans do
+      {:reply, {:error, ElixirDB.Error.resource_limit("shadow orphan capacity exceeded")}, state}
+    else
+      case persist_sources(state, Map.put(state.sources, source_uuid, %{entry | orphans: orphans})) do
+        {:ok, next} -> {:reply, :ok, next}
+        {:error, error} -> {:reply, {:error, error}, state}
+      end
     end
   end
 

@@ -65,7 +65,7 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
              ElixirDB.Documents.put(source.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     {:ok, source_endpoint} = LocalEndpoint.new(source.database_uuid)
-    {:ok, shadow_endpoint} = LocalEndpoint.new(shadow.database_uuid, shadow: true)
+    {:ok, shadow_endpoint} = LocalEndpoint.new(shadow.database_uuid, shadow_opts(profile))
 
     assert {:ok, %{status: :completed}} =
              ElixirDB.Replication.one_shot_endpoints(
@@ -79,7 +79,7 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
     assert {:ok, %{revision: ^revision, body: %{"n" => 1}, sequence: 1}} =
              DatabaseCatalog.command_with_context(
                shadow.database_uuid,
-               CommandContext.shadow_read(shadow_database_uuid: shadow.database_uuid),
+               CommandContext.shadow_read(shadow_context(profile)),
                {:command, :get_document, %{document_id: "doc"}}
              )
 
@@ -101,7 +101,7 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
     assert {:ok, %{revision: first}} =
              ElixirDB.Documents.put(source.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
-    pull!(source.database_uuid, shadow.database_uuid, profile)
+    pull!(source.database_uuid, profile)
     assert :ok = DatabaseCatalog.close(shadow.database_uuid)
     assert {:ok, _} = DatabaseCatalog.open_internal(shadow.database_uuid)
 
@@ -112,9 +112,9 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
                body: %{"n" => 2}
              })
 
-    pull!(source.database_uuid, shadow.database_uuid, profile)
+    pull!(source.database_uuid, profile)
 
-    assert {:ok, %{revision: ^second, body: %{"n" => 2}}} = shadow_document(shadow.database_uuid)
+    assert {:ok, %{revision: ^second, body: %{"n" => 2}}} = shadow_document(profile)
   end
 
   test "reports replacement instead of bootstrapping a ready shadow with a stale epoch", %{
@@ -128,7 +128,7 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
     assert {:ok, _} =
              DatabaseCatalog.command_with_context(
                shadow.database_uuid,
-               CommandContext.shadow_replication(shadow_database_uuid: shadow.database_uuid),
+               CommandContext.shadow_replication(shadow_context(profile)),
                {:command, :put_local_record,
                 %{
                   namespace: "shadow_checkpoints",
@@ -139,7 +139,7 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
              )
 
     {:ok, source_endpoint} = LocalEndpoint.new(source.database_uuid)
-    {:ok, shadow_endpoint} = LocalEndpoint.new(shadow.database_uuid, shadow: true)
+    {:ok, shadow_endpoint} = LocalEndpoint.new(shadow.database_uuid, shadow_opts(profile))
 
     assert {:error, %{code: :shadow_replacement_required}} =
              ElixirDB.Replication.handshake(
@@ -151,9 +151,9 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
              )
   end
 
-  defp pull!(source_uuid, shadow_uuid, profile) do
+  defp pull!(source_uuid, profile) do
     {:ok, source_endpoint} = LocalEndpoint.new(source_uuid)
-    {:ok, shadow_endpoint} = LocalEndpoint.new(shadow_uuid, shadow: true)
+    {:ok, shadow_endpoint} = LocalEndpoint.new(profile.target_database_uuid, shadow_opts(profile))
 
     assert {:ok, %{status: :completed}} =
              ElixirDB.Replication.one_shot_endpoints(
@@ -165,11 +165,29 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
              )
   end
 
-  defp shadow_document(shadow_uuid) do
+  defp shadow_document(profile) do
     DatabaseCatalog.command_with_context(
-      shadow_uuid,
-      CommandContext.shadow_read(shadow_database_uuid: shadow_uuid),
+      profile.target_database_uuid,
+      CommandContext.shadow_read(shadow_context(profile)),
       {:command, :get_document, %{document_id: "doc"}}
     )
+  end
+
+  defp shadow_opts(profile) do
+    [
+      shadow: true,
+      source_database_uuid: profile.source_database_uuid,
+      generation: profile.generation,
+      operation_id: profile.operation_id
+    ]
+  end
+
+  defp shadow_context(profile) do
+    [
+      source_database_uuid: profile.source_database_uuid,
+      shadow_database_uuid: profile.target_database_uuid,
+      generation: profile.generation,
+      operation_id: profile.operation_id
+    ]
   end
 end

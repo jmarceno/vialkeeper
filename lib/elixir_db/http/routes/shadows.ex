@@ -71,8 +71,8 @@ defmodule ElixirDB.HTTP.Routes.Shadows do
     }
 
     with {:ok, definition} <- next_definition(source_uuid, current, attrs),
-         :ok <- RouteTable.delete(source_uuid),
          {:ok, definition} <- Registry.put_desired(definition),
+         :ok <- retire_previous_route(current, definition),
          :ok <- enqueue(definition) do
       Response.ok(conn, redacted_definition(definition, :provisioning), 202)
     else
@@ -81,13 +81,28 @@ defmodule ElixirDB.HTTP.Routes.Shadows do
   end
 
   defp disable(conn, source_uuid) do
-    with :ok <- RouteTable.delete(source_uuid),
-         {:ok, definition} <- Registry.disable(source_uuid),
+    with {:ok, definition} <- Registry.disable(source_uuid),
+         :ok <- retire_route(definition),
          :ok <- enqueue(definition) do
       Response.ok(conn, redacted_definition(definition, :destroying), 202)
     else
       {:error, error} -> Response.error(conn, error)
     end
+  end
+
+  defp retire_previous_route(nil, _definition), do: :ok
+
+  defp retire_previous_route(%Definition{generation: generation}, %Definition{
+         generation: generation
+       }),
+       do: :ok
+
+  defp retire_previous_route(%Definition{} = previous, _definition),
+    do: retire_route(previous)
+
+  defp retire_route(%Definition{} = definition) do
+    _ = RouteTable.compare_delete(definition.source_uuid, Definition.token(definition))
+    :ok
   end
 
   defp enqueue(definition) do

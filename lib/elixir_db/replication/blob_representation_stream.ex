@@ -94,13 +94,16 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
       {@format_version_header, Integer.to_string(stream.format_version)},
       {@encoding_header, encoding_header(stream.encoding)},
       {@logical_length_header, Integer.to_string(stream.logical_length)},
-      {@payload_sha256_header, stream.payload_sha256}
+      {@payload_sha256_header, stream.payload_sha256},
+      {"x-elixirdb-blob-logical-digest", stream.logical_digest}
     ]
   end
 
   @spec parse_http_headers(term(), binary()) ::
           {:ok, Representation.descriptor()} | {:error, Error.t()}
   def parse_http_headers(headers, logical_digest) do
+    digest = logical_digest || Headers.get(headers, "x-elixirdb-blob-logical-digest")
+
     with :ok <- reject_content_encoding(headers),
          :ok <- require_media_type(headers),
          {:ok, format_version} <-
@@ -117,12 +120,12 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
            Representation.descriptor(
              format_version: format_version,
              encoding: encoding,
-             logical_digest: logical_digest,
+             logical_digest: digest,
              logical_length: logical_length,
              payload_length: payload_length,
              payload_sha256: payload_sha256
            ),
-         :ok <- Representation.validate_route_digest(logical_digest, descriptor) do
+         :ok <- Representation.validate_route_digest(digest, descriptor) do
       {:ok, descriptor}
     end
   end
