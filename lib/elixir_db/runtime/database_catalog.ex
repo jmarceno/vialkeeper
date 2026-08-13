@@ -593,8 +593,15 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp route_command(uuid, class, command, deadline) do
     case {command_io_class(command), ReadPool.enabled?(uuid)} do
       {:read, true} -> ReadPool.execute(uuid, class, command, deadline)
+      {:exclusive, true} -> exclusive_command(uuid, class, command, deadline)
       _ -> DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
     end
+  end
+
+  defp exclusive_command(uuid, class, command, deadline) do
+    ReadPool.with_quiesce(uuid, deadline, fn ->
+      DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
+    end)
   end
 
   defp command_io_class({:command_context, _authority, inner}), do: command_io_class(inner)

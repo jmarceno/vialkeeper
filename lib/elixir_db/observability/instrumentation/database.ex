@@ -6,6 +6,7 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
     * `elixir_db.database.command`     — span + histogram
     * `elixir_db.database.overload`    — counter only (not a unit of work)
     * `elixir_db.database.admission.wait` — histogram (queue wait, not owner work)
+    * `elixir_db.database.read_pool.quiesce.duration` — histogram (exclusive drain)
 
   Instrumentation lives at the service/owner boundary (the catalog and owner),
   never inside a physical storage adapter.
@@ -142,6 +143,17 @@ defmodule ElixirDB.Observability.Instrumentation.Database do
       queue_depth_at_enqueue: queue_depth_at_enqueue,
       queue_depth_at_grant: queue_depth_at_grant
     )
+  end
+
+  @doc """
+  Records `elixir_db.database.read_pool.quiesce.duration` for one exclusive drain.
+
+  `duration` is a native monotonic-time delta. No document ids or payloads.
+  """
+  @spec read_pool_quiesce(binary(), non_neg_integer()) :: :ok
+  def read_pool_quiesce(uuid, duration)
+      when is_binary(uuid) and is_integer(duration) and duration >= 0 do
+    Meters.record(:"elixir_db.database.read_pool.quiesce.duration", duration, db_uuid: uuid)
   end
 
   @doc """

@@ -125,6 +125,45 @@ defmodule ElixirDB.Runtime.ReadPool do
     end
   end
 
+  @spec quiesce(binary(), Deadline.t()) :: :ok | {:error, Error.t()}
+  def quiesce(uuid, :infinity) when is_binary(uuid), do: do_quiesce(uuid, :infinity)
+
+  def quiesce(uuid, deadline_ms) when is_binary(uuid) and is_integer(deadline_ms) do
+    do_quiesce(uuid, deadline_ms)
+  end
+
+  @spec resume(binary()) :: :ok | {:error, Error.t()}
+  def resume(uuid) when is_binary(uuid) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid}) do
+      [{_pid, _}] -> call(uuid, :resume, 5_000)
+      [] -> :ok
+    end
+  end
+
+  @spec with_quiesce(binary(), Deadline.t(), (-> term())) :: term() | {:error, Error.t()}
+  def with_quiesce(uuid, deadline, fun) when is_binary(uuid) and is_function(fun, 0) do
+    started = System.monotonic_time()
+    result = quiesce(uuid, deadline)
+
+    DatabaseInstrumentation.read_pool_quiesce(
+      uuid,
+      System.monotonic_time() - started
+    )
+
+    case result do
+      :ok ->
+        try do
+          fun.()
+        after
+          _ = resume(uuid)
+        end
+
+      {:error, _} = error ->
+        _ = resume(uuid)
+        error
+    end
+  end
+
   @spec stats(binary()) :: {:ok, map()} | {:error, Error.t()}
   def stats(uuid) when is_binary(uuid), do: call(uuid, :stats, 5_000)
 
@@ -141,7 +180,9 @@ defmodule ElixirDB.Runtime.ReadPool do
        waiting_by_ref: %{},
        worker_monitors: %{},
        closing?: false,
-       close_from: nil
+       close_from: nil,
+       quiesce_count: 0,
+       quiesce_froms: []
      }}
   end
 
@@ -164,6 +205,22 @@ defmodule ElixirDB.Runtime.ReadPool do
     end
   end
 
+  def handle_call(:quiesce, from, state) do
+    state = %{state | quiesce_count: state.quiesce_count + 1}
+
+    if map_size(state.busy) == 0 do
+      {:reply, :ok, state}
+    else
+      {:noreply, %{state | quiesce_froms: [from | state.quiesce_froms]}}
+    end
+  end
+
+  def handle_call(:resume, _from, state) do
+    count = max(state.quiesce_count - 1, 0)
+    state = %{state | quiesce_count: count}
+    {:reply, :ok, maybe_resume_grants(state)}
+  end
+
   def handle_call(:close_readers, _from, state) do
     pids = worker_pids(state)
 
@@ -183,7 +240,8 @@ defmodule ElixirDB.Runtime.ReadPool do
         active: map_size(state.busy),
         queued: queued_count(state),
         workers: worker_count(state),
-        closing?: state.closing?
+        closing?: state.closing?,
+        quiescing?: state.quiesce_count > 0
       }}, state}
   end
 
@@ -298,9 +356,27 @@ defmodule ElixirDB.Runtime.ReadPool do
     end
   end
 
+  defp do_quiesce(uuid, deadline_ms) do
+    if Deadline.exhausted?(deadline_ms) do
+      {:error, deadline_error()}
+    else
+      case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid}) do
+        [{_pid, _}] ->
+          try do
+            call(uuid, :quiesce, Deadline.call_timeout(deadline_ms))
+          catch
+            :exit, reason -> translate_exit(reason)
+          end
+
+        [] ->
+          :ok
+      end
+    end
+  end
+
   defp admit(state, %Waiter{} = waiter) do
     cond do
-      not :queue.is_empty(state.idle) ->
+      not paused?(state) and not :queue.is_empty(state.idle) ->
         grant_idle(state, waiter)
 
       queued_count(state) < state.queue_limit ->
@@ -363,28 +439,21 @@ defmodule ElixirDB.Runtime.ReadPool do
 
         %{state | busy: busy}
         |> recycle_worker(worker_pid)
-        |> maybe_finish_close()
+        |> maybe_finish_drain()
     end
   end
 
   defp recycle_worker(state, worker_pid) do
-    cond do
-      not Process.alive?(worker_pid) ->
-        grant_loop(state)
-
-      state.closing? ->
-        idle = :queue.in(worker_pid, state.idle)
-        grant_loop(%{state | idle: idle})
-
-      true ->
-        idle = :queue.in(worker_pid, state.idle)
-        grant_loop(%{state | idle: idle})
+    if Process.alive?(worker_pid) do
+      grant_loop(%{state | idle: :queue.in(worker_pid, state.idle)})
+    else
+      grant_loop(state)
     end
   end
 
   defp grant_loop(state) do
     cond do
-      state.closing? ->
+      paused?(state) ->
         state
 
       :queue.is_empty(state.idle) ->
@@ -442,7 +511,7 @@ defmodule ElixirDB.Runtime.ReadPool do
       {nil, busy} ->
         %{state | busy: busy}
         |> maybe_disable()
-        |> maybe_finish_close()
+        |> maybe_finish_drain()
 
       {%Job{} = job, busy} ->
         unless job.cancelled? do
@@ -456,7 +525,7 @@ defmodule ElixirDB.Runtime.ReadPool do
 
         %{state | busy: busy}
         |> maybe_disable()
-        |> maybe_finish_close()
+        |> maybe_finish_drain()
     end
   end
 
@@ -503,6 +572,12 @@ defmodule ElixirDB.Runtime.ReadPool do
     %{state | waiters: :queue.new(), waiting_by_ref: %{}}
   end
 
+  defp maybe_finish_drain(state) do
+    state
+    |> maybe_finish_close()
+    |> maybe_finish_quiesce()
+  end
+
   defp maybe_finish_close(%{closing?: true, close_from: from} = state)
        when not is_nil(from) and map_size(state.busy) == 0 do
     GenServer.reply(from, :ok)
@@ -510,6 +585,20 @@ defmodule ElixirDB.Runtime.ReadPool do
   end
 
   defp maybe_finish_close(state), do: state
+
+  defp maybe_finish_quiesce(state)
+       when state.quiesce_count > 0 and map_size(state.busy) == 0 do
+    Enum.each(state.quiesce_froms, &GenServer.reply(&1, :ok))
+    %{state | quiesce_froms: []}
+  end
+
+  defp maybe_finish_quiesce(state), do: state
+
+  defp maybe_resume_grants(state) do
+    if paused?(state), do: state, else: grant_loop(state)
+  end
+
+  defp paused?(state), do: state.closing? or state.quiesce_count > 0
 
   defp maybe_disable(state) do
     if :queue.is_empty(state.idle) and map_size(state.busy) == 0,
