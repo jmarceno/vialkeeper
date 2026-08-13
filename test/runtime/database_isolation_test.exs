@@ -79,6 +79,10 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     assert [{runtime_b, _}] =
              Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid_b})
 
+    owner_a = pids_for({:owner, uuid_a})
+    pool_a = pids_for({:read_pool, uuid_a})
+    worker_a = pids_for({:read_worker, uuid_a, 1})
+
     assert runtime_a != runtime_b
     assert Process.alive?(runtime_a)
     assert Process.alive?(runtime_b)
@@ -86,6 +90,16 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     ref = Process.monitor(runtime_a)
     Process.exit(runtime_a, :kill)
     assert_receive {:DOWN, ^ref, :process, ^runtime_a, :killed}, 2_000
+
+    refute Process.alive?(runtime_a)
+
+    ElixirDB.Eventual.eventually(
+      fn ->
+        Enum.all?(owner_a ++ pool_a ++ worker_a, fn pid -> not Process.alive?(pid) end)
+      end,
+      timeout: 2_000,
+      message: "plan §4.9: killed runtime must not leave owner or reader processes behind"
+    )
 
     assert_sibling_admission_ready(uuid_b)
 
@@ -180,6 +194,10 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
                fn -> ElixirDB.Documents.get(uuid_b, %{id: "b-doc"}) end,
                "sibling database remained readable after victim runtime kill"
              )
+  end
+
+  defp pids_for(key) do
+    Enum.map(Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, key), &elem(&1, 0))
   end
 
   defp assert_sibling_admission_ready(uuid) do

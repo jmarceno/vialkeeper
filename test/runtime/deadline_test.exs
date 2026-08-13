@@ -41,4 +41,11 @@ defmodule ElixirDB.Runtime.DeadlineTest do
 
     refute Deadline.genserver_call_timeout?({:noproc, {GenServer, :call, [self(), :request]}})
   end
+
+  test "no_process_exit? recognizes missing-process GenServer.call exits" do
+    assert Deadline.no_process_exit?(:noproc)
+    assert Deadline.no_process_exit?({:noproc, {GenServer, :call, [self(), :request]}})
+    assert Deadline.no_process_exit?({{:noproc, :details}, {GenServer, :call, []}})
+    refute Deadline.no_process_exit?(:timeout)
+  end
 end
