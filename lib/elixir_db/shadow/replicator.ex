@@ -5,6 +5,7 @@ defmodule ElixirDB.Shadow.Replicator do
   alias ElixirDB.Error
   alias ElixirDB.Replication
   alias ElixirDB.Replication.{LocalEndpoint, Profile, RemoteEndpoint}
+  alias ElixirDB.Runtime.ChildSpec
   alias ElixirDB.Shadow.Worker
 
   @default_retry_ms 1_000
@@ -21,7 +22,7 @@ defmodule ElixirDB.Shadow.Replicator do
     request = Keyword.fetch!(opts, :request)
     id = {__MODULE__, request_value(request, "shadow_uuid"), request_value(request, "generation")}
 
-    %{id: id, start: {__MODULE__, :start_link, [opts]}, type: :worker, restart: :permanent}
+    ChildSpec.worker(id, {__MODULE__, :start_link, [opts]}, :permanent)
   end
 
   @spec cancel(GenServer.server()) :: :ok
@@ -184,8 +185,13 @@ defmodule ElixirDB.Shadow.Replicator do
   defp continuous?(opts), do: Keyword.get(opts, :mode, "one_shot") in [:continuous, "continuous"]
   defp retry_ms(opts), do: Keyword.get(opts, :retry_ms, @default_retry_ms)
 
-  defp request_value(request, key) when is_map(request),
-    do: Map.get(request, key, Map.get(request, String.to_atom(key)))
+  defp request_value(request, "shadow_uuid") when is_map(request),
+    do: Map.get(request, "shadow_uuid", Map.get(request, :shadow_uuid))
+
+  defp request_value(request, "generation") when is_map(request),
+    do: Map.get(request, "generation", Map.get(request, :generation))
+
+  defp request_value(request, key) when is_map(request), do: Map.get(request, key)
 
   defp generation_request(request) do
     Map.take(request, ~w(source_uuid shadow_uuid generation operation_id))

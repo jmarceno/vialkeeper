@@ -1312,7 +1312,7 @@ defmodule ElixirDB.Replication do
 
   defp import_request(context, chains \\ nil, extra \\ %{}) do
     chains = chains || Map.get(context, :chains, [])
-    profile = normalize_profile(Map.get(context, :profile, nil))
+    profile = normalize_profile(Map.get(context, :profile))
     base = %{chains: chains}
 
     if shadow_profile?(profile) do

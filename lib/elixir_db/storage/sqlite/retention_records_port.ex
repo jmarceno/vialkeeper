@@ -6,6 +6,7 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecordsPort do
 
   alias ElixirDB.MapAccess
   alias ElixirDB.Storage.BackendContext
+  alias ElixirDB.Storage.LocalRecordRequest
   alias ElixirDB.Storage.Ports.Errors
   alias ElixirDB.Storage.SQLite.{Context, LocalRecords, RetentionRecords}
 
@@ -167,12 +168,15 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecordsPort do
 
     with {:ok, adapter} <- Context.unwrap(context) do
       Errors.wrap(
-        LocalRecords.put_cas_tx(adapter, %{
-          namespace: RetentionRecords.peer_ledger_namespace(),
-          key: peer_uuid,
-          expected_version: expected,
-          value: value
-        })
+        LocalRecords.put_cas_tx(
+          adapter,
+          LocalRecordRequest.new(
+            RetentionRecords.peer_ledger_namespace(),
+            peer_uuid,
+            expected,
+            value
+          )
+        )
       )
     end
   end

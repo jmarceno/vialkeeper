@@ -5,6 +5,7 @@ defmodule ElixirDB.Replication.LocalEndpoint do
   alias ElixirDB.Attachments
   alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.{CommandContext, DatabaseCatalog}
+  alias ElixirDB.Storage.LocalRecordRequest
 
   defstruct [:database_uuid, shadow?: false]
   @type t :: %__MODULE__{database_uuid: binary(), shadow?: boolean()}
@@ -95,14 +96,13 @@ defmodule ElixirDB.Replication.LocalEndpoint do
       command(
         endpoint,
         {:command, :put_local_record,
-         %{
-           namespace: "checkpoints",
-           key: replication_id,
-           expected_version: MapAccess.get(checkpoint, :expected_checkpoint_version, 0),
-           value:
-             Map.delete(checkpoint, "expected_checkpoint_version")
-             |> Map.delete(:expected_checkpoint_version)
-         }},
+         LocalRecordRequest.new(
+           "checkpoints",
+           replication_id,
+           MapAccess.get(checkpoint, :expected_checkpoint_version, 0),
+           Map.delete(checkpoint, "expected_checkpoint_version")
+           |> Map.delete(:expected_checkpoint_version)
+         )},
         30_000
       )
 
@@ -112,14 +112,13 @@ defmodule ElixirDB.Replication.LocalEndpoint do
       command(
         endpoint,
         {:command, :put_local_record,
-         %{
-           namespace: "shadow_checkpoints",
-           key: replication_id,
-           expected_version: MapAccess.get(checkpoint, :expected_checkpoint_version, 0),
-           value:
-             Map.delete(checkpoint, "expected_checkpoint_version")
-             |> Map.delete(:expected_checkpoint_version)
-         }},
+         LocalRecordRequest.new(
+           "shadow_checkpoints",
+           replication_id,
+           MapAccess.get(checkpoint, :expected_checkpoint_version, 0),
+           Map.delete(checkpoint, "expected_checkpoint_version")
+           |> Map.delete(:expected_checkpoint_version)
+         )},
         30_000
       )
 

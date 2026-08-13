@@ -110,7 +110,31 @@ defmodule ElixirDB.Storage.Services.Import do
     chains = MapAccess.get(request, :chains, [])
     purged_boundaries = MapAccess.get(request, :purged_boundaries, [])
     source_database_uuid = MapAccess.get(request, :source_database_uuid)
-    profile = request_profile(request)
+
+    case request_profile(request) do
+      :invalid ->
+        {:error, ElixirDB.Error.invalid_request("replication profile is invalid")}
+
+      profile ->
+        import_tx_with_profile(
+          context,
+          request,
+          profile,
+          chains,
+          purged_boundaries,
+          source_database_uuid
+        )
+    end
+  end
+
+  defp import_tx_with_profile(
+         context,
+         request,
+         profile,
+         chains,
+         purged_boundaries,
+         source_database_uuid
+       ) do
     shadow? = Profile.shadow?(profile)
 
     with :ok <- validate_profile_request(context, request, profile),
@@ -855,9 +879,6 @@ defmodule ElixirDB.Storage.Services.Import do
     end
   end
 
-  defp validate_profile_request(_context, _request, _profile),
-    do: {:error, ElixirDB.Error.invalid_request("replication profile is invalid")}
-
   defp validate_shadow_metadata(context, profile) do
     case Shadows.metadata(context) do
       {:ok, metadata} when is_map(metadata) ->
@@ -940,7 +961,9 @@ defmodule ElixirDB.Storage.Services.Import do
   end
 
   defp max_origin(origins) when map_size(origins) == 0, do: 0
-  defp max_origin(origins), do: origins |> Map.values() |> Enum.max()
+
+  defp max_origin(origins),
+    do: origins |> Enum.max_by(fn {_id, sequence} -> sequence end) |> elem(1)
 
   defp metadata_field(metadata, key),
     do: Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))

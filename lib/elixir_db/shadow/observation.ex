@@ -1,6 +1,8 @@
 defmodule ElixirDB.Shadow.Observation do
   @moduledoc "Observed lifecycle and health state for a managed shadow."
 
+  alias ElixirDB.MapAccess
+
   @states ~w(absent provisioning bootstrapping ready unhealthy destroying orphaned)a
   @enforce_keys [:state, :applied_source_sequence, :updated_at]
   defstruct state: :absent,
@@ -24,11 +26,10 @@ defmodule ElixirDB.Shadow.Observation do
   def new(attrs \\ %{})
 
   def new(attrs) when is_map(attrs) do
-    attrs = string_keys(attrs)
-    state = attrs["state"] || :absent
-    sequence = attrs["applied_source_sequence"] || 0
-
-    with {:ok, state} <- normalize_state(state),
+    with {:ok, attrs} <- normalize_keys(attrs),
+         state <- attrs["state"] || :absent,
+         sequence <- attrs["applied_source_sequence"] || 0,
+         {:ok, state} <- normalize_state(state),
          :ok <- validate_sequence(sequence) do
       {:ok,
        %__MODULE__{
@@ -75,9 +76,13 @@ defmodule ElixirDB.Shadow.Observation do
   defp validate_sequence(_),
     do: {:error, ElixirDB.Error.invalid_request("shadow watermark must be a non-negative integer")}
 
-  defp string_keys(map),
-    do:
-      Map.new(map, fn {key, value} ->
-        {if(is_atom(key), do: Atom.to_string(key), else: key), value}
-      end)
+  defp normalize_keys(map) do
+    case MapAccess.string_keys(map) do
+      {:ok, normalized} ->
+        {:ok, normalized}
+
+      :key_collision ->
+        {:error, ElixirDB.Error.invalid_request("shadow fields contain duplicate keys")}
+    end
+  end
 end

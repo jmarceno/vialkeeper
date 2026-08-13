@@ -1,6 +1,8 @@
 defmodule ElixirDB.Shadow.Definition do
   @moduledoc "Validated desired state for one source-bound managed shadow."
 
+  alias ElixirDB.MapAccess
+
   @enforce_keys [:source_uuid, :enabled, :generation, :shadow_uuid, :operation_id]
   defstruct [
     :source_uuid,
@@ -28,9 +30,8 @@ defmodule ElixirDB.Shadow.Definition do
 
   @spec new(String.t(), map()) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
   def new(source_uuid, attrs) when is_binary(source_uuid) and is_map(attrs) do
-    attrs = string_keys(attrs)
-
-    with :ok <- valid_uuid(source_uuid, "source_uuid"),
+    with {:ok, attrs} <- normalize_keys(attrs),
+         :ok <- valid_uuid(source_uuid, "source_uuid"),
          {:ok, location} <- required_text(attrs, "location"),
          {:ok, attachment_location} <- required_text(attrs, "attachment_location"),
          :ok <- valid_attachment_location(attachment_location),
@@ -68,20 +69,22 @@ defmodule ElixirDB.Shadow.Definition do
 
   @spec from_map(map()) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
   def from_map(map) when is_map(map) do
-    map = string_keys(map)
-    source_uuid = map["source_uuid"]
-    enabled = map["enabled"]
-    attrs = Map.put(map, "generation", Map.get(map, "generation", 0))
+    with {:ok, map} <- normalize_keys(map) do
+      source_uuid = map["source_uuid"]
+      enabled = map["enabled"]
+      attrs = Map.put(map, "generation", Map.get(map, "generation", 0))
 
-    case enabled do
-      true ->
-        new(source_uuid, attrs)
+      case enabled do
+        true ->
+          new(source_uuid, attrs)
 
-      false ->
-        disabled_from_map(source_uuid, attrs)
+        false ->
+          disabled_from_map(source_uuid, attrs)
 
-      _ ->
-        {:error, ElixirDB.Error.integrity_violation("shadow desired state enabled flag is invalid")}
+        _ ->
+          {:error,
+           ElixirDB.Error.integrity_violation("shadow desired state enabled flag is invalid")}
+      end
     end
   end
 
@@ -108,9 +111,8 @@ defmodule ElixirDB.Shadow.Definition do
     }
 
   defp disabled_from_map(source_uuid, attrs) do
-    attrs = string_keys(attrs)
-
-    with :ok <- valid_uuid(source_uuid, "source_uuid"),
+    with {:ok, attrs} <- normalize_keys(attrs),
+         :ok <- valid_uuid(source_uuid, "source_uuid"),
          {:ok, generation} <- non_negative(Map.get(attrs, "generation", 0), :generation),
          {:ok, shadow_uuid} <- optional_uuid(attrs["shadow_uuid"], "shadow_uuid"),
          {:ok, operation_id} <- optional_uuid(attrs["operation_id"], "operation_id"),
@@ -187,9 +189,13 @@ defmodule ElixirDB.Shadow.Definition do
   defp valid_uuid(_, field),
     do: {:error, ElixirDB.Error.invalid_request("shadow #{field} must be a UUID")}
 
-  defp string_keys(map),
-    do:
-      Map.new(map, fn {key, value} ->
-        {if(is_atom(key), do: Atom.to_string(key), else: key), value}
-      end)
+  defp normalize_keys(map) do
+    case MapAccess.string_keys(map) do
+      {:ok, normalized} ->
+        {:ok, normalized}
+
+      :key_collision ->
+        {:error, ElixirDB.Error.invalid_request("shadow fields contain duplicate keys")}
+    end
+  end
 end

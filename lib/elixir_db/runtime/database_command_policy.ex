@@ -6,33 +6,33 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
   alias ElixirDB.Error
   alias ElixirDB.Runtime.CommandContext
 
-  @shadow_read MapSet.new([
-                 Commands.GetDocument,
-                 Commands.GetRevision,
-                 Commands.ResolveAttachmentTicket,
-                 Commands.ResolveBlobMetadata
-               ])
+  @shadow_read [
+    Commands.GetDocument,
+    Commands.GetRevision,
+    Commands.ResolveAttachmentTicket,
+    Commands.ResolveBlobMetadata
+  ]
 
-  @shadow_replication MapSet.new([
-                        Commands.Identity,
-                        Commands.ReadChanges,
-                        Commands.DiffRevisions,
-                        Commands.GetRevisionChains,
-                        Commands.ImportRevisionChains,
-                        Commands.GetRevisionsBatch,
-                        Commands.GetCheckpoint,
-                        Commands.PutCheckpoint,
-                        Commands.GetLocalRecord,
-                        Commands.PutLocalRecord,
-                        Commands.ReadBoundaryPages,
-                        Commands.InstallBoundaryPages
-                      ])
+  @shadow_replication [
+    Commands.Identity,
+    Commands.ReadChanges,
+    Commands.DiffRevisions,
+    Commands.GetRevisionChains,
+    Commands.ImportRevisionChains,
+    Commands.GetRevisionsBatch,
+    Commands.GetCheckpoint,
+    Commands.PutCheckpoint,
+    Commands.GetLocalRecord,
+    Commands.PutLocalRecord,
+    Commands.ReadBoundaryPages,
+    Commands.InstallBoundaryPages
+  ]
 
-  @shadow_control MapSet.new([
-                    Commands.Identity,
-                    Commands.IntegrityCheck,
-                    Commands.Close
-                  ])
+  @shadow_control [
+    Commands.Identity,
+    Commands.IntegrityCheck,
+    Commands.Close
+  ]
 
   @spec authorize(DatabaseKind.t(), CommandContext.t(), struct()) :: :ok | {:error, Error.t()}
   def authorize(database_kind, %CommandContext{} = context, command) do
@@ -57,16 +57,16 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
 
   @spec allowed?(CommandContext.class(), module(), term()) :: boolean()
   def allowed?(:shadow_read, command_type, command) do
-    MapSet.member?(@shadow_read, command_type) or
+    command_type in @shadow_read or
       (command_type == Commands.GetLocalRecord and valid_shadow_state_read?(command))
   end
 
   def allowed?(:shadow_replication, command_type, command) do
-    MapSet.member?(@shadow_replication, command_type) and valid_checkpoint_command?(command)
+    command_type in @shadow_replication and valid_checkpoint_command?(command)
   end
 
   def allowed?(:shadow_control, command_type, _command),
-    do: MapSet.member?(@shadow_control, command_type)
+    do: command_type in @shadow_control
 
   def allowed?(_, _command_type, _command), do: false
 
@@ -75,9 +75,9 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
     type = command_type(command)
 
     cond do
-      MapSet.member?(@shadow_read, type) -> :shadow_read
-      MapSet.member?(@shadow_replication, type) -> :shadow_replication
-      MapSet.member?(@shadow_control, type) -> :shadow_control
+      type in @shadow_read -> :shadow_read
+      type in @shadow_replication -> :shadow_replication
+      type in @shadow_control -> :shadow_control
       true -> :unknown
     end
   end
@@ -92,7 +92,7 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
     Enum.into(Commands.command_types(), %{}, fn command_type ->
       classes =
         [:shadow_read, :shadow_replication, :shadow_control]
-        |> Enum.filter(&MapSet.member?(policy_set(&1), command_type))
+        |> Enum.filter(&(command_type in policy_set(&1)))
 
       {command_type, classes}
     end)

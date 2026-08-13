@@ -74,6 +74,15 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
     assert meta == %{served_by: "shadow", source_watermark: 9}
   end
 
+  test "omitting consistency uses the eventual route", %{source_uuid: source_uuid} do
+    put_route(source_uuid, %ProbeEndpoint{mode: :ok})
+
+    assert {:ok, %Results.GetDocument{}, %{served_by: "shadow", source_watermark: 9}} =
+             ReadRouter.get(source_uuid, %{id: "doc"},
+               primary: fn _ -> flunk("omitted consistency should use the shadow") end
+             )
+  end
+
   test "any bulk shadow failure falls back as one primary batch and retires the exact route", %{
     source_uuid: source_uuid
   } do

@@ -2,6 +2,7 @@ defmodule ElixirDB.Storage.SQLite.Schema do
   @moduledoc "Creates and validates the fixed Version 1 SQLite schema and metadata."
   alias ElixirDB.DerivedView.Engine
   alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.Shadow.Metadata
   alias ElixirDB.Storage.SQLite.Connection
   alias ElixirDB.UUID
 
@@ -343,16 +344,17 @@ defmodule ElixirDB.Storage.SQLite.Schema do
          ],
          database_uuid
        ) do
-    metadata = %{
-      source_database_uuid: source_uuid,
-      shadow_database_uuid: shadow_uuid,
-      generation: generation,
-      operation_id: operation_id,
-      attachment_store_type: store_type,
-      attachment_location: location,
-      specification_digest: digest,
-      created_at: created_at
-    }
+    metadata =
+      Metadata.new(
+        source_uuid,
+        shadow_uuid,
+        generation,
+        operation_id,
+        store_type,
+        location,
+        digest,
+        created_at
+      )
 
     with :ok <- validate_shadow_identity(source_uuid, shadow_uuid),
          true <- shadow_uuid == database_uuid,

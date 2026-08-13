@@ -4,6 +4,7 @@ defmodule ElixirDB.Shadow.ReadRouter do
   alias ElixirDB.Attachments.Manifest
   alias ElixirDB.Attachments.Representation
   alias ElixirDB.Error
+  alias ElixirDB.Observability.Instrumentation.Shadow, as: ShadowInstr
   alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Shadow.RouteTable
   alias ElixirDB.Storage.Results
@@ -15,11 +16,13 @@ defmodule ElixirDB.Shadow.ReadRouter do
   def get(source_uuid, request, opts \\ []) when is_binary(source_uuid) and is_map(request) do
     primary = Keyword.fetch!(opts, :primary)
 
-    case consistency(opts) do
-      :primary -> with_meta(primary.(request), "primary")
-      :eventual -> route_get(source_uuid, request, opts, primary)
-      {:error, _} = error -> error
-    end
+    ShadowInstr.read(source_uuid, fn ->
+      case consistency(opts) do
+        :primary -> with_meta(primary.(request), "primary")
+        :eventual -> route_get(source_uuid, request, opts, primary)
+        {:error, _} = error -> error
+      end
+    end)
   end
 
   @spec bulk_get(binary(), [map()], keyword()) ::
@@ -28,11 +31,13 @@ defmodule ElixirDB.Shadow.ReadRouter do
       when is_binary(source_uuid) and is_list(requests) do
     primary = Keyword.fetch!(opts, :primary)
 
-    case consistency(opts) do
-      :primary -> with_meta(primary.(requests), "primary")
-      :eventual -> route_bulk(source_uuid, requests, opts, primary)
-      {:error, _} = error -> error
-    end
+    ShadowInstr.read(source_uuid, fn ->
+      case consistency(opts) do
+        :primary -> with_meta(primary.(requests), "primary")
+        :eventual -> route_bulk(source_uuid, requests, opts, primary)
+        {:error, _} = error -> error
+      end
+    end)
   end
 
   @spec open_attachment(binary(), map(), keyword()) ::
@@ -41,11 +46,13 @@ defmodule ElixirDB.Shadow.ReadRouter do
       when is_binary(source_uuid) and is_map(request) do
     primary = Keyword.fetch!(opts, :primary)
 
-    case consistency(opts) do
-      :primary -> with_meta(primary.(request), "primary")
-      :eventual -> route_attachment(source_uuid, request, opts, primary)
-      {:error, _} = error -> error
-    end
+    ShadowInstr.read(source_uuid, fn ->
+      case consistency(opts) do
+        :primary -> with_meta(primary.(request), "primary")
+        :eventual -> route_attachment(source_uuid, request, opts, primary)
+        {:error, _} = error -> error
+      end
+    end)
   end
 
   defp route_get(source_uuid, request, opts, primary) do
@@ -128,6 +135,7 @@ defmodule ElixirDB.Shadow.ReadRouter do
   end
 
   defp fallback(source_uuid, snapshot, primary, request) do
+    ShadowInstr.fallback(source_uuid)
     _ = RouteTable.compare_delete(source_uuid, snapshot)
     with_meta(primary.(request), "primary")
   end
@@ -268,7 +276,7 @@ defmodule ElixirDB.Shadow.ReadRouter do
   defp stream_watermark(_), do: 0
 
   defp consistency(opts) do
-    case Keyword.get(opts, :read_consistency, :primary) do
+    case Keyword.get(opts, :read_consistency, :eventual) do
       value when value in [:primary, "primary"] -> :primary
       value when value in [:eventual, "eventual"] -> :eventual
       _ -> {:error, Error.invalid_request("read consistency must be primary or eventual")}

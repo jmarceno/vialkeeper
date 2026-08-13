@@ -4,17 +4,12 @@ defmodule ElixirDB.Query.SubscriptionHub do
 
   alias ElixirDB.Changes.Page
   alias ElixirDB.MapAccess
-  alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
+  alias ElixirDB.Runtime.{ChangeNotifier, ChildSpec, DatabaseCatalog}
 
   @batch_limit 100
 
   def child_spec(uuid),
-    do: %{
-      id: {__MODULE__, uuid},
-      start: {__MODULE__, :start_link, [uuid]},
-      restart: :permanent,
-      type: :worker
-    }
+    do: ChildSpec.worker({__MODULE__, uuid}, {__MODULE__, :start_link, [uuid]}, :permanent)
 
   def start_link(uuid), do: GenServer.start_link(__MODULE__, uuid, name: via(uuid))
 

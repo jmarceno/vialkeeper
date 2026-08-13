@@ -277,10 +277,6 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
 
         data when is_map(data) ->
           {:ok, data}
-
-        _ ->
-          {:error,
-           ElixirDB.Error.database_unavailable("remote endpoint returned an invalid response")}
       end
     end
   end

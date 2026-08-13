@@ -109,29 +109,28 @@ defmodule ElixirDB.Error do
 
   @spec public(t()) :: map()
   def public(%__MODULE__{code: :internal_error, retryable: retryable}) do
-    %{
-      code: "internal_error",
-      message: "internal error",
-      retryable: retryable,
-      details: %{}
-    }
+    public_envelope("internal_error", "internal error", retryable, %{})
   end
 
   def public(%__MODULE__{code: :shadow_database_hidden, retryable: retryable}) do
-    %{
-      code: "database_not_found",
-      message: "database not found",
-      retryable: retryable,
-      details: %{}
-    }
+    public_envelope("database_not_found", "database not found", retryable, %{})
   end
 
   def public(%__MODULE__{code: code, message: message, retryable: retryable, details: details}) do
+    public_envelope(
+      Atom.to_string(code),
+      message,
+      retryable,
+      Map.drop(details, [:cause, "cause"])
+    )
+  end
+
+  defp public_envelope(code, message, retryable, details) do
     %{
-      code: Atom.to_string(code),
+      code: code,
       message: message,
       retryable: retryable,
-      details: Map.drop(details, [:cause, "cause"])
+      details: details
     }
   end
 end

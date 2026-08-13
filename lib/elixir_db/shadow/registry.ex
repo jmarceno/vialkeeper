@@ -3,6 +3,7 @@ defmodule ElixirDB.Shadow.Registry do
   use GenServer
 
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.AtomicWrite
   alias ElixirDB.Shadow.{Definition, Observation}
 
@@ -172,12 +173,16 @@ defmodule ElixirDB.Shadow.Registry do
   defp ensure_integrity(%{integrity: {:error, error}}), do: {:error, error}
 
   defp token_matches?(definition, token) when is_map(token) do
-    token = string_keys(token)
+    case MapAccess.string_keys(token) do
+      {:ok, token} ->
+        token["source_uuid"] == definition.source_uuid and
+          token["generation"] == definition.generation and
+          token["shadow_uuid"] == definition.shadow_uuid and
+          token["operation_id"] == definition.operation_id
 
-    token["source_uuid"] == definition.source_uuid and
-      token["generation"] == definition.generation and
-      token["shadow_uuid"] == definition.shadow_uuid and
-      token["operation_id"] == definition.operation_id
+      :key_collision ->
+        false
+    end
   end
 
   defp token_matches?(_, _), do: false
@@ -259,10 +264,4 @@ defmodule ElixirDB.Shadow.Registry do
     {:halt,
      {:error, ElixirDB.Error.integrity_violation("shadow control state contains an invalid source")}}
   end
-
-  defp string_keys(map),
-    do:
-      Map.new(map, fn {key, value} ->
-        {if(is_atom(key), do: Atom.to_string(key), else: key), value}
-      end)
 end

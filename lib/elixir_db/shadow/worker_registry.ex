@@ -3,6 +3,7 @@ defmodule ElixirDB.Shadow.WorkerRegistry do
   use GenServer
 
   @default_name __MODULE__
+  @call_timeout 30_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, @default_name))
@@ -22,7 +23,7 @@ defmodule ElixirDB.Shadow.WorkerRegistry do
   @spec list(GenServer.server()) :: [map()]
   def list(server \\ @default_name), do: call(server, :list)
 
-  defp call(server, message), do: GenServer.call(server, message)
+  defp call(server, message), do: GenServer.call(server, message, @call_timeout)
 
   @impl true
   def init(_opts), do: {:ok, %{entries: %{}}}

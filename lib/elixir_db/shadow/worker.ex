@@ -10,7 +10,7 @@ defmodule ElixirDB.Shadow.Worker do
   alias ElixirDB.PathSafety
   alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Runtime.{AtomicWrite, CommandContext, DatabaseCatalog}
-  alias ElixirDB.Shadow.{Protocol, WorkerSupervisor}
+  alias ElixirDB.Shadow.{Metadata, Protocol, WorkerSupervisor}
   alias ElixirDB.Storage.Results
 
   @journal_filename "managed_shadows.json"
@@ -62,7 +62,7 @@ defmodule ElixirDB.Shadow.Worker do
   def init(opts) do
     root = root(opts)
     :ok = File.mkdir_p(root)
-    {:ok, %{root: root, options: opts, journal_path: journal_path(root)}}
+    {:ok, direct_state(opts)}
   end
 
   @impl true
@@ -124,23 +124,14 @@ defmodule ElixirDB.Shadow.Worker do
 
   defp direct_call({:provision, request}, opts),
     do:
-      provision_state(request, %{
-        root: root(opts),
-        options: opts,
-        journal_path: journal_path(root(opts))
-      })
+      provision_state(request, direct_state(opts))
       |> result_only()
 
   defp direct_call({:inspect, request}, opts),
-    do:
-      inspect_state(request, %{
-        root: root(opts),
-        options: opts,
-        journal_path: journal_path(root(opts))
-      })
+    do: inspect_state(request, direct_state(opts))
 
   defp direct_call({:destroy, request}, opts) do
-    state = %{root: root(opts), options: opts, journal_path: journal_path(root(opts))}
+    state = direct_state(opts)
 
     case destroy_state(request, state) do
       {:ok, result, _next} -> {:ok, result}
@@ -149,7 +140,7 @@ defmodule ElixirDB.Shadow.Worker do
   end
 
   defp direct_call({:mark_ready, request, watermark}, opts) do
-    state = %{root: root(opts), options: opts, journal_path: journal_path(root(opts))}
+    state = direct_state(opts)
 
     case mark_ready_state(request, watermark, state) do
       {:ok, _next} -> :ok
@@ -158,28 +149,13 @@ defmodule ElixirDB.Shadow.Worker do
   end
 
   defp direct_call({:read_document, request, read_opts}, opts),
-    do:
-      read_document_state(request, read_opts, %{
-        root: root(opts),
-        options: opts,
-        journal_path: journal_path(root(opts))
-      })
+    do: read_document_state(request, read_opts, direct_state(opts))
 
   defp direct_call({:bulk_read_documents, request, read_opts}, opts),
-    do:
-      bulk_read_state(request, read_opts, %{
-        root: root(opts),
-        options: opts,
-        journal_path: journal_path(root(opts))
-      })
+    do: bulk_read_state(request, read_opts, direct_state(opts))
 
   defp direct_call({:open_attachment_representation, request, read_opts}, opts),
-    do:
-      open_attachment_representation_state(request, read_opts, %{
-        root: root(opts),
-        options: opts,
-        journal_path: journal_path(root(opts))
-      })
+    do: open_attachment_representation_state(request, read_opts, direct_state(opts))
 
   defp reply_mutation(_state, {:ok, result, next}, _old), do: {:reply, {:ok, result}, next}
   defp reply_mutation(_state, {:error, error}, old), do: {:reply, {:error, error}, old}
@@ -230,39 +206,70 @@ defmodule ElixirDB.Shadow.Worker do
   defp provision_existing_or_new(request, journal, state) do
     entries = journal["shadows"] || []
 
-    same_generation =
-      Enum.find(
-        entries,
-        &same_source_generation?(&1, request["source_uuid"], request["generation"])
-      )
+    case provision_status(entries, request) do
+      {:same_generation, same_generation} ->
+        provision_same_generation(same_generation, request, journal, state)
 
-    cond do
-      same_generation && same_identity?(same_generation, request) ->
-        with :ok <- validate_managed_entry(same_generation, request, state),
-             {:ok, _identity} <- DatabaseCatalog.open_internal(request["shadow_uuid"]) do
-          {:ok, public_entry(same_generation, true), journal}
-        end
-
-      same_generation ->
-        {:error,
-         Error.shadow_generation_conflict("shadow generation is already bound to another operation")}
-
-      Enum.any?(entries, &(&1["shadow_uuid"] == request["shadow_uuid"])) ->
+      :identity_conflict ->
         {:error, Error.shadow_identity_conflict("shadow UUID is already bound to another source")}
 
-      Enum.any?(
-        entries,
-        &(&1["source_uuid"] == request["source_uuid"] && &1["generation"] > request["generation"])
-      ) ->
+      :stale_generation ->
         {:error,
          Error.shadow_generation_stale("shadow generation is older than the managed generation")}
 
-      true ->
+      :new_generation ->
         with :ok <- destroy_older_generations(entries, request, state),
              {:ok, entry} <- create_entry(request, state) do
           {:ok, public_entry(entry, false),
            %{journal | "shadows" => [entry | reject_source(entries, request["source_uuid"])]}}
         end
+    end
+  end
+
+  defp provision_status(entries, request) do
+    {same_generation, shadow_uuid_conflict, stale_generation} =
+      Enum.reduce(entries, {nil, false, false}, fn entry, {same, conflict, stale} ->
+        {
+          same_generation_entry(same, entry, request),
+          shadow_uuid_conflict?(conflict, entry, request),
+          stale_generation?(stale, entry, request)
+        }
+      end)
+
+    cond do
+      same_generation -> {:same_generation, same_generation}
+      shadow_uuid_conflict -> :identity_conflict
+      stale_generation -> :stale_generation
+      true -> :new_generation
+    end
+  end
+
+  defp same_generation_entry(nil, entry, request) do
+    if same_source_generation?(entry, request["source_uuid"], request["generation"]) do
+      entry
+    end
+  end
+
+  defp same_generation_entry(same, _entry, _request), do: same
+
+  defp shadow_uuid_conflict?(conflict, entry, request),
+    do: conflict or entry["shadow_uuid"] == request["shadow_uuid"]
+
+  defp stale_generation?(stale, entry, request),
+    do:
+      stale or
+        (entry["source_uuid"] == request["source_uuid"] and
+           entry["generation"] > request["generation"])
+
+  defp provision_same_generation(same_generation, request, journal, state) do
+    if same_identity?(same_generation, request) do
+      with :ok <- validate_managed_entry(same_generation, request, state),
+           {:ok, _identity} <- DatabaseCatalog.open_internal(request["shadow_uuid"]) do
+        {:ok, public_entry(same_generation, true), journal}
+      end
+    else
+      {:error,
+       Error.shadow_generation_conflict("shadow generation is already bound to another operation")}
     end
   end
 
@@ -392,12 +399,7 @@ defmodule ElixirDB.Shadow.Worker do
              DatabaseCatalog.command_with_context(
                request["shadow_uuid"],
                context,
-               {:command, :get_document,
-                %{
-                  document_id: document_id,
-                  revision: request["revision"],
-                  include_conflicts: request["include_conflicts"] || false
-                }}
+               {:command, :get_document, read_command(request, document_id)}
              ),
            {:ok, watermark} <- shadow_watermark(request["shadow_uuid"]) do
         {:ok, %{document: Results.to_public(document), source_watermark: watermark}}
@@ -422,12 +424,7 @@ defmodule ElixirDB.Shadow.Worker do
                 DatabaseCatalog.command_with_context(
                   request["shadow_uuid"],
                   context,
-                  {:command, :get_document,
-                   %{
-                     document_id: id,
-                     revision: normalized["revision"],
-                     include_conflicts: normalized["include_conflicts"] || false
-                   }}
+                  {:command, :get_document, read_command(normalized, id)}
                 )
               end)},
            {:ok, watermark} <- shadow_watermark(request["shadow_uuid"]) do
@@ -484,8 +481,7 @@ defmodule ElixirDB.Shadow.Worker do
     case DatabaseCatalog.command_with_context(
            request["shadow_uuid"],
            shadow_read_context(request),
-           {:command, :get_document,
-            %{document_id: document_id, revision: request["revision"], include_conflicts: false}}
+           {:command, :get_document, read_command(request, document_id, false)}
          ) do
       {:ok, %Results.GetDocument{} = document} -> {:ok, document}
       {:ok, document} when is_map(document) -> {:ok, Results.get_document(document)}
@@ -862,15 +858,26 @@ defmodule ElixirDB.Shadow.Worker do
   defp accept_absent(other), do: {:error, other}
 
   defp shadow_metadata(request) do
+    Metadata.new(
+      request["source_uuid"],
+      request["shadow_uuid"],
+      request["generation"],
+      request["operation_id"],
+      "external_cas",
+      request["attachment_location"],
+      request["specification_digest"],
+      DateTime.utc_now() |> DateTime.to_iso8601()
+    )
+  end
+
+  defp read_command(request, document_id),
+    do: read_command(request, document_id, request["include_conflicts"] || false)
+
+  defp read_command(request, document_id, include_conflicts) when is_boolean(include_conflicts) do
     %{
-      source_database_uuid: request["source_uuid"],
-      shadow_database_uuid: request["shadow_uuid"],
-      generation: request["generation"],
-      operation_id: request["operation_id"],
-      attachment_store_type: "external_cas",
-      attachment_location: request["attachment_location"],
-      specification_digest: request["specification_digest"],
-      created_at: DateTime.utc_now() |> DateTime.to_iso8601()
+      document_id: document_id,
+      revision: request["revision"],
+      include_conflicts: include_conflicts
     }
   end
 
@@ -902,6 +909,11 @@ defmodule ElixirDB.Shadow.Worker do
         worker = Application.get_env(:elixir_db, :shadow_worker, [])
         Path.expand(Keyword.get(worker, :storage_root, "shadows"), ElixirDB.Config.database_root())
     end
+  end
+
+  defp direct_state(opts) do
+    root = root(opts)
+    %{root: root, options: opts, journal_path: journal_path(root)}
   end
 
   defp attachment_roots(state) do

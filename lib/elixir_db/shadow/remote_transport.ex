@@ -23,7 +23,9 @@ defmodule ElixirDB.Shadow.RemoteTransport do
   end
 
   defp checked_request(base_url, method, path, body, auth_token, timeout) do
-    case ReplicationTransport.request(base_url, method, path, body, auth_token, timeout) do
+    request = &ReplicationTransport.request/6
+
+    case request.(base_url, method, path, body, auth_token, timeout) do
       {:ok, %{"data" => data}} -> {:ok, data}
       {:ok, data} when is_map(data) -> {:ok, data}
       {:ok, _} -> {:error, Error.shadow_incompatible("shadow control response must be an object")}

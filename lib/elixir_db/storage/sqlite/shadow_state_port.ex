@@ -2,7 +2,9 @@ defmodule ElixirDB.Storage.SQLite.ShadowStatePort do
   @moduledoc "SQLite shadow identity and source-origin port implementation."
   @behaviour ElixirDB.Storage.Ports.ShadowState
 
+  alias ElixirDB.Shadow.Metadata
   alias ElixirDB.Storage.BackendContext
+  alias ElixirDB.Storage.LocalRecordRequest
   alias ElixirDB.Storage.Ports.Errors
   alias ElixirDB.Storage.SQLite.{Connection, Context, LocalRecords, Transaction}
 
@@ -80,9 +82,6 @@ defmodule ElixirDB.Storage.SQLite.ShadowStatePort do
 
       {:error, %ElixirDB.Error{} = error} ->
         {:error, error}
-
-      {:error, reason} ->
-        {:error, Errors.normalize(reason)}
     end
   end
 
@@ -113,16 +112,16 @@ defmodule ElixirDB.Storage.SQLite.ShadowStatePort do
            created_at
          ]
        ]) do
-    %{
-      source_database_uuid: source_uuid,
-      shadow_database_uuid: shadow_uuid,
-      generation: generation,
-      operation_id: operation_id,
-      attachment_store_type: store_type,
-      attachment_location: location,
-      specification_digest: digest,
-      created_at: created_at
-    }
+    Metadata.new(
+      source_uuid,
+      shadow_uuid,
+      generation,
+      operation_id,
+      store_type,
+      location,
+      digest,
+      created_at
+    )
   end
 
   defp decode_metadata(_), do: nil
@@ -249,9 +248,11 @@ defmodule ElixirDB.Storage.SQLite.ShadowStatePort do
     end
   end
 
-  defp watermark_request(nil, sequence),
-    do: %{namespace: "shadow_state", key: "watermark", expected_version: 0, value: sequence}
+  defp watermark_request(nil, sequence), do: watermark_request(0, sequence)
 
   defp watermark_request(%{version: version}, sequence),
-    do: %{namespace: "shadow_state", key: "watermark", expected_version: version, value: sequence}
+    do: watermark_request(version, sequence)
+
+  defp watermark_request(expected_version, sequence),
+    do: LocalRecordRequest.new("shadow_state", "watermark", expected_version, sequence)
 end

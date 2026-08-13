@@ -26,7 +26,7 @@ defmodule ElixirDB.HTTP.Request do
   def read_consistency(conn) do
     case get_req_header(conn, "x-elixirdb-read-consistency") do
       [] ->
-        {:ok, :primary}
+        {:ok, :eventual}
 
       ["primary"] ->
         {:ok, :primary}

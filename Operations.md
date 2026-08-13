@@ -489,10 +489,10 @@ public.
 
 ### Shadow read routing
 
-Public document and attachment reads default to `primary`. To opt into a
-ready shadow, send `x-elixirdb-read-consistency: eventual` on the point,
-bulk-get, or attachment-get request. The source keeps an exact in-memory
-route snapshot containing the source/shadow UUIDs, generation, operation ID,
+Public document and attachment reads default to `eventual` when a ready shadow
+route exists. Send `x-elixirdb-read-consistency: primary` to bypass the shadow
+explicitly; `eventual` may also be sent explicitly. The source keeps an exact
+in-memory route snapshot containing the source/shadow UUIDs, generation, operation ID,
 and endpoint; a route is never selected by UUID alone. Shadow point and bulk
 read responses include `x-elixirdb-read-served-by: shadow` and the durable
 `x-elixirdb-source-watermark`. Primary responses identify `primary` and omit
@@ -652,6 +652,7 @@ not block the hot path.
 | Federation query | `elixir_db.federation.query` | `….duration` |
 | Derived view batch | `elixir_db.derived_view.batch` | `….duration` |
 | HTTP request | `elixir_db.http.request` | `….duration` |
+| Shadow read / route fallback | `elixir_db.shadow.*` | count + duration |
 | Attachment read / write / GC | `elixir_db.attachment.*` | count + duration |
 
 `error.code` uses stable atoms from `ElixirDB.Error` (e.g.
