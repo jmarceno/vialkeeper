@@ -1,5 +1,8 @@
 defmodule ElixirDB.Observability.ShadowSignalTest do
+  @moduledoc "Shadow read and fallback signals without private request fields."
   use ElixirDB.Observability.OtelCase, async: false
+
+  @moduletag :integration
 
   alias ElixirDB.Eventual
   alias ElixirDB.Shadow.{ReadRouter, RouteTable}
@@ -68,7 +71,7 @@ defmodule ElixirDB.Observability.ShadowSignalTest do
                operation_id: ElixirDB.UUID.v4()
              })
 
-    assert {:ok, %Results.GetDocument{}, %{served_by: "primary"}} =
+    assert {:ok, %Results.GetDocument{}, %{served_by: "source"}} =
              ReadRouter.get(source_uuid, %{id: "doc"},
                primary: fn _ ->
                  {:ok, Results.get_document(%{id: "doc", revision: "primary", body: %{}})}

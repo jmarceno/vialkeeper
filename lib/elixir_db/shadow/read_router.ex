@@ -9,20 +9,18 @@ defmodule ElixirDB.Shadow.ReadRouter do
   alias ElixirDB.Shadow.RouteTable
   alias ElixirDB.Storage.Results
 
-  @default_timeout 30_000
+  @miss_codes [:document_not_found, :revision_not_found, :attachment_not_found]
 
   @spec get(binary(), map(), keyword()) ::
           {:ok, term(), map()} | {:error, Error.t()}
   def get(source_uuid, request, opts \\ []) when is_binary(source_uuid) and is_map(request) do
     primary = Keyword.fetch!(opts, :primary)
 
-    ShadowInstr.read(source_uuid, fn ->
-      case consistency(opts) do
-        :primary -> with_meta(primary.(request), "primary")
-        :eventual -> route_get(source_uuid, request, opts, primary)
-        {:error, _} = error -> error
-      end
-    end)
+    case consistency(opts) do
+      :primary -> with_meta(primary.(request), "source")
+      :eventual -> route_get(source_uuid, request, opts, primary)
+      {:error, _} = error -> error
+    end
   end
 
   @spec bulk_get(binary(), [map()], keyword()) ::
@@ -31,13 +29,11 @@ defmodule ElixirDB.Shadow.ReadRouter do
       when is_binary(source_uuid) and is_list(requests) do
     primary = Keyword.fetch!(opts, :primary)
 
-    ShadowInstr.read(source_uuid, fn ->
-      case consistency(opts) do
-        :primary -> with_meta(primary.(requests), "primary")
-        :eventual -> route_bulk(source_uuid, requests, opts, primary)
-        {:error, _} = error -> error
-      end
-    end)
+    case consistency(opts) do
+      :primary -> with_meta(primary.(requests), "source")
+      :eventual -> route_bulk(source_uuid, requests, opts, primary)
+      {:error, _} = error -> error
+    end
   end
 
   @spec open_attachment(binary(), map(), keyword()) ::
@@ -46,52 +42,51 @@ defmodule ElixirDB.Shadow.ReadRouter do
       when is_binary(source_uuid) and is_map(request) do
     primary = Keyword.fetch!(opts, :primary)
 
-    ShadowInstr.read(source_uuid, fn ->
-      case consistency(opts) do
-        :primary -> with_meta(primary.(request), "primary")
-        :eventual -> route_attachment(source_uuid, request, opts, primary)
-        {:error, _} = error -> error
-      end
-    end)
+    case consistency(opts) do
+      :primary -> with_meta(primary.(request), "source")
+      :eventual -> route_attachment(source_uuid, request, opts, primary)
+      {:error, _} = error -> error
+    end
   end
 
   defp route_get(source_uuid, request, opts, primary) do
-    case RouteTable.get(source_uuid) do
-      {:ok, snapshot} ->
-        case shadow_get(snapshot, request, opts) do
-          {:ok, document, watermark} -> {:ok, document, shadow_meta(watermark)}
-          {:error, _error} -> fallback(source_uuid, snapshot, primary, request)
-        end
-
-      :not_found ->
-        with_meta(primary.(request), "primary")
-    end
+    routed_read(source_uuid, fn -> primary.(request) end, &shadow_get(&1, request, opts))
   end
 
   defp route_bulk(source_uuid, requests, opts, primary) do
-    case RouteTable.get(source_uuid) do
-      {:ok, snapshot} ->
-        case shadow_bulk(snapshot, requests, opts) do
-          {:ok, documents, watermark} -> {:ok, documents, shadow_meta(watermark)}
-          {:error, _error} -> fallback(source_uuid, snapshot, primary, requests)
-        end
-
-      :not_found ->
-        with_meta(primary.(requests), "primary")
-    end
+    routed_read(source_uuid, fn -> primary.(requests) end, &shadow_bulk(&1, requests, opts))
   end
 
   defp route_attachment(source_uuid, request, opts, primary) do
+    routed_read(
+      source_uuid,
+      fn -> primary.(request) end,
+      &shadow_attachment(&1, request, opts)
+    )
+  end
+
+  defp routed_read(source_uuid, primary_result, shadow_fun) do
     case RouteTable.get(source_uuid) do
       {:ok, snapshot} ->
-        case shadow_attachment(snapshot, request, opts) do
-          {:ok, stream, watermark} -> {:ok, stream, shadow_meta(watermark)}
-          {:error, _error} -> fallback(source_uuid, snapshot, primary, request)
-        end
+        ShadowInstr.read(source_uuid, fn ->
+          serve_or_fallback(source_uuid, snapshot, primary_result, shadow_fun.(snapshot))
+        end)
 
       :not_found ->
-        with_meta(primary.(request), "primary")
+        with_meta(primary_result.(), "source")
     end
+  end
+
+  defp serve_or_fallback(_source_uuid, _snapshot, _primary_result, {:ok, value, watermark}),
+    do: {:ok, value, shadow_meta(watermark)}
+
+  defp serve_or_fallback(source_uuid, snapshot, primary_result, {:error, error}) do
+    unless miss?(error) do
+      ShadowInstr.fallback(source_uuid)
+      _ = RouteTable.compare_delete(source_uuid, snapshot)
+    end
+
+    with_meta(primary_result.(), "source")
   end
 
   defp shadow_get(snapshot, request, opts) do
@@ -134,16 +129,13 @@ defmodule ElixirDB.Shadow.ReadRouter do
        Error.database_unavailable("shadow read endpoint failed", %{cause: inspect(exception)})}
   end
 
-  defp fallback(source_uuid, snapshot, primary, request) do
-    ShadowInstr.fallback(source_uuid)
-    _ = RouteTable.compare_delete(source_uuid, snapshot)
-    with_meta(primary.(request), "primary")
-  end
-
   defp with_meta({:ok, value}, served_by), do: {:ok, value, %{served_by: served_by}}
   defp with_meta({:error, _} = error, _served_by), do: error
 
   defp shadow_meta(watermark), do: %{served_by: "shadow", source_watermark: watermark}
+
+  defp miss?(%Error{code: code}) when code in @miss_codes, do: true
+  defp miss?(_), do: false
 
   defp shadow_request(snapshot, request) do
     request
@@ -156,20 +148,23 @@ defmodule ElixirDB.Shadow.ReadRouter do
     })
   end
 
-  defp normalize_document_response(%{"document" => document} = response) do
-    with {:ok, document} <- normalize_document(document) do
-      {:ok, document, Map.get(response, "source_watermark", 0)}
+  defp normalize_document_response(response) when is_map(response) do
+    document = Map.get(response, "document", Map.get(response, :document))
+
+    with {:ok, document} <- fetch_document(document),
+         {:ok, document} <- normalize_document(document),
+         {:ok, watermark} <- require_watermark(response) do
+      {:ok, document, watermark}
     end
   end
 
-  defp normalize_document_response(%{document: document} = response) do
-    with {:ok, document} <- normalize_document(document) do
-      {:ok, document, Map.get(response, :source_watermark, 0)}
-    end
-  end
+  defp normalize_document_response(_),
+    do: {:error, Error.shadow_incompatible("shadow document response is invalid")}
 
-  defp normalize_document_response(document),
-    do: normalize_document(document) |> with_zero_watermark()
+  defp fetch_document(nil),
+    do: {:error, Error.shadow_incompatible("shadow document response is invalid")}
+
+  defp fetch_document(document), do: {:ok, document}
 
   defp normalize_document(%Results.GetDocument{} = document), do: {:ok, document}
 
@@ -182,19 +177,24 @@ defmodule ElixirDB.Shadow.ReadRouter do
   defp normalize_document(_),
     do: {:error, Error.shadow_incompatible("shadow document response is invalid")}
 
-  defp with_zero_watermark({:ok, document}), do: {:ok, document, 0}
-  defp with_zero_watermark({:error, _} = error), do: error
+  defp normalize_bulk_response(response) when is_map(response) do
+    results = Map.get(response, "results", Map.get(response, :results))
 
-  defp normalize_bulk_response(%{"results" => results} = response) when is_list(results),
-    do: normalize_bulk_entries(results, Map.get(response, "source_watermark", 0))
-
-  defp normalize_bulk_response(%{results: results} = response) when is_list(results),
-    do: normalize_bulk_entries(results, Map.get(response, :source_watermark, 0))
+    with {:ok, results} <- fetch_bulk_results(results),
+         {:ok, watermark} <- require_watermark(response) do
+      normalize_bulk_entries(results, watermark)
+    end
+  end
 
   defp normalize_bulk_response(results) when is_list(results),
-    do: normalize_bulk_entries(results, 0)
+    do: {:error, Error.shadow_incompatible("shadow bulk response is missing a watermark")}
 
   defp normalize_bulk_response(_),
+    do: {:error, Error.shadow_incompatible("shadow bulk response is invalid")}
+
+  defp fetch_bulk_results(results) when is_list(results), do: {:ok, results}
+
+  defp fetch_bulk_results(_),
     do: {:error, Error.shadow_incompatible("shadow bulk response is invalid")}
 
   defp normalize_bulk_entries(results, watermark) do
@@ -214,6 +214,13 @@ defmodule ElixirDB.Shadow.ReadRouter do
     end
   rescue
     ArgumentError -> {:error, Error.shadow_incompatible("shadow bulk response is invalid")}
+  end
+
+  defp require_watermark(response) when is_map(response) do
+    case Map.get(response, "source_watermark", Map.get(response, :source_watermark)) do
+      watermark when is_integer(watermark) and watermark >= 0 -> {:ok, watermark}
+      _ -> {:error, Error.shadow_incompatible("shadow read watermark is missing")}
+    end
   end
 
   defp attachment_entry(document, request) do
@@ -271,9 +278,18 @@ defmodule ElixirDB.Shadow.ReadRouter do
       {:error, Error.internal_error("shadow attachment decode failed", %{cause: error})}
   end
 
-  defp stream_watermark(%{"source_watermark" => watermark}), do: watermark
-  defp stream_watermark(%{source_watermark: watermark}), do: watermark
-  defp stream_watermark(_), do: 0
+  defp stream_watermark(response) do
+    case response do
+      %{source_watermark: watermark} when is_integer(watermark) and watermark >= 0 ->
+        watermark
+
+      %{"source_watermark" => watermark} when is_integer(watermark) and watermark >= 0 ->
+        watermark
+
+      _ ->
+        0
+    end
+  end
 
   defp consistency(opts) do
     case Keyword.get(opts, :read_consistency, :eventual) do
@@ -283,8 +299,20 @@ defmodule ElixirDB.Shadow.ReadRouter do
     end
   end
 
-  defp endpoint_timeout(%{endpoint: %{read_timeout: timeout}}) when is_integer(timeout), do: timeout
-  defp endpoint_timeout(_), do: @default_timeout
+  defp endpoint_timeout(%{endpoint: %{read_timeout: timeout}})
+       when is_integer(timeout) and timeout > 0,
+       do: timeout
+
+  defp endpoint_timeout(%{endpoint: %{timeout: timeout}})
+       when is_integer(timeout) and timeout > 0,
+       do: timeout
+
+  defp endpoint_timeout(_) do
+    case ElixirDB.Config.host_limits()[:max_wait_ms] do
+      timeout when is_integer(timeout) and timeout > 0 -> timeout
+      _ -> ElixirDB.Config.shutdown_timeout()
+    end
+  end
 
   defp string_keys(map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
 end

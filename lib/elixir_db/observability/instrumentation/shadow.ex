@@ -28,7 +28,10 @@ defmodule ElixirDB.Observability.Instrumentation.Shadow do
   end
 
   defp read_outcome({:ok, _value, %{served_by: "shadow"}}), do: :shadow
-  defp read_outcome({:ok, _value, %{served_by: "primary"}}), do: :primary
+
+  defp read_outcome({:ok, _value, %{served_by: served_by}}) when served_by in ["source", "primary"],
+    do: :source
+
   defp read_outcome({:error, _error}), do: :error
   defp read_outcome(_), do: :invalid
 end

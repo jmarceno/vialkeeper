@@ -50,8 +50,8 @@ defmodule ElixirDB.HTTP.Response do
     |> put_resp_header("x-elixirdb-source-watermark", Integer.to_string(watermark))
   end
 
-  def put_read_headers(conn, %{served_by: "primary"}),
-    do: put_resp_header(conn, "x-elixirdb-read-served-by", "primary")
+  def put_read_headers(conn, %{served_by: served_by}) when served_by in ["source", "primary"],
+    do: put_resp_header(conn, "x-elixirdb-read-served-by", "source")
 
   def put_read_headers(conn, _meta), do: conn
 

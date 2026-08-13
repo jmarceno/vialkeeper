@@ -495,13 +495,15 @@ explicitly; `eventual` may also be sent explicitly. The source keeps an exact
 in-memory route snapshot containing the source/shadow UUIDs, generation, operation ID,
 and endpoint; a route is never selected by UUID alone. Shadow point and bulk
 read responses include `x-elixirdb-read-served-by: shadow` and the durable
-`x-elixirdb-source-watermark`. Primary responses identify `primary` and omit
-the watermark.
+`x-elixirdb-source-watermark`. Source-served responses, including fallback and
+explicit `primary` consistency, identify `source` and omit the watermark.
 
-If any item in a shadow bulk read fails, the source retries the complete batch
-against the primary and removes only the matching route snapshot. Attachment
-reads use the external CAS as a read-only physical representation stream;
-the worker never writes or copies those bytes into the managed shadow bundle.
+A lagging document, revision, or attachment miss falls back the request (the
+whole original batch for bulk-get) and keeps the ready route. Transport,
+protocol, identity, or store failure falls back once and removes only the
+matching generation snapshot. Attachment reads use the external CAS as a
+read-only physical representation stream; the worker never writes or copies
+those bytes into the managed shadow bundle.
 
 ---
 

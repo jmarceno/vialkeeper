@@ -25,6 +25,9 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
     def read_document(%__MODULE__{mode: :error}, _request, _timeout, _opts),
       do: {:error, ElixirDB.Error.database_unavailable("probe unavailable")}
 
+    def read_document(%__MODULE__{mode: :miss}, _request, _timeout, _opts),
+      do: {:error, ElixirDB.Error.document_not_found("document not found")}
+
     def bulk_read_documents(%__MODULE__{mode: :ok}, _request, _timeout, _opts) do
       {:ok,
        %{
@@ -89,7 +92,7 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
     put_route(source_uuid, %ProbeEndpoint{mode: :error})
     {:ok, counter} = Agent.start_link(fn -> 0 end)
 
-    assert {:ok, [%{ok: %Results.GetDocument{body: %{}}}], %{served_by: "primary"}} =
+    assert {:ok, [%{ok: %Results.GetDocument{body: %{}}}], %{served_by: "source"}} =
              ReadRouter.bulk_get(source_uuid, [%{id: "doc"}],
                read_consistency: :eventual,
                primary: fn requests ->
@@ -106,7 +109,7 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
   test "primary consistency never consults the route", %{source_uuid: source_uuid} do
     put_route(source_uuid, %ProbeEndpoint{mode: :ok})
 
-    assert {:ok, %Results.GetDocument{body: %{served: :primary}}, %{served_by: "primary"}} =
+    assert {:ok, %Results.GetDocument{body: %{served: :primary}}, %{served_by: "source"}} =
              ReadRouter.get(source_uuid, %{id: "doc"},
                read_consistency: :primary,
                primary: fn _ ->
@@ -114,6 +117,27 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
                   Results.get_document(%{id: "doc", revision: "rev", body: %{served: :primary}})}
                end
              )
+  end
+
+  test "a document miss falls back to source and keeps the ready route", %{
+    source_uuid: source_uuid
+  } do
+    put_route(source_uuid, %ProbeEndpoint{mode: :miss})
+
+    assert {:ok, %Results.GetDocument{body: %{"served" => "source"}}, %{served_by: "source"}} =
+             ReadRouter.get(source_uuid, %{id: "doc"},
+               read_consistency: :eventual,
+               primary: fn _ ->
+                 {:ok,
+                  Results.get_document(%{
+                    id: "doc",
+                    revision: "rev",
+                    body: %{"served" => "source"}
+                  })}
+               end
+             )
+
+    assert {:ok, %{endpoint: %ProbeEndpoint{mode: :miss}}} = RouteTable.get(source_uuid)
   end
 
   defp put_route(source_uuid, endpoint) do
