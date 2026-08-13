@@ -30,4 +30,9 @@ defmodule ElixirDB.Shadow.RemoteTransport do
       {:error, _} = error -> error
     end
   end
+
+  @doc "Opens a physical attachment response from a POST control request."
+  def open_stream(base_url, path, body, digest, auth_token, timeout) do
+    ReplicationTransport.open_post_stream(base_url, path, body, digest, auth_token, timeout)
+  end
 end

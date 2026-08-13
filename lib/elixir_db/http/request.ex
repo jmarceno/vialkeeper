@@ -1,4 +1,6 @@
 defmodule ElixirDB.HTTP.Request do
+  import Plug.Conn, only: [get_req_header: 2]
+
   alias ElixirDB.HTTP.BodyReader
   alias ElixirDB.HTTP.Response
   @moduledoc "Shared request-body and path-parameter helpers for HTTP routes."
@@ -19,6 +21,26 @@ defmodule ElixirDB.HTTP.Request do
   end
 
   def uuid(conn), do: conn.path_params["uuid"]
+
+  @doc "Parses the optional read-consistency request header."
+  def read_consistency(conn) do
+    case get_req_header(conn, "x-elixirdb-read-consistency") do
+      [] ->
+        {:ok, :primary}
+
+      ["primary"] ->
+        {:ok, :primary}
+
+      ["eventual"] ->
+        {:ok, :eventual}
+
+      [_] ->
+        {:error, ElixirDB.Error.invalid_request("read consistency must be primary or eventual")}
+
+      _ ->
+        {:error, ElixirDB.Error.invalid_request("read consistency header must appear once")}
+    end
+  end
 
   @doc """
   Bounds-checks a URL path parameter used as an identifier (index_id, job_id,

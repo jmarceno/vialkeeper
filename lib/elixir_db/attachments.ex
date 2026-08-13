@@ -12,6 +12,7 @@ defmodule ElixirDB.Attachments do
   alias ElixirDB.Observability.Instrumentation.Attachment, as: AttachmentInstr
   alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
+  alias ElixirDB.Shadow.ReadRouter
 
   @store FilesystemStore
   @release_on_raise [
@@ -110,6 +111,17 @@ defmodule ElixirDB.Attachments do
           :erlang.raise(kind, reason, __STACKTRACE__)
       end
     end
+  end
+
+  @doc "Opens an attachment through the selected primary or eventual shadow route."
+  @spec open_stream_with_meta(binary(), map(), keyword()) ::
+          {:ok, map(), map()} | {:error, ElixirDB.Error.t()}
+  def open_stream_with_meta(uuid, request, opts \\ []) when is_binary(uuid) and is_map(request) do
+    ReadRouter.open_attachment(
+      uuid,
+      request,
+      Keyword.put(opts, :primary, fn primary_request -> open_stream(uuid, primary_request) end)
+    )
   end
 
   @doc "Resolves a ticket without opening the byte stream."

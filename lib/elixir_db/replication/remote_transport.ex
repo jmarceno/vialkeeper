@@ -52,6 +52,39 @@ defmodule ElixirDB.Replication.RemoteTransport do
         ]
       )
 
+    request_stream(options, digest)
+  end
+
+  @doc "Opens a lazy blob response for an authenticated JSON POST request."
+  def open_post_stream(base_url, path, body, digest, auth_token \\ nil, timeout \\ nil) do
+    timeout = timeout || ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
+
+    with {:ok, encoded} <- WireCompression.encode_json(body, decoded_limit()) do
+      options =
+        stream_base_options(base_url, :post, path)
+        |> Keyword.merge(
+          receive_timeout: timeout,
+          connect_options: [timeout: min(timeout, 5_000)],
+          body: encoded.body,
+          into: :self,
+          decode_body: false,
+          compressed: false,
+          headers: [
+            {"accept", BlobRepresentationStream.media_type()},
+            {"accept-encoding", "zstd"},
+            {"content-type", "application/json"},
+            {"content-encoding", "zstd"},
+            {"x-elixirdb-uncompressed-length", Integer.to_string(encoded.uncompressed_length)},
+            {"content-length", Integer.to_string(encoded.compressed_length)}
+            | auth_headers(auth_token) ++ trace_headers()
+          ]
+        )
+
+      request_stream(options, digest)
+    end
+  end
+
+  defp request_stream(options, digest) do
     case Req.request(options) do
       {:ok, %{status: status, body: body} = result} when status in 200..299 ->
         open_stream_success(result, body, digest)

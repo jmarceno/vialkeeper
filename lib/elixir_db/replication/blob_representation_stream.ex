@@ -70,6 +70,15 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
 
   def new(_), do: {:error, Error.invalid_request("invalid blob representation stream")}
 
+  @doc "Builds a validated stream or raises for an internal stream contract violation."
+  @spec new!(map()) :: t()
+  def new!(attrs) do
+    case new(attrs) do
+      {:ok, stream} -> stream
+      {:error, error} -> raise ArgumentError, error.message
+    end
+  end
+
   @spec descriptor(t()) :: Representation.descriptor()
   def descriptor(%__MODULE__{} = stream) do
     stream

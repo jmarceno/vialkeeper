@@ -3,10 +3,11 @@ defmodule ElixirDB.HTTP.Routes.ShadowControl do
   use Plug.Router
 
   alias ElixirDB.HTTP.{Request, Response}
+  alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Shadow.{Protocol, Worker}
 
   @provision_fields ~w(source_uuid shadow_uuid generation operation_id attachment_store_type attachment_location specification_digest source_base_url source_bearer_token)
-  @read_fields ~w(source_uuid shadow_uuid generation operation_id id document_id revision include_conflicts requests)
+  @read_fields ~w(source_uuid shadow_uuid generation operation_id id document_id revision include_conflicts requests name)
 
   plug(:match)
   plug(:dispatch)
@@ -71,7 +72,10 @@ defmodule ElixirDB.HTTP.Routes.ShadowControl do
 
   post "/shadows/:source_uuid/generations/:generation/reads/attachment" do
     read_request(conn, @read_fields, fn conn, body ->
-      Response.result(conn, Worker.open_attachment_representation(body, [], []))
+      case Worker.open_attachment_representation(body, [], []) do
+        {:ok, %BlobRepresentationStream{} = stream} -> send_representation(conn, stream)
+        {:error, error} -> Response.error(conn, error)
+      end
     end)
   end
 
@@ -130,4 +134,19 @@ defmodule ElixirDB.HTTP.Routes.ShadowControl do
 
   defp parse_generation(_),
     do: {:error, ElixirDB.Error.invalid_request("shadow generation is missing")}
+
+  defp send_representation(conn, stream) do
+    conn =
+      conn
+      |> put_representation_headers(BlobRepresentationStream.response_headers(stream))
+      |> Plug.Conn.send_chunked(200)
+
+    Response.stream_chunks(conn, stream.body)
+  end
+
+  defp put_representation_headers(conn, headers) do
+    Enum.reduce(headers, conn, fn {name, value}, acc ->
+      Plug.Conn.put_resp_header(acc, name, value)
+    end)
+  end
 end

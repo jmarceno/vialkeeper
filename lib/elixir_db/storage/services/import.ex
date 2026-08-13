@@ -947,8 +947,6 @@ defmodule ElixirDB.Storage.Services.Import do
 
   defp digest(id), do: id |> String.split("-", parts: 2) |> List.last()
 
-  defp normalize_import_attachments(_raw, true), do: {:ok, %{}}
-
   defp normalize_import_attachments(raw, _deleted) do
     case MapAccess.get(raw, :attachments) || MapAccess.get(raw, "attachments") || %{} do
       attachments when is_map(attachments) -> Manifest.normalize(attachments)

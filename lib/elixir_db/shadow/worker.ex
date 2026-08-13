@@ -3,13 +3,15 @@ defmodule ElixirDB.Shadow.Worker do
   import Kernel, except: [inspect: 1, inspect: 2]
   use GenServer
 
-  alias ElixirDB.Attachments.StoreRef
+  alias ElixirDB.Attachments.{FilesystemStore, Manifest, Representation, StoreRef}
   alias ElixirDB.Error
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.NodeIdentity
   alias ElixirDB.PathSafety
+  alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Runtime.{AtomicWrite, CommandContext, DatabaseCatalog}
   alias ElixirDB.Shadow.{Protocol, WorkerSupervisor}
+  alias ElixirDB.Storage.Results
 
   @journal_filename "managed_shadows.json"
   @journal_version 1
@@ -102,8 +104,8 @@ defmodule ElixirDB.Shadow.Worker do
   def handle_call({:bulk_read_documents, request, read_opts}, _from, state),
     do: {:reply, bulk_read_state(request, read_opts, state), state}
 
-  def handle_call({:open_attachment_representation, request, _read_opts}, _from, state),
-    do: {:reply, attachment_unavailable(request, state), state}
+  def handle_call({:open_attachment_representation, request, read_opts}, _from, state),
+    do: {:reply, open_attachment_representation_state(request, read_opts, state), state}
 
   defp call_server(opts, message) do
     case Keyword.get(opts, :server) do
@@ -171,9 +173,9 @@ defmodule ElixirDB.Shadow.Worker do
         journal_path: journal_path(root(opts))
       })
 
-  defp direct_call({:open_attachment_representation, request, _read_opts}, opts),
+  defp direct_call({:open_attachment_representation, request, read_opts}, opts),
     do:
-      attachment_unavailable(request, %{
+      open_attachment_representation_state(request, read_opts, %{
         root: root(opts),
         options: opts,
         journal_path: journal_path(root(opts))
@@ -398,7 +400,7 @@ defmodule ElixirDB.Shadow.Worker do
                 }}
              ),
            {:ok, watermark} <- shadow_watermark(request["shadow_uuid"]) do
-        {:ok, %{document: document, source_watermark: watermark}}
+        {:ok, %{document: Results.to_public(document), source_watermark: watermark}}
       end
     end
   end
@@ -429,7 +431,11 @@ defmodule ElixirDB.Shadow.Worker do
                 )
               end)},
            {:ok, watermark} <- shadow_watermark(request["shadow_uuid"]) do
-        {:ok, %{results: results, source_watermark: watermark}}
+        {:ok,
+         %{
+           results: Enum.map(results, &public_bulk_result/1),
+           source_watermark: watermark
+         }}
       end
     else
       nil -> {:error, Error.invalid_request("shadow bulk read requests are required")}
@@ -437,8 +443,96 @@ defmodule ElixirDB.Shadow.Worker do
     end
   end
 
-  defp attachment_unavailable(_request, _state),
-    do: {:error, Error.shadow_attachment_unavailable("shadow attachment reads are not ready")}
+  defp open_attachment_representation_state(request, _read_opts, state) do
+    with {:ok, request} <- normalize_read(request),
+         {:ok, journal} <- read_journal(state.journal_path),
+         {:ok, entry} <- find_entry(journal, request),
+         :ok <- ready_entry(entry),
+         {:ok, document_id} <- document_id(request),
+         {:ok, name} <- attachment_name(request),
+         {:ok, document} <- shadow_document(request, document_id),
+         {:ok, attachment} <- attachment_entry(document, name),
+         {:ok, digest} <- attachment_digest(attachment),
+         {:ok, ref} <- external_store(entry, state),
+         {:ok, {descriptor, reader}} <- FilesystemStore.open_representation_read(ref, digest),
+         :ok <- Representation.validate_route_digest(digest, descriptor) do
+      {:ok,
+       BlobRepresentationStream.new!(Map.put(descriptor, :body, representation_stream(reader)))}
+    end
+  rescue
+    exception in [ArgumentError, KeyError, FunctionClauseError] ->
+      {:error,
+       Error.shadow_attachment_unavailable("shadow attachment read failed", %{
+         cause: inspect(exception)
+       })}
+  end
+
+  defp public_bulk_result({:ok, %Results.GetDocument{} = document}),
+    do: %{"ok" => Results.to_public(document)}
+
+  defp public_bulk_result({:error, %Error{} = error}), do: %{"error" => Error.public(error)}
+
+  defp public_bulk_result(other),
+    do: %{
+      "error" =>
+        Error.public(
+          Error.internal_error("shadow bulk result is invalid", %{cause: inspect(other)})
+        )
+    }
+
+  defp shadow_document(request, document_id) do
+    case DatabaseCatalog.command_with_context(
+           request["shadow_uuid"],
+           shadow_read_context(request),
+           {:command, :get_document,
+            %{document_id: document_id, revision: request["revision"], include_conflicts: false}}
+         ) do
+      {:ok, %Results.GetDocument{} = document} -> {:ok, document}
+      {:ok, document} when is_map(document) -> {:ok, Results.get_document(document)}
+      {:error, _} = error -> error
+      _ -> {:error, Error.shadow_attachment_unavailable("shadow document response is invalid")}
+    end
+  end
+
+  defp attachment_name(request) do
+    case request["name"] do
+      name when is_binary(name) and name != "" -> {:ok, name}
+      _ -> {:error, Error.invalid_request("attachment name is required")}
+    end
+  end
+
+  defp attachment_entry(document, name) do
+    case Map.get(document.attachments || %{}, name) do
+      attachment when is_map(attachment) -> {:ok, attachment}
+      _ -> {:error, Error.attachment_not_found("attachment is not present in the shadow document")}
+    end
+  end
+
+  defp attachment_digest(attachment) do
+    attachment = Map.new(attachment, fn {key, value} -> {to_string(key), value} end)
+    digest = attachment["blob"] || attachment["digest"]
+
+    Manifest.validate_digest(digest)
+  end
+
+  defp external_store(entry, state) do
+    ref = StoreRef.external_read_only(entry["attachment_location"], attachment_roots(state))
+    StoreRef.normalize(ref)
+  end
+
+  defp representation_stream(reader) do
+    Stream.resource(
+      fn -> reader end,
+      fn current ->
+        case FilesystemStore.read_representation_chunks(current) do
+          {:ok, chunk} -> {[chunk], current}
+          {:done, current} -> {:halt, current}
+          {:error, error} -> {[{:error, error}], current}
+        end
+      end,
+      &FilesystemStore.close_representation_read/1
+    )
+  end
 
   defp shadow_watermark(shadow_uuid) do
     DatabaseCatalog.command_with_context(
@@ -484,7 +578,7 @@ defmodule ElixirDB.Shadow.Worker do
 
     Protocol.generation_request(
       value,
-      ~w(source_uuid shadow_uuid generation operation_id id document_id revision include_conflicts requests)
+      ~w(source_uuid shadow_uuid generation operation_id id document_id revision include_conflicts requests name)
     )
   end
 

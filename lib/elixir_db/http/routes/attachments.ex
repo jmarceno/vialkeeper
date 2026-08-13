@@ -35,8 +35,15 @@ defmodule ElixirDB.HTTP.Routes.Attachments do
       conn,
       Schemas.opts(:attachment_get, "attachment get contains an unknown field"),
       fn body, conn ->
-        case Attachments.open_stream(Request.uuid(conn), body) do
-          {:ok, stream} -> send_attachment(conn, stream)
+        with {:ok, consistency} <- Request.read_consistency(conn),
+             {:ok, stream, meta} <-
+               Attachments.open_stream_with_meta(
+                 Request.uuid(conn),
+                 body,
+                 read_consistency: consistency
+               ) do
+          send_attachment(Response.put_read_headers(conn, meta), stream)
+        else
           {:error, error} -> Response.error(conn, error)
         end
       end

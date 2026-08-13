@@ -6,10 +6,38 @@ defmodule ElixirDB.Documents do
   alias ElixirDB.JSON.StrictDecoder
   alias ElixirDB.MapAccess
   alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.Shadow.ReadRouter
 
-  def get(uuid, request) do
+  def get(uuid, request), do: get(uuid, request, [])
+
+  def get(uuid, request, opts) when is_list(opts) do
+    case validate_get(request) do
+      {:ok, request} ->
+        get_validated(uuid, request, opts)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp get_validated(uuid, request, opts) do
+    case ReadRouter.get(
+           uuid,
+           request,
+           Keyword.put(opts, :primary, fn normalized -> get_primary(uuid, normalized) end)
+         ) do
+      {:ok, value, _meta} -> {:ok, value}
+      {:error, _} = error -> error
+    end
+  end
+
+  def get_with_meta(uuid, request, opts \\ []) do
     with {:ok, request} <- validate_get(request) do
-      DatabaseCatalog.command(uuid, {:command, :get_document, request})
+      ReadRouter.get(
+        uuid,
+        request,
+        Keyword.put(opts, :primary, fn normalized -> get_primary(uuid, normalized) end)
+      )
     end
   end
 
@@ -49,26 +77,50 @@ defmodule ElixirDB.Documents do
     end
   end
 
-  def bulk_get(uuid, requests) when is_list(requests) do
+  def bulk_get(uuid, requests) when is_list(requests), do: bulk_get(uuid, requests, [])
+
+  def bulk_get(_uuid, _requests),
+    do: {:error, ElixirDB.Error.invalid_request("bulk-get body must be an array")}
+
+  def bulk_get(uuid, requests, opts) when is_list(requests) and is_list(opts) do
+    case bulk_get_with_meta(uuid, requests, opts) do
+      {:ok, value, _meta} -> {:ok, value}
+      {:error, _} = error -> error
+    end
+  end
+
+  def bulk_get(_uuid, _requests, _opts),
+    do: {:error, ElixirDB.Error.invalid_request("bulk-get body must be an array")}
+
+  def bulk_get_with_meta(uuid, requests, opts \\ [])
+
+  def bulk_get_with_meta(uuid, requests, opts) when is_list(requests) do
     if length(requests) <= (ElixirDB.Config.host_limits()[:max_bulk_operations] || 500),
       do:
-        {:ok,
-         Enum.map(requests, fn request ->
-           case get(uuid, request) do
-             {:ok, value} -> %{ok: value}
-             {:error, error} -> %{error: ElixirDB.Error.public(error)}
-           end
-         end)},
+        ReadRouter.bulk_get(
+          uuid,
+          requests,
+          Keyword.put(opts, :primary, fn normalized -> bulk_get_primary(uuid, normalized) end)
+        ),
       else:
         {:error, ElixirDB.Error.resource_limit("bulk-get operation count exceeds the host limit")}
   end
 
-  # SAFETY: the /bulk-get route decodes the JSON body without an object allow-list (the
-  # endpoint legitimately accepts an array), so a non-array body (object, scalar) reaches
-  # here. Without this fallback the `when is_list` clause above would raise
-  # FunctionClauseError in the request process. Funnel it into a typed 400 instead.
-  def bulk_get(_uuid, _requests),
+  def bulk_get_with_meta(_uuid, _requests, _opts),
     do: {:error, ElixirDB.Error.invalid_request("bulk-get body must be an array")}
+
+  defp get_primary(uuid, request),
+    do: DatabaseCatalog.command(uuid, {:command, :get_document, request})
+
+  defp bulk_get_primary(uuid, requests) do
+    {:ok,
+     Enum.map(requests, fn request ->
+       case get_primary(uuid, request) do
+         {:ok, value} -> %{ok: value}
+         {:error, error} -> %{error: ElixirDB.Error.public(error)}
+       end
+     end)}
+  end
 
   def bulk_write(uuid, operations) when is_list(operations) do
     limit = ElixirDB.Config.host_limits()[:max_bulk_operations] || 500

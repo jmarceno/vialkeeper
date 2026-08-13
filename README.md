@@ -486,6 +486,15 @@ the worker reports the exact generation ready; the worker control plane is
 authenticated separately from the ordinary public API and uses the bounded
 Zstandard JSON wire.
 
+Once a generation is ready, clients may request eventual reads with the
+`x-elixirdb-read-consistency: eventual` header. Point and bulk reads are
+served by the exact generation snapshot when possible; a shadow error falls
+back to the primary for the whole bulk request and retires only that exact
+route. Responses identify `x-elixirdb-read-served-by` and, for shadow reads,
+the durable `x-elixirdb-source-watermark`. Attachment downloads use the same
+consistency choice and stream from the configured external CAS without
+copying attachment bytes into the shadow bundle.
+
 Operator configuration and the worker lifecycle are documented in
 [Operations.md](Operations.md#shadow-control-and-workers).
 

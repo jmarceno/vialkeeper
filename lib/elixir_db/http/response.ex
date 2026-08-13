@@ -34,6 +34,27 @@ defmodule ElixirDB.HTTP.Response do
   def result(conn, {:error, error}, _status), do: error(conn, error)
   def result(conn, :ok, status), do: ok(conn, %{}, status)
 
+  def result_with_read_meta(conn, result, status \\ 200)
+
+  def result_with_read_meta(conn, {:ok, data, meta}, status) when is_map(meta) do
+    conn = put_read_headers(conn, meta)
+    result(conn, {:ok, data}, status)
+  end
+
+  def result_with_read_meta(conn, {:error, _} = error, _status), do: result(conn, error)
+
+  def put_read_headers(conn, %{served_by: "shadow", source_watermark: watermark})
+      when is_integer(watermark) and watermark >= 0 do
+    conn
+    |> put_resp_header("x-elixirdb-read-served-by", "shadow")
+    |> put_resp_header("x-elixirdb-source-watermark", Integer.to_string(watermark))
+  end
+
+  def put_read_headers(conn, %{served_by: "primary"}),
+    do: put_resp_header(conn, "x-elixirdb-read-served-by", "primary")
+
+  def put_read_headers(conn, _meta), do: conn
+
   def send_json(conn, status, body) do
     request_id = MapAccess.get(body, :request_id, request_id(conn))
 

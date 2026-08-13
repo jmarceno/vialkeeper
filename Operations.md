@@ -487,6 +487,22 @@ the exact generation ready. A failed or incompatible control request leaves
 the source route unready and never makes a partially provisioned generation
 public.
 
+### Shadow read routing
+
+Public document and attachment reads default to `primary`. To opt into a
+ready shadow, send `x-elixirdb-read-consistency: eventual` on the point,
+bulk-get, or attachment-get request. The source keeps an exact in-memory
+route snapshot containing the source/shadow UUIDs, generation, operation ID,
+and endpoint; a route is never selected by UUID alone. Shadow point and bulk
+read responses include `x-elixirdb-read-served-by: shadow` and the durable
+`x-elixirdb-source-watermark`. Primary responses identify `primary` and omit
+the watermark.
+
+If any item in a shadow bulk read fails, the source retries the complete batch
+against the primary and removes only the matching route snapshot. Attachment
+reads use the external CAS as a read-only physical representation stream;
+the worker never writes or copies those bytes into the managed shadow bundle.
+
 ---
 
 ## Live subscriptions (ops)

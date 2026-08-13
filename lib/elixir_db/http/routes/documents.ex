@@ -11,7 +11,18 @@ defmodule ElixirDB.HTTP.Routes.Documents do
       conn,
       Schemas.opts(:document_get, "document get contains an unknown field"),
       fn body, conn ->
-        Response.result(conn, ElixirDB.Documents.get(Request.uuid(conn), body))
+        case Request.read_consistency(conn) do
+          {:ok, consistency} ->
+            Response.result_with_read_meta(
+              conn,
+              ElixirDB.Documents.get_with_meta(Request.uuid(conn), body,
+                read_consistency: consistency
+              )
+            )
+
+          {:error, error} ->
+            Response.error(conn, error)
+        end
       end
     )
   end
@@ -50,7 +61,20 @@ defmodule ElixirDB.HTTP.Routes.Documents do
     # Bulk get is an array of get requests — BodyReader allows arrays; per-item validation
     # remains in Documents.bulk_get/2.
     Request.call(conn, fn body, conn ->
-      Response.result(conn, ElixirDB.Documents.bulk_get(Request.uuid(conn), body))
+      case Request.read_consistency(conn) do
+        {:ok, consistency} ->
+          Response.result_with_read_meta(
+            conn,
+            ElixirDB.Documents.bulk_get_with_meta(
+              Request.uuid(conn),
+              body,
+              read_consistency: consistency
+            )
+          )
+
+        {:error, error} ->
+          Response.error(conn, error)
+      end
     end)
   end
 

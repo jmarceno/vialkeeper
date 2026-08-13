@@ -4,6 +4,7 @@ defmodule ElixirDB.Shadow.RemoteEndpoint do
   @behaviour ElixirDB.Shadow.Endpoint
 
   alias ElixirDB.Error
+  alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Shadow.{Protocol, RemoteTransport}
 
   defstruct [:base_url, :auth_token, :control_timeout_ms, :read_timeout_ms]
@@ -69,15 +70,21 @@ defmodule ElixirDB.Shadow.RemoteEndpoint do
       )
 
   @impl true
-  def open_attachment_representation(%__MODULE__{} = endpoint, request, timeout, _opts),
-    do:
-      call(
-        endpoint,
-        :post,
-        generation_path(request) <> "/reads/attachment",
-        request,
-        timeout
-      )
+  def open_attachment_representation(%__MODULE__{} = endpoint, request, timeout, _opts) do
+    with {:ok, document_response} <- read_document(endpoint, request, timeout, []),
+         {:ok, digest} <- attachment_digest(document_response, request),
+         {:ok, descriptor, body} <-
+           RemoteTransport.open_stream(
+             endpoint.base_url,
+             generation_path(request) <> "/reads/attachment",
+             request,
+             digest,
+             endpoint.auth_token,
+             timeout
+           ) do
+      BlobRepresentationStream.new(Map.put(descriptor, :body, body))
+    end
+  end
 
   defp call(endpoint, method, path, body, timeout) do
     RemoteTransport.request(
@@ -88,6 +95,20 @@ defmodule ElixirDB.Shadow.RemoteEndpoint do
       endpoint.auth_token,
       timeout
     )
+  end
+
+  defp attachment_digest(document_response, request) do
+    request = Protocol.string_keys(request)
+    name = request["name"]
+    response = Protocol.string_keys(document_response)
+    document = Map.get(response, "document", response) |> Protocol.string_keys()
+    attachments = Map.get(document, "attachments", %{}) |> Protocol.string_keys()
+    attachment = Map.get(attachments, name, %{}) |> Protocol.string_keys()
+    digest = attachment["blob"] || attachment["digest"]
+
+    if is_binary(digest),
+      do: {:ok, digest},
+      else: {:error, Error.attachment_not_found("attachment is not present in the shadow document")}
   end
 
   defp generation_path(request) when is_map(request) do
