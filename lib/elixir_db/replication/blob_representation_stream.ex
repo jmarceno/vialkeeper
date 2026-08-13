@@ -51,7 +51,7 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
   def new(attrs) when is_map(attrs) do
-    body = Map.get(attrs, :body) || Map.get(attrs, "body")
+    body = Map.get(attrs, :body)
 
     with {:ok, descriptor} <- Representation.descriptor(attrs),
          :ok <- require_body(body) do
@@ -72,14 +72,9 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
 
   @spec descriptor(t()) :: Representation.descriptor()
   def descriptor(%__MODULE__{} = stream) do
-    %{
-      format_version: stream.format_version,
-      encoding: stream.encoding,
-      logical_digest: stream.logical_digest,
-      logical_length: stream.logical_length,
-      payload_length: stream.payload_length,
-      payload_sha256: stream.payload_sha256
-    }
+    stream
+    |> Map.from_struct()
+    |> Map.delete(:body)
   end
 
   @spec response_headers(t()) :: [{binary(), binary()}]
@@ -110,14 +105,14 @@ defmodule ElixirDB.Replication.BlobRepresentationStream do
          {:ok, payload_length} <- parse_content_length(headers),
          payload_sha256 <- Headers.get(headers, @payload_sha256_header),
          {:ok, descriptor} <-
-           Representation.descriptor(%{
+           Representation.descriptor(
              format_version: format_version,
              encoding: encoding,
              logical_digest: logical_digest,
              logical_length: logical_length,
              payload_length: payload_length,
              payload_sha256: payload_sha256
-           }),
+           ),
          :ok <- Representation.validate_route_digest(logical_digest, descriptor) do
       {:ok, descriptor}
     end

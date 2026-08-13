@@ -10,6 +10,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
   alias ElixirDB.Documents
   alias ElixirDB.Eventual
   alias ElixirDB.Query.Subscriptions
+  alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Replication.LocalEndpoint
 
   alias ElixirDB.Runtime.{
@@ -647,7 +648,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
   end
 
   defp raw_blob_stream(digest, bytes) do
-    ElixirDB.Replication.BlobRepresentationStream.new(%{
+    BlobRepresentationStream.new(%{
       logical_digest: digest,
       logical_length: byte_size(bytes),
       format_version: 1,

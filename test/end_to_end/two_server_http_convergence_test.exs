@@ -12,6 +12,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
   @moduletag :integration
 
+  alias ElixirDB.Attachments.FilesystemStore
   alias ElixirDB.EndToEnd.TwoServerHttpConvergenceTest.Barrier
   alias ElixirDB.MapAccess
   alias ElixirDB.Replication.Id
@@ -949,7 +950,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
   defp blob_encoding!(uuid, digest) do
     {:ok, bundle} = DatabaseCatalog.bundle_root(uuid)
-    assert {:ok, stat} = ElixirDB.Attachments.FilesystemStore.stat(bundle, digest)
+    assert {:ok, stat} = FilesystemStore.stat(bundle, digest)
     stat.encoding
   end
 

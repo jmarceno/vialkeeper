@@ -3,6 +3,7 @@ defmodule ElixirDB.HTTP.BodyReader do
 
   alias ElixirDB.HTTP.ReplicationWirePlug
   alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationInstr
   alias ElixirDB.Replication.WireCompression
 
   @doc """
@@ -101,16 +102,22 @@ defmodule ElixirDB.HTTP.BodyReader do
     else
       with {:ok, compressed, conn} <-
              read_chunks_raw(conn, WireCompression.encoded_limit(decoded_limit), []),
-           {:ok, body} <-
-             WireCompression.decode_json(compressed,
-               decoded_limit: decoded_limit,
-               headers: conn.req_headers,
-               expect: :map_or_list
-             ),
+           {:ok, body} <- decode_replication_body(compressed, conn, decoded_limit),
            :ok <- maybe_reject_unknown_fields(body, opts) do
+        ReplicationInstr.wire_bytes(:ingress, :json, :zstd, byte_size(compressed))
         {:ok, body, conn}
       end
     end
+  end
+
+  defp decode_replication_body(compressed, conn, decoded_limit) do
+    ReplicationInstr.wire_codec(:ingress, :decompress, fn ->
+      WireCompression.decode_json(compressed,
+        decoded_limit: decoded_limit,
+        headers: conn.req_headers,
+        expect: :map_or_list
+      )
+    end)
   end
 
   defp maybe_reject_unknown_fields(body, opts) do
@@ -185,10 +192,7 @@ defmodule ElixirDB.HTTP.BodyReader do
   defp content_length_positive?(conn) do
     case Plug.Conn.get_req_header(conn, "content-length") do
       [value | _] ->
-        case Integer.parse(value) do
-          {n, ""} when n > 0 -> true
-          _ -> false
-        end
+        match?({n, ""} when n > 0, Integer.parse(value))
 
       _ ->
         false

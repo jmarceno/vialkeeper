@@ -16,6 +16,7 @@ defmodule ElixirDB.Attachments.Representation do
   @trailer_size 92
   @encoding_raw 0
   @encoding_zstd 1
+  @descriptor_string_keys ~w(format_version encoding logical_digest payload_sha256 logical_length payload_length)
 
   @type encoding :: :raw | :zstd
 
@@ -76,19 +77,15 @@ defmodule ElixirDB.Attachments.Representation do
       >> ->
         with :ok <- validate_version(version),
              :ok <- validate_flags(flags),
-             {:ok, encoding} <- encoding_atom(encoding),
-             logical_hex <- encode_digest(logical_digest),
-             payload_hex <- encode_digest(payload_digest),
-             {:ok, descriptor} <-
-               descriptor(%{
-                 format_version: version,
-                 encoding: encoding,
-                 logical_digest: logical_hex,
-                 logical_length: logical_length,
-                 payload_length: payload_length,
-                 payload_sha256: payload_hex
-               }) do
-          {:ok, descriptor}
+             {:ok, encoding} <- encoding_atom(encoding) do
+          descriptor(
+            format_version: version,
+            encoding: encoding,
+            logical_digest: encode_digest(logical_digest),
+            logical_length: logical_length,
+            payload_length: payload_length,
+            payload_sha256: encode_digest(payload_digest)
+          )
         end
 
       _ ->
@@ -99,7 +96,15 @@ defmodule ElixirDB.Attachments.Representation do
   def parse_trailer(_),
     do: {:error, Error.integrity_violation("attachment representation trailer is invalid")}
 
-  @spec descriptor(map()) :: {:ok, descriptor()} | {:error, Error.t()}
+  @spec descriptor(map() | keyword()) :: {:ok, descriptor()} | {:error, Error.t()}
+  def descriptor(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs) do
+      descriptor(Map.new(attrs))
+    else
+      {:error, Error.invalid_request("invalid attachment representation")}
+    end
+  end
+
   def descriptor(attrs) when is_map(attrs) do
     with {:ok, descriptor} <- normalize_descriptor(attrs),
          :ok <- validate_raw_invariants(descriptor) do
@@ -134,22 +139,16 @@ defmodule ElixirDB.Attachments.Representation do
   end
 
   defp normalize_descriptor(attrs) do
-    encoding = encoding_value(Map.get(attrs, :encoding) || Map.get(attrs, "encoding"))
-
-    format_version =
-      Map.get(attrs, :format_version) || Map.get(attrs, "format_version") || @format_version
-
-    logical_digest = Map.get(attrs, :logical_digest) || Map.get(attrs, "logical_digest")
-    payload_sha256 = Map.get(attrs, :payload_sha256) || Map.get(attrs, "payload_sha256")
-    logical_length = Map.get(attrs, :logical_length) || Map.get(attrs, "logical_length")
-    payload_length = Map.get(attrs, :payload_length) || Map.get(attrs, "payload_length")
+    attrs = atomize_descriptor_keys(attrs)
+    encoding = encoding_value(Map.get(attrs, :encoding))
+    format_version = Map.get(attrs, :format_version) || @format_version
 
     with :ok <- validate_version(format_version),
          {:ok, encoding} <- require_encoding(encoding),
-         {:ok, logical_digest} <- Manifest.validate_digest(logical_digest),
-         {:ok, payload_sha256} <- Manifest.validate_digest(payload_sha256),
-         true <- is_integer(logical_length) and logical_length >= 0,
-         true <- is_integer(payload_length) and payload_length >= 0,
+         {:ok, logical_digest} <- Manifest.validate_digest(Map.get(attrs, :logical_digest)),
+         {:ok, payload_sha256} <- Manifest.validate_digest(Map.get(attrs, :payload_sha256)),
+         {:ok, logical_length} <- validate_length(Map.get(attrs, :logical_length)),
+         {:ok, payload_length} <- validate_length(Map.get(attrs, :payload_length)),
          :ok <- validate_zstd_payload_length(encoding, payload_length) do
       {:ok,
        %{
@@ -160,14 +159,18 @@ defmodule ElixirDB.Attachments.Representation do
          payload_length: payload_length,
          payload_sha256: payload_sha256
        }}
-    else
-      {:error, %Error{}} = error ->
-        error
-
-      _ ->
-        {:error, Error.invalid_request("invalid attachment representation")}
     end
   end
+
+  defp atomize_descriptor_keys(attrs) do
+    Map.new(attrs, fn
+      {key, value} when key in @descriptor_string_keys -> {String.to_existing_atom(key), value}
+      entry -> entry
+    end)
+  end
+
+  defp validate_length(value) when is_integer(value) and value >= 0, do: {:ok, value}
+  defp validate_length(_), do: {:error, Error.invalid_request("invalid attachment representation")}
 
   defp validate_raw_invariants(%{encoding: :raw} = descriptor) do
     if descriptor.payload_length == descriptor.logical_length and

@@ -429,12 +429,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     })
   end
 
-  defp write_trailer(fd, trailer) do
-    case :file.write(fd, trailer) do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp write_trailer(fd, trailer), do: :file.write(fd, trailer)
 
   defp enforce_max_logical_bytes(logical_length, max_logical_bytes)
        when logical_length <= max_logical_bytes,
@@ -791,9 +786,8 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   end
 
   defp finalize_physical(%{phase: {:writing, :zstd}, fd: fd, compression_ctx: ctx} = state) do
-    with {:ok, output, _ctx} <- Compression.finish_compression(ctx, <<>>),
-         {:ok, state} <- append_payload_bytes(state, fd, output) do
-      {:ok, state}
+    with {:ok, output, _ctx} <- Compression.finish_compression(ctx, <<>>) do
+      append_payload_bytes(state, fd, output)
     end
   end
 
@@ -1097,9 +1091,6 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     else
       false ->
         {:error, Error.integrity_violation("attachment representation trailer is invalid")}
-
-      {:error, %Error{}} = error ->
-        error
 
       {:error, reason} ->
         {:error, Error.internal_error("attachment open failed", %{reason: inspect(reason)})}

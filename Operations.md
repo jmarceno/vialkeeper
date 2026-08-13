@@ -172,7 +172,7 @@ paths that must not escape the root (`..`, symlinks).
 ```text
 notes.elixirdb/
 ├── <backend data>     # metadata, revisions, indexes, views, jobs, …
-├── blobs/             # content-addressed attachment bytes
+├── blobs/             # attachment representations (<prefix>/<digest>.blob)
 └── tmp/               # incomplete uploads (not authoritative)
 ```
 
@@ -329,6 +329,15 @@ Per-database retention defaults (`GET`/`PUT …/config`):
 Uploads: `POST …/attachments/upload` with `application/octet-stream`.
 Downloads: `POST …/attachments/get` with `{id, revision?, name}`.
 
+On disk every blob is one file, `blobs/<2-hex-prefix>/<digest>.blob`: the
+stored payload (raw bytes or a Zstandard frame, chosen once at ingest by a
+compressibility probe) followed by a fixed 92-byte trailer carrying the
+format version, encoding, logical/payload lengths, logical digest, and
+payload checksum. Downloads always return the original logical bytes;
+`integrity_check` validates both the payload checksum and the decoded
+logical digest. Do not edit or truncate these files — a payload or trailer
+mismatch makes the blob unreadable and replication of it fails cleanly.
+
 Database config keys (host-bounded):
 
 - `attachments.max_attachment_bytes`
@@ -419,6 +428,19 @@ for admission only; it does not change blob identity or compression.
 Enabled continuous jobs resume after catalog startup. Cancellation is
 cooperative: transfer tasks stop; an already committing import/checkpoint is
 allowed to finish.
+
+Remote wire behavior: every non-empty JSON request/response between peers is
+one bounded Zstandard frame (`Content-Encoding: zstd` plus
+`x-elixirdb-uncompressed-length`); attachment payloads transfer as the stored
+`.blob` representation byte-for-byte
+(`application/vnd.elixirdb.blob-representation`, no HTTP `Content-Encoding`),
+so the target never re-encodes. Troubleshooting: a peer that answers with
+plain uncompressed JSON on wire routes is not an ElixirDB replication
+endpoint (or an intermediary rewrote the response) — the job fails with
+`replication_incompatible`; malformed frames, wrong declared lengths, and
+over-limit bodies are rejected deterministically with `invalid_request` /
+`payload_too_large` and never advance checkpoints; plain 5xx pages from load
+balancers stay retryable.
 
 What replicates vs what stays local: see [README.md](README.md#replication-application-view).
 
@@ -565,6 +587,7 @@ not block the hot path.
 | Query execute | `elixir_db.query.execute` | `….duration` |
 | Index build | `elixir_db.index.build` | `….duration` |
 | Replication batch / transfer / checkpoint | matching `elixir_db.replication.*` | matching |
+| Replication remote wire | — | `elixir_db.replication.wire.bytes` + `….wire.codec.duration` |
 | Subscription update / open / overload | `….subscription.update` | matching counters |
 | View update / query | `elixir_db.view.*` | matching |
 | Federation query | `elixir_db.federation.query` | `….duration` |
@@ -581,9 +604,10 @@ not block the hot path.
 Owned by `ElixirDB.Observability.Attributes`. Includes `db.uuid` (never the
 filesystem path), `command.type`, `error.code`, `outcome`, HTTP method/route
 template/status, index/replication/admission/subscription/view/federation
-ids and bounded counts. **Never** recorded: document bodies, document IDs,
-attachment names/digests/bytes, search text, revision bodies, full remote
-URLs.
+ids and bounded counts, plus the bounded remote-wire dimensions (`direction`,
+`payload_kind`, `endpoint_kind`, `encoding`, `operation`). **Never** recorded:
+document bodies, document IDs, attachment names/digests/bytes, search text,
+revision bodies, full remote URLs, tokens, or raw codec error text.
 
 ### Trace context
 

@@ -13,6 +13,9 @@ defmodule ElixirDB.Replication.AuthTokenTransportTest do
   defmodule CapturePlug do
     @moduledoc false
     use Plug.Router
+
+    alias ElixirDB.Replication.WireCompression
+
     plug(:match)
     plug(:dispatch)
 
@@ -36,7 +39,7 @@ defmodule ElixirDB.Replication.AuthTokenTransportTest do
         "canonicalization_version" => 1
       }
 
-      {:ok, encoded} = ElixirDB.Replication.WireCompression.encode_json(payload, 65_536)
+      {:ok, encoded} = WireCompression.encode_json(payload, 65_536)
 
       conn
       |> Plug.Conn.put_resp_content_type("application/json")

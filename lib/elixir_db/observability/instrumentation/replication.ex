@@ -10,6 +10,10 @@ defmodule ElixirDB.Observability.Instrumentation.Replication do
     * `elixir_db.replication.transfer` — span + histogram for one transfer barrier
     * `elixir_db.replication.blob.transfer` — span + counter + histogram for
       each missing-blob transfer (privacy: no digests/paths/bodies)
+    * `elixir_db.replication.wire.bytes` — histogram, one value per
+      encoded/decoded remote-wire payload boundary
+    * `elixir_db.replication.wire.codec.duration` — histogram per remote-wire
+      compress/decompress operation
 
   Both spans are children of the worker's trace context, which is detached/
   re-attached across the worker's async phase tasks (see Worker.start_batch_span).
@@ -24,6 +28,8 @@ defmodule ElixirDB.Observability.Instrumentation.Replication do
   @blob_transfer_span "elixir_db.replication.blob.transfer"
   @blob_transfer_count :"elixir_db.replication.blob.transfer.count"
   @blob_transfer_duration :"elixir_db.replication.blob.transfer.duration"
+  @wire_bytes :"elixir_db.replication.wire.bytes"
+  @wire_codec_duration :"elixir_db.replication.wire.codec.duration"
 
   @doc """
   Wraps a checkpoint CAS write (`put_checkpoint`) in the
@@ -167,4 +173,39 @@ defmodule ElixirDB.Observability.Instrumentation.Replication do
   end
 
   defp emit_blob_transfer(_base, _duration, _other), do: :ok
+
+  @doc """
+  Records one encoded/decoded remote-wire payload boundary.
+
+  Only bounded dimensions are recorded — never digests, URLs, bodies, or
+  error text. Local endpoints never cross this boundary and must emit none.
+  """
+  @spec wire_bytes(:egress | :ingress, :json | :blob, :zstd | :raw, non_neg_integer()) :: :ok
+  def wire_bytes(direction, payload_kind, encoding, bytes)
+      when direction in [:egress, :ingress] and payload_kind in [:json, :blob] and
+             encoding in [:zstd, :raw] and is_integer(bytes) and bytes >= 0 do
+    Meters.record(@wire_bytes, bytes,
+      direction: direction,
+      payload_kind: payload_kind,
+      endpoint_kind: :remote,
+      encoding: encoding
+    )
+  end
+
+  @doc "Times one remote-wire codec operation and returns the fun result."
+  @spec wire_codec(:egress | :ingress, :compress | :decompress, (-> result)) :: result
+        when result: term()
+  def wire_codec(direction, operation, fun)
+      when direction in [:egress, :ingress] and operation in [:compress, :decompress] and
+             is_function(fun, 0) do
+    started = System.monotonic_time()
+    result = fun.()
+
+    Meters.record(@wire_codec_duration, System.monotonic_time() - started,
+      direction: direction,
+      operation: operation
+    )
+
+    result
+  end
 end

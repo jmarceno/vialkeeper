@@ -88,7 +88,6 @@ defmodule ElixirDB.Replication.WireCompression do
     case :ezstd.compress(json, @compression_level) do
       compressed when is_binary(compressed) -> {:ok, compressed}
       {:error, _reason} -> nif_error()
-      _other -> nif_error()
     end
   rescue
     _error in [ArgumentError, ErlangError] -> nif_error()
@@ -98,7 +97,6 @@ defmodule ElixirDB.Replication.WireCompression do
     case :ezstd.decompress(body) do
       json when is_binary(json) -> {:ok, json}
       {:error, _reason} -> nif_error()
-      _other -> nif_error()
     end
   rescue
     _error in [ArgumentError, ErlangError] -> nif_error()

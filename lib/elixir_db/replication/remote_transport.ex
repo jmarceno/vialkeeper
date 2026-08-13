@@ -2,6 +2,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
   @moduledoc "Executes authenticated HTTP requests and lazy response streams for remote replication."
 
   alias ElixirDB.Error
+  alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationInstr
   alias ElixirDB.Observability.Tracer
   alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Replication.WireCompression
@@ -83,8 +84,12 @@ defmodule ElixirDB.Replication.RemoteTransport do
     case Req.request(options) do
       {:ok, %{status: status} = result} when status in 200..299 ->
         case decode_wire_json(result) do
-          {:ok, _body} -> :ok
-          {:error, _} = error -> error
+          {:ok, _body} ->
+            ReplicationInstr.wire_bytes(:egress, :blob, stream.encoding, stream.payload_length)
+            :ok
+
+          {:error, _} = error ->
+            error
         end
 
       {:ok, %{status: status} = result} ->
@@ -97,6 +102,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
 
   defp open_stream_success(result, body, digest) do
     with {:ok, descriptor} <- BlobRepresentationStream.parse_http_headers(result.headers, digest) do
+      ReplicationInstr.wire_bytes(:ingress, :blob, descriptor.encoding, descriptor.payload_length)
       {:ok, descriptor, body}
     end
   end
@@ -181,8 +187,12 @@ defmodule ElixirDB.Replication.RemoteTransport do
   defp add_request_body(options, nil, _auth_headers, _trace_headers), do: {:ok, options}
 
   defp add_request_body(options, body, auth_headers, trace_headers) do
-    case WireCompression.encode_json(body, decoded_limit()) do
+    case ReplicationInstr.wire_codec(:egress, :compress, fn ->
+           WireCompression.encode_json(body, decoded_limit())
+         end) do
       {:ok, encoded} ->
+        ReplicationInstr.wire_bytes(:egress, :json, :zstd, encoded.compressed_length)
+
         {:ok,
          Keyword.merge(options,
            body: encoded.body,
@@ -254,20 +264,27 @@ defmodule ElixirDB.Replication.RemoteTransport do
         {:error, Error.payload_too_large("remote endpoint response is too large")}
 
       true ->
-        case WireCompression.decode_json(body,
-               decoded_limit: decoded_limit,
-               headers: headers,
-               expect: :map
-             ) do
-          {:ok, value} ->
-            {:ok, value}
+        decode_wire_body(body, headers, decoded_limit)
+    end
+  end
 
-          {:error, %Error{code: :payload_too_large} = error} ->
-            {:error, error}
+  defp decode_wire_body(body, headers, decoded_limit) do
+    case ReplicationInstr.wire_codec(:ingress, :decompress, fn ->
+           WireCompression.decode_json(body,
+             decoded_limit: decoded_limit,
+             headers: headers,
+             expect: :map
+           )
+         end) do
+      {:ok, value} ->
+        ReplicationInstr.wire_bytes(:ingress, :json, :zstd, byte_size(body))
+        {:ok, value}
 
-          {:error, _error} ->
-            {:error, incompatible_response()}
-        end
+      {:error, %Error{code: :payload_too_large} = error} ->
+        {:error, error}
+
+      {:error, _error} ->
+        {:error, incompatible_response()}
     end
   end
 

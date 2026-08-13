@@ -14,7 +14,7 @@ Your app  ──HTTP /v1──►  ElixirDB host
            registrations.json
            notes.elixirdb/      # portable database bundle
              <backend data>     # backend-owned durable artifact
-             blobs/             # attachment bytes
+             blobs/             # attachment representations (digest.blob)
              tmp/               # incomplete uploads (not authoritative)
 ```
 
@@ -306,6 +306,10 @@ const stream = await fetch(`${baseUrl}/v1/databases/${uuid}/changes/stream`, {
 2. Reference that digest in a document put.
 3. Download by document id + attachment name.
 
+Storage encoding is transparent: ingest picks raw or Zstandard per blob and
+stores one `digest.blob` file (payload + integrity trailer); downloads always
+return the original bytes.
+
 ```typescript
 const upload = await fetch(`${baseUrl}/v1/databases/${uuid}/attachments/upload`, {
   method: "POST",
@@ -445,8 +449,10 @@ after restart. One-shot jobs end in `completed` or `failed`.
 Remote peer HTTP (`/v1/databases/:uuid/replication/…`) sends Zstandard-compressed
 JSON (`Content-Encoding: zstd`, `x-elixirdb-uncompressed-length`). Public document
 and job APIs stay uncompressed JSON even when a client sends `Accept-Encoding: zstd`.
-Attachment bytes use `application/vnd.elixirdb.blob-representation` without HTTP
-`Content-Encoding`.
+Attachment payloads transfer as the stored representation byte for byte — raw or
+Zstandard as chosen at ingest — using
+`application/vnd.elixirdb.blob-representation` without HTTP `Content-Encoding`,
+and the target installs them without probing or re-encoding.
 
 **Elixir:** `ElixirDB.Replication.JobManager` (`put/2`, `start/2`, …) and
 `ElixirDB.Replication`.

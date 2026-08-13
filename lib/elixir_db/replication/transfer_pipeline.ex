@@ -10,6 +10,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
   alias ElixirDB.Error
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationModule
+  alias ElixirDB.Observability.Tracer
   alias ElixirDB.Replication.BlobRepresentationStream
 
   defmodule ChainChunk do
@@ -836,8 +837,16 @@ defmodule ElixirDB.Replication.TransferPipeline do
   defp validate_blob_stream(%BlobRepresentationStream{}, _digest, _length),
     do: {:error, Error.integrity_violation("blob stream metadata does not match manifest")}
 
-  defp record_payload_length(%BlobRepresentationStream{payload_length: payload_length}) do
-    _ = ElixirDB.Observability.Tracer.set_attributes(payload_length: payload_length)
+  defp record_payload_length(%BlobRepresentationStream{
+         payload_length: payload_length,
+         encoding: encoding
+       }) do
+    _ =
+      Tracer.set_attributes(
+        payload_length: payload_length,
+        blob_encoding: encoding
+      )
+
     :ok
   end
 

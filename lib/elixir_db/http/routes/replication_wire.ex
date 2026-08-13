@@ -5,6 +5,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   alias ElixirDB.Domain.Checkpoint
   alias ElixirDB.HTTP.{BodyReader, Request, Response}
   alias ElixirDB.HTTP.Schemas
+  alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationInstr
   alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Replication.Wire
   alias ElixirDB.Runtime.DatabaseCatalog
@@ -273,6 +274,13 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
                  admission_class: :replication
                ) do
             {:ok, %Plug.Conn{} = conn} ->
+              ReplicationInstr.wire_bytes(
+                :ingress,
+                :blob,
+                descriptor.encoding,
+                descriptor.payload_length
+              )
+
               Response.result(conn, :ok)
 
             {:error, error} ->
@@ -472,6 +480,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
   end
 
   defp send_blob_representation(conn, stream) do
+    ReplicationInstr.wire_bytes(:egress, :blob, stream.encoding, stream.payload_length)
     request_id = Response.request_id(conn)
 
     conn =

@@ -21,6 +21,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
   alias ElixirDB.Replication.Id
   alias ElixirDB.Replication.JobManager
   alias ElixirDB.Replication.LocalEndpoint
+  alias ElixirDB.Replication.RemoteEndpoint
   alias ElixirDB.Replication.Worker
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.TestServer
@@ -227,6 +228,153 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     for span <- batch_wire_spans do
       assert span[:parent_span_id] != :undefined,
              "wire span in a worker batch trace must be parented by the extracted context"
+    end
+  end
+
+  test "remote wire codec metrics are bounded and local endpoints emit none", %{a: a, b: b} do
+    payload = String.duplicate("wire-metric-payload-", 512)
+
+    assert {:ok, %{blob: digest}} =
+             ElixirDB.Attachments.upload_stream(a.database_uuid, [payload])
+
+    assert {:ok, _} =
+             ElixirDB.Documents.put(a.database_uuid, %{
+               id: "wire-metrics-doc",
+               body: %{"ok" => true},
+               attachments: %{
+                 "file.bin" => %{blob: digest, content_type: "application/octet-stream"}
+               }
+             })
+
+    # A local one-shot replication crosses no remote wire boundary.
+    {:ok, source} = LocalEndpoint.new(a.database_uuid)
+    {:ok, target} = LocalEndpoint.new(b.database_uuid)
+    {:ok, replication_id} = Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
+
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        b.database_uuid,
+        replication_id
+      )
+
+    assert {:ok, pid} =
+             Worker.start_link(%{
+               source: source,
+               target: target,
+               replication_id: replication_id,
+               mode: "one_shot",
+               direction: "push"
+             })
+
+    ref = Process.monitor(pid)
+    :gen_statem.cast(pid, :start)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
+
+    Eventual.eventually(
+      fn -> TestMetricExporter.datapoints("elixir_db.replication.batch.duration") != [] end,
+      timeout: 8_000,
+      message: "local batch duration was not exported"
+    )
+
+    assert TestMetricExporter.datapoints("elixir_db.replication.wire.bytes") == []
+    assert TestMetricExporter.datapoints("elixir_db.replication.wire.codec.duration") == []
+
+    # A remote one-shot replication records every JSON and blob boundary.
+    server_b = TestServer.start_supervised!()
+    c_path = "obs-repl-wire-#{System.unique_integer([:positive])}-c.elixirdb"
+    {:ok, c} = DatabaseCatalog.create(c_path)
+
+    on_exit(fn ->
+      _ = disable_jobs(c.database_uuid)
+      _ = DatabaseCatalog.close(c.database_uuid)
+      _ = DatabaseCatalog.unregister(c.database_uuid)
+      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), c_path))
+    end)
+
+    {:ok, remote_replication_id} =
+      Id.calculate(a.database_uuid, c.database_uuid, "push", "one_shot")
+
+    :ok =
+      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        a.database_uuid,
+        c.database_uuid,
+        remote_replication_id
+      )
+
+    {:ok, remote_target} =
+      RemoteEndpoint.new(%{
+        "kind" => "remote",
+        "base_url" => server_b.base_url,
+        "database_uuid" => c.database_uuid
+      })
+
+    assert {:ok, remote_pid} =
+             Worker.start_link(%{
+               source: source,
+               target: remote_target,
+               replication_id: remote_replication_id,
+               mode: "one_shot",
+               direction: "push"
+             })
+
+    remote_ref = Process.monitor(remote_pid)
+    :gen_statem.cast(remote_pid, :start)
+    assert_receive {:DOWN, ^remote_ref, :process, ^remote_pid, :normal}, 15_000
+
+    assert {:ok, _} = ElixirDB.Documents.get(c.database_uuid, %{id: "wire-metrics-doc"})
+
+    wire_datapoints =
+      Eventual.eventually(
+        fn ->
+          datapoints = TestMetricExporter.datapoints("elixir_db.replication.wire.bytes")
+          kinds = MapSet.new(datapoints, &TestMetricExporter.datapoint_attr(&1, :payload_kind))
+
+          if MapSet.subset?(MapSet.new([:json, :blob]), kinds), do: {:ok, datapoints}, else: false
+        end,
+        timeout: 8_000,
+        message: "wire.bytes was not exported for both JSON and blob payloads"
+      )
+
+    for datapoint <- wire_datapoints do
+      assert TestMetricExporter.datapoint_attr(datapoint, :endpoint_kind) == :remote
+      assert TestMetricExporter.datapoint_attr(datapoint, :direction) in [:egress, :ingress]
+      assert TestMetricExporter.datapoint_attr(datapoint, :payload_kind) in [:json, :blob]
+      assert TestMetricExporter.datapoint_attr(datapoint, :encoding) in [:zstd, :raw]
+    end
+
+    blob_datapoints =
+      Enum.filter(
+        wire_datapoints,
+        &(TestMetricExporter.datapoint_attr(&1, :payload_kind) == :blob)
+      )
+
+    assert Enum.any?(
+             blob_datapoints,
+             &(TestMetricExporter.datapoint_attr(&1, :encoding) == :zstd)
+           )
+
+    codec_datapoints =
+      Eventual.eventually(
+        fn ->
+          datapoints =
+            TestMetricExporter.datapoints("elixir_db.replication.wire.codec.duration")
+
+          operations = MapSet.new(datapoints, &TestMetricExporter.datapoint_attr(&1, :operation))
+
+          if MapSet.subset?(MapSet.new([:compress, :decompress]), operations),
+            do: {:ok, datapoints},
+            else: false
+        end,
+        timeout: 8_000,
+        message: "wire codec duration was not exported for compress and decompress"
+      )
+
+    wire_metric_text = inspect(wire_datapoints ++ codec_datapoints)
+
+    for sentinel <- [digest, "wire-metrics-doc", "file.bin", server_b.base_url, "Bearer"] do
+      refute wire_metric_text =~ sentinel,
+             "privacy sentinel #{sentinel} appeared in wire metric attributes"
     end
   end
 

@@ -437,26 +437,24 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
   defp decode_body(%{headers: headers, body: body}) do
     content_type = header(headers, "content-type") || ""
-    encoding = header(headers, "content-encoding") || ""
 
-    cond do
-      content_type =~ "ndjson" ->
-        body
+    if content_type =~ "ndjson" or content_type =~ "blob-representation" do
+      body
+    else
+      decode_json_body(headers, body)
+    end
+  end
 
-      content_type =~ "blob-representation" ->
-        body
+  defp decode_json_body(_headers, body) when body == "" or not is_binary(body), do: body
 
-      is_binary(body) and body != "" and encoding =~ "zstd" ->
-        TestReplicationWire.decode_response(headers, body)
-
-      is_binary(body) and body != "" ->
-        case StrictDecoder.decode(body) do
-          {:ok, decoded} -> decoded
-          _ -> body
-        end
-
-      true ->
-        body
+  defp decode_json_body(headers, body) do
+    if (header(headers, "content-encoding") || "") =~ "zstd" do
+      TestReplicationWire.decode_response(headers, body)
+    else
+      case StrictDecoder.decode(body) do
+        {:ok, decoded} -> decoded
+        _ -> body
+      end
     end
   end
 

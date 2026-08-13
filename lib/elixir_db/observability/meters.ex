@@ -36,6 +36,8 @@ defmodule ElixirDB.Observability.Meters do
   | `elixir_db.attachment.gc.duration` | histogram |
   | `elixir_db.replication.blob.transfer.count` | counter |
   | `elixir_db.replication.blob.transfer.duration` | histogram |
+  | `elixir_db.replication.wire.bytes` | histogram |
+  | `elixir_db.replication.wire.codec.duration` | histogram |
   | `elixir_db.query.subscription.open` | counter |
   | `elixir_db.query.subscription.update` | counter |
   | `elixir_db.query.subscription.overload` | counter |
@@ -71,6 +73,8 @@ defmodule ElixirDB.Observability.Meters do
     {:"elixir_db.attachment.gc.duration", :histogram},
     {:"elixir_db.replication.blob.transfer.count", :counter},
     {:"elixir_db.replication.blob.transfer.duration", :histogram},
+    {:"elixir_db.replication.wire.bytes", :histogram},
+    {:"elixir_db.replication.wire.codec.duration", :histogram},
     {:"elixir_db.query.subscription.open", :counter},
     {:"elixir_db.query.subscription.update", :counter},
     {:"elixir_db.query.subscription.overload", :counter},

@@ -20,10 +20,14 @@ defmodule ElixirDB.Observability.Attributes do
   `bytes_deleted`, transfer measurements `chain_chunks`,
   `max_chain_concurrency_observed`, `blob_count`,
   `max_blob_concurrency_observed`, `peak_reserved_transfer_bytes`, and
-  `logical_blob_bytes`, and
+  `logical_blob_bytes`,
   `finch.duration` (the telemetry bridge only: a
   bounded numeric duration from the Finch stop event, never customer data),
-  `derived.source_count`, `derived.document_count`, and `derived.group_count`.
+  `derived.source_count`, `derived.document_count`, and `derived.group_count`,
+  and the bounded remote-wire dimensions `direction` (`:egress` | `:ingress`),
+  `payload_kind` (`:json` | `:blob`), `endpoint_kind` (`:remote`), `encoding`
+  and `blob_encoding` (`:zstd` | `:raw`), and `operation`
+  (`:compress` | `:decompress`).
 
   ## Forbidden (enforced by absence)
 
@@ -85,6 +89,12 @@ defmodule ElixirDB.Observability.Attributes do
     max_blob_concurrency_observed: :max_blob_concurrency_observed,
     peak_reserved_transfer_bytes: :peak_reserved_transfer_bytes,
     finch_duration: :"finch.duration",
+    direction: :direction,
+    payload_kind: :payload_kind,
+    endpoint_kind: :endpoint_kind,
+    encoding: :encoding,
+    blob_encoding: :blob_encoding,
+    operation: :operation,
     event_type: :event_type,
     admission_class: :"admission.class",
     queue_depth_at_enqueue: :queue_depth_at_enqueue,

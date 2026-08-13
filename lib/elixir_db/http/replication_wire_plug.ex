@@ -14,6 +14,7 @@ defmodule ElixirDB.HTTP.ReplicationWirePlug do
 
   alias ElixirDB.Error
   alias ElixirDB.HTTP.Response
+  alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationInstr
   alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Replication.WireCompression
 
@@ -80,7 +81,11 @@ defmodule ElixirDB.HTTP.ReplicationWirePlug do
     limit = decoded_limit()
 
     with {:ok, term} <- decode_resp_term(conn.resp_body),
-         {:ok, encoded} <- WireCompression.encode_json(term, limit) do
+         {:ok, encoded} <-
+           ReplicationInstr.wire_codec(:egress, :compress, fn ->
+             WireCompression.encode_json(term, limit)
+           end) do
+      ReplicationInstr.wire_bytes(:egress, :json, :zstd, encoded.compressed_length)
       put_compressed(conn, encoded)
     else
       _ ->
