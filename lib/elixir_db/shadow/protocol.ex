@@ -4,6 +4,7 @@ defmodule ElixirDB.Shadow.Protocol do
   alias ElixirDB.Error
 
   @protocol_major 1
+  @max_generation 9_223_372_036_854_775_807
   @capabilities [
     "generation_fencing_v1",
     "shadow_provision_v1",
@@ -25,6 +26,9 @@ defmodule ElixirDB.Shadow.Protocol do
   @spec required_capabilities() :: [binary()]
   def required_capabilities, do: @capabilities
 
+  @spec max_generation() :: pos_integer()
+  def max_generation, do: @max_generation
+
   @spec response(binary()) :: map()
   def response(node_id) when is_binary(node_id) do
     %{
@@ -36,11 +40,15 @@ defmodule ElixirDB.Shadow.Protocol do
 
   @spec compatible?(map()) :: boolean()
   def compatible?(value) when is_map(value) do
-    value = string_keys(value)
+    case normalize_string_keys(value) do
+      {:ok, value} ->
+        value["protocol_major"] == @protocol_major and
+          is_list(value["capabilities"]) and
+          Enum.all?(@capabilities, &(&1 in value["capabilities"]))
 
-    value["protocol_major"] == @protocol_major and
-      is_list(value["capabilities"]) and
-      Enum.all?(@capabilities, &(&1 in value["capabilities"]))
+      {:error, :invalid_keys} ->
+        false
+    end
   end
 
   def compatible?(_), do: false
@@ -55,9 +63,8 @@ defmodule ElixirDB.Shadow.Protocol do
   @doc "Validates a control request's immutable source/generation identity."
   @spec generation_request(map(), [binary()]) :: {:ok, map()} | {:error, Error.t()}
   def generation_request(value, allowed_fields) when is_map(value) and is_list(allowed_fields) do
-    value = string_keys(value)
-
-    with :ok <- reject_unknown(value, allowed_fields),
+    with {:ok, value} <- normalize_request_keys(value),
+         :ok <- reject_unknown(value, allowed_fields),
          :ok <- uuid(value["source_uuid"], "source_uuid"),
          {:ok, generation} <- generation(value["generation"]),
          :ok <- uuid(value["shadow_uuid"], "shadow_uuid"),
@@ -75,8 +82,12 @@ defmodule ElixirDB.Shadow.Protocol do
     do: {:error, Error.invalid_request("shadow control request must be an object")}
 
   @spec string_keys(map()) :: map()
-  def string_keys(value) when is_map(value),
-    do: Map.new(value, fn {key, member} -> {to_string(key), member} end)
+  def string_keys(value) when is_map(value) do
+    case normalize_string_keys(value) do
+      {:ok, normalized} -> normalized
+      {:error, :invalid_keys} -> value
+    end
+  end
 
   defp reject_unknown(value, allowed) do
     if Enum.any?(Map.keys(value), &(&1 not in allowed)),
@@ -93,6 +104,47 @@ defmodule ElixirDB.Shadow.Protocol do
   defp uuid(_value, field),
     do: {:error, Error.invalid_request("shadow #{field} must be a UUID")}
 
-  defp generation(value) when is_integer(value) and value >= 0, do: {:ok, value}
-  defp generation(_), do: {:error, Error.invalid_request("shadow generation must be non-negative")}
+  defp generation(value)
+       when is_integer(value) and value >= 0 and value <= @max_generation,
+       do: {:ok, value}
+
+  defp generation(_),
+    do:
+      {:error,
+       Error.invalid_request("shadow generation must be an integer within the supported range")}
+
+  defp string_key(key) when is_binary(key), do: key
+  defp string_key(key) when is_atom(key), do: Atom.to_string(key)
+
+  defp normalize_request_keys(value) do
+    case normalize_string_keys(value) do
+      {:ok, normalized} ->
+        {:ok, normalized}
+
+      {:error, :invalid_keys} ->
+        {:error, Error.invalid_request("shadow control request contains invalid fields")}
+    end
+  end
+
+  defp normalize_string_keys(value) when is_struct(value), do: {:error, :invalid_keys}
+
+  defp normalize_string_keys(value) do
+    Enum.reduce_while(value, {:ok, %{}}, &put_normalized_member/2)
+  end
+
+  defp put_normalized_member({key, member}, {:ok, acc}) do
+    case normalized_key(key) do
+      {:ok, key} -> put_unique_member(acc, key, member)
+      {:error, :invalid_keys} = error -> {:halt, error}
+    end
+  end
+
+  defp put_unique_member(acc, key, member) do
+    if Map.has_key?(acc, key),
+      do: {:halt, {:error, :invalid_keys}},
+      else: {:cont, {:ok, Map.put(acc, key, member)}}
+  end
+
+  defp normalized_key(key) when is_binary(key) or is_atom(key), do: {:ok, string_key(key)}
+  defp normalized_key(_key), do: {:error, :invalid_keys}
 end

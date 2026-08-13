@@ -29,7 +29,7 @@ defmodule ElixirDB.View.BookmarkCodec do
          :ok <- validate_expected(value, expected) do
       {:ok, value}
     else
-      {:error, _} = error ->
+      {:error, %ElixirDB.Error{code: :invalid_bookmark}} = error ->
         error
 
       _ ->

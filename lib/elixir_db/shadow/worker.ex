@@ -435,10 +435,10 @@ defmodule ElixirDB.Shadow.Worker do
 
   defp bulk_read_state(request, _read_opts, state) do
     with {:ok, request} <- normalize_read(request),
+         {:ok, requests} <- bulk_requests(request["requests"]),
          {:ok, journal} <- read_journal(state.journal_path),
          {:ok, entry} <- find_entry(journal, request),
-         :ok <- ready_entry(entry),
-         requests when is_list(requests) <- request["requests"] do
+         :ok <- ready_entry(entry) do
       context = shadow_read_context(request)
 
       with {:ok, results} <-
@@ -464,10 +464,29 @@ defmodule ElixirDB.Shadow.Worker do
     else
       :not_found -> {:error, Error.shadow_not_ready("shadow generation is not ready")}
       {:error, _} = error -> error
-      nil -> {:error, Error.invalid_request("shadow bulk read requests are required")}
-      _ -> {:error, Error.invalid_request("shadow bulk read requests must be an array")}
     end
   end
+
+  defp bulk_requests(nil),
+    do: {:error, Error.invalid_request("shadow bulk read requests are required")}
+
+  defp bulk_requests(requests) when is_list(requests) do
+    max_operations = ElixirDB.Config.host_limits()[:max_bulk_operations] || 500
+
+    cond do
+      length(requests) > max_operations ->
+        {:error, Error.resource_limit("shadow bulk read exceeds the configured limit")}
+
+      Enum.all?(requests, &is_map/1) ->
+        {:ok, requests}
+
+      true ->
+        {:error, Error.invalid_request("shadow bulk read requests must contain objects")}
+    end
+  end
+
+  defp bulk_requests(_),
+    do: {:error, Error.invalid_request("shadow bulk read requests must be an array")}
 
   defp open_attachment_representation_state(request, _read_opts, state) do
     with {:ok, request} <- normalize_read(request),
