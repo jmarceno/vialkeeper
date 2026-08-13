@@ -162,9 +162,39 @@ defmodule ElixirDB.Shadow.Replicator do
       wait_ms: Keyword.get(opts, :wait_ms, 1_000),
       wait_ms_for_read: Keyword.get(opts, :wait_ms_for_read, 0),
       batch: Keyword.get(opts, :batch, 100),
-      phase_hook: Keyword.get(opts, :phase_hook)
+      phase_hook: readiness_phase_hook(request, opts)
     }
   end
+
+  defp readiness_phase_hook(request, opts) do
+    phase_hook = Keyword.get(opts, :phase_hook)
+
+    if continuous?(opts) and Keyword.get(opts, :mark_ready, false) do
+      fn phase, context -> readiness_phase(phase_hook, phase, context, request, opts) end
+    else
+      phase_hook
+    end
+  end
+
+  defp readiness_phase(phase_hook, phase, context, request, opts) do
+    case invoke_phase_hook(phase_hook, phase, context) do
+      :ok -> mark_ready_at_phase(phase, request, context, opts)
+      error -> error
+    end
+  end
+
+  defp invoke_phase_hook(nil, _phase, _context), do: :ok
+  defp invoke_phase_hook(phase_hook, phase, context), do: phase_hook.(phase, context)
+
+  defp mark_ready_at_phase(:after_checkpoint_source, request, context, opts) do
+    Worker.mark_ready(
+      generation_request(request),
+      Map.get(context, :since, 0),
+      Keyword.get(opts, :worker_options, [])
+    )
+  end
+
+  defp mark_ready_at_phase(_phase, _request, _context, _opts), do: :ok
 
   defp maybe_mark_ready(_request, {:error, _error}, _opts), do: :ok
 

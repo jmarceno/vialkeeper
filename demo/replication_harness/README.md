@@ -10,14 +10,17 @@ Run it from the repository root:
 
 Then open <http://127.0.0.1:4180>.
 
-The launcher starts three processes:
+The launcher starts five cooperating processes:
 
 1. A web/database BEAM node on port `4100`, owning Database A and Database B.
 2. A separate native-client BEAM node on port `4101`, owning Database C and
    printing its `ElixirDB.Changes.wait/2` feed to the terminal.
-3. A dependency-free Node.js static server on port `4180`. Its small local
+3. A managed shadow-worker BEAM node on port `4102`.
+4. A second managed shadow-worker BEAM node on port `4103`.
+5. A dependency-free Node.js static server on port `4180`. Its small local
    proxy keeps browser requests same-origin while forwarding Client A and
-   Client B to the real `/v1` HTTP server.
+   Client B to the real authenticated `/v1` HTTP server and coordinating
+   bounded scenario runs.
 
 The database node enables continuous remote replication in this topology:
 
@@ -36,6 +39,33 @@ The native process owns Database C directly in Elixir; it does not use the web
 UI or an HTTP client to observe its changes. Its output is written to the
 terminal and to the run directory’s `native-cli.log`.
 
+## Scenario lab
+
+The General feature lab panel drives real public HTTP contracts and records one
+JSON result per run under the run directory’s `state/results/` folder. The
+browser only receives redacted topology and result data; bearer tokens remain
+in the private run-state file used by the local controller.
+
+The recipes cover:
+
+- managed shadow provisioning, eventual versus primary read headers, external
+  CAS attachment reads, generation movement between workers, and a controlled
+  worker restart;
+- A → B and A → C replication, structured indexes, query execution and
+  explain, and the NDJSON query subscription lifecycle;
+- federation queries, materialized-view generation, and declarative view
+  indexing;
+- concurrent foreground writes, retention compaction, observability snapshots,
+  and integrity checks;
+- authenticated replication identities, durable replication jobs, control-plane
+  capabilities, ordinary database visibility, and integrity boundaries.
+
+Worker cards also expose Stop and Restart actions. These actions are bounded by
+the launcher-owned worker process and are useful for observing route
+invalidation and generation recovery without editing production configuration.
+The controller endpoints live only in the demo Node server; they do not add
+routes to the ElixirDB HTTP application.
+
 The page also reads the same OpenTelemetry metric stream used by the database:
 each BEAM node has a local one-second metric reader with no collector network
 connection. The telemetry cards show cumulative HTTP requests, database
@@ -51,6 +81,8 @@ Optional environment variables:
 ```sh
 ELIXIRDB_DEMO_DB_PORT=4200 \
 ELIXIRDB_DEMO_CLI_PORT=4201 \
+ELIXIRDB_DEMO_WORKER_A_PORT=4202 \
+ELIXIRDB_DEMO_WORKER_B_PORT=4203 \
 ELIXIRDB_DEMO_WEB_PORT=4280 \
 ./scripts/run-replication-harness.sh
 ```

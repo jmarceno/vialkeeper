@@ -766,6 +766,248 @@ button {
   font-size: 11px;
 }
 
+.lab-panel {
+  margin-bottom: 18px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: linear-gradient(145deg, rgba(29, 41, 49, 0.98), rgba(19, 28, 34, 0.98));
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.16);
+}
+
+.lab-copy {
+  max-width: 780px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.lab-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--teal);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.lab-status[data-state="working"],
+.lab-status[data-state="starting"] {
+  color: var(--amber);
+}
+
+.lab-status[data-state="error"] {
+  color: var(--red);
+}
+
+.lab-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 18px;
+  margin-top: 16px;
+}
+
+.lab-subheading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.lab-subheading h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.lab-subheading .field-label {
+  margin: 0;
+  text-align: right;
+}
+
+.topology-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.topology-card,
+.scenario-card,
+.scenario-result,
+.shadow-state {
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: rgba(8, 13, 17, 0.36);
+}
+
+.topology-card {
+  padding: 10px;
+}
+
+.topology-card-heading,
+.result-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.topology-card .field-label {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topology-card strong {
+  display: block;
+  margin-top: 8px;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topology-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--teal);
+  font-family: var(--mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.topology-state[data-state="error"] {
+  color: var(--red);
+}
+
+.topology-state[data-state="starting"] {
+  color: var(--amber);
+}
+
+.topology-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.topology-actions .button {
+  min-height: 27px;
+  padding: 0 7px;
+  font-size: 10px;
+}
+
+.shadow-state {
+  margin-top: 12px;
+  padding: 10px;
+}
+
+.shadow-state .lab-subheading {
+  margin-bottom: 6px;
+}
+
+.lab-pre {
+  max-height: 180px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-deep);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.scenario-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.scenario-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px;
+}
+
+.scenario-card h4,
+.scenario-card p {
+  margin: 0;
+}
+
+.scenario-card h4 {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.scenario-card p:last-child {
+  max-width: 500px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.scenario-id {
+  margin-bottom: 4px !important;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.scenario-card .button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  font-size: 10px;
+}
+
+.scenario-result {
+  margin-top: 12px;
+  padding: 10px;
+}
+
+.result-heading {
+  margin-bottom: 7px;
+}
+
+.result-heading .field-label {
+  margin: 0;
+}
+
+.result-status {
+  color: var(--teal);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.scenario-result[data-state="working"] .result-status {
+  color: var(--amber);
+}
+
+.scenario-result[data-state="failed"] .result-status {
+  color: var(--red);
+}
+
+.lab-error {
+  margin: 0;
+  color: var(--red);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
 @keyframes pulse {
   0%,
   100% {
@@ -844,6 +1086,20 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .lab-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .lab-panel .panel-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .lab-status {
+    padding-top: 0;
+  }
+
   .observability-panel .panel-heading {
     flex-direction: column;
     gap: 12px;
@@ -868,5 +1124,14 @@ button {
   .native-details {
     margin-left: 0;
     text-align: left;
+  }
+
+  .scenario-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .scenario-card .button {
+    width: 100%;
   }
 }

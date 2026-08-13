@@ -145,6 +145,55 @@
         </p>
       </section>
 
+      <section class="lab-panel" aria-labelledby="lab-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Scenario controller · persisted result artifacts</p>
+            <h2 id="lab-heading">General feature lab</h2>
+            <p class="lab-copy">
+              These recipes drive the same authenticated HTTP and native paths as the app above.
+              Each run records bounded evidence, response headers, and the first failing step.
+            </p>
+          </div>
+          <div class="lab-status" id="lab-status" data-state="starting">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="lab-status-text">Loading topology…</span>
+          </div>
+        </div>
+
+        <div class="lab-layout">
+          <div>
+            <div class="lab-subheading">
+              <h3>Live topology</h3>
+              <span class="field-label">Read routing and worker capabilities</span>
+            </div>
+            <div class="topology-grid" id="topology-grid"></div>
+            <div class="shadow-state" id="shadow-state">
+              <div class="lab-subheading">
+                <h3>Shadow route</h3>
+                <span class="field-label">Source-side status · paths redacted</span>
+              </div>
+              <pre class="lab-pre" data-role="shadow-summary">Waiting for the source controller…</pre>
+            </div>
+          </div>
+
+          <div class="scenario-column">
+            <div class="lab-subheading">
+              <h3>Scenario recipes</h3>
+              <span class="field-label">Bounded, repeatable, real API paths</span>
+            </div>
+            <div class="scenario-grid" id="scenario-grid"></div>
+            <div class="scenario-result" id="scenario-result" data-state="idle">
+              <div class="result-heading">
+                <span class="field-label">Last run</span>
+                <span class="result-status" data-role="result-status">No scenario run yet</span>
+              </div>
+              <pre class="lab-pre" data-role="result-body">Choose a recipe to produce a persisted result.</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="client-grid" id="client-grid" aria-label="HTTP database clients"></section>
 
       <section class="native-panel" aria-label="Native Elixir client">

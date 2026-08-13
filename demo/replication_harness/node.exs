@@ -22,24 +22,47 @@ defmodule ElixirDB.ReplicationHarness.Node do
 
   @poll_interval 100
 
-  def main([mode]) when mode in ["web", "cli"] do
-    configure_runtime!()
+  def main([mode]) when mode in ["web", "cli", "worker"] do
+    configure_runtime!(mode)
     {:ok, _} = Application.ensure_all_started(:elixir_db)
 
     case mode do
       "web" -> web_node()
       "cli" -> cli_node()
+      "worker" -> worker_node()
     end
   end
 
-  def main(_), do: raise("usage: mix run demo/replication_harness/node.exs web|cli")
+  def main(_),
+    do: raise("usage: mix run demo/replication_harness/node.exs web|cli|worker")
 
-  defp configure_runtime! do
-    root = System.fetch_env!("ELIXIR_DB_ROOT") |> Path.expand()
+  defp configure_runtime!(mode) do
+    root = database_root()
     port = System.fetch_env!("ELIXIR_DB_PORT") |> String.to_integer()
 
     Application.put_env(:elixir_db, :database_root, root)
     Application.put_env(:elixir_db, :listener, ip: {127, 0, 0, 1}, port: port)
+
+    case mode do
+      "web" ->
+        Application.put_env(:elixir_db, :auth, auth_config())
+        Application.put_env(:elixir_db, :shadow_controller, shadow_controller_config())
+
+      "cli" ->
+        Application.put_env(:elixir_db, :auth, auth_config())
+
+      "worker" ->
+        Application.put_env(:elixir_db, :auth, enabled: false, token_digests: [])
+
+        Application.put_env(:elixir_db, :shadow_worker,
+          enabled: true,
+          storage_root: "shadows",
+          control_token_digests: [digest(control_token())],
+          allowed_attachment_roots: allowed_attachment_roots(),
+          allowed_source_origins: [source_url()],
+          auto_replicate: true
+        )
+    end
   end
 
   defp web_node do
@@ -47,6 +70,9 @@ defmodule ElixirDB.ReplicationHarness.Node do
     main_config = System.fetch_env!("DEMO_MAIN_CONFIG")
     cli_config = System.fetch_env!("DEMO_C_CONFIG")
     ready_config = System.fetch_env!("DEMO_READY_CONFIG")
+    private_config = System.fetch_env!("DEMO_PRIVATE_CONFIG")
+    worker_a_config = System.fetch_env!("DEMO_WORKER_A_CONFIG")
+    worker_b_config = System.fetch_env!("DEMO_WORKER_B_CONFIG")
 
     a = create!("web-a.db")
     b = create!("web-b.db")
@@ -58,13 +84,19 @@ defmodule ElixirDB.ReplicationHarness.Node do
       })
     )
 
+    attachment_location = attachment_location!(a.database_uuid)
+
     write_json!(main_config, %{
       "server_url" => server_url,
       "clients" => [
         client_config("a", "Client A", "Database A", a.database_uuid, server_url),
         client_config("b", "Client B", "Database B", b.database_uuid, server_url)
       ],
-      "native_client" => nil
+      "native_client" => nil,
+      "shadow" => %{
+        "source_database_uuid" => a.database_uuid,
+        "locations" => ["worker-a", "worker-b"]
+      }
     })
 
     IO.puts("Web database node started")
@@ -74,6 +106,8 @@ defmodule ElixirDB.ReplicationHarness.Node do
     IO.puts("Waiting for the native Elixir node at #{cli_config}…")
 
     cli = wait_for_json!(cli_config, 120_000)
+    _worker_a = wait_for_json!(worker_a_config, 120_000)
+    _worker_b = wait_for_json!(worker_b_config, 120_000)
     c_uuid = cli["database_uuid"]
     c_url = cli["endpoint"]
 
@@ -90,12 +124,33 @@ defmodule ElixirDB.ReplicationHarness.Node do
         client_config("b", "Client B", "Database B", b.database_uuid, server_url)
       ],
       "native_client" => Map.merge(cli, %{"replication_source" => a.database_uuid}),
-      "jobs" => jobs
+      "jobs" => jobs,
+      "shadow" => %{
+        "source_database_uuid" => a.database_uuid,
+        "locations" => ["worker-a", "worker-b"],
+        "status_path" => "/api/lab/state"
+      }
     }
 
     write_json!(ready_config, ready)
 
+    write_json!(private_config, %{
+      "project_root" => System.fetch_env!("DEMO_PROJECT_ROOT"),
+      "source_endpoint" => server_url,
+      "source_token" => source_token(),
+      "source_database_uuid" => a.database_uuid,
+      "source_attachment_location" => attachment_location,
+      "allowed_attachment_roots" => allowed_attachment_roots(),
+      "clients" => ready["clients"],
+      "native_client" => ready["native_client"],
+      "workers" => [
+        private_worker_config("a", worker_a_config),
+        private_worker_config("b", worker_b_config)
+      ]
+    })
+
     IO.puts("Replication jobs enabled: A ↔ B and A → native C")
+    IO.puts("Shadow workers available: worker-a and worker-b")
     IO.puts("Manual UI configuration written to #{ready_config}")
     keep_alive()
   end
@@ -120,6 +175,26 @@ defmodule ElixirDB.ReplicationHarness.Node do
 
     wait_for_file!(ready_config, 120_000)
     print_changes(c.database_uuid, 0)
+  end
+
+  defp worker_node do
+    config_path = System.fetch_env!("DEMO_WORKER_CONFIG")
+    key = System.get_env("DEMO_WORKER_KEY", "worker")
+    endpoint = server_url()
+
+    write_json!(config_path, %{
+      "key" => key,
+      "label" => "Shadow worker #{String.upcase(key)}",
+      "endpoint" => endpoint,
+      "control_endpoint" => endpoint,
+      "control_token" => control_token(),
+      "database_root" => database_root(),
+      "port" => System.fetch_env!("ELIXIR_DB_PORT") |> String.to_integer(),
+      "pid" => System.pid()
+    })
+
+    IO.puts("Shadow worker #{key} started at #{endpoint}")
+    keep_alive()
   end
 
   defp print_changes(uuid, since) do
@@ -172,7 +247,12 @@ defmodule ElixirDB.ReplicationHarness.Node do
   end
 
   defp remote_endpoint(database_uuid, base_url),
-    do: %{"kind" => "remote", "database_uuid" => database_uuid, "base_url" => base_url}
+    do: %{
+      "kind" => "remote",
+      "database_uuid" => database_uuid,
+      "base_url" => base_url,
+      "auth_token" => source_token()
+    }
 
   defp client_config(key, label, database_label, uuid, endpoint),
     do: %{
@@ -183,14 +263,81 @@ defmodule ElixirDB.ReplicationHarness.Node do
       "endpoint" => endpoint
     }
 
+  defp private_worker_config(key, config_path) do
+    worker = wait_for_json!(config_path, 120_000)
+
+    %{
+      "key" => key,
+      "label" => worker["label"],
+      "endpoint" => worker["endpoint"],
+      "control_endpoint" => worker["control_endpoint"],
+      "control_token" => worker["control_token"],
+      "database_root" => worker["database_root"],
+      "port" => worker["port"],
+      "pid" => worker["pid"],
+      "config_path" => config_path
+    }
+  end
+
+  defp shadow_controller_config do
+    [
+      enabled: true,
+      source_base_url: server_url(),
+      source_bearer_token: source_token(),
+      location: [shadow_location("a"), shadow_location("b")]
+    ]
+  end
+
+  defp shadow_location(key) do
+    upper = String.upcase(key)
+
+    %{
+      name: "worker-#{key}",
+      kind: :remote,
+      control_base_url: System.fetch_env!("DEMO_WORKER_#{upper}_ENDPOINT"),
+      control_bearer_token: System.fetch_env!("DEMO_WORKER_#{upper}_CONTROL_TOKEN"),
+      control_timeout_ms: 5_000,
+      read_timeout_ms: 5_000
+    }
+  end
+
+  defp auth_config, do: [enabled: true, token_digests: [digest(source_token())]]
+
+  defp digest(token), do: :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
+
+  defp source_token, do: System.fetch_env!("DEMO_SOURCE_TOKEN")
+
+  defp control_token, do: System.fetch_env!("DEMO_WORKER_CONTROL_TOKEN")
+
+  defp allowed_attachment_roots do
+    System.get_env("DEMO_ALLOWED_ATTACHMENT_ROOTS", "")
+    |> String.split(":", trim: true)
+    |> Enum.map(&Path.expand/1)
+  end
+
+  defp attachment_location!(uuid) do
+    case DatabaseCatalog.bundle_root(uuid) do
+      {:ok, root} -> Path.join(root, "blobs")
+      {:error, error} -> raise "could not locate attachment store: #{inspect(error)}"
+    end
+  end
+
   defp server_url do
     port = System.fetch_env!("ELIXIR_DB_PORT")
     "http://127.0.0.1:#{port}"
   end
 
+  defp source_url do
+    System.get_env("DEMO_SOURCE_ENDPOINT", server_url())
+  end
+
+  defp database_root, do: System.fetch_env!("ELIXIR_DB_ROOT") |> Path.expand()
+
   defp write_json!(path, value) do
     File.mkdir_p!(Path.dirname(path))
-    File.write!(path, JSON.encode_to_iodata!(value))
+    temp_path = "#{path}.tmp-#{System.unique_integer([:positive])}"
+    File.write!(temp_path, JSON.encode_to_iodata!(value))
+    File.rename!(temp_path, path)
   end
 
   defp wait_for_json!(path, timeout) do

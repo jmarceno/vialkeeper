@@ -61,10 +61,16 @@ defmodule ElixirDB.Shadow.Definition do
 
   @spec replace(t(), map()) :: {:ok, t()} | {:error, ElixirDB.Error.t()}
   def replace(%__MODULE__{} = previous, attrs) when is_map(attrs) do
-    attrs =
-      Map.merge(Map.from_struct(previous), attrs) |> Map.put(:generation, previous.generation + 1)
+    with {:ok, attrs} <- normalize_keys(attrs) do
+      attrs =
+        previous
+        |> Map.from_struct()
+        |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+        |> Map.merge(attrs)
+        |> Map.put("generation", previous.generation + 1)
 
-    new(previous.source_uuid, attrs)
+      new(previous.source_uuid, attrs)
+    end
   end
 
   @spec from_map(map()) :: {:ok, t()} | {:error, ElixirDB.Error.t()}

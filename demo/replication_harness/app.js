@@ -3,6 +3,9 @@ const state = {
   clients: new Map(),
   eventCount: 0,
   observabilityRefreshing: false,
+  labState: null,
+  scenarios: [],
+  scenarioRunning: false,
 };
 
 const elements = {
@@ -16,6 +19,15 @@ const elements = {
   observabilityStatus: document.querySelector("#observability-status"),
   observabilityStatusText: document.querySelector("#observability-status-text"),
   observabilityNote: document.querySelector("#observability-note"),
+  labStatus: document.querySelector("#lab-status"),
+  labStatusText: document.querySelector("#lab-status-text"),
+  topologyGrid: document.querySelector("#topology-grid"),
+  shadowState: document.querySelector("#shadow-state"),
+  shadowSummary: document.querySelector('[data-role="shadow-summary"]'),
+  scenarioGrid: document.querySelector("#scenario-grid"),
+  scenarioResult: document.querySelector("#scenario-result"),
+  resultStatus: document.querySelector('[data-role="result-status"]'),
+  resultBody: document.querySelector('[data-role="result-body"]'),
 };
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -140,6 +152,189 @@ function renderTelemetryUnavailable(kind, error) {
   setTelemetryText(panel, "commands-latency", "avg — · p95 —");
   setTelemetryText(panel, "replication-latency", "avg — · p95 —");
   setTelemetryText(panel, "error-detail", "No sample");
+}
+
+async function fetchLab(path, options = {}) {
+  const response = await fetch(path, {
+    cache: "no-store",
+    ...options,
+    headers: {
+      accept: "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  let envelope;
+  try {
+    envelope = await response.json();
+  } catch {
+    throw new Error(`HTTP ${response.status} returned a non-JSON lab response`);
+  }
+  if (!response.ok || envelope.error) {
+    throw new Error(envelope.error?.message || `HTTP ${response.status}`);
+  }
+  return envelope.data;
+}
+
+function setLabStatus(stateName, text) {
+  elements.labStatus.dataset.state = stateName;
+  elements.labStatusText.textContent = text;
+}
+
+function renderLabState(data) {
+  state.labState = data;
+  const workers = data.workers || [];
+  const topologyCards = [
+    {
+      label: "Source node",
+      value: "A / B",
+      detail: data.source_database_uuid || "Waiting for source UUID",
+      status: "online",
+    },
+    {
+      label: "Native node",
+      value: "C",
+      detail: data.native_client?.database_uuid || "Waiting for native UUID",
+      status: data.native_client ? "online" : "starting",
+    },
+    ...workers.map((worker) => ({
+      label: worker.label || `Shadow worker ${worker.key}`,
+      workerKey: worker.key,
+      value: worker.status === "online" ? "Online" : "Offline",
+      detail: worker.capabilities
+        ? `protocol ${worker.capabilities.protocol_major} · ${worker.capabilities.capability_count} capabilities`
+        : worker.error || worker.endpoint,
+      status: worker.status === "online" ? "online" : "error",
+    })),
+  ];
+
+  elements.topologyGrid.innerHTML = topologyCards
+    .map(
+      (card) => `
+        <article class="topology-card">
+          <div class="topology-card-heading">
+            <span class="field-label">${escapeHtml(card.label)}</span>
+            <span class="topology-state" data-state="${escapeHtml(card.status)}"><span class="status-dot"></span>${escapeHtml(card.value)}</span>
+          </div>
+          <strong>${escapeHtml(card.detail)}</strong>
+          ${
+            card.workerKey
+              ? `<div class="topology-actions"><button class="button" data-worker-action="stop" data-worker="${escapeHtml(card.workerKey)}">Stop</button><button class="button" data-worker-action="restart" data-worker="${escapeHtml(card.workerKey)}">Restart</button></div>`
+              : ""
+          }
+        </article>
+      `,
+    )
+    .join("");
+
+  const shadow = data.shadow;
+  elements.shadowSummary.textContent = pretty(
+    shadow
+      ? {
+          enabled: shadow.enabled,
+          desired: shadow.desired
+            ? {
+                location: shadow.desired.location,
+                generation: shadow.desired.generation,
+                state: shadow.desired.state,
+                shadow_uuid: shadow.desired.shadow_uuid,
+              }
+            : null,
+          observed: shadow.observed,
+          error: data.shadow_error,
+        }
+      : { state: "absent", error: data.shadow_error },
+  );
+
+  for (const button of elements.topologyGrid.querySelectorAll("[data-worker-action]")) {
+    button.addEventListener("click", () => runWorkerAction(button.dataset.worker, button.dataset.workerAction));
+  }
+
+  if (workers.length > 0 && workers.every((worker) => worker.status === "online")) {
+    setLabStatus("connected", "Topology live · workers authenticated");
+  } else {
+    setLabStatus("working", "Topology reachable · one or more workers offline");
+  }
+}
+
+function renderScenarios() {
+  elements.scenarioGrid.innerHTML = state.scenarios
+    .map(
+      (scenario) => `
+        <article class="scenario-card" data-scenario="${escapeHtml(scenario.id)}">
+          <div>
+            <p class="scenario-id">${escapeHtml(scenario.id)}</p>
+            <h4>${escapeHtml(scenario.label)}</h4>
+            <p>${escapeHtml(scenario.description)}</p>
+          </div>
+          <button class="button button-primary" data-action="run-scenario" ${state.scenarioRunning ? "disabled" : ""}>Run recipe</button>
+        </article>
+      `,
+    )
+    .join("");
+
+  for (const card of elements.scenarioGrid.querySelectorAll("[data-scenario]")) {
+    card.querySelector('[data-action="run-scenario"]').addEventListener("click", () => runScenario(card.dataset.scenario));
+  }
+}
+
+function renderScenarioResult(result) {
+  elements.scenarioResult.dataset.state = result.status || "idle";
+  elements.resultStatus.textContent = result.status
+    ? `${result.scenario_id} · ${result.status} · ${formatDuration(result.duration_ms)}`
+    : "No scenario run yet";
+  elements.resultBody.textContent = pretty(result);
+}
+
+async function refreshLabState() {
+  try {
+    renderLabState(await fetchLab("/api/lab/state"));
+  } catch (error) {
+    setLabStatus("error", error.message);
+    elements.shadowSummary.textContent = error.message;
+  }
+}
+
+async function loadScenarios() {
+  try {
+    state.scenarios = await fetchLab("/api/scenarios");
+    renderScenarios();
+  } catch (error) {
+    elements.scenarioGrid.innerHTML = `<p class="lab-error">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function runWorkerAction(worker, action) {
+  setLabStatus("working", `${action === "restart" ? "Restarting" : "Stopping"} worker-${worker}…`);
+  try {
+    await fetchLab(`/api/lab/workers/${encodeURIComponent(worker)}/actions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    await refreshLabState();
+  } catch (error) {
+    setLabStatus("error", error.message);
+  }
+}
+
+async function runScenario(id) {
+  if (state.scenarioRunning) return;
+  state.scenarioRunning = true;
+  renderScenarios();
+  elements.scenarioResult.dataset.state = "working";
+  elements.resultStatus.textContent = `${id} · running…`;
+  elements.resultBody.textContent = "The controller is waiting on real persisted state and bounded HTTP probes.";
+
+  try {
+    const result = await fetchLab(`/api/scenarios/${encodeURIComponent(id)}/run`, { method: "POST" });
+    renderScenarioResult(result);
+    await refreshLabState();
+  } catch (error) {
+    renderScenarioResult({ scenario_id: id, status: "failed", failure: { message: error.message } });
+  } finally {
+    state.scenarioRunning = false;
+    renderScenarios();
+  }
 }
 
 async function fetchTelemetry(path) {
@@ -505,6 +700,7 @@ async function start() {
     }
     renderClients();
     renderNativeInfo(state.config.native_client);
+    await Promise.all([loadScenarios(), refreshLabState()]);
 
     const checks = await Promise.all([...state.clients.values()].map(checkConnection));
     if (checks.every(Boolean)) updateGlobalStatus("connected", "All connections live");
@@ -512,6 +708,7 @@ async function start() {
 
     for (const client of state.clients.values()) void pollClient(client);
     void refreshObservability();
+    window.setInterval(() => void refreshLabState(), 2_000);
     window.setInterval(() => void refreshObservability(), 2_000);
   } catch (error) {
     updateGlobalStatus("error", "Harness configuration unavailable");

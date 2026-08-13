@@ -188,7 +188,7 @@ defmodule ElixirDB.Shadow.Reconciler do
       maybe_route(state.definition, endpoint, inspected)
     end
 
-    continue(state)
+    schedule_retry(state)
   end
 
   defp apply_control_result({:bootstrapping, generation, inspected}, state) do
@@ -199,7 +199,7 @@ defmodule ElixirDB.Shadow.Reconciler do
       observe(state.definition, :bootstrapping, inspected)
     end
 
-    continue(state)
+    schedule_retry(state)
   end
 
   defp apply_control_result({:destroyed, _result}, state) do

@@ -196,7 +196,7 @@ defmodule ElixirDB.Shadow.Worker do
       _ =
         WorkerSupervisor.start_replicator(
           request,
-          mode: :continuous,
+          mode: "continuous",
           mark_ready: true,
           worker_options: [server: self()]
         )
