@@ -10,6 +10,7 @@ defmodule ElixirDB.HostConfig do
 
   alias ElixirDB.Federation.Normalizer
   alias ElixirDB.JSON.StrictDecoder
+  alias ElixirDB.PathSafety
   alias ElixirDB.Runtime.{AdmissionPolicy, AtomicWrite}
 
   @filename "host.toml"
@@ -97,16 +98,32 @@ defmodule ElixirDB.HostConfig do
   @default_security %{"allow_insecure_remote" => false}
   @default_observability %{"otlp_endpoint" => ""}
   @default_web_ui %{"enabled" => true}
+  @default_shadow_controller %{
+    "enabled" => false,
+    "source_base_url" => "",
+    "source_bearer_token" => "",
+    "location" => []
+  }
+  @default_shadow_worker %{
+    "enabled" => false,
+    "storage_root" => "shadows",
+    "control_token_digests" => [],
+    "allowed_attachment_roots" => [],
+    "allowed_source_origins" => []
+  }
 
   @default_admission AdmissionPolicy.default_toml_map()
 
-  @known_sections ~w(listener limits admission auth tls security observability federation web_ui)
+  @known_sections ~w(listener limits admission auth tls security observability federation web_ui shadow_controller shadow_worker)
   @allowed_listener ~w(ip port)
   @allowed_auth ~w(enabled tokens)
   @allowed_tls ~w(enabled certfile keyfile)
   @allowed_security ~w(allow_insecure_remote)
   @allowed_observability ~w(otlp_endpoint)
   @allowed_web_ui ~w(enabled)
+  @allowed_shadow_controller ~w(enabled source_base_url source_bearer_token location)
+  @allowed_shadow_location ~w(name kind control_base_url control_bearer_token control_timeout_ms read_timeout_ms)
+  @allowed_shadow_worker ~w(enabled storage_root control_token_digests allowed_attachment_roots allowed_source_origins)
   @allowed_federation ~w(max_sources max_concurrent_sources max_candidates max_execution_ms saved_query)
   @allowed_admission Map.keys(@default_admission)
 
@@ -134,6 +151,8 @@ defmodule ElixirDB.HostConfig do
       "security" => @default_security,
       "observability" => @default_observability,
       "web_ui" => @default_web_ui,
+      "shadow_controller" => @default_shadow_controller,
+      "shadow_worker" => @default_shadow_worker,
       "federation" => %{
         "max_sources" => 16,
         "max_concurrent_sources" => 8,
@@ -243,6 +262,8 @@ defmodule ElixirDB.HostConfig do
          {:ok, security} <- validate_security(raw["security"]),
          {:ok, obs} <- validate_observability(raw["observability"]),
          {:ok, web_ui} <- validate_web_ui(raw["web_ui"]),
+         {:ok, shadow_controller} <- validate_shadow_controller(raw["shadow_controller"], limits),
+         {:ok, shadow_worker} <- validate_shadow_worker(raw["shadow_worker"], root),
          {:ok, federation} <- validate_federation(raw["federation"], limits) do
       # host_limits consumers (`ElixirDB.Config.host_limits/0`) expect atom keys,
       # matching the original `config/config.exs` keyword form. The keys are
@@ -262,6 +283,8 @@ defmodule ElixirDB.HostConfig do
         |> Keyword.put(:security, security)
         |> Keyword.put(:otlp_endpoint, obs)
         |> Keyword.put(:web_ui, web_ui)
+        |> Keyword.put(:shadow_controller, shadow_controller)
+        |> Keyword.put(:shadow_worker, shadow_worker)
         |> Keyword.put(:federation, federation)
 
       {:ok, config}
@@ -470,6 +493,301 @@ defmodule ElixirDB.HostConfig do
   end
 
   defp validate_web_ui(_), do: {:error, "host.toml: [web_ui] must be a table"}
+
+  defp validate_shadow_controller(nil, limits),
+    do: validate_shadow_controller(@default_shadow_controller, limits)
+
+  defp validate_shadow_controller(%{} = controller, limits) do
+    with :ok <- allow_only(controller, @allowed_shadow_controller, "shadow_controller"),
+         :ok <- validate_bool(controller["enabled"], "shadow_controller.enabled"),
+         :ok <-
+           validate_optional_text(
+             controller["source_base_url"],
+             "shadow_controller.source_base_url"
+           ),
+         :ok <-
+           validate_optional_secret(
+             controller["source_bearer_token"],
+             "shadow_controller.source_bearer_token"
+           ),
+         {:ok, locations} <- validate_shadow_locations(controller["location"], limits),
+         :ok <- validate_shadow_controller_requirements(controller, locations) do
+      {:ok,
+       [
+         enabled: controller["enabled"] == true,
+         source_base_url: String.trim(controller["source_base_url"] || ""),
+         source_bearer_token: controller["source_bearer_token"] || "",
+         locations: locations
+       ]}
+    end
+  end
+
+  defp validate_shadow_controller(_, _limits),
+    do: {:error, "host.toml: [shadow_controller] must be a table"}
+
+  defp validate_shadow_controller_requirements(%{"enabled" => true} = controller, locations) do
+    remote? = Enum.any?(locations, &(&1.kind == :remote))
+
+    cond do
+      locations == [] ->
+        {:error, "host.toml: enabled shadow_controller requires at least one location"}
+
+      remote? and String.trim(controller["source_base_url"] || "") == "" ->
+        {:error, "host.toml: remote shadow_controller requires source_base_url"}
+
+      remote? and String.trim(controller["source_bearer_token"] || "") == "" ->
+        {:error, "host.toml: remote shadow_controller requires source_bearer_token"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_shadow_controller_requirements(_controller, _locations), do: :ok
+
+  defp validate_shadow_worker(nil, root), do: validate_shadow_worker(@default_shadow_worker, root)
+
+  defp validate_shadow_worker(%{} = worker, root) do
+    with :ok <- allow_only(worker, @allowed_shadow_worker, "shadow_worker"),
+         :ok <- validate_bool(worker["enabled"], "shadow_worker.enabled"),
+         :ok <- validate_storage_root(worker["storage_root"], root),
+         :ok <-
+           validate_digest_list(
+             worker["control_token_digests"],
+             "shadow_worker.control_token_digests"
+           ),
+         {:ok, attachment_roots} <-
+           validate_allowed_roots(
+             worker["allowed_attachment_roots"],
+             "shadow_worker.allowed_attachment_roots"
+           ),
+         {:ok, origins} <-
+           validate_origins(
+             worker["allowed_source_origins"],
+             "shadow_worker.allowed_source_origins"
+           ) do
+      {:ok,
+       [
+         enabled: worker["enabled"] == true,
+         storage_root: worker["storage_root"] || "shadows",
+         control_token_digests: Enum.map(worker["control_token_digests"] || [], &String.downcase/1),
+         allowed_attachment_roots: attachment_roots,
+         allowed_source_origins: origins
+       ]}
+    end
+  end
+
+  defp validate_shadow_worker(_, _root),
+    do: {:error, "host.toml: [shadow_worker] must be a table"}
+
+  defp validate_shadow_locations(nil, _limits), do: {:ok, []}
+
+  defp validate_shadow_locations(locations, limits) when is_list(locations) do
+    Enum.reduce_while(
+      locations,
+      {:ok, {MapSet.new(), []}},
+      &validate_shadow_location_entry(&1, &2, limits)
+    )
+    |> case do
+      {:ok, {_names, values}} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
+  end
+
+  defp validate_shadow_locations(_, _limits),
+    do: {:error, "host.toml: shadow_controller.location must be an array"}
+
+  defp validate_shadow_location_entry(location, {:ok, {names, acc}}, limits) do
+    case validate_shadow_location(location, limits) do
+      {:ok, value} -> add_shadow_location(value, names, acc)
+      {:error, _} = error -> {:halt, error}
+    end
+  end
+
+  defp add_shadow_location(%{name: name} = value, names, acc) do
+    if MapSet.member?(names, name),
+      do: {:halt, {:error, "host.toml: shadow_controller.location names must be unique"}},
+      else: {:cont, {:ok, {MapSet.put(names, name), [value | acc]}}}
+  end
+
+  defp validate_shadow_location(%{} = location, limits) do
+    with :ok <- allow_only(location, @allowed_shadow_location, "shadow_controller.location"),
+         {:ok, name} <- required_text(location["name"], "shadow_controller.location.name"),
+         {:ok, kind} <- validate_shadow_kind(location["kind"]),
+         :ok <- validate_shadow_location_shape(location, kind),
+         {:ok, control_timeout} <-
+           validate_timeout(location["control_timeout_ms"], kind, limits, "control_timeout_ms"),
+         {:ok, read_timeout} <-
+           validate_timeout(location["read_timeout_ms"], kind, limits, "read_timeout_ms") do
+      {:ok,
+       %{
+         name: name,
+         kind: kind,
+         control_base_url: String.trim(location["control_base_url"] || ""),
+         control_bearer_token: location["control_bearer_token"] || "",
+         control_timeout_ms: control_timeout,
+         read_timeout_ms: read_timeout
+       }}
+    end
+  end
+
+  defp validate_shadow_location(_, _limits),
+    do: {:error, "host.toml: shadow_controller.location entries must be tables"}
+
+  defp validate_shadow_kind("local"), do: {:ok, :local}
+  defp validate_shadow_kind("remote"), do: {:ok, :remote}
+
+  defp validate_shadow_kind(_),
+    do: {:error, "host.toml: shadow_controller.location.kind must be local or remote"}
+
+  defp validate_shadow_location_shape(location, :local) do
+    if Enum.any?(
+         ~w(control_base_url control_bearer_token control_timeout_ms read_timeout_ms),
+         &Map.has_key?(location, &1)
+       ),
+       do: {:error, "host.toml: local shadow locations must omit remote fields"},
+       else: :ok
+  end
+
+  defp validate_shadow_location_shape(location, :remote) do
+    with {:ok, _} <-
+           required_text(
+             location["control_base_url"],
+             "shadow_controller.location.control_base_url"
+           ),
+         :ok <-
+           validate_url(location["control_base_url"], "shadow_controller.location.control_base_url"),
+         {:ok, _} <-
+           required_text(
+             location["control_bearer_token"],
+             "shadow_controller.location.control_bearer_token"
+           ),
+         :ok <-
+           validate_positive_integer(
+             location["control_timeout_ms"],
+             "shadow_controller.location.control_timeout_ms"
+           ) do
+      validate_positive_integer(
+        location["read_timeout_ms"],
+        "shadow_controller.location.read_timeout_ms"
+      )
+    end
+  end
+
+  defp validate_timeout(_value, :local, _limits, _field), do: {:ok, nil}
+
+  defp validate_timeout(value, :remote, limits, field) do
+    max_wait_ms = limits["max_wait_ms"]
+
+    case value do
+      value when is_integer(value) and value > 0 and value <= max_wait_ms -> {:ok, value}
+      _ -> {:error, "host.toml: shadow_controller.location.#{field} must be 1..#{max_wait_ms}"}
+    end
+  end
+
+  defp validate_storage_root(nil, _root), do: :ok
+
+  defp validate_storage_root(value, root) when is_binary(value) do
+    expanded = Path.expand(value, root)
+
+    if Path.type(value) != :absolute and PathSafety.within_root?(expanded, root) and
+         PathSafety.no_symlink_components?(expanded),
+       do: :ok,
+       else: {:error, "host.toml: shadow_worker.storage_root must remain beneath the database root"}
+  end
+
+  defp validate_storage_root(_, _root),
+    do: {:error, "host.toml: shadow_worker.storage_root must be a relative path"}
+
+  defp validate_allowed_roots(nil, _field), do: {:ok, []}
+
+  defp validate_allowed_roots(values, field) when is_list(values) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
+      if is_binary(value) and Path.type(value) == :absolute and
+           PathSafety.no_symlink_components?(value),
+         do: {:cont, {:ok, [Path.expand(value) | acc]}},
+         else:
+           {:halt,
+            {:error, "host.toml: #{field} entries must be absolute, readable, non-symlink paths"}}
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
+  end
+
+  defp validate_allowed_roots(_, field), do: {:error, "host.toml: #{field} must be an array"}
+
+  defp validate_origins(nil, _field), do: {:ok, []}
+
+  defp validate_origins(values, field) when is_list(values) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
+      case validate_url(value, field) do
+        :ok -> {:cont, {:ok, [String.trim(value) | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
+  end
+
+  defp validate_origins(_, field), do: {:error, "host.toml: #{field} must be an array"}
+
+  defp validate_digest_list(nil, _field), do: :ok
+
+  defp validate_digest_list(values, field) when is_list(values) do
+    Enum.reduce_while(values, :ok, fn value, :ok ->
+      if is_binary(value) and byte_size(value) == @digest_hex_length and
+           Regex.match?(~r/^[0-9a-fA-F]+$/, value),
+         do: {:cont, :ok},
+         else: {:halt, {:error, "host.toml: #{field} entries must be SHA-256 hex digests"}}
+    end)
+  end
+
+  defp validate_digest_list(_, field), do: {:error, "host.toml: #{field} must be an array"}
+
+  defp validate_optional_text(nil, _field), do: :ok
+
+  defp validate_optional_text(value, field) when is_binary(value),
+    do: validate_url_or_empty(value, field)
+
+  defp validate_optional_text(_, field), do: {:error, "host.toml: #{field} must be a string"}
+
+  defp validate_optional_secret(nil, _field), do: :ok
+  defp validate_optional_secret(value, _field) when is_binary(value), do: :ok
+
+  defp validate_optional_secret(_, field),
+    do: {:error, "host.toml: #{field} must be a string"}
+
+  defp validate_url_or_empty("", _field), do: :ok
+  defp validate_url_or_empty(value, field), do: validate_url(value, field)
+
+  defp validate_url(value, field) when is_binary(value) do
+    uri = URI.parse(String.trim(value))
+
+    if uri.scheme in ["http", "https"] and is_binary(uri.host) and uri.userinfo == nil and
+         uri.query == nil and uri.fragment == nil and uri.path in [nil, "", "/"],
+       do: :ok,
+       else:
+         {:error,
+          "host.toml: #{field} must be a canonical HTTP(S) origin without userinfo, query, or fragment"}
+  end
+
+  defp validate_url(_, field), do: {:error, "host.toml: #{field} must be an HTTP(S) URL"}
+
+  defp required_text(value, field) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: {:error, "host.toml: #{field} must not be empty"}, else: {:ok, value}
+  end
+
+  defp required_text(_, field), do: {:error, "host.toml: #{field} must be a string"}
+
+  defp validate_positive_integer(value, _field) when is_integer(value) and value > 0, do: :ok
+
+  defp validate_positive_integer(_, field),
+    do: {:error, "host.toml: #{field} must be a positive integer"}
 
   defp validate_federation(nil, _limits),
     do:

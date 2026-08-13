@@ -24,6 +24,7 @@ defmodule ElixirDB.Application do
       ElixirDB.Replication.JobManager,
       {Task.Supervisor, name: ElixirDB.TaskSupervisor},
       ElixirDB.Runtime.DatabaseCatalog,
+      ElixirDB.Shadow.Supervisor,
       ElixirDB.DerivedView.Supervisor,
       ElixirDB.DerivedView.Manager,
       http_server

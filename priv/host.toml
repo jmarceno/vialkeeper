@@ -100,3 +100,28 @@ otlp_endpoint = ""
 # route is unavailable; the /v1 API is unchanged.
 [web_ui]
 enabled = true
+
+# Source-local shadow control is disabled by default. Locations are explicit
+# operator-supplied workers; local locations omit all remote fields.
+[shadow_controller]
+enabled = false
+source_base_url = ""
+source_bearer_token = ""
+location = []
+
+# [[shadow_controller.location]]
+# name = "worker-a"
+# kind = "remote"
+# control_base_url = "https://worker-a.example"
+# control_bearer_token = "<secret>"
+# control_timeout_ms = 5000
+# read_timeout_ms = 5000
+
+# Worker mode is also disabled by default. Attachment roots are absolute
+# worker-visible CAS blobs directories and are never copied by ElixirDB.
+[shadow_worker]
+enabled = false
+storage_root = "shadows"
+control_token_digests = []
+allowed_attachment_roots = []
+allowed_source_origins = []
