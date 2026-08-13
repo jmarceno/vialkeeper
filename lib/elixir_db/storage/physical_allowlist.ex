@@ -42,7 +42,9 @@ defmodule ElixirDB.Storage.PhysicalAllowlist do
     "test/end_to_end/hot_journal_recovery_test.exs",
     "test/end_to_end/offline_copy_test.exs",
     "test/observability/sqlite_probe_test.exs",
-    "test/contract/term_blob_test.exs"
+    "test/contract/term_blob_test.exs",
+    "test/physical/sqlite/read_pool_connection_test.exs",
+    "test/physical/sqlite/read_snapshot_test.exs"
   ]
 
   @classified_physical_support [

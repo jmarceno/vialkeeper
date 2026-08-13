@@ -18,6 +18,11 @@ defmodule ElixirDB.Storage.Memory.Transaction do
     end
   end
 
+  @impl true
+  def run_snapshot(%BackendContext{} = context, fun) when is_function(fun, 1) do
+    run(context, fun)
+  end
+
   defp run_locked(adapter, context, fun) do
     case :global.trans({__MODULE__, adapter.store}, fn ->
            execute(adapter, context, Store.get(adapter.store), fun)

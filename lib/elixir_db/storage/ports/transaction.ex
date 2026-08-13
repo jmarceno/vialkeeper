@@ -14,4 +14,5 @@ defmodule ElixirDB.Storage.Ports.Transaction do
   @type fun :: (BackendContext.t() -> result(term()))
 
   @callback run(BackendContext.t(), fun()) :: result(term())
+  @callback run_snapshot(BackendContext.t(), fun()) :: result(term())
 end

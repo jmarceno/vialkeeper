@@ -26,12 +26,37 @@ defmodule ElixirDB.Storage.Transaction do
         Errors.wrap(backend.run_transaction(context, fun))
 
       function_exported?(backend, :transaction_port, 0) ->
-        port = backend.transaction_port()
-        Errors.wrap(port.run(context, fun))
+        Errors.wrap(backend.transaction_port().run(context, fun))
 
       true ->
-        {:error,
-         ElixirDB.Error.internal_error("storage backend does not implement the transaction port")}
+        missing_transaction_port()
     end
+  end
+
+  @doc """
+  Runs `fun` against one consistent snapshot of `context`.
+
+  `fun` receives an opaque backend context and must return `{:ok, value}` or
+  `{:error, ElixirDB.Error.t()}`. Nested snapshots are an error.
+  """
+  @spec run_snapshot(BackendContext.t(), fun()) :: {:ok, term()} | {:error, ElixirDB.Error.t()}
+  def run_snapshot(%BackendContext{} = context, fun) when is_function(fun, 1) do
+    backend = BackendContext.backend(context)
+
+    cond do
+      function_exported?(backend, :run_snapshot, 2) ->
+        Errors.wrap(backend.run_snapshot(context, fun))
+
+      function_exported?(backend, :transaction_port, 0) ->
+        Errors.wrap(backend.transaction_port().run_snapshot(context, fun))
+
+      true ->
+        missing_transaction_port()
+    end
+  end
+
+  defp missing_transaction_port do
+    {:error,
+     ElixirDB.Error.internal_error("storage backend does not implement the transaction port")}
   end
 end

@@ -9,10 +9,12 @@ defmodule ElixirDB.Storage.Ports do
 
   Port families:
 
-  * `:lifecycle` — create/open/close, identity, configuration, capabilities,
-    backend diagnostics, and an opaque `ElixirDB.Storage.BackendContext`
-  * `:transaction` — run an atomic operation with a backend-selected isolation
-    strategy; callers never supply engine transaction text
+  * `:lifecycle` — create/open/close, optional snapshot readers, identity,
+    configuration, capabilities, backend diagnostics, and an opaque
+    `ElixirDB.Storage.BackendContext`
+  * `:transaction` — run an atomic write or a read snapshot with a
+    backend-selected isolation strategy; callers never supply engine
+    transaction text
   * `:ownership` — acquire/release single-database runtime ownership
   * `:document_facts` — document/revision/leaf/winner fact reads and writes
   * `:change_log` — allocate/append/read changes and causal state
