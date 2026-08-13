@@ -7,7 +7,7 @@ defmodule ElixirDB.Attachments do
   while attachment bytes are transferred.
   """
 
-  alias ElixirDB.Attachments.{FilesystemStore, Manifest, Representation, Ticket}
+  alias ElixirDB.Attachments.{FilesystemStore, Manifest, Representation, StoreRef, Ticket}
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Attachment, as: AttachmentInstr
   alias ElixirDB.Replication.BlobRepresentationStream
@@ -391,7 +391,7 @@ defmodule ElixirDB.Attachments do
          max_bytes,
          admission_class
        ) do
-    case @store.begin_put_representation(bundle_root, descriptor, max_bytes) do
+    case @store.begin_put_representation(StoreRef.bundle_local(bundle_root), descriptor, max_bytes) do
       {:ok, writer} ->
         try do
           with {:ok, stream_chunks, final_conn} <-
@@ -456,7 +456,7 @@ defmodule ElixirDB.Attachments do
   end
 
   defp do_upload(uuid, bundle_root, source, max_bytes, opts, admission_class) do
-    case @store.begin_put(bundle_root, max_bytes, Map.new(opts)) do
+    case @store.begin_put(StoreRef.bundle_local(bundle_root), max_bytes, Map.new(opts)) do
       {:ok, writer} ->
         try do
           with {:ok, stream_chunks, final_conn} <-
@@ -522,7 +522,7 @@ defmodule ElixirDB.Attachments do
            ),
          length when is_integer(length) and length >= 0 <-
            MapAccess.get_first(metadata, [:logical_size, :length]),
-         :ok <- @store.verify(bundle_root, digest, length) do
+         :ok <- @store.verify(StoreRef.bundle_local(bundle_root), digest, length) do
       true
     else
       _ -> false
@@ -535,7 +535,7 @@ defmodule ElixirDB.Attachments do
 
   defp open_blob_representation_under_guard(uuid, digest, read_guard, read_handle, admission_class) do
     with {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
-         true <- @store.exists?(bundle_root, digest),
+         true <- @store.exists?(StoreRef.bundle_local(bundle_root), digest),
          {:ok, meta} <-
            metadata_command(
              uuid,
@@ -544,7 +544,8 @@ defmodule ElixirDB.Attachments do
            ),
          length when is_integer(length) and length >= 0 <-
            MapAccess.get_first(meta, [:logical_size, :length]),
-         {:ok, {descriptor, reader}} <- @store.open_representation_read(bundle_root, digest),
+         {:ok, {descriptor, reader}} <-
+           @store.open_representation_read(StoreRef.bundle_local(bundle_root), digest),
          :ok <- Representation.validate_route_digest(digest, descriptor),
          read_handle <-
            AttachmentInstr.finish_read_open(read_handle,
@@ -774,7 +775,7 @@ defmodule ElixirDB.Attachments do
   defp open_stream_under_guard(uuid, ticket_request, read_guard, read_handle) do
     case resolve_ticket_command(uuid, ticket_request) do
       {:ok, ticket} ->
-        case @store.open_read(ticket.bundle_path, ticket.blob_digest) do
+        case @store.open_read(StoreRef.bundle_local(ticket.bundle_path), ticket.blob_digest) do
           {:ok, reader} ->
             read_handle =
               AttachmentInstr.finish_read_open(read_handle, logical_bytes: ticket.logical_size)
@@ -850,7 +851,7 @@ defmodule ElixirDB.Attachments do
   defp resolve_one_digest(uuid, bundle_root, digest) do
     with {:ok, meta} <-
            DatabaseCatalog.command(uuid, {:command, :resolve_blob_metadata, %{digest: digest}}),
-         true <- @store.exists?(bundle_root, digest) do
+         true <- @store.exists?(StoreRef.bundle_local(bundle_root), digest) do
       length = MapAccess.get_first(meta, [:logical_size, :length])
 
       if is_integer(length) and length >= 0 do
@@ -942,9 +943,9 @@ defmodule ElixirDB.Attachments do
              {:command, :cleanup_expired_pending_blobs, %{}},
              admission_class
            ),
-         {:ok, on_disk} <- @store.list_digests(bundle_root),
+         {:ok, on_disk} <- @store.list_digests(StoreRef.bundle_local(bundle_root)),
          {:ok, {deleted, bytes_deleted}} <- delete_unreachable(bundle_root, on_disk, live),
-         :ok <- @store.cleanup_tmp(bundle_root, tmp_cleanup_cutoff()) do
+         :ok <- @store.cleanup_tmp(StoreRef.bundle_local(bundle_root), tmp_cleanup_cutoff()) do
       {:ok,
        %{
          deleted: length(deleted),
@@ -996,8 +997,9 @@ defmodule ElixirDB.Attachments do
     |> Enum.reduce_while({:ok, {[], 0}}, fn digest, {:ok, {deleted, bytes_deleted}} ->
       invoke_gc_hook({:before_delete, digest})
 
-      with {:ok, %{physical_size: physical_size}} <- @store.stat(bundle_root, digest),
-           :ok <- @store.delete(bundle_root, digest) do
+      with {:ok, %{physical_size: physical_size}} <-
+             @store.stat(StoreRef.bundle_local(bundle_root), digest),
+           :ok <- @store.delete(StoreRef.bundle_local(bundle_root), digest) do
         {:cont, {:ok, {[digest | deleted], bytes_deleted + physical_size}}}
       else
         {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} ->

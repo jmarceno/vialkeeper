@@ -9,7 +9,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
   @behaviour ElixirDB.Attachments.Store
 
-  alias ElixirDB.Attachments.Compression
+  alias ElixirDB.Attachments.{Compression, StoreRef}
   alias ElixirDB.Attachments.Representation
   alias ElixirDB.DatabaseBundle
   alias ElixirDB.DurableFS
@@ -30,17 +30,18 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   @type representation_reader :: {:representation_reader, reference()}
 
   @impl true
-  def begin_put(bundle_path, max_bytes, _options)
-      when is_binary(bundle_path) and is_integer(max_bytes) and max_bytes > 0 do
-    with {:ok, bundle} <- bundle_for(bundle_path),
+  def begin_put(store_ref, max_bytes, _options)
+      when is_integer(max_bytes) and max_bytes > 0 do
+    with {:ok, ref} <- writable_ref(store_ref),
+         {:ok, bundle} <- bundle_for(ref),
          {:ok, tmp_path} <- exclusive_tmp(bundle.tmp_path),
          {:ok, fd} <- File.open(tmp_path, [:write, :binary, :raw]) do
-      ref = make_ref()
+      writer_ref = make_ref()
 
       put_writer(
-        ref,
+        writer_ref,
         %{
-          bundle_path: bundle.root,
+          store_ref: ref,
           tmp_path: tmp_path,
           fd: fd,
           hash_ctx: :crypto.hash_init(:sha256),
@@ -54,7 +55,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
         }
       )
 
-      {:ok, {:writer, ref}}
+      {:ok, {:writer, writer_ref}}
     end
   end
 
@@ -91,7 +92,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
            :ok <- sync_file(state.fd),
            :ok <- close_fd(state.fd),
            {:ok, install_kind} <-
-             install_blob(state.bundle_path, state.tmp_path, descriptor.logical_digest) do
+             install_blob(state.store_ref, state.tmp_path, descriptor.logical_digest) do
         {:ok,
          %{
            digest: descriptor.logical_digest,
@@ -117,20 +118,21 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   def abort_put(_), do: :ok
 
   @impl true
-  def begin_put_representation(bundle_path, descriptor, max_logical_bytes)
-      when is_binary(bundle_path) and is_integer(max_logical_bytes) and max_logical_bytes > 0 do
-    with {:ok, descriptor} <- Representation.descriptor(descriptor),
+  def begin_put_representation(store_ref, descriptor, max_logical_bytes)
+      when is_integer(max_logical_bytes) and max_logical_bytes > 0 do
+    with {:ok, ref} <- writable_ref(store_ref),
+         {:ok, descriptor} <- Representation.descriptor(descriptor),
          :ok <- enforce_max_logical_bytes(descriptor.logical_length, max_logical_bytes),
-         {:ok, bundle} <- bundle_for(bundle_path),
+         {:ok, bundle} <- bundle_for(ref),
          {:ok, tmp_path} <- exclusive_tmp(bundle.tmp_path),
          {:ok, fd} <- File.open(tmp_path, [:write, :binary, :raw]) do
-      ref = make_ref()
+      writer_ref = make_ref()
 
       put_keyed(
         @representation_writer_key,
-        ref,
+        writer_ref,
         %{
-          bundle_path: bundle.root,
+          store_ref: ref,
           tmp_path: tmp_path,
           fd: fd,
           descriptor: descriptor,
@@ -139,7 +141,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
         }
       )
 
-      {:ok, {:representation_writer, ref}}
+      {:ok, {:representation_writer, writer_ref}}
     end
   end
 
@@ -177,7 +179,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
            :ok <- sync_file(state.fd),
            :ok <- close_fd(state.fd),
            {:ok, install_kind} <-
-             install_blob(state.bundle_path, state.tmp_path, state.descriptor.logical_digest) do
+             install_blob(state.store_ref, state.tmp_path, state.descriptor.logical_digest) do
         {:ok,
          %{
            digest: state.descriptor.logical_digest,
@@ -229,21 +231,21 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   def writer_tmp_path(_), do: nil
 
   @impl true
-  def exists?(bundle_path, digest) do
-    match?({:ok, _path}, resolve_blob_file(bundle_path, digest))
+  def exists?(store_ref, digest) do
+    match?({:ok, _path}, resolve_blob_file(store_ref, digest))
   end
 
   @impl true
-  def stat(bundle_path, digest) do
-    with {:ok, path} <- resolve_blob_file(bundle_path, digest),
+  def stat(store_ref, digest) do
+    with {:ok, path} <- resolve_blob_file(store_ref, digest),
          {:ok, descriptor, size} <- read_validated_descriptor(path, digest) do
       {:ok, %{encoding: descriptor.encoding, physical_size: size}}
     end
   end
 
   @impl true
-  def open_read(bundle_path, digest) do
-    with {:ok, path} <- resolve_blob_file(bundle_path, digest),
+  def open_read(store_ref, digest) do
+    with {:ok, path} <- resolve_blob_file(store_ref, digest),
          {:ok, descriptor, _size} <- read_validated_descriptor(path, digest),
          {:ok, fd, decompress_ctx} <- open_logical_components(path, descriptor) do
       ref = make_ref()
@@ -303,8 +305,8 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   def close_read(_), do: :ok
 
   @impl true
-  def open_representation_read(bundle_path, digest) do
-    with {:ok, path} <- resolve_blob_file(bundle_path, digest),
+  def open_representation_read(store_ref, digest) do
+    with {:ok, path} <- resolve_blob_file(store_ref, digest),
          {:ok, descriptor, _size} <- read_validated_descriptor(path, digest),
          {:ok, fd} <- File.open(path, [:read, :binary, :raw]) do
       ref = make_ref()
@@ -356,10 +358,10 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   def close_representation_read(_), do: :ok
 
   @impl true
-  def list_digests(bundle_path) do
-    with {:ok, bundle} <- bundle_for(bundle_path) do
+  def list_digests(store_ref) do
+    with {:ok, ref} <- readable_ref(store_ref) do
       digests =
-        bundle.blobs_path
+        ref.blobs_path
         |> Path.join("**/*.blob")
         |> Path.wildcard()
         |> Enum.map(&digest_from_blob_path/1)
@@ -372,26 +374,28 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   end
 
   @impl true
-  def delete(bundle_path, digest) do
-    with {:ok, path} <- resolve_blob_file(bundle_path, digest) do
+  def delete(store_ref, digest) do
+    with {:ok, ref} <- writable_ref(store_ref),
+         {:ok, path} <- resolve_blob_file(ref, digest) do
       safe_rm(path)
     end
   end
 
   @impl true
-  def verify(bundle_path, digest, expected_size)
+  def verify(store_ref, digest, expected_size)
       when is_integer(expected_size) and expected_size >= 0 do
-    with {:ok, path} <- resolve_blob_file(bundle_path, digest),
+    with {:ok, path} <- resolve_blob_file(store_ref, digest),
          {:ok, descriptor} <- validate_physical_blob(path, digest),
          :ok <- validate_expected_logical_size(descriptor, expected_size),
-         {:ok, reader} <- open_read(bundle_path, digest) do
+         {:ok, reader} <- open_read(store_ref, digest) do
       stream_verify(reader, expected_size, digest)
     end
   end
 
   @impl true
-  def cleanup_tmp(bundle_path, %DateTime{} = cutoff) do
-    with {:ok, bundle} <- bundle_for(bundle_path) do
+  def cleanup_tmp(store_ref, %DateTime{} = cutoff) do
+    with {:ok, ref} <- writable_ref(store_ref),
+         {:ok, bundle} <- bundle_for(ref) do
       cutoff_unix = DateTime.to_unix(cutoff)
 
       bundle.tmp_path
@@ -796,8 +800,8 @@ defmodule ElixirDB.Attachments.FilesystemStore do
   defp encoding_from_phase({:writing, encoding}), do: encoding
   defp encoding_from_phase(:probing), do: :raw
 
-  defp install_blob(bundle_path, tmp_path, digest) do
-    case bundle_for(bundle_path) do
+  defp install_blob(store_ref, tmp_path, digest) do
+    case bundle_for(store_ref) do
       {:ok, bundle} ->
         with :ok <- ensure_blob_directory(bundle, digest) do
           install_into_bundle(bundle, tmp_path, digest)
@@ -1040,11 +1044,11 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
   defp maybe_open_decompressor(:zstd), do: Compression.new_decompression_context()
 
-  defp resolve_blob_file(bundle_path, digest) do
+  defp resolve_blob_file(store_ref, digest) do
     with {:ok, digest} <- validate_digest(digest),
-         {:ok, bundle} <- bundle_for(bundle_path),
-         :ok <- ensure_blob_path_safe(bundle, digest) do
-      path = blob_path(bundle.blobs_path, digest)
+         {:ok, ref} <- readable_ref(store_ref),
+         :ok <- ensure_blob_path_safe(ref, digest) do
+      path = blob_path(ref.blobs_path, digest)
 
       case blob_file_kind(path) do
         :regular ->
@@ -1160,7 +1164,7 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     end
   end
 
-  defp bundle_for(bundle_path) do
+  defp bundle_for(%StoreRef{mode: :bundle_local, bundle_root: bundle_path}) do
     case DatabaseBundle.open(bundle_path) do
       {:ok, bundle} ->
         if PathSafety.within_root?(bundle.blobs_path, bundle.root) and
@@ -1172,6 +1176,24 @@ defmodule ElixirDB.Attachments.FilesystemStore do
 
       {:error, %Error{}} = error ->
         error
+    end
+  end
+
+  defp bundle_for(%StoreRef{mode: :external_read_only}),
+    do: {:error, Error.shadow_attachment_store_read_only("external attachment store is read-only")}
+
+  defp bundle_for(bundle_path) when is_binary(bundle_path),
+    do: bundle_for(StoreRef.bundle_local(bundle_path))
+
+  defp bundle_for(_),
+    do: {:error, Error.invalid_request("attachment store reference is invalid")}
+
+  defp readable_ref(store_ref), do: StoreRef.normalize(store_ref)
+
+  defp writable_ref(store_ref) do
+    with {:ok, ref} <- StoreRef.normalize(store_ref),
+         :ok <- StoreRef.ensure_writable(ref) do
+      {:ok, ref}
     end
   end
 
@@ -1225,31 +1247,45 @@ defmodule ElixirDB.Attachments.FilesystemStore do
     end
   end
 
-  defp ensure_blob_path_safe(bundle, digest) do
-    directory = Path.join(bundle.blobs_path, prefix(digest))
+  defp ensure_blob_path_safe(%DatabaseBundle{} = bundle, digest),
+    do: ensure_blob_path_safe(StoreRef.bundle_local(bundle), digest)
 
-    cond do
-      not PathSafety.within_root?(directory, bundle.root) ->
-        {:error, Error.integrity_violation("attachment blob path escapes root")}
+  defp ensure_blob_path_safe(%StoreRef{} = ref, digest) do
+    directory = Path.join(ref.blobs_path, prefix(digest))
 
-      not PathSafety.no_symlink_components?(directory) ->
-        {:error, Error.integrity_violation("attachment blob path contains a symlink")}
+    with :ok <- validate_blob_root(ref, directory),
+         :ok <- validate_blob_symlinks(directory) do
+      inspect_blob_directory(directory)
+    end
+  end
 
-      true ->
-        case File.lstat(directory) do
-          {:ok, %File.Stat{type: :directory}} ->
-            :ok
+  defp validate_blob_root(%StoreRef{} = ref, directory) do
+    root = ref.bundle_root || ref.blobs_path
 
-          {:ok, _stat} ->
-            {:error, Error.integrity_violation("attachment blob prefix must be a directory")}
+    if PathSafety.within_root?(directory, root) or StoreRef.within_allowed_root?(ref, directory),
+      do: :ok,
+      else: {:error, Error.integrity_violation("attachment blob path escapes root")}
+  end
 
-          {:error, :enoent} ->
-            :ok
+  defp validate_blob_symlinks(directory) do
+    if PathSafety.no_symlink_components?(directory),
+      do: :ok,
+      else: {:error, Error.integrity_violation("attachment blob path contains a symlink")}
+  end
 
-          {:error, reason} ->
-            {:error,
-             Error.internal_error("cannot inspect blob directory", %{reason: inspect(reason)})}
-        end
+  defp inspect_blob_directory(directory) do
+    case File.lstat(directory) do
+      {:ok, %File.Stat{type: :directory}} ->
+        :ok
+
+      {:ok, _stat} ->
+        {:error, Error.integrity_violation("attachment blob prefix must be a directory")}
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, Error.internal_error("cannot inspect blob directory", %{reason: inspect(reason)})}
     end
   end
 

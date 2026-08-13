@@ -8,7 +8,9 @@ defmodule ElixirDB.Attachments.Store do
   callbacks stream the encoded payload only and must not decompress.
   """
 
-  @callback begin_put(bundle_path :: binary(), max_bytes :: pos_integer(), options :: map()) ::
+  alias ElixirDB.Attachments.StoreRef
+
+  @callback begin_put(store_ref :: StoreRef.t(), max_bytes :: pos_integer(), options :: map()) ::
               {:ok, term()} | {:error, ElixirDB.Error.t()}
 
   @callback write_chunk(writer :: term(), chunk :: binary()) ::
@@ -27,7 +29,7 @@ defmodule ElixirDB.Attachments.Store do
   @callback abort_put(writer :: term()) :: :ok
 
   @callback begin_put_representation(
-              bundle_path :: binary(),
+              store_ref :: StoreRef.t(),
               descriptor :: map(),
               max_logical_bytes :: pos_integer()
             ) :: {:ok, term()} | {:error, ElixirDB.Error.t()}
@@ -47,12 +49,12 @@ defmodule ElixirDB.Attachments.Store do
 
   @callback abort_put_representation(writer :: term()) :: :ok
 
-  @callback exists?(bundle_path :: binary(), digest :: binary()) :: boolean()
+  @callback exists?(store_ref :: StoreRef.t(), digest :: binary()) :: boolean()
 
-  @callback stat(bundle_path :: binary(), digest :: binary()) ::
+  @callback stat(store_ref :: StoreRef.t(), digest :: binary()) ::
               {:ok, map()} | {:error, ElixirDB.Error.t()}
 
-  @callback open_read(bundle_path :: binary(), digest :: binary()) ::
+  @callback open_read(store_ref :: StoreRef.t(), digest :: binary()) ::
               {:ok, term()} | {:error, ElixirDB.Error.t()}
 
   @callback read_chunks(reader :: term()) ::
@@ -60,7 +62,7 @@ defmodule ElixirDB.Attachments.Store do
 
   @callback close_read(reader :: term()) :: :ok
 
-  @callback open_representation_read(bundle_path :: binary(), digest :: binary()) ::
+  @callback open_representation_read(store_ref :: StoreRef.t(), digest :: binary()) ::
               {:ok, {map(), term()}} | {:error, ElixirDB.Error.t()}
 
   @callback read_representation_chunks(reader :: term()) ::
@@ -68,15 +70,19 @@ defmodule ElixirDB.Attachments.Store do
 
   @callback close_representation_read(reader :: term()) :: :ok
 
-  @callback list_digests(bundle_path :: binary()) ::
+  @callback list_digests(store_ref :: StoreRef.t()) ::
               {:ok, [binary()]} | {:error, ElixirDB.Error.t()}
 
-  @callback delete(bundle_path :: binary(), digest :: binary()) ::
+  @callback delete(store_ref :: StoreRef.t(), digest :: binary()) ::
               :ok | {:error, ElixirDB.Error.t()}
 
-  @callback verify(bundle_path :: binary(), digest :: binary(), expected_size :: non_neg_integer()) ::
+  @callback verify(
+              store_ref :: StoreRef.t(),
+              digest :: binary(),
+              expected_size :: non_neg_integer()
+            ) ::
               :ok | {:error, ElixirDB.Error.t()}
 
-  @callback cleanup_tmp(bundle_path :: binary(), cutoff :: DateTime.t()) ::
+  @callback cleanup_tmp(store_ref :: StoreRef.t(), cutoff :: DateTime.t()) ::
               :ok | {:error, ElixirDB.Error.t()}
 end
