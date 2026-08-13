@@ -7,7 +7,15 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   alias ElixirDB.DerivedView.Manager, as: DerivedViewManager
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Compact
-  alias ElixirDB.Runtime.{AttachmentCoordinator, ChangeNotifier, RetentionScheduler}
+
+  alias ElixirDB.Runtime.{
+    AttachmentCoordinator,
+    ChangeNotifier,
+    CommandContext,
+    DatabaseCommandPolicy,
+    RetentionScheduler
+  }
+
   alias ElixirDB.Storage.Registry, as: StorageRegistry
   alias ElixirDB.Storage.Results
   alias ElixirDB.Storage.Services
@@ -23,6 +31,15 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   def command(uuid, command, timeout \\ 30_000) do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
       [{pid, _}] -> GenServer.call(pid, command, timeout)
+      [] -> {:error, ElixirDB.Error.database_closed("database owner is not running")}
+    end
+  end
+
+  @doc "Routes a command with an explicit internal authority context."
+  @spec command_with_context(binary(), CommandContext.t(), term(), timeout()) :: term()
+  def command_with_context(uuid, %CommandContext{} = context, command, timeout \\ 30_000) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid}) do
+      [{pid, _}] -> GenServer.call(pid, {:command_context, context, command}, timeout)
       [] -> {:error, ElixirDB.Error.database_closed("database owner is not running")}
     end
   end
@@ -110,8 +127,12 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   @impl true
   def handle_call(:sync, _from, state), do: {:reply, :ok, state}
 
+  def handle_call({:command_context, %CommandContext{} = context, command}, from, state) do
+    dispatch_command(context, command, from, state)
+  end
+
   def handle_call(command, from, state) do
-    handle_command(Commands.normalize(command), from, state)
+    dispatch_command(CommandContext.public(), command, from, state)
   catch
     kind, reason ->
       Logger.error("database owner command raised",
@@ -125,6 +146,15 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
           cause: inspect(reason),
           kind: kind
         })}, state}
+  end
+
+  defp dispatch_command(%CommandContext{} = context, command, from, state) do
+    normalized = Commands.normalize(command)
+
+    case DatabaseCommandPolicy.authorize(database_kind(state), context, normalized) do
+      :ok -> handle_command(normalized, from, state)
+      {:error, %ElixirDB.Error{} = error} -> {:reply, {:error, error}, state}
+    end
   end
 
   defp handle_command(%Commands.Identity{}, _from, state),

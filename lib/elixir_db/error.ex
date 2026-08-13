@@ -27,6 +27,16 @@ defmodule ElixirDB.Error do
     database_in_use: {409, true},
     database_not_closable: {409, true},
     derived_database_read_only: {403, false},
+    shadow_database_hidden: {404, false},
+    shadow_command_forbidden: {403, false},
+    shadow_not_ready: {503, true},
+    shadow_incompatible: {409, false},
+    shadow_generation_stale: {409, false},
+    shadow_generation_conflict: {409, false},
+    shadow_identity_conflict: {409, false},
+    shadow_attachment_unavailable: {503, true},
+    shadow_replacement_required: {410, false},
+    shadow_attachment_store_read_only: {403, false},
     duplicate_database_uuid: {409, false},
     revision_conflict: {409, false},
     bookmark_stale: {409, true},
@@ -102,6 +112,15 @@ defmodule ElixirDB.Error do
     %{
       code: "internal_error",
       message: "internal error",
+      retryable: retryable,
+      details: %{}
+    }
+  end
+
+  def public(%__MODULE__{code: :shadow_database_hidden, retryable: retryable}) do
+    %{
+      code: "database_not_found",
+      message: "database not found",
       retryable: retryable,
       details: %{}
     }

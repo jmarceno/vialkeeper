@@ -16,9 +16,24 @@ defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
     limit = ElixirDB.Config.host_limits()[:admission_limit] || 128
     policy = admission_policy(limit)
 
-    children = [
+    children = children_for_kind(uuid, bundle, Map.get(args, :database_kind), limit, policy)
+
+    Supervisor.init(children, strategy: :rest_for_one)
+  end
+
+  defp children_for_kind(uuid, bundle, :shadow, limit, policy) do
+    [
       {ElixirDB.Runtime.Ownership, DatabaseBundle.root(bundle)},
-      {ElixirDB.Runtime.DatabaseOwner, {uuid, bundle, Map.get(args, :database_kind)}},
+      {ElixirDB.Runtime.DatabaseOwner, {uuid, bundle, :shadow}},
+      AdmissionSupervisor.child_spec(uuid, limit, policy),
+      {ElixirDB.Runtime.AttachmentCoordinator, {uuid, :read_only}}
+    ]
+  end
+
+  defp children_for_kind(uuid, bundle, kind, limit, policy) do
+    [
+      {ElixirDB.Runtime.Ownership, DatabaseBundle.root(bundle)},
+      {ElixirDB.Runtime.DatabaseOwner, {uuid, bundle, kind}},
       AdmissionSupervisor.child_spec(uuid, limit, policy),
       {ElixirDB.Runtime.AttachmentCoordinator, uuid},
       {ElixirDB.Runtime.ChangeNotifier, uuid},
@@ -26,8 +41,6 @@ defmodule ElixirDB.Runtime.DatabaseRuntimeSupervisor do
       {ElixirDB.Query.SubscriptionSupervisor, uuid},
       {ElixirDB.Runtime.RetentionScheduler, uuid}
     ]
-
-    Supervisor.init(children, strategy: :rest_for_one)
   end
 
   defp admission_policy(limit) do

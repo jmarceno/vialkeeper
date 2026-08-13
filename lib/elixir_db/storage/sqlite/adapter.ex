@@ -91,7 +91,8 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
            Schema.create(conn, uuid, config_json,
              storage_mode: storage_mode,
              database_kind: MapAccess.get(options, :database_kind, :ordinary),
-             initial_derived_view: MapAccess.get(options, :initial_derived_view)
+             initial_derived_view: MapAccess.get(options, :initial_derived_view),
+             shadow_metadata: MapAccess.get(options, :shadow_metadata)
            ),
          {:ok, identity} <- Schema.validate(conn, storage_mode: storage_mode) do
       {:ok,
@@ -171,6 +172,7 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
       document_facts: ElixirDB.Storage.SQLite.DocumentFacts,
       change_log: ElixirDB.Storage.SQLite.ChangeLog,
       local_records: ElixirDB.Storage.SQLite.LocalRecordsPort,
+      shadow_state: ElixirDB.Storage.SQLite.ShadowStatePort,
       retention_records: ElixirDB.Storage.SQLite.RetentionRecordsPort,
       index_candidates: ElixirDB.Storage.SQLite.IndexCandidates,
       view_state: ElixirDB.Storage.SQLite.ViewStatePort,

@@ -24,6 +24,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     Inspection,
     Lifecycle,
     RetentionRecords,
+    ShadowState,
     Store,
     Transaction,
     ViewState
@@ -82,13 +83,15 @@ defmodule ElixirDB.Storage.Memory.Adapter do
     uuid = MapAccess.get(options, :database_uuid, ElixirDB.UUID.v4())
     config = MapAccess.get(options, :config, ElixirDB.Config.defaults())
     initial_derived = MapAccess.get(options, :initial_derived_view)
+    shadow_metadata = MapAccess.get(options, :shadow_metadata)
 
     with :ok <- RequestValidation.validate_uuid(uuid),
          {:ok, bounded_config} <- ElixirDB.Config.merge_and_bound(config),
          :ok <- File.mkdir_p(path),
          identity <- build_identity(uuid, bounded_config, options),
          {:ok, store} <- Store.start_link(root: path, identity: identity),
-         :ok <- maybe_seed_derived(store, identity, initial_derived) do
+         :ok <- maybe_seed_derived(store, identity, initial_derived),
+         :ok <- maybe_seed_shadow(store, identity, shadow_metadata) do
       {:ok, %__MODULE__{root: Path.expand(path), store: store, identity: identity}}
     end
   end
@@ -97,7 +100,15 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   def open(path, _options \\ %{}) when is_binary(path) do
     with {:ok, store} <- Store.open(path) do
       identity = Store.identity(store)
-      {:ok, %__MODULE__{root: Path.expand(path), store: store, identity: identity}}
+
+      case validate_shadow_state(identity, Store.get(store)) do
+        :ok ->
+          {:ok, %__MODULE__{root: Path.expand(path), store: store, identity: identity}}
+
+        {:error, _} = error ->
+          _ = Store.close(store)
+          error
+      end
     end
   end
 
@@ -317,6 +328,7 @@ defmodule ElixirDB.Storage.Memory.Adapter do
       transaction: Transaction,
       document_facts: DocumentFacts,
       change_log: ChangeLog,
+      shadow_state: ShadowState,
       retention_records: RetentionRecords,
       index_candidates: IndexCandidates,
       view_state: ViewState,
@@ -375,6 +387,59 @@ defmodule ElixirDB.Storage.Memory.Adapter do
   end
 
   defp maybe_seed_derived(_store, _identity, _), do: :ok
+
+  defp maybe_seed_shadow(_store, %{database_kind: kind}, nil) when kind != :shadow, do: :ok
+
+  defp maybe_seed_shadow(_store, %{database_kind: :shadow}, nil),
+    do: {:error, ElixirDB.Error.invalid_request("shadow metadata is required")}
+
+  defp maybe_seed_shadow(store, %{database_kind: :shadow}, metadata) when is_map(metadata) do
+    state = Store.get(store)
+
+    case validate_shadow_state(state.identity, %{state | shadow_metadata: metadata}) do
+      :ok ->
+        Store.update(store, fn next_state ->
+          {:ok, %{next_state | shadow_metadata: metadata}, :ok}
+        end)
+        |> normalize_seed_result()
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp maybe_seed_shadow(_store, _identity, _metadata), do: :ok
+
+  defp normalize_seed_result({:ok, :ok}), do: :ok
+  defp normalize_seed_result({:error, _} = error), do: error
+
+  defp validate_shadow_state(%{database_kind: :shadow, database_uuid: database_uuid}, state) do
+    case state.shadow_metadata do
+      %{source_database_uuid: source_uuid, shadow_database_uuid: ^database_uuid} = metadata
+      when source_uuid != database_uuid ->
+        if valid_shadow_metadata?(metadata), do: :ok, else: invalid_shadow_metadata()
+
+      _ ->
+        invalid_shadow_metadata()
+    end
+  end
+
+  defp validate_shadow_state(_identity, _state), do: :ok
+
+  defp valid_shadow_metadata?(metadata) do
+    is_binary(metadata[:source_database_uuid]) and
+      is_binary(metadata[:operation_id]) and
+      is_integer(metadata[:generation]) and
+      metadata[:generation] > 0 and
+      metadata[:attachment_store_type] == "external_cas" and
+      is_binary(metadata[:attachment_location]) and
+      Path.type(metadata[:attachment_location]) == :absolute and
+      is_binary(metadata[:specification_digest]) and
+      is_binary(metadata[:created_at])
+  end
+
+  defp invalid_shadow_metadata,
+    do: {:error, ElixirDB.Error.unsupported_format("shadow database metadata is invalid")}
 
   defp seed_derived_state(state, initial) do
     case DerivedState.seed(state, initial) do

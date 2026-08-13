@@ -17,6 +17,7 @@ defmodule ElixirDB.Storage.Ports do
   * `:document_facts` — document/revision/leaf/winner fact reads and writes
   * `:change_log` — allocate/append/read changes and causal state
   * `:local_records` — versioned get/put-CAS/list/delete over typed namespaces
+  * `:shadow_state` — immutable shadow binding and monotonic source origins
   * `:retention_records` — peer positions, boundary pages, retention state
   * `:index_candidates` — logical index definitions and candidate retrieval
   * `:view_state` — view definition/state/row fact persistence and range scans
@@ -38,6 +39,7 @@ defmodule ElixirDB.Storage.Ports do
     :document_facts,
     :change_log,
     :local_records,
+    :shadow_state,
     :retention_records,
     :index_candidates,
     :view_state,
@@ -63,6 +65,7 @@ defmodule ElixirDB.Storage.Ports do
     document_facts: ElixirDB.Storage.Ports.DocumentFacts,
     change_log: ElixirDB.Storage.Ports.ChangeLog,
     local_records: ElixirDB.Storage.Ports.LocalRecords,
+    shadow_state: ElixirDB.Storage.Ports.ShadowState,
     retention_records: ElixirDB.Storage.Ports.RetentionRecords,
     index_candidates: ElixirDB.Storage.Ports.IndexCandidates,
     view_state: ElixirDB.Storage.Ports.ViewState,

@@ -33,6 +33,7 @@ defmodule ElixirDB.Storage.SQLite.Schema do
          :ok <- begin_initialization(conn),
          :ok <- insert_metadata(conn, database_uuid, database_kind, config_json),
          :ok <- initialize_derived(conn, database_kind, Keyword.get(opts, :initial_derived_view)),
+         :ok <- initialize_shadow(conn, database_kind, Keyword.get(opts, :shadow_metadata)),
          :ok <- commit_initialization(conn) do
       :ok
     else
@@ -185,7 +186,7 @@ defmodule ElixirDB.Storage.SQLite.Schema do
   end
 
   defp validate_metadata_kind(value) do
-    if value in ["ordinary", "derived"], do: nil, else: metadata_invalid_error()
+    if value in ["ordinary", "derived", "shadow"], do: nil, else: metadata_invalid_error()
   end
 
   defp validate_metadata_versions(format, schema, revision, canonical, protocol) do
@@ -310,6 +311,72 @@ defmodule ElixirDB.Storage.SQLite.Schema do
     end
   end
 
+  defp validate_kind_state(conn, %{database_kind: :shadow, database_uuid: database_uuid}) do
+    case Connection.query(
+           conn,
+           "SELECT source_database_uuid, shadow_database_uuid, generation, operation_id, attachment_store_type, attachment_location, specification_digest, created_at FROM shadow_metadata WHERE id = 1"
+         ) do
+      {:ok, [row]} ->
+        validate_shadow_record(row, database_uuid)
+
+      {:ok, []} ->
+        {:error, ElixirDB.Error.unsupported_format("shadow database metadata is incomplete")}
+
+      {:error, reason} ->
+        {:error,
+         ElixirDB.Error.unsupported_format("SQLite shadow metadata validation failed", %{
+           cause: inspect(reason)
+         })}
+    end
+  end
+
+  defp validate_shadow_record(
+         [
+           source_uuid,
+           shadow_uuid,
+           generation,
+           operation_id,
+           store_type,
+           location,
+           digest,
+           created_at
+         ],
+         database_uuid
+       ) do
+    metadata = %{
+      source_database_uuid: source_uuid,
+      shadow_database_uuid: shadow_uuid,
+      generation: generation,
+      operation_id: operation_id,
+      attachment_store_type: store_type,
+      attachment_location: location,
+      specification_digest: digest,
+      created_at: created_at
+    }
+
+    with :ok <- validate_shadow_identity(source_uuid, shadow_uuid),
+         true <- shadow_uuid == database_uuid,
+         {:ok, _} <- fetch_shadow_uuid(metadata, :source_database_uuid),
+         {:ok, _} <- fetch_shadow_uuid(metadata, :shadow_database_uuid),
+         {:ok, _} <- fetch_shadow_generation(metadata),
+         {:ok, _} <- fetch_shadow_uuid(metadata, :operation_id),
+         {:ok, _} <- fetch_shadow_store_type(metadata),
+         {:ok, _} <- fetch_shadow_path(metadata),
+         {:ok, _} <- fetch_shadow_digest(metadata),
+         {:ok, _} <- fetch_shadow_created_at(metadata) do
+      :ok
+    else
+      false ->
+        {:error,
+         ElixirDB.Error.shadow_identity_conflict(
+           "shadow metadata UUID does not match database identity"
+         )}
+
+      {:error, _} ->
+        {:error, ElixirDB.Error.unsupported_format("shadow database metadata is invalid")}
+    end
+  end
+
   defp begin_initialization(conn), do: Connection.execute(conn, "BEGIN IMMEDIATE")
 
   defp commit_initialization(conn), do: Connection.execute(conn, "COMMIT")
@@ -373,6 +440,106 @@ defmodule ElixirDB.Storage.SQLite.Schema do
 
   defp initialize_derived(_conn, :derived, _),
     do: {:error, ElixirDB.Error.invalid_request("derived metadata is required")}
+
+  defp initialize_derived(_conn, :shadow, nil), do: :ok
+
+  defp initialize_derived(_conn, :shadow, _initial),
+    do: {:error, ElixirDB.Error.invalid_request("shadow database cannot include derived metadata")}
+
+  defp initialize_shadow(_conn, :ordinary, nil), do: :ok
+
+  defp initialize_shadow(_conn, :ordinary, _metadata),
+    do: {:error, ElixirDB.Error.invalid_request("ordinary database cannot include shadow metadata")}
+
+  defp initialize_shadow(_conn, :derived, nil), do: :ok
+
+  defp initialize_shadow(_conn, :derived, _metadata),
+    do: {:error, ElixirDB.Error.invalid_request("derived database cannot include shadow metadata")}
+
+  defp initialize_shadow(conn, :shadow, metadata) when is_map(metadata) do
+    with {:ok, source_uuid} <- fetch_shadow_uuid(metadata, :source_database_uuid),
+         {:ok, shadow_uuid} <- fetch_shadow_uuid(metadata, :shadow_database_uuid),
+         {:ok, generation} <- fetch_shadow_generation(metadata),
+         {:ok, operation_id} <- fetch_shadow_uuid(metadata, :operation_id),
+         {:ok, attachment_store_type} <- fetch_shadow_store_type(metadata),
+         {:ok, attachment_location} <- fetch_shadow_path(metadata),
+         {:ok, specification_digest} <- fetch_shadow_digest(metadata),
+         {:ok, created_at} <- fetch_shadow_created_at(metadata),
+         :ok <- validate_shadow_identity(source_uuid, shadow_uuid) do
+      Connection.execute(
+        conn,
+        "INSERT INTO shadow_metadata (id, source_database_uuid, shadow_database_uuid, generation, operation_id, attachment_store_type, attachment_location, specification_digest, created_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          source_uuid,
+          shadow_uuid,
+          generation,
+          operation_id,
+          attachment_store_type,
+          attachment_location,
+          specification_digest,
+          created_at
+        ]
+      )
+    end
+  end
+
+  defp initialize_shadow(_conn, :shadow, _metadata),
+    do: {:error, ElixirDB.Error.invalid_request("shadow database metadata is required")}
+
+  defp fetch_shadow_uuid(metadata, key) do
+    value = Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
+
+    if is_binary(value) and valid_uuid?(value),
+      do: {:ok, value},
+      else: {:error, ElixirDB.Error.invalid_request("shadow metadata UUID is invalid")}
+  end
+
+  defp fetch_shadow_generation(metadata) do
+    value = Map.get(metadata, :generation, Map.get(metadata, "generation"))
+
+    if is_integer(value) and value > 0,
+      do: {:ok, value},
+      else: {:error, ElixirDB.Error.invalid_request("shadow metadata generation is invalid")}
+  end
+
+  defp fetch_shadow_path(metadata) do
+    value = Map.get(metadata, :attachment_location, Map.get(metadata, "attachment_location"))
+
+    if is_binary(value) and Path.type(value) == :absolute and value != "",
+      do: {:ok, value},
+      else: {:error, ElixirDB.Error.invalid_request("shadow attachment location must be absolute")}
+  end
+
+  defp fetch_shadow_store_type(metadata) do
+    value = Map.get(metadata, :attachment_store_type, Map.get(metadata, "attachment_store_type"))
+
+    if value == "external_cas",
+      do: {:ok, value},
+      else: {:error, ElixirDB.Error.invalid_request("shadow attachment store type is invalid")}
+  end
+
+  defp fetch_shadow_digest(metadata) do
+    value = Map.get(metadata, :specification_digest, Map.get(metadata, "specification_digest"))
+
+    if is_binary(value) and value != "",
+      do: {:ok, value},
+      else: {:error, ElixirDB.Error.invalid_request("shadow specification digest is invalid")}
+  end
+
+  defp fetch_shadow_created_at(metadata) do
+    value = Map.get(metadata, :created_at, Map.get(metadata, "created_at"))
+
+    case DateTime.from_iso8601(value || "") do
+      {:ok, _datetime, 0} -> {:ok, value}
+      _ -> {:error, ElixirDB.Error.invalid_request("shadow creation time is invalid")}
+    end
+  end
+
+  defp validate_shadow_identity(source_uuid, shadow_uuid) do
+    if source_uuid == shadow_uuid,
+      do: {:error, ElixirDB.Error.shadow_identity_conflict("shadow and source UUIDs must differ")},
+      else: :ok
+  end
 
   defp insert_derived_view(
          conn,

@@ -4,7 +4,8 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
 
   alias ElixirDB.Runtime.DatabaseAdmission
 
-  def start_link(uuid), do: GenServer.start_link(__MODULE__, uuid, name: via(uuid))
+  def start_link({uuid, mode}), do: GenServer.start_link(__MODULE__, {uuid, mode}, name: via(uuid))
+  def start_link(uuid) when is_binary(uuid), do: start_link({uuid, :normal})
 
   def via(uuid),
     do: {:via, Registry, {ElixirDB.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid}}}
@@ -72,13 +73,14 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   end
 
   @impl true
-  def init(uuid) do
+  def init({uuid, mode}) do
     Process.flag(:trap_exit, true)
-    limits = load_limits(uuid)
+    limits = load_limits(uuid, mode)
 
     {:ok,
      %{
        uuid: uuid,
+       read_only: mode == :read_only,
        closing: false,
        gc_barrier: false,
        gc_token: nil,
@@ -102,6 +104,9 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
        active_references: 0
      }}
   end
+
+  @impl true
+  def init(uuid) when is_binary(uuid), do: init({uuid, :normal})
 
   @impl true
   def handle_call({:update_limits, attachments}, _from, state) do
@@ -130,6 +135,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   def handle_call({:acquire_write, caller_pid}, _from, state) do
     with :ok <- ensure_caller(caller_pid),
          :ok <- ensure_open(state),
+         :ok <- ensure_mutation_allowed(state),
          :ok <- ensure_no_gc_barrier(state),
          :ok <- ensure_write_capacity(state) do
       token = make_token()
@@ -146,6 +152,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   def handle_call({:acquire_reference, caller_pid}, _from, state) do
     with :ok <- ensure_caller(caller_pid),
          :ok <- ensure_open(state),
+         :ok <- ensure_mutation_allowed(state),
          :ok <- ensure_no_gc_barrier(state) do
       token = make_token()
       {:reply, {:ok, token}, add_guard(state, caller_pid, :reference, token)}
@@ -164,7 +171,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
 
   @impl true
   def handle_call({:schedule_gc, module}, _from, state) when is_atom(module) do
-    case ensure_open(state) do
+    case with_open_mutation(state) do
       :ok -> {:reply, :ok, start_scheduled_gc(state, module)}
       {:error, _} = error -> {:reply, error, state}
     end
@@ -173,7 +180,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   @impl true
   def handle_call({:begin_gc, caller_pid}, from, %{gc_barrier: true} = state) do
     with :ok <- ensure_caller(caller_pid),
-         :ok <- ensure_open(state) do
+         :ok <- with_open_mutation(state) do
       case state.gc_follow_up do
         nil ->
           # Serialize the next GC so a post-compact trigger cannot race an
@@ -193,7 +200,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
   @impl true
   def handle_call({:begin_gc, caller_pid}, from, state) do
     with :ok <- ensure_caller(caller_pid),
-         :ok <- ensure_open(state) do
+         :ok <- with_open_mutation(state) do
       monitor_ref = Process.monitor(caller_pid)
       state = %{state | gc_barrier: true, gc_caller: caller_pid, gc_monitor_ref: monitor_ref}
 
@@ -405,7 +412,12 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
     %{state | gc_monitor_ref: nil}
   end
 
-  defp load_limits(uuid) do
+  defp load_limits(_uuid, :read_only) do
+    defaults = ElixirDB.Config.defaults()["attachments"]
+    limits_from_config(defaults)
+  end
+
+  defp load_limits(uuid, _mode) do
     case DatabaseAdmission.execute(uuid, :maintenance, {:command, :identity, %{}}) do
       {:ok, %{config: config}} when is_map(config) ->
         limits_from_config(Map.get(config, "attachments", %{}))
@@ -446,6 +458,20 @@ defmodule ElixirDB.Runtime.AttachmentCoordinator do
     do: {:error, ElixirDB.Error.database_closed("attachment coordinator is closing")}
 
   defp ensure_open(_), do: :ok
+
+  defp with_open_mutation(state) do
+    case ensure_open(state) do
+      :ok -> ensure_mutation_allowed(state)
+      error -> error
+    end
+  end
+
+  defp ensure_mutation_allowed(%{read_only: true}),
+    do:
+      {:error,
+       ElixirDB.Error.shadow_command_forbidden("shadow attachment coordinator is read-only")}
+
+  defp ensure_mutation_allowed(_), do: :ok
 
   defp ensure_caller(caller_pid) when is_pid(caller_pid), do: :ok
 

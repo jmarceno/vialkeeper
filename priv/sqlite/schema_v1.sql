@@ -9,7 +9,7 @@ PRAGMA trusted_schema = OFF;
 CREATE TABLE IF NOT EXISTS db_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   database_uuid TEXT NOT NULL UNIQUE,
-  database_kind TEXT NOT NULL CHECK (database_kind IN ('ordinary', 'derived')),
+  database_kind TEXT NOT NULL CHECK (database_kind IN ('ordinary', 'derived', 'shadow')),
   history_epoch TEXT NOT NULL,
   file_format_version INTEGER NOT NULL CHECK (file_format_version = 1),
   logical_schema_version INTEGER NOT NULL CHECK (logical_schema_version = 1),
@@ -22,6 +22,23 @@ CREATE TABLE IF NOT EXISTS db_meta (
   retention_boundary_digest TEXT,
   created_at TEXT NOT NULL,
   config_json TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS shadow_metadata (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  source_database_uuid TEXT NOT NULL,
+  shadow_database_uuid TEXT NOT NULL UNIQUE,
+  generation INTEGER NOT NULL CHECK (generation > 0),
+  operation_id TEXT NOT NULL UNIQUE,
+  attachment_store_type TEXT NOT NULL CHECK (attachment_store_type = 'external_cas'),
+  attachment_location TEXT NOT NULL,
+  specification_digest TEXT NOT NULL,
+  created_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS shadow_origins (
+  document_id TEXT PRIMARY KEY,
+  source_update_sequence INTEGER NOT NULL CHECK (source_update_sequence >= 0)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS documents (

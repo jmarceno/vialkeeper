@@ -10,6 +10,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   alias ElixirDB.Runtime.{
     AttachmentCoordinator,
     ChangeNotifier,
+    CommandContext,
     DatabaseAdmission,
     DatabaseOwner,
     DatabaseRuntimeSupervisor,
@@ -31,7 +32,16 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   def create_internal(relative_path, options \\ %{}),
     do: GenServer.call(__MODULE__, {:create_internal, relative_path, options})
 
+  @doc "Creates a shadow bundle through the trusted shadow controller boundary."
+  def create_shadow_internal(relative_path, options \\ %{}),
+    do: GenServer.call(__MODULE__, {:create_shadow_internal, relative_path, options})
+
   def register(relative_path), do: GenServer.call(__MODULE__, {:register, relative_path})
+
+  @doc "Registers a shadow bundle through the trusted shadow controller boundary."
+  def register_shadow_internal(relative_path),
+    do: GenServer.call(__MODULE__, {:register_shadow_internal, relative_path})
+
   def unregister(uuid), do: GenServer.call(__MODULE__, {:unregister, uuid})
   def list, do: GenServer.call(__MODULE__, :list)
 
@@ -42,10 +52,16 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
+  @doc "Opens a shadow bundle through an internal control-plane boundary."
+  def open_internal(uuid), do: GenServer.call(__MODULE__, {:open, uuid, true}, 30_000)
+
   def close(uuid), do: GenServer.call(__MODULE__, {:close, uuid}, 30_000)
 
   @doc "Returns the absolute bundle root for a registered database UUID."
   def bundle_root(uuid), do: GenServer.call(__MODULE__, {:bundle_root, uuid})
+
+  @doc "Returns a shadow bundle root through an internal control-plane boundary."
+  def bundle_root_internal(uuid), do: GenServer.call(__MODULE__, {:bundle_root, uuid, true})
 
   # The database.open span is created here, in the caller process, before the
   # GenServer.call — so the span is a child of the caller's trace (e.g. the
@@ -98,6 +114,58 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   def command(uuid, command, timeout) when is_binary(uuid) do
     command_as(uuid, :foreground, command, timeout)
+  end
+
+  @doc "Routes an internal command with explicit shadow authority and admission."
+  @spec command_with_context(binary(), CommandContext.t(), term(), timeout()) :: term()
+  def command_with_context(uuid, context, command, timeout \\ 30_000)
+
+  def command_with_context(uuid, %CommandContext{} = context, command, :infinity)
+      when is_binary(uuid) do
+    class = if context.class == :shadow_replication, do: :replication, else: :foreground
+
+    with :ok <- ensure_command_target_internal(uuid, :infinity) do
+      Database.command(uuid, {:command_context, context, command}, fn ->
+        DatabaseAdmission.execute_with_deadline(
+          uuid,
+          class,
+          {:command_context, context, command},
+          :infinity
+        )
+      end)
+    end
+  end
+
+  def command_with_context(uuid, %CommandContext{} = context, command, timeout)
+      when is_binary(uuid) and is_integer(timeout) and timeout >= 0 do
+    deadline_ms = Deadline.from_timeout(timeout)
+    class = if context.class == :shadow_replication, do: :replication, else: :foreground
+
+    with :ok <- ensure_command_target_internal(uuid, deadline_ms) do
+      Database.command(uuid, {:command_context, context, command}, fn ->
+        DatabaseAdmission.execute_with_deadline(
+          uuid,
+          class,
+          {:command_context, context, command},
+          deadline_ms
+        )
+      end)
+    end
+  end
+
+  defp ensure_command_target_internal(uuid, :infinity),
+    do: GenServer.call(__MODULE__, {:ensure_command_target, uuid, true}, :infinity)
+
+  defp ensure_command_target_internal(uuid, deadline_ms) do
+    if Deadline.exhausted?(deadline_ms) do
+      {:error, command_deadline_error()}
+    else
+      GenServer.call(
+        __MODULE__,
+        {:ensure_command_target, uuid, true},
+        Deadline.call_timeout(deadline_ms)
+      )
+    end
   end
 
   @doc "Routes a command using an already-created absolute deadline."
@@ -231,6 +299,52 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   end
 
+  defp register_database(state, relative_path, allow_shadow) do
+    backend = StorageRegistry.backend()
+
+    with {:ok, bundle_root} <- safe_path(state.root, relative_path),
+         true <- File.dir?(bundle_root),
+         :ok <- ensure_path_not_open(state, bundle_root),
+         {:ok, bundle} <- DatabaseBundle.validate(bundle_root),
+         {:ok, adapter} <- backend.open(backend.artifact_path(DatabaseBundle.root(bundle))),
+         {:ok, identity} <- backend.identity(adapter),
+         :ok <- backend.close(adapter),
+         :ok <- allow_shadow_or_reject(identity_kind(identity), allow_shadow),
+         :ok <- no_duplicate_uuid(state, identity_uuid(identity), bundle_root),
+         {:ok, next} <-
+           put_entry(
+             state,
+             identity_uuid(identity),
+             relative_path,
+             bundle,
+             identity_kind(identity)
+           ) do
+      {:reply, {:ok, identity}, next}
+    else
+      false ->
+        {:reply,
+         {:error, ElixirDB.Error.database_unavailable("registered database bundle is missing")},
+         state}
+
+      {:error, %ElixirDB.Error{} = error} ->
+        {:reply, {:error, error}, state}
+
+      {:error, reason} ->
+        {:reply,
+         {:error,
+          ElixirDB.Error.database_unavailable("database could not be registered", %{
+            cause: inspect(reason)
+          })}, state}
+    end
+  end
+
+  defp allow_shadow_or_reject(:shadow, true), do: :ok
+
+  defp allow_shadow_or_reject(:shadow, false),
+    do: {:error, ElixirDB.Error.shadow_database_hidden("shadow databases are internal")}
+
+  defp allow_shadow_or_reject(_kind, _allow_shadow), do: :ok
+
   @impl true
   def handle_call({:create, relative_path, options}, _from, state) do
     safe(fn -> create_database(state, relative_path, options, :ordinary) end, state)
@@ -255,49 +369,31 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   end
 
   @impl true
-  def handle_call({:register, relative_path}, _from, state) do
-    # SAFETY: register opens the database file via the adapter; an unanticipated raise
-    # would crash the shared catalog. Catch and convert to a typed error.
+  def handle_call({:create_shadow_internal, relative_path, options}, _from, state) do
     safe(
       fn ->
-        backend = StorageRegistry.backend()
-
-        with {:ok, bundle_root} <- safe_path(state.root, relative_path),
-             true <- File.dir?(bundle_root),
-             :ok <- ensure_path_not_open(state, bundle_root),
-             {:ok, bundle} <- DatabaseBundle.validate(bundle_root),
-             {:ok, adapter} <- backend.open(backend.artifact_path(DatabaseBundle.root(bundle))),
-             {:ok, identity} <- backend.identity(adapter),
-             :ok <- backend.close(adapter),
-             :ok <- no_duplicate_uuid(state, identity_uuid(identity), bundle_root),
-             {:ok, next} <-
-               put_entry(
-                 state,
-                 identity_uuid(identity),
-                 relative_path,
-                 bundle,
-                 identity_kind(identity)
-               ) do
-          {:reply, {:ok, identity}, next}
+        if is_map(options) and MapAccess.get(options, :database_kind) == :shadow do
+          create_database(state, relative_path, options, :shadow)
         else
-          false ->
-            {:reply,
-             {:error, ElixirDB.Error.database_unavailable("registered database bundle is missing")},
-             state}
-
-          {:error, %ElixirDB.Error{} = error} ->
-            {:reply, {:error, error}, state}
-
-          {:error, reason} ->
-            {:reply,
-             {:error,
-              ElixirDB.Error.database_unavailable("database could not be registered", %{
-                cause: inspect(reason)
-              })}, state}
+          {:reply,
+           {:error,
+            ElixirDB.Error.invalid_request(
+              "internal shadow creation requires the shadow database kind"
+            )}, state}
         end
       end,
       state
     )
+  end
+
+  @impl true
+  def handle_call({:register, relative_path}, _from, state) do
+    safe(fn -> register_database(state, relative_path, false) end, state)
+  end
+
+  @impl true
+  def handle_call({:register_shadow_internal, relative_path}, _from, state) do
+    safe(fn -> register_database(state, relative_path, true) end, state)
   end
 
   @impl true
@@ -324,29 +420,31 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   @impl true
   def handle_call(:list, _from, state),
-    do: {:reply, {:ok, Enum.map(Map.values(state.entries), &entry_status/1)}, state}
+    do:
+      {:reply,
+       {:ok,
+        state.entries
+        |> Map.values()
+        |> Enum.reject(&shadow_entry?/1)
+        |> Enum.map(&entry_status/1)}, state}
 
   @impl true
-  def handle_call({:bundle_root, uuid}, _from, state) do
-    case Map.get(state.entries, uuid) do
-      %{bundle_root: bundle_root} when is_binary(bundle_root) ->
-        {:reply, {:ok, bundle_root}, state}
+  def handle_call({:bundle_root, uuid}, _from, state),
+    do: handle_bundle_root(state, uuid, false)
 
-      nil ->
-        {:reply, {:error, ElixirDB.Error.database_not_registered("database is not registered")},
-         state}
-
-      _entry ->
-        {:reply, {:error, ElixirDB.Error.database_unavailable("database bundle root is missing")},
-         state}
-    end
-  end
+  @impl true
+  def handle_call({:bundle_root, uuid, true}, _from, state),
+    do: handle_bundle_root(state, uuid, true)
 
   @impl true
   def handle_call({:info, uuid}, _from, state) do
     case Map.get(state.entries, uuid) do
       nil ->
         {:reply, {:error, ElixirDB.Error.database_not_registered("database is not registered")},
+         state}
+
+      %{database_kind: :shadow} ->
+        {:reply, {:error, ElixirDB.Error.shadow_database_hidden("shadow database is internal")},
          state}
 
       entry ->
@@ -362,17 +460,12 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   @impl true
   def handle_call({:open, uuid}, _from, state) do
-    # The database.open span wraps this call in the caller process (see open/1).
-    # Rejected opens (unavailable/in_use) become outcome: :rejected there but
-    # keep span status UNSET (expected outcomes).
-    if Map.has_key?(state.close_operations, uuid) do
-      {:reply, {:error, ElixirDB.Error.database_closed("database is closing")}, state}
-    else
-      case open_runtime(state, uuid) do
-        {:ok, info, new_state} -> {:reply, {:ok, info}, new_state}
-        {:error, error, new_state} -> {:reply, {:error, error}, new_state}
-      end
-    end
+    handle_open(state, uuid, false)
+  end
+
+  @impl true
+  def handle_call({:open, uuid, true}, _from, state) do
+    handle_open(state, uuid, true)
   end
 
   @impl true
@@ -401,14 +494,19 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   @impl true
   def handle_call({:ensure_command_target, uuid}, _from, state) do
-    safe(fn -> reply_ensure_command_target(uuid, state) end, state)
+    safe(fn -> reply_ensure_command_target(uuid, state, false) end, state)
   end
 
-  defp reply_ensure_command_target(uuid, state) do
+  @impl true
+  def handle_call({:ensure_command_target, uuid, true}, _from, state) do
+    safe(fn -> reply_ensure_command_target(uuid, state, true) end, state)
+  end
+
+  defp reply_ensure_command_target(uuid, state, allow_shadow) do
     if Map.has_key?(state.close_operations, uuid) do
       {:reply, {:error, ElixirDB.Error.database_closed("database is closing")}, state}
     else
-      case open_runtime(state, uuid) do
+      case open_runtime(state, uuid, allow_shadow) do
         {:ok, _info, new_state} -> {:reply, :ok, new_state}
         {:error, error, new_state} -> {:reply, {:error, error}, new_state}
       end
@@ -485,10 +583,43 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     {:noreply, state}
   end
 
-  defp open_runtime(state, uuid) do
+  defp handle_bundle_root(state, uuid, allow_shadow) do
+    case Map.get(state.entries, uuid) do
+      %{database_kind: :shadow} when not allow_shadow ->
+        {:reply, {:error, ElixirDB.Error.shadow_database_hidden("shadow database is internal")},
+         state}
+
+      %{bundle_root: bundle_root} when is_binary(bundle_root) ->
+        {:reply, {:ok, bundle_root}, state}
+
+      nil ->
+        {:reply, {:error, ElixirDB.Error.database_not_registered("database is not registered")},
+         state}
+
+      _entry ->
+        {:reply, {:error, ElixirDB.Error.database_unavailable("database bundle root is missing")},
+         state}
+    end
+  end
+
+  defp handle_open(state, uuid, allow_shadow) do
+    if Map.has_key?(state.close_operations, uuid) do
+      {:reply, {:error, ElixirDB.Error.database_closed("database is closing")}, state}
+    else
+      case open_runtime(state, uuid, allow_shadow) do
+        {:ok, info, new_state} -> {:reply, {:ok, info}, new_state}
+        {:error, error, new_state} -> {:reply, {:error, error}, new_state}
+      end
+    end
+  end
+
+  defp open_runtime(state, uuid, allow_shadow) do
     case Map.get(state.entries, uuid) do
       nil ->
         {:error, ElixirDB.Error.database_not_registered("database is not registered"), state}
+
+      %{database_kind: :shadow} when not allow_shadow ->
+        {:error, ElixirDB.Error.shadow_database_hidden("shadow database is internal"), state}
 
       %{bundle_root: _root} = entry ->
         open_registered_entry(state, uuid, entry)
@@ -774,6 +905,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp identity_kind(identity) when is_map(identity) do
     MapAccess.get(identity, :database_kind, :ordinary)
   end
+
+  defp shadow_entry?(%{database_kind: :shadow}), do: true
+  defp shadow_entry?(_entry), do: false
 
   defp resume_registered_jobs(uuid) do
     case open(uuid) do

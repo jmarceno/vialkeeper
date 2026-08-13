@@ -374,6 +374,76 @@ defmodule ElixirDB.Commands do
     defstruct [:request]
   end
 
+  @doc "Returns every command envelope type that must receive a policy decision."
+  @spec command_types() :: [module()]
+  def command_types do
+    [
+      Identity,
+      UpdateConfig,
+      IntegrityCheck,
+      GetDocument,
+      GetRevision,
+      PutDocument,
+      CreateDocument,
+      DeleteDocument,
+      ResolveConflict,
+      BulkWrite,
+      ReadChanges,
+      DiffRevisions,
+      GetRevisionChains,
+      ImportRevisionChains,
+      GetCheckpoint,
+      PutLocalRecord,
+      GetLocalRecord,
+      PutCheckpoint,
+      ListIndexes,
+      CreateIndex,
+      DeleteIndex,
+      RebuildIndex,
+      ExecuteQuery,
+      ExecuteSubscriptionSnapshot,
+      GetRevisionsBatch,
+      ExplainQuery,
+      ListJobs,
+      PutJob,
+      DeleteJob,
+      CompactRetention,
+      RetentionStatus,
+      ListPeerPositions,
+      PutPeerPositionCas,
+      ReadBoundaryPages,
+      InstallBoundaryPages,
+      HasLocalOriginChanges,
+      ClearPendingLocalCausal,
+      Close,
+      ResolveAttachmentTicket,
+      ResolveBlobMetadata,
+      ProtectPendingBlob,
+      RemovePendingBlobProtection,
+      ListLiveAttachmentDigests,
+      CleanupExpiredPendingBlobs,
+      ListViews,
+      CreateView,
+      DeleteView,
+      ViewState,
+      ApplyViewBatch,
+      BeginViewRebuild,
+      AppendViewRebuildPage,
+      FinishViewRebuild,
+      QueryView,
+      ReadWinningDocumentsPage,
+      GetDerivedView,
+      SetDerivedEnabled,
+      ListDerivedSources,
+      SetDerivedSourceError,
+      ApplyDerivedSourceBatch,
+      BeginDerivedSourceRebuild,
+      ApplyDerivedRebuildPage,
+      PruneDerivedRebuildStalePage,
+      FinishDerivedSourceRebuild
+    ]
+  end
+
   @doc "Converts tagged owner tuples and already-normalized structs into command structs."
   @spec normalize(term()) :: struct() | term()
   def normalize(%_{} = command), do: command
