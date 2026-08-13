@@ -32,6 +32,32 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
     {:ok, uuid: uuid, path: path, base_url: server.base_url}
   end
 
+  test "sequential multi-chunk uploads on one keepalive connection stay in sync", %{
+    base_url: base,
+    uuid: uuid
+  } do
+    # Bodies larger than one read_body chunk force streamed reads; the server
+    # must respond with the fully-consumed conn or the second request on the
+    # same connection reads leftover body bytes.
+    first_payload = :crypto.strong_rand_bytes(200_000)
+    second_payload = :crypto.strong_rand_bytes(150_000)
+
+    %URI{host: host, port: port} = URI.parse(base)
+
+    {:ok, socket} =
+      :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false, nodelay: true])
+
+    try do
+      first = keepalive_upload!(socket, host, port, uuid, first_payload)
+      second = keepalive_upload!(socket, host, port, uuid, second_payload)
+
+      assert first["data"]["blob"] == sha256_hex(first_payload)
+      assert second["data"]["blob"] == sha256_hex(second_payload)
+    after
+      :gen_tcp.close(socket)
+    end
+  end
+
   test "JSON body is rejected on upload", %{base_url: base, uuid: uuid} do
     assert {:ok, %{status: status, body: body}} =
              Req.post(base <> "/v1/databases/#{uuid}/attachments/upload",
@@ -367,6 +393,61 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
     remainder = Task.await(download, 10_000)
     assert first_chunk <> remainder == payload
   end
+
+  defp keepalive_upload!(socket, host, port, uuid, payload) do
+    request = [
+      "POST /v1/databases/#{uuid}/attachments/upload HTTP/1.1\r\n",
+      "host: #{host}:#{port}\r\n",
+      "content-type: application/octet-stream\r\n",
+      "content-length: #{byte_size(payload)}\r\n",
+      "\r\n",
+      payload
+    ]
+
+    :ok = :gen_tcp.send(socket, request)
+    {status, headers, body} = read_http_response(socket)
+    assert status == 201, "upload failed with #{status}: #{inspect(body)}"
+    refute String.downcase(Map.get(headers, "connection", "")) == "close"
+    {:ok, decoded} = StrictDecoder.decode(body)
+    decoded
+  end
+
+  defp read_http_response(socket) do
+    {head, rest} = read_until_headers(socket, <<>>)
+    [status_line | header_lines] = String.split(head, "\r\n", trim: true)
+    [_http, status | _] = String.split(status_line, " ")
+
+    headers =
+      Map.new(header_lines, fn line ->
+        [name, value] = String.split(line, ":", parts: 2)
+        {String.downcase(name), String.trim(value)}
+      end)
+
+    content_length = String.to_integer(Map.fetch!(headers, "content-length"))
+    body = read_exact(socket, rest, content_length)
+    {String.to_integer(status), headers, body}
+  end
+
+  defp read_until_headers(socket, buffer) do
+    case :binary.split(buffer, "\r\n\r\n") do
+      [head, rest] ->
+        {head, rest}
+
+      [_] ->
+        {:ok, chunk} = :gen_tcp.recv(socket, 0, 10_000)
+        read_until_headers(socket, buffer <> chunk)
+    end
+  end
+
+  defp read_exact(_socket, buffer, length) when byte_size(buffer) >= length,
+    do: binary_part(buffer, 0, length)
+
+  defp read_exact(socket, buffer, length) do
+    {:ok, chunk} = :gen_tcp.recv(socket, 0, 10_000)
+    read_exact(socket, buffer <> chunk, length)
+  end
+
+  defp sha256_hex(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
 
   defp header(headers, name) do
     Enum.find_value(headers, &header_value(&1, name))

@@ -55,8 +55,22 @@ defmodule ElixirDB.Replication.CompactBootstrapTest do
     assert {:ok, %{body: %{"n" => 1}}} =
              ElixirDB.Documents.get(b.database_uuid, %{id: "first"})
 
+    payload = String.duplicate("bootstrap-attachment-", 2_048)
+
+    assert {:ok, %{blob: digest}} =
+             ElixirDB.Attachments.upload_stream(a.database_uuid, [payload])
+
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "second", body: %{"n" => 2}})
+             ElixirDB.Documents.put(a.database_uuid, %{
+               id: "second",
+               body: %{"n" => 2},
+               attachments: %{
+                 "payload.bin" => %{
+                   "blob" => digest,
+                   "content_type" => "application/octet-stream"
+                 }
+               }
+             })
 
     assert {:ok, %{current_sequence: 2}} =
              DatabaseCatalog.command(a.database_uuid, {:command, :identity, %{}})
@@ -86,8 +100,15 @@ defmodule ElixirDB.Replication.CompactBootstrapTest do
 
     assert {:ok, %{status: :completed}} = Replication.one_shot(a.database_uuid, b.database_uuid)
 
-    assert {:ok, %{body: %{"n" => 2}}} =
+    assert {:ok, %{body: %{"n" => 2}, attachments: attachments}} =
              ElixirDB.Documents.get(b.database_uuid, %{id: "second"})
+
+    assert %{"payload.bin" => %{digest: ^digest}} = attachments
+
+    # The bootstrap transferred the encoded representation byte for byte.
+    {:ok, source_bundle} = DatabaseCatalog.bundle_root(a.database_uuid)
+    {:ok, target_bundle} = DatabaseCatalog.bundle_root(b.database_uuid)
+    assert blob_file_bytes!(target_bundle, digest) == blob_file_bytes!(source_bundle, digest)
   end
 
   test "handshake reconcile marks bootstrap when checkpoint is below retention floor", %{a: a, b: b} do
@@ -113,6 +134,10 @@ defmodule ElixirDB.Replication.CompactBootstrapTest do
     assert context.bootstrap_required
     assert context.reconcile_reason == :below_floor
     assert context.since == 2
+  end
+
+  defp blob_file_bytes!(bundle, digest) do
+    File.read!(Path.join([bundle, "blobs", String.slice(digest, 0, 2), digest <> ".blob"]))
   end
 
   defp update_peer_safe(source_uuid, peer_uuid, safe_sequence) do

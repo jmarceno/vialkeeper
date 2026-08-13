@@ -79,6 +79,58 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
     refute decoded =~ uuid
   end
 
+  test "malformed compressed JSON requests fail deterministically with compressed errors", %{
+    uuid: uuid,
+    base_url: base_url
+  } do
+    url = base_url <> "/v1/databases/#{uuid}/replication/revisions/diff"
+    encoded = ElixirDB.TestReplicationWire.encode!(%{"revisions" => []})
+    length_header = Integer.to_string(encoded.uncompressed_length)
+    truncated = binary_part(encoded.body, 0, byte_size(encoded.body) - 1)
+    concatenated = encoded.body <> encoded.body
+    <<_magic::binary-size(4), frame_rest::binary>> = encoded.body
+    corrupt_magic = <<0, 0, 0, 0>> <> frame_rest
+    decoded_limit = ElixirDB.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
+
+    cases = [
+      {"missing content-encoding",
+       [{"content-type", "application/json"}, {"x-elixirdb-uncompressed-length", length_header}],
+       encoded.body, 400, "invalid_request"},
+      {"missing uncompressed length",
+       [{"content-type", "application/json"}, {"content-encoding", "zstd"}], encoded.body, 400,
+       "invalid_request"},
+      {"non-canonical uncompressed length", wire_headers("0" <> length_header), encoded.body, 400,
+       "invalid_request"},
+      {"uncompressed length and frame content size disagree",
+       wire_headers(Integer.to_string(encoded.uncompressed_length + 1)), encoded.body, 400,
+       "invalid_request"},
+      {"truncated frame", wire_headers(length_header), truncated, 400, "invalid_request"},
+      {"concatenated frames", wire_headers(length_header), concatenated, 400, "invalid_request"},
+      {"corrupt frame magic", wire_headers(length_header), corrupt_magic, 400, "invalid_request"},
+      {"declared expansion over the limit", wire_headers(Integer.to_string(decoded_limit + 1)),
+       encoded.body, 413, "payload_too_large"}
+    ]
+
+    for {label, headers, body, status, code} <- cases do
+      assert {:ok, response} =
+               Req.post(url,
+                 body: body,
+                 headers: [{"accept-encoding", "zstd"} | headers],
+                 decode_body: false,
+                 compressed: false
+               )
+
+      assert response.status == status,
+             "#{label}: expected #{status}, got #{response.status}"
+
+      assert zstd_content_encoding?(response), "#{label}: error response is not compressed"
+      assert zstd_magic?(response.body), "#{label}: error body is not a Zstandard frame"
+
+      decoded = ElixirDB.TestReplicationWire.decode_response(response.headers, response.body)
+      assert decoded["error"]["code"] == code, "#{label}: #{inspect(decoded)}"
+    end
+  end
+
   test "public document routes remain uncompressed", %{uuid: uuid, base_url: base_url} do
     assert {:ok, response} =
              Req.post(base_url <> "/v1/databases/#{uuid}/documents/put",
@@ -92,6 +144,14 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
     refute zstd_content_encoding?(response)
     assert json_content_type?(response)
     assert {:ok, _} = JSON.decode(response.body)
+  end
+
+  defp wire_headers(uncompressed_length) do
+    [
+      {"content-type", "application/json"},
+      {"content-encoding", "zstd"},
+      {"x-elixirdb-uncompressed-length", uncompressed_length}
+    ]
   end
 
   defp json_content_type?(response) do

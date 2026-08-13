@@ -39,9 +39,13 @@ defmodule ElixirDB.Attachments do
 
   `source` may be a `Plug.Conn`, an enumerable of binaries, or a zero-arity
   function returning `{:ok, binary(), next_fun}`, `:done`, or `{:error, error}`.
+
+  When `source` is a `Plug.Conn`, success returns `{:ok, data, conn}` with the
+  connection whose request body was fully consumed; the caller must respond on
+  that connection so keepalive body accounting stays correct.
   """
   @spec upload_stream(binary(), chunk_source(), keyword()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
+          {:ok, map()} | {:ok, map(), Plug.Conn.t()} | {:error, ElixirDB.Error.t()}
   def upload_stream(uuid, source, opts \\ []) when is_binary(uuid) and is_list(opts) do
     admission_class = Keyword.get(opts, :admission_class, :foreground)
 
@@ -56,6 +60,7 @@ defmodule ElixirDB.Attachments do
       after
         _ = AttachmentCoordinator.release(uuid, write_guard)
       end
+      |> pop_source_conn()
     end
   end
 
@@ -335,8 +340,15 @@ defmodule ElixirDB.Attachments do
     put_blob_representation(uuid, BlobRepresentationStream.descriptor(stream), stream.body, opts)
   end
 
+  @doc """
+  Installs an encoded blob representation streamed from `source`.
+
+  When `source` is a `Plug.Conn`, success returns `{:ok, conn}` with the
+  connection whose request body was fully consumed; the caller must respond on
+  that connection so keepalive body accounting stays correct.
+  """
   @spec put_blob_representation(binary(), map(), chunk_source(), keyword()) ::
-          :ok | {:error, ElixirDB.Error.t()}
+          :ok | {:ok, Plug.Conn.t()} | {:error, ElixirDB.Error.t()}
   def put_blob_representation(uuid, descriptor, source, opts)
       when is_binary(uuid) and is_map(descriptor) do
     admission_class = Keyword.get(opts, :admission_class, :foreground)
@@ -356,7 +368,9 @@ defmodule ElixirDB.Attachments do
                  max_bytes,
                  admission_class
                )
-             end) do
+             end)
+             |> pop_source_conn() do
+          {:ok, _stats, %Plug.Conn{} = conn} -> {:ok, conn}
           {:ok, _stats} -> :ok
           {:error, _} = error -> error
         end
@@ -380,7 +394,8 @@ defmodule ElixirDB.Attachments do
     case @store.begin_put_representation(bundle_root, descriptor, max_bytes) do
       {:ok, writer} ->
         try do
-          with {:ok, stream_chunks} <- write_all_representation_chunks(writer, source),
+          with {:ok, stream_chunks, final_conn} <-
+                 normalize_chunk_result(write_all_representation_chunks(writer, source)),
                {:ok, finished} <- @store.finish_put_representation(writer),
                :ok <-
                  match_blob_identity(
@@ -397,12 +412,14 @@ defmodule ElixirDB.Attachments do
                    admission_class
                  ) do
             {:ok,
-             Map.merge(protected, %{
+             protected
+             |> Map.merge(%{
                stream_chunks: stream_chunks,
                encoding: finished.encoding,
                payload_length: descriptor.payload_length,
                deduplicated?: finished.deduplicated?
-             })}
+             })
+             |> put_source_conn(final_conn)}
           else
             {:error, _} = error ->
               abort_representation_writer(writer)
@@ -442,7 +459,8 @@ defmodule ElixirDB.Attachments do
     case @store.begin_put(bundle_root, max_bytes, Map.new(opts)) do
       {:ok, writer} ->
         try do
-          with {:ok, stream_chunks} <- write_all_chunks(writer, source),
+          with {:ok, stream_chunks, final_conn} <-
+                 normalize_chunk_result(write_all_chunks(writer, source)),
                {:ok, finished} <- @store.finish_put(writer),
                {:ok, protected} <-
                  protect_uploaded_blob(
@@ -452,11 +470,13 @@ defmodule ElixirDB.Attachments do
                    admission_class
                  ) do
             {:ok,
-             Map.merge(protected, %{
+             protected
+             |> Map.merge(%{
                stream_chunks: stream_chunks,
                encoding: finished.encoding,
                deduplicated?: finished.deduplicated?
-             })}
+             })
+             |> put_source_conn(final_conn)}
           else
             {:error, _} = error ->
               abort_writer(writer)
@@ -659,14 +679,16 @@ defmodule ElixirDB.Attachments do
     end)
   end
 
+  # Returns the final conn so HTTP callers respond with correct body
+  # accounting; responding with a pre-read conn desynchronizes keepalive.
   defp write_conn_chunks(writer, conn, count, write_fun) do
     case Plug.Conn.read_body(conn, @read_chunk_opts) do
-      {:ok, "", _conn} ->
-        {:ok, count}
+      {:ok, "", conn} ->
+        {:ok, count, conn}
 
-      {:ok, body, _conn} ->
+      {:ok, body, conn} ->
         with :ok <- write_fun.(writer, body) do
-          {:ok, count + 1}
+          {:ok, count + 1, conn}
         end
 
       {:more, body, conn} ->
@@ -681,6 +703,22 @@ defmodule ElixirDB.Attachments do
          })}
     end
   end
+
+  defp normalize_chunk_result({:ok, count}), do: {:ok, count, nil}
+  defp normalize_chunk_result({:ok, count, conn}), do: {:ok, count, conn}
+  defp normalize_chunk_result({:error, _} = error), do: error
+
+  defp put_source_conn(data, %Plug.Conn{} = conn), do: Map.put(data, :source_conn, conn)
+  defp put_source_conn(data, nil), do: data
+
+  defp pop_source_conn({:ok, data}) when is_map(data) do
+    case Map.pop(data, :source_conn) do
+      {nil, data} -> {:ok, data}
+      {%Plug.Conn{} = conn, data} -> {:ok, data, conn}
+    end
+  end
+
+  defp pop_source_conn(other), do: other
 
   defp write_fun_chunks(writer, fun, count, write_fun) do
     case fun.() do

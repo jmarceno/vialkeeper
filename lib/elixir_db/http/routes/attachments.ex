@@ -14,8 +14,15 @@ defmodule ElixirDB.HTTP.Routes.Attachments do
     case require_octet_stream(conn) do
       :ok ->
         case Attachments.upload_stream(uuid, conn) do
-          {:ok, data} -> Response.ok(conn, data, 201)
-          {:error, error} -> Response.error(conn, error)
+          {:ok, data, conn} ->
+            Response.ok(conn, data, 201)
+
+          {:error, error} ->
+            # The request body may be partially consumed; do not reuse the
+            # connection with stale body accounting.
+            conn
+            |> Plug.Conn.put_resp_header("connection", "close")
+            |> Response.error(error)
         end
 
       {:error, error} ->

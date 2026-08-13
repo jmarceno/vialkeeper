@@ -68,7 +68,7 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
     refute content_encoding?(response)
     assert content_length(response) == payload_length
     assert byte_size(response.body) == payload_length
-    assert header(response, "x-elixirdb-blob-encoding") in ["zstd", "compressed"]
+    assert header(response, "x-elixirdb-blob-encoding") == "zstd"
   end
 
   test "target install does not probe or recompress a replicated representation", %{
@@ -155,14 +155,12 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
   end
 
   defp encoded_payload_length(bundle, digest, stat) do
-    prefix = String.slice(digest, 0, 2)
-    blob = Path.join([bundle, "blobs", prefix, digest <> ".blob"])
-    zst = Path.join([bundle, "blobs", prefix, digest <> ".zst"])
+    blob = Path.join([bundle, "blobs", String.slice(digest, 0, 2), digest <> ".blob"])
 
-    cond do
-      File.regular?(blob) -> File.stat!(blob).size - 92
-      File.regular?(zst) -> File.stat!(zst).size - 48
-      true -> stat.physical_size
+    if File.regular?(blob) do
+      File.stat!(blob).size - 92
+    else
+      stat.physical_size
     end
   end
 

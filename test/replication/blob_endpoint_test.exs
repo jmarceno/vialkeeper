@@ -257,6 +257,100 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
     end)
   end
 
+  test "wire PUT rejects malformed representation headers without installing", %{
+    uuid: uuid,
+    base_url: base_url
+  } do
+    bytes = "wire-header-checks"
+    digest = sha256_hex(bytes)
+    url = base_url <> "/v1/databases/#{uuid}/replication/blobs/#{digest}"
+    valid = valid_representation_headers(bytes, digest)
+
+    rejected = [
+      {[{"content-encoding", "zstd"} | valid], 400, "invalid_request"},
+      {replace_header(valid, "content-type", "application/octet-stream"), 400, "invalid_request"},
+      {replace_header(valid, "x-elixirdb-blob-format-version", "2"), 409, "unsupported_format"},
+      {replace_header(valid, "x-elixirdb-blob-encoding", "gzip"), 409, "unsupported_format"},
+      {replace_header(valid, "x-elixirdb-blob-logical-length", "01"), 400, "invalid_request"},
+      {replace_header(
+         valid,
+         "x-elixirdb-blob-logical-length",
+         Integer.to_string(byte_size(bytes) + 1)
+       ), 422, "integrity_violation"},
+      {replace_header(valid, "x-elixirdb-blob-payload-sha256", sha256_hex("other-bytes")), 422,
+       "integrity_violation"}
+    ]
+
+    for {headers, status, code} <- rejected do
+      assert {:ok, %{status: response_status, headers: response_headers, body: body}} =
+               Req.put(url,
+                 body: bytes,
+                 headers: [{"accept-encoding", "zstd"} | headers],
+                 decode_body: false,
+                 compressed: false
+               )
+
+      decoded = ElixirDB.TestReplicationWire.decode_response(response_headers, body)
+
+      assert response_status == status,
+             "expected #{status} for #{inspect(headers)}, got #{response_status}: #{inspect(decoded)}"
+
+      assert decoded["error"]["code"] == code
+    end
+
+    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+             Attachments.open_blob_representation(uuid, digest)
+  end
+
+  test "wire PUT rejects a payload that does not match its declared checksum", %{
+    uuid: uuid,
+    base_url: base_url
+  } do
+    payload = String.duplicate("checksum-mismatch-", 512)
+    digest = sha256_hex(payload)
+    encoded = :ezstd.compress(payload, 1)
+    <<first, rest::binary>> = encoded
+    corrupted = <<Bitwise.bxor(first, 1), rest::binary>>
+
+    headers = [
+      {"accept-encoding", "zstd"},
+      {"content-type", "application/vnd.elixirdb.blob-representation"},
+      {"x-elixirdb-blob-format-version", "1"},
+      {"x-elixirdb-blob-encoding", "zstd"},
+      {"x-elixirdb-blob-logical-length", Integer.to_string(byte_size(payload))},
+      {"x-elixirdb-blob-payload-sha256", sha256_hex(encoded)},
+      {"content-length", Integer.to_string(byte_size(corrupted))}
+    ]
+
+    assert {:ok, %{status: 422, headers: response_headers, body: body}} =
+             Req.put(base_url <> "/v1/databases/#{uuid}/replication/blobs/#{digest}",
+               body: corrupted,
+               headers: headers,
+               decode_body: false,
+               compressed: false
+             )
+
+    decoded = ElixirDB.TestReplicationWire.decode_response(response_headers, body)
+    assert decoded["error"]["code"] == "integrity_violation"
+
+    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+             Attachments.open_blob_representation(uuid, digest)
+  end
+
+  defp valid_representation_headers(bytes, digest) do
+    [
+      {"content-type", "application/vnd.elixirdb.blob-representation"},
+      {"x-elixirdb-blob-format-version", "1"},
+      {"x-elixirdb-blob-encoding", "raw"},
+      {"x-elixirdb-blob-logical-length", Integer.to_string(byte_size(bytes))},
+      {"x-elixirdb-blob-payload-sha256", digest},
+      {"content-length", Integer.to_string(byte_size(bytes))}
+    ]
+  end
+
+  defp replace_header(headers, name, value),
+    do: List.keyreplace(headers, name, 0, {name, value})
+
   defp raw_stream(digest, bytes) do
     BlobRepresentationStream.new(%{
       logical_digest: digest,

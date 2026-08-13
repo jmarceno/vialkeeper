@@ -742,6 +742,228 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
              DatabaseCatalog.command(b_uuid, {:command, :integrity_check, %{}})
   end
 
+  @tag :slow
+  test "one-shot remote pull preserves raw and zstd representations byte for byte" do
+    {server_a, server_b, a_uuid, b_uuid} = start_server_pair!("e2e-repr")
+
+    raw_payload = :crypto.strong_rand_bytes(65_536)
+    zstd_payload = String.duplicate("byte-stable-representation-", 8_192)
+
+    raw_digest = upload_blob!(server_a, a_uuid, raw_payload)
+    zstd_digest = upload_blob!(server_a, a_uuid, zstd_payload)
+    assert blob_encoding!(a_uuid, raw_digest) == :raw
+    assert blob_encoding!(a_uuid, zstd_digest) == :zstd
+
+    # The target already holds a valid representation of the raw payload.
+    assert upload_blob!(server_b, b_uuid, raw_payload) == raw_digest
+    existing_bytes = blob_file_bytes!(b_uuid, raw_digest)
+    existing_file_id = blob_file_id!(b_uuid, raw_digest)
+
+    assert {:ok, %{"revision" => raw_revision}} =
+             put_document!(server_a, a_uuid, "raw-doc", %{"kind" => "raw"}, %{
+               "payload.bin" => %{
+                 "blob" => raw_digest,
+                 "content_type" => "application/octet-stream"
+               }
+             })
+
+    assert {:ok, %{"revision" => zstd_revision}} =
+             put_document!(server_a, a_uuid, "zstd-doc", %{"kind" => "zstd"}, %{
+               "payload.bin" => %{
+                 "blob" => zstd_digest,
+                 "content_type" => "application/octet-stream"
+               }
+             })
+
+    assert {:ok, %{"job_id" => job_id}} =
+             put_replication_job!(server_b, b_uuid, %{
+               "persist" => true,
+               "mode" => "one_shot",
+               "direction" => "pull",
+               "enabled" => true,
+               "endpoint" => %{
+                 "kind" => "remote",
+                 "database_uuid" => a_uuid,
+                 "base_url" => server_a.base_url
+               }
+             })
+
+    start_job!(b_uuid, job_id)
+    await_job_state(b_uuid, job_id, :completed)
+
+    wait_for_document!(server_b, b_uuid, "raw-doc", raw_revision, %{"kind" => "raw"})
+    wait_for_document!(server_b, b_uuid, "zstd-doc", zstd_revision, %{"kind" => "zstd"})
+
+    # Complete on-disk representation files (payload plus trailer) match.
+    for digest <- [raw_digest, zstd_digest] do
+      assert blob_file_bytes!(b_uuid, digest) == blob_file_bytes!(a_uuid, digest)
+    end
+
+    # The pre-existing valid target representation was kept, not replaced:
+    # same inode, so the file was never reinstalled via rename.
+    assert blob_file_bytes!(b_uuid, raw_digest) == existing_bytes
+    assert blob_file_id!(b_uuid, raw_digest) == existing_file_id
+
+    # Public download still returns the original logical bytes.
+    assert download_attachment!(server_b, b_uuid, "raw-doc", "payload.bin") == raw_payload
+    assert download_attachment!(server_b, b_uuid, "zstd-doc", "payload.bin") == zstd_payload
+
+    assert {:ok, %{ok: true}} =
+             DatabaseCatalog.command(b_uuid, {:command, :integrity_check, %{}})
+  end
+
+  @tag :slow
+  test "source representation corruption fails pull without installing on the target" do
+    {server_a, server_b, a_uuid, b_uuid} = start_server_pair!("e2e-corrupt")
+
+    payload = String.duplicate("corrupted-representation-", 4_096)
+    digest = upload_blob!(server_a, a_uuid, payload)
+
+    assert {:ok, %{"revision" => revision}} =
+             put_document!(server_a, a_uuid, "poisoned", %{"n" => 1}, %{
+               "payload.bin" => %{
+                 "blob" => digest,
+                 "content_type" => "application/octet-stream"
+               }
+             })
+
+    source_blob_path = blob_file_path!(a_uuid, digest)
+    original = File.read!(source_blob_path)
+    <<first, rest::binary>> = original
+    File.write!(source_blob_path, <<Bitwise.bxor(first, 1), rest::binary>>)
+
+    assert {:ok, replication_id} = Id.calculate(a_uuid, b_uuid, "pull", "one_shot")
+    checkpoint_before = checkpoint_source_sequence(b_uuid, replication_id)
+
+    assert {:ok, %{"job_id" => job_id}} =
+             put_replication_job!(server_b, b_uuid, %{
+               "persist" => true,
+               "mode" => "one_shot",
+               "direction" => "pull",
+               "enabled" => true,
+               "retry" => %{
+                 "max_attempts" => 2,
+                 "base_delay_ms" => 10,
+                 "max_delay_ms" => 20,
+                 "jitter_ms" => 1
+               },
+               "endpoint" => %{
+                 "kind" => "remote",
+                 "database_uuid" => a_uuid,
+                 "base_url" => server_a.base_url
+               }
+             })
+
+    start_job!(b_uuid, job_id)
+    await_job_state(b_uuid, job_id, :failed)
+
+    # No partial install: document, blob, checkpoint, and tmp dir untouched.
+    assert_document_missing!(server_b, b_uuid, "poisoned")
+
+    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+             ElixirDB.Attachments.open_blob_representation(b_uuid, digest)
+
+    assert checkpoint_source_sequence(b_uuid, replication_id) == checkpoint_before
+    {:ok, target_bundle} = DatabaseCatalog.bundle_root(b_uuid)
+    assert Path.wildcard(Path.join([target_bundle, "tmp", "*"])) == []
+
+    # No leaked guard on either side: the target stays writable and a clean
+    # retry converges once the source representation is restored.
+    assert {:ok, _} = put_document!(server_b, b_uuid, "target-writable", %{"ok" => true})
+    File.write!(source_blob_path, original)
+
+    assert {:ok, %{"job_id" => retry_job_id}} =
+             put_replication_job!(server_b, b_uuid, %{
+               "persist" => true,
+               "mode" => "one_shot",
+               "direction" => "pull",
+               "enabled" => true,
+               "endpoint" => %{
+                 "kind" => "remote",
+                 "database_uuid" => a_uuid,
+                 "base_url" => server_a.base_url
+               }
+             })
+
+    start_job!(b_uuid, retry_job_id)
+    await_job_state(b_uuid, retry_job_id, :completed)
+    wait_for_document!(server_b, b_uuid, "poisoned", revision, %{"n" => 1})
+    assert blob_file_bytes!(b_uuid, digest) == original
+  end
+
+  defp start_server_pair!(prefix_base) do
+    root = ElixirDB.Config.database_root()
+    prefix = "#{prefix_base}-#{System.unique_integer([:positive])}"
+    a_path = prefix <> "-a.elixirdb"
+    b_path = prefix <> "-b.elixirdb"
+
+    for path <- [a_path, b_path] do
+      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+    end
+
+    server_a = TestServer.start_supervised!()
+    server_b = TestServer.start_supervised!()
+    a_uuid = create_database!(server_a, a_path)
+    b_uuid = create_database!(server_b, b_path)
+
+    on_exit(fn ->
+      _ = maybe_disable_jobs(b_uuid)
+      _ = TestServer.stop(server_a)
+      _ = TestServer.stop(server_b)
+      _ = DatabaseCatalog.close(a_uuid)
+      _ = DatabaseCatalog.close(b_uuid)
+      _ = DatabaseCatalog.unregister(a_uuid)
+      _ = DatabaseCatalog.unregister(b_uuid)
+      ElixirDB.TempDatabase.cleanup(Path.join(root, a_path))
+      ElixirDB.TempDatabase.cleanup(Path.join(root, b_path))
+    end)
+
+    {server_a, server_b, a_uuid, b_uuid}
+  end
+
+  defp start_job!(uuid, job_id) do
+    case JobManager.start(uuid, job_id) do
+      {:ok, _} -> :ok
+      {:error, %ElixirDB.Error{code: :replication_already_running}} -> :ok
+      other -> flunk("job #{job_id} did not start: #{inspect(other)}")
+    end
+  end
+
+  defp blob_file_path!(uuid, digest) do
+    {:ok, bundle} = DatabaseCatalog.bundle_root(uuid)
+    path = Path.join([bundle, "blobs", String.slice(digest, 0, 2), digest <> ".blob"])
+    assert File.regular?(path), "expected representation file at #{path}"
+    path
+  end
+
+  defp blob_file_bytes!(uuid, digest), do: File.read!(blob_file_path!(uuid, digest))
+
+  defp blob_file_id!(uuid, digest) do
+    path = blob_file_path!(uuid, digest)
+    {:ok, info} = :file.read_file_info(String.to_charlist(path))
+
+    # :file_info record layout: {:file_info, size, type, access, atime, mtime,
+    # ctime, mode, links, major_device, minor_device, inode, uid, gid}
+    {elem(info, 9), elem(info, 11)}
+  end
+
+  defp blob_encoding!(uuid, digest) do
+    {:ok, bundle} = DatabaseCatalog.bundle_root(uuid)
+    assert {:ok, stat} = ElixirDB.Attachments.FilesystemStore.stat(bundle, digest)
+    stat.encoding
+  end
+
+  defp download_attachment!(server, uuid, document_id, name) do
+    assert {:ok, %{status: 200, body: body}} =
+             Req.post(server.base_url <> "/v1/databases/#{uuid}/attachments/get",
+               json: %{"id" => document_id, "name" => name},
+               decode_body: false,
+               compressed: false
+             )
+
+    body
+  end
+
   defp create_database!(server, path) do
     assert {:ok, %{status: 201, body: body}} =
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})

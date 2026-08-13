@@ -266,15 +266,22 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
     with_blob_digest(conn, fn conn, digest ->
       case BlobRepresentationStream.parse_http_headers(conn.req_headers, digest) do
         {:ok, descriptor} ->
-          Response.result(
-            conn,
-            ElixirDB.Attachments.put_blob_representation(
-              Request.uuid(conn),
-              descriptor,
-              conn,
-              admission_class: :replication
-            )
-          )
+          case ElixirDB.Attachments.put_blob_representation(
+                 Request.uuid(conn),
+                 descriptor,
+                 conn,
+                 admission_class: :replication
+               ) do
+            {:ok, %Plug.Conn{} = conn} ->
+              Response.result(conn, :ok)
+
+            {:error, error} ->
+              # The request body may be partially consumed; do not reuse the
+              # connection with stale body accounting.
+              conn
+              |> Plug.Conn.put_resp_header("connection", "close")
+              |> Response.error(error)
+          end
 
         {:error, error} ->
           conn = discard_request_body(conn)
