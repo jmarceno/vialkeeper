@@ -341,6 +341,7 @@ defmodule ElixirDB.Storage.Services.Chains do
                document_id: doc.document_id,
                history_id: leaf.history_id,
                leaf_revision: leaf_id,
+               source_update_sequence: doc.update_sequence,
                truncated: truncated?,
                revisions: Enum.map(revisions, &revision_wire(&1, doc.document_id))
              }}

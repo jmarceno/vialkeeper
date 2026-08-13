@@ -115,7 +115,7 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
 
   get "/local-records/:namespace/:key" do
     with_record_path(conn, fn conn, namespace, key ->
-      if namespace == "retention_boundary_state" do
+      if namespace in ["retention_boundary_state", "shadow_checkpoints"] do
         Response.result(
           conn,
           replication_command(
@@ -130,6 +130,45 @@ defmodule ElixirDB.HTTP.Routes.ReplicationWire do
         )
       end
     end)
+  end
+
+  put "/local-records/:namespace/:key" do
+    Request.call(
+      conn,
+      Schemas.opts(:wire_checkpoint, "shadow checkpoint PUT has an invalid replacement"),
+      fn body, conn ->
+        with_record_path(conn, fn conn, namespace, key ->
+          cond do
+            namespace != "shadow_checkpoints" ->
+              Response.error(
+                conn,
+                ElixirDB.Error.invalid_request("local record namespace is not writable")
+              )
+
+            not valid_checkpoint_put?(body) ->
+              Response.error(
+                conn,
+                ElixirDB.Error.invalid_request("shadow checkpoint PUT has an invalid replacement")
+              )
+
+            true ->
+              Response.result(
+                conn,
+                replication_command(
+                  Request.uuid(conn),
+                  {:command, :put_local_record,
+                   %{
+                     namespace: namespace,
+                     key: key,
+                     expected_version: body["expected_checkpoint_version"],
+                     value: Map.delete(body, "expected_checkpoint_version")
+                   }}
+                )
+              )
+          end
+        end)
+      end
+    )
   end
 
   put "/peers/:peer_database_uuid" do

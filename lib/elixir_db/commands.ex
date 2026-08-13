@@ -469,6 +469,9 @@ defmodule ElixirDB.Commands do
   def normalize({:command, :get_local_record, "checkpoints", replication_id}),
     do: %GetCheckpoint{replication_id: replication_id}
 
+  def normalize({:command, :get_local_record, "shadow_checkpoints", replication_id}),
+    do: %GetLocalRecord{namespace: "shadow_checkpoints", key: replication_id}
+
   def normalize({:command, :get_local_record, namespace, key}),
     do: %GetLocalRecord{namespace: namespace, key: key}
 

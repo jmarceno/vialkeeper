@@ -71,6 +71,10 @@ defmodule ElixirDB.Replication.LocalEndpoint do
     do: command(uuid, {:command, :get_local_record, "checkpoints", replication_id})
 
   @impl true
+  def get_shadow_checkpoint(%__MODULE__{database_uuid: uuid}, replication_id),
+    do: command(uuid, {:command, :get_local_record, "shadow_checkpoints", replication_id})
+
+  @impl true
   def get_local_record(%__MODULE__{database_uuid: uuid}, namespace, key),
     do: command(uuid, {:command, :get_local_record, namespace, key})
 
@@ -82,6 +86,22 @@ defmodule ElixirDB.Replication.LocalEndpoint do
         {:command, :put_local_record,
          %{
            namespace: "checkpoints",
+           key: replication_id,
+           expected_version: MapAccess.get(checkpoint, :expected_checkpoint_version, 0),
+           value:
+             Map.delete(checkpoint, "expected_checkpoint_version")
+             |> Map.delete(:expected_checkpoint_version)
+         }}
+      )
+
+  @impl true
+  def put_shadow_checkpoint(%__MODULE__{database_uuid: uuid}, replication_id, checkpoint),
+    do:
+      command(
+        uuid,
+        {:command, :put_local_record,
+         %{
+           namespace: "shadow_checkpoints",
            key: replication_id,
            expected_version: MapAccess.get(checkpoint, :expected_checkpoint_version, 0),
            value:

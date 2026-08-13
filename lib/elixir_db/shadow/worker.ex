@@ -9,7 +9,7 @@ defmodule ElixirDB.Shadow.Worker do
   alias ElixirDB.NodeIdentity
   alias ElixirDB.PathSafety
   alias ElixirDB.Runtime.{AtomicWrite, CommandContext, DatabaseCatalog}
-  alias ElixirDB.Shadow.Protocol
+  alias ElixirDB.Shadow.{Protocol, WorkerSupervisor}
 
   @journal_filename "managed_shadows.json"
   @journal_version 1
@@ -68,8 +68,16 @@ defmodule ElixirDB.Shadow.Worker do
     {:reply, capability_response(state), state}
   end
 
-  def handle_call({:provision, request}, _from, state),
-    do: reply_mutation(state, provision_state(request, state), state)
+  def handle_call({:provision, request}, _from, state) do
+    case provision_state(request, state) do
+      {:ok, _result, next} = reply ->
+        maybe_start_replicator(request, state)
+        reply_mutation(state, reply, next)
+
+      {:error, _error} = reply ->
+        reply_mutation(state, reply, state)
+    end
+  end
 
   def handle_call({:inspect, request}, _from, state),
     do: {:reply, inspect_state(request, state), state}
@@ -173,6 +181,29 @@ defmodule ElixirDB.Shadow.Worker do
 
   defp reply_mutation(_state, {:ok, result, next}, _old), do: {:reply, {:ok, result}, next}
   defp reply_mutation(_state, {:error, error}, old), do: {:reply, {:error, error}, old}
+
+  defp maybe_start_replicator(request, state) do
+    auto_replicate? =
+      Keyword.get(
+        state.options,
+        :auto_replicate,
+        Keyword.get(Application.get_env(:elixir_db, :shadow_worker, []), :auto_replicate, false)
+      )
+
+    if auto_replicate? and Process.whereis(WorkerSupervisor) do
+      _ =
+        WorkerSupervisor.start_replicator(
+          request,
+          mode: :continuous,
+          mark_ready: true,
+          worker_options: [server: self()]
+        )
+
+      :ok
+    else
+      :ok
+    end
+  end
 
   defp result_only({:ok, result, _state}), do: {:ok, result}
   defp result_only({:error, error}), do: {:error, error}
@@ -355,16 +386,20 @@ defmodule ElixirDB.Shadow.Worker do
          {:ok, document_id} <- document_id(request) do
       context = shadow_read_context(request)
 
-      DatabaseCatalog.command_with_context(
-        request["shadow_uuid"],
-        context,
-        {:command, :get_document,
-         %{
-           document_id: document_id,
-           revision: request["revision"],
-           include_conflicts: request["include_conflicts"] || false
-         }}
-      )
+      with {:ok, document} <-
+             DatabaseCatalog.command_with_context(
+               request["shadow_uuid"],
+               context,
+               {:command, :get_document,
+                %{
+                  document_id: document_id,
+                  revision: request["revision"],
+                  include_conflicts: request["include_conflicts"] || false
+                }}
+             ),
+           {:ok, watermark} <- shadow_watermark(request["shadow_uuid"]) do
+        {:ok, %{document: document, source_watermark: watermark}}
+      end
     end
   end
 
@@ -376,22 +411,26 @@ defmodule ElixirDB.Shadow.Worker do
          requests when is_list(requests) <- request["requests"] do
       context = shadow_read_context(request)
 
-      {:ok,
-       Enum.map(requests, fn item ->
-         normalized = Protocol.string_keys(item)
-         id = normalized["id"] || normalized["document_id"]
+      with {:ok, results} <-
+             {:ok,
+              Enum.map(requests, fn item ->
+                normalized = Protocol.string_keys(item)
+                id = normalized["id"] || normalized["document_id"]
 
-         DatabaseCatalog.command_with_context(
-           request["shadow_uuid"],
-           context,
-           {:command, :get_document,
-            %{
-              document_id: id,
-              revision: normalized["revision"],
-              include_conflicts: normalized["include_conflicts"] || false
-            }}
-         )
-       end)}
+                DatabaseCatalog.command_with_context(
+                  request["shadow_uuid"],
+                  context,
+                  {:command, :get_document,
+                   %{
+                     document_id: id,
+                     revision: normalized["revision"],
+                     include_conflicts: normalized["include_conflicts"] || false
+                   }}
+                )
+              end)},
+           {:ok, watermark} <- shadow_watermark(request["shadow_uuid"]) do
+        {:ok, %{results: results, source_watermark: watermark}}
+      end
     else
       nil -> {:error, Error.invalid_request("shadow bulk read requests are required")}
       _ -> {:error, Error.invalid_request("shadow bulk read requests must be an array")}
@@ -400,6 +439,21 @@ defmodule ElixirDB.Shadow.Worker do
 
   defp attachment_unavailable(_request, _state),
     do: {:error, Error.shadow_attachment_unavailable("shadow attachment reads are not ready")}
+
+  defp shadow_watermark(shadow_uuid) do
+    DatabaseCatalog.command_with_context(
+      shadow_uuid,
+      CommandContext.shadow_read(shadow_database_uuid: shadow_uuid),
+      {:command, :get_local_record, "shadow_state", "watermark"}
+    )
+    |> case do
+      {:ok, nil} -> {:ok, 0}
+      {:ok, %{value: value}} when is_integer(value) and value >= 0 -> {:ok, value}
+      {:ok, %{"value" => value}} when is_integer(value) and value >= 0 -> {:ok, value}
+      {:ok, _} -> {:error, Error.integrity_violation("shadow watermark is invalid")}
+      {:error, _} = error -> error
+    end
+  end
 
   defp normalize_provision(value) when is_map(value) do
     value = Protocol.string_keys(value)

@@ -51,6 +51,7 @@ defmodule ElixirDB.Storage.Memory.Store do
           derived_groups: %{optional(binary()) => map()},
           shadow_metadata: map() | nil,
           shadow_origins: %{optional(binary()) => non_neg_integer()},
+          shadow_watermark: non_neg_integer(),
           closed?: boolean()
         }
 
@@ -444,6 +445,7 @@ defmodule ElixirDB.Storage.Memory.Store do
       derived_groups: %{},
       shadow_metadata: nil,
       shadow_origins: %{},
+      shadow_watermark: 0,
       closed?: false
     }
   end

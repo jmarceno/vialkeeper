@@ -63,7 +63,16 @@ defmodule ElixirDB.HTTP.Schemas do
   @wire_changes ["since", "limit", "wait_ms"]
   @wire_diff ["documents", "source_database_uuid"]
   @wire_get_chains ["documents", "bootstrap", "cursor", "page_cursor", "limit"]
-  @wire_put_chains ["chains", "purged_boundaries", "source_database_uuid"]
+  @wire_put_chains [
+    "chains",
+    "purged_boundaries",
+    "source_database_uuid",
+    "profile",
+    "shadow_database_uuid",
+    "shadow_generation",
+    "operation_id",
+    "source_watermark"
+  ]
   @wire_checkpoint [
     "expected_checkpoint_version",
     "version",

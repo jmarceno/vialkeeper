@@ -5,7 +5,7 @@ defmodule ElixirDB.Replication do
   alias ElixirDB.JSON.{Canonical, Stringify}
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Replication, as: ReplicationModule
-  alias ElixirDB.Replication.{CheckpointReconciler, Id, Wire}
+  alias ElixirDB.Replication.{CheckpointReconciler, Id, Profile, Wire}
   alias ElixirDB.Replication.LocalEndpoint
   alias ElixirDB.Replication.TransferPipeline
   alias ElixirDB.Retention.SafeReport
@@ -44,7 +44,11 @@ defmodule ElixirDB.Replication do
   @doc "Run one captured batch sequence, or keep waiting when mode is continuous."
   def run(source, target, options \\ %{}) do
     session_id = option(options, :session_id, ElixirDB.UUID.v4())
-    options = put_option(options, :session_id, session_id)
+
+    options =
+      options
+      |> put_option(:session_id, session_id)
+      |> put_option(:profile, normalize_profile(option(options, :profile, nil)))
 
     with {:ok, context} <- handshake(source, target, options) do
       process_from_handshake(source, target, context, options)
@@ -53,10 +57,14 @@ defmodule ElixirDB.Replication do
 
   @doc "Handshake: identities, compatibility, replication id, checkpoint reconciliation."
   def handshake(source, target, options) do
+    profile = normalize_profile(option(options, :profile, nil))
+
     with :ok <- phase_hook(options, :handshake, %{}),
+         :ok <- Profile.validate(profile),
          {:ok, source_identity} <- endpoint_call(source, :identity, []),
          {:ok, target_identity} <- endpoint_call(target, :identity, []),
          :ok <- compatible(source_identity, target_identity),
+         :ok <- compatible_profile(profile, source_identity, target_identity),
          {:ok, replication_id} <-
            Id.calculate(
              source_uuid(source_identity),
@@ -64,27 +72,21 @@ defmodule ElixirDB.Replication do
              option(options, :direction, "push"),
              option(options, :mode, "one_shot")
            ),
-         {:ok, source_checkpoint} <- endpoint_call(source, :get_checkpoint, [replication_id]),
-         {:ok, target_checkpoint} <- endpoint_call(target, :get_checkpoint, [replication_id]),
+         {:ok, source_checkpoint} <- profile_checkpoint(source, replication_id, profile, :source),
+         {:ok, target_checkpoint} <- profile_checkpoint(target, replication_id, profile, :target),
          {:ok, target_boundary_state} <-
            endpoint_call(target, :get_local_record, [
              "retention_boundary_state",
              source_uuid(source_identity)
            ]),
-         {:ok, peer_record} <-
-           endpoint_call(source, :get_local_record, [
-             "peer_ledger",
-             source_uuid(target_identity)
-           ]),
+         {:ok, peer_record} <- profile_peer_record(source, target_identity, profile),
          reconcile <-
-           CheckpointReconciler.reconcile(
-             value(source_checkpoint),
-             value(target_checkpoint),
-             source_identity
-           ),
+           reconcile_profile(source_checkpoint, target_checkpoint, source_identity, profile),
+         :ok <- validate_shadow_reconcile(reconcile, profile, options),
          terminal <- get(source_identity, :current_sequence) || 0 do
       context = %{
         session_id: option(options, :session_id, ElixirDB.UUID.v4()),
+        profile: profile,
         replication_id: replication_id,
         since: reconcile.since,
         terminal: terminal,
@@ -160,7 +162,7 @@ defmodule ElixirDB.Replication do
 
     with :ok <- phase_hook(options, :read_changes, context),
          changes_result <- endpoint_call(source, :read_changes, [request]),
-         {:ok, context} <- apply_read_changes_result(changes_result, context) do
+         {:ok, context} <- apply_read_changes_result(changes_result, context, options) do
       finalize_read_changes(source, context, options)
     end
   end
@@ -216,7 +218,7 @@ defmodule ElixirDB.Replication do
   def import_chains(target, context, options) do
     with :ok <- phase_hook(options, :import, context),
          {:ok, imported} <-
-           endpoint_call(target, :import_revision_chains, [%{chains: context.chains}]),
+           endpoint_call(target, :import_revision_chains, [import_request(context)]),
          {:ok, _confirmed} <-
            endpoint_call(target, :confirm_durable_commit, [%{imported: imported}]) do
       context = %{context | imported: imported}
@@ -236,10 +238,7 @@ defmodule ElixirDB.Replication do
              context.replication_id,
              :target,
              fn ->
-               endpoint_call(target, :put_checkpoint, [
-                 context.replication_id,
-                 prepared.target_request
-               ])
+               put_profile_checkpoint(target, context, prepared.target_request)
              end
            ) do
       context =
@@ -247,7 +246,7 @@ defmodule ElixirDB.Replication do
           checkpoint_prepared: prepared,
           target_checkpoint_result: target_result,
           source_checkpoint: prepared.source_current,
-          target_checkpoint: prepared.target_current
+          target_checkpoint: target_result
         })
 
       with :ok <- phase_hook(options, :after_checkpoint_target, context) do
@@ -261,17 +260,7 @@ defmodule ElixirDB.Replication do
     prepared = Map.fetch!(context, :checkpoint_prepared)
 
     with :ok <- phase_hook(options, :checkpoint_source, context),
-         {:ok, source_result} <-
-           ReplicationModule.checkpoint_span(
-             context.replication_id,
-             :source,
-             fn ->
-               endpoint_call(source, :put_checkpoint, [
-                 context.replication_id,
-                 prepared.source_request
-               ])
-             end
-           ) do
+         {:ok, source_result} <- checkpoint_source_profile(source, context, prepared) do
       next = prepared.sequence
 
       context =
@@ -279,6 +268,10 @@ defmodule ElixirDB.Replication do
         |> Map.put(:since, next)
         |> Map.put(:safe_source_sequence, prepared.safe_source_sequence)
         |> Map.put(:source_checkpoint_result, source_result)
+        |> Map.put(
+          :ready?,
+          shadow_profile?(Map.get(context, :profile)) or Map.get(context, :ready?, false)
+        )
         |> Map.put(:selected, [])
         |> Map.put(:documents, [])
         |> Map.put(:chains, [])
@@ -297,8 +290,8 @@ defmodule ElixirDB.Replication do
     target_uuid = source_uuid(context.target_identity || target)
 
     with :ok <- phase_hook(options, :report_peer, context),
-         {:ok, _result} <- report_peer_position(source, target, context, options),
-         :ok <- clear_pending_local_causal(source, target_uuid) do
+         {:ok, _result} <- report_peer_profile(source, target, context, options),
+         :ok <- clear_pending_local_causal_profile(source, target_uuid, context.profile) do
       with :ok <- phase_hook(options, :after_report_peer, context) do
         {:ok, context}
       end
@@ -310,11 +303,13 @@ defmodule ElixirDB.Replication do
     with :ok <- phase_hook(options, :waiting, context),
          {:ok, source_identity} <- endpoint_call(source, :identity, []),
          reconcile <-
-           CheckpointReconciler.reconcile(
-             value(context.source_checkpoint),
-             value(context.target_checkpoint),
-             source_identity
+           reconcile_profile(
+             context.source_checkpoint,
+             context.target_checkpoint,
+             source_identity,
+             Map.get(context, :profile, Profile.peer())
            ),
+         :ok <- validate_shadow_reconcile(reconcile, Map.get(context, :profile), options),
          context <-
            maybe_mark_bootstrap(context, reconcile, source_identity),
          {:ok, changes} <-
@@ -519,11 +514,19 @@ defmodule ElixirDB.Replication do
            ),
          {:ok, imported} <-
            endpoint_call(target, :import_revision_chains, [
-             %{
-               chains: chains,
-               purged_boundaries: get(page, :purged_boundaries) || [],
-               source_database_uuid: get(context.source_identity, :database_uuid)
-             }
+             import_request(
+               context,
+               chains,
+               %{
+                 purged_boundaries: get(page, :purged_boundaries) || [],
+                 source_database_uuid: get(context.source_identity, :database_uuid),
+                 source_watermark:
+                   if(get(page, :continuation_cursor),
+                     do: max_chain_source_sequence(chains),
+                     else: context.terminal
+                   )
+               }
+             )
            ]),
          {:ok, _confirmed} <-
            endpoint_call(target, :confirm_durable_commit, [%{imported: imported}]) do
@@ -662,8 +665,12 @@ defmodule ElixirDB.Replication do
     imported = context.imported
     source_identity = context.source_identity || %{}
 
-    with {:ok, source_current} <- endpoint_call(source, :get_checkpoint, [context.replication_id]),
-         {:ok, target_current} <- endpoint_call(target, :get_checkpoint, [context.replication_id]),
+    profile = Map.get(context, :profile, Profile.peer())
+
+    with {:ok, source_current} <-
+           profile_checkpoint(source, context.replication_id, profile, :source),
+         {:ok, target_current} <-
+           profile_checkpoint(target, context.replication_id, profile, :target),
          source_value <- value(source_current),
          target_value <- value(target_current),
          session_id <- context.session_id,
@@ -726,7 +733,9 @@ defmodule ElixirDB.Replication do
          options
        ) do
     has_local =
-      unacknowledged_local_mutations?(target, get(source_identity, :database_uuid), options)
+      if shadow_profile?(Map.get(context, :profile)),
+        do: false,
+        else: unacknowledged_local_mutations?(target, get(source_identity, :database_uuid), options)
 
     SafeReport.decide(%{
       source_history_epoch: get(source_identity, :history_epoch),
@@ -787,6 +796,45 @@ defmodule ElixirDB.Replication do
     ])
   end
 
+  defp put_profile_checkpoint(target, context, request) do
+    if shadow_profile?(Map.get(context, :profile)) do
+      endpoint_call(target, :put_shadow_checkpoint, [context.replication_id, request])
+    else
+      endpoint_call(target, :put_checkpoint, [context.replication_id, request])
+    end
+  end
+
+  defp checkpoint_source_profile(source, context, prepared) do
+    if shadow_profile?(Map.get(context, :profile)) do
+      {:ok, %{skipped: true}}
+    else
+      ReplicationModule.checkpoint_span(
+        context.replication_id,
+        :source,
+        fn ->
+          endpoint_call(source, :put_checkpoint, [
+            context.replication_id,
+            prepared.source_request
+          ])
+        end
+      )
+    end
+  end
+
+  defp report_peer_profile(source, target, context, options) do
+    if shadow_profile?(Map.get(context, :profile)) do
+      {:ok, %{skipped: true}}
+    else
+      report_peer_position(source, target, context, options)
+    end
+  end
+
+  defp clear_pending_local_causal_profile(source, target_uuid, profile) do
+    if shadow_profile?(profile),
+      do: :ok,
+      else: clear_pending_local_causal(source, target_uuid)
+  end
+
   defp peer_record_version(source, peer_uuid) do
     case endpoint_call(source, :get_local_record, ["peer_ledger", peer_uuid]) do
       {:ok, nil} -> 0
@@ -835,15 +883,23 @@ defmodule ElixirDB.Replication do
       get_in(identity, ["config", "retention", "peer_expiry_ms"]) || 86_400_000
   end
 
-  defp apply_read_changes_result({:error, %ElixirDB.Error{code: :history_truncated}}, context) do
-    {:ok, %{context | bootstrap_required: true, selected: []}}
+  defp apply_read_changes_result(
+         {:error, %ElixirDB.Error{code: :history_truncated}},
+         context,
+         _options
+       ) do
+    if shadow_profile?(Map.get(context, :profile)) and Map.get(context, :ready?, false) do
+      {:error, ElixirDB.Error.shadow_replacement_required("shadow history was truncated")}
+    else
+      {:ok, %{context | bootstrap_required: true, selected: []}}
+    end
   end
 
-  defp apply_read_changes_result({:ok, changes}, context) do
+  defp apply_read_changes_result({:ok, changes}, context, _options) do
     {:ok, %{context | selected: get(changes, :results) || []}}
   end
 
-  defp apply_read_changes_result({:error, error}, _context), do: {:error, error}
+  defp apply_read_changes_result({:error, error}, _context, _options), do: {:error, error}
 
   defp maybe_mark_bootstrap(context, reconcile, source_identity) do
     context =
@@ -1049,6 +1105,80 @@ defmodule ElixirDB.Replication do
     end
   end
 
+  defp profile_checkpoint(_endpoint, _replication_id, %Profile{kind: :shadow}, :source),
+    do: {:ok, nil}
+
+  defp profile_checkpoint(endpoint, replication_id, %Profile{kind: :shadow}, :target),
+    do: endpoint_call(endpoint, :get_shadow_checkpoint, [replication_id])
+
+  defp profile_checkpoint(endpoint, replication_id, %Profile{kind: :peer}, _side),
+    do: endpoint_call(endpoint, :get_checkpoint, [replication_id])
+
+  defp profile_peer_record(_source, _target_identity, %Profile{kind: :shadow}),
+    do: {:ok, nil}
+
+  defp profile_peer_record(source, target_identity, %Profile{kind: :peer}),
+    do:
+      endpoint_call(source, :get_local_record, [
+        "peer_ledger",
+        source_uuid(target_identity)
+      ])
+
+  defp reconcile_profile(source_checkpoint, target_checkpoint, source_identity, %Profile{
+         kind: :peer
+       }),
+       do:
+         CheckpointReconciler.reconcile(
+           value(source_checkpoint),
+           value(target_checkpoint),
+           source_identity
+         )
+
+  defp reconcile_profile(_source_checkpoint, target_checkpoint, source_identity, %Profile{
+         kind: :shadow
+       }) do
+    target_value = value(target_checkpoint)
+
+    CheckpointReconciler.reconcile(target_value, target_value, source_identity)
+  end
+
+  defp validate_shadow_reconcile(reconcile, %Profile{kind: :shadow}, options) do
+    if option(options, :shadow_ready, false) and reconcile.bootstrap_required do
+      {:error,
+       ElixirDB.Error.shadow_replacement_required("shadow history no longer overlaps the source")}
+    else
+      :ok
+    end
+  end
+
+  defp validate_shadow_reconcile(_reconcile, _profile, _options), do: :ok
+
+  defp compatible_profile(%Profile{kind: :peer}, _source, _target), do: :ok
+
+  defp compatible_profile(
+         %Profile{
+           kind: :shadow,
+           source_database_uuid: source_database_uuid,
+           target_database_uuid: target_database_uuid
+         },
+         source,
+         target
+       ) do
+    cond do
+      source_uuid(source) != source_database_uuid ->
+        {:error, ElixirDB.Error.shadow_identity_conflict("shadow source UUID does not match")}
+
+      source_uuid(target) != target_database_uuid ->
+        {:error, ElixirDB.Error.shadow_identity_conflict("shadow target UUID does not match")}
+
+      get(target, :database_kind) not in [:shadow, "shadow"] ->
+        {:error, ElixirDB.Error.shadow_incompatible("replication target is not a shadow")}
+
+      true ->
+        :ok
+    end
+  end
+
   defp boundary_refresh_required?(source_identity, _target_checkpoint, target_state) do
     installed_epoch = boundary_state_epoch(target_state) || 0
     installed_digest = boundary_state_digest(target_state)
@@ -1170,7 +1300,58 @@ defmodule ElixirDB.Replication do
         option(options, :max_transfer_bytes_in_flight, defaults["max_transfer_bytes_in_flight"]),
       batch_documents: option(options, :batch_documents, option(options, :batch, @default_batch)),
       phase_hook: option(options, :phase_hook, nil),
-      replication_id: option(options, :replication_id, nil)
+      replication_id: option(options, :replication_id, nil),
+      profile: normalize_profile(option(options, :profile, nil)),
+      blob_mode:
+        if(shadow_profile?(normalize_profile(option(options, :profile, nil))),
+          do: :external,
+          else: :replicated
+        )
     }
   end
+
+  defp import_request(context, chains \\ nil, extra \\ %{}) do
+    chains = chains || Map.get(context, :chains, [])
+    profile = normalize_profile(Map.get(context, :profile, nil))
+    base = %{chains: chains}
+
+    if shadow_profile?(profile) do
+      Map.merge(
+        base,
+        Map.merge(extra, %{
+          profile: "shadow",
+          source_database_uuid: profile.source_database_uuid,
+          shadow_database_uuid: profile.target_database_uuid,
+          shadow_generation: profile.generation,
+          operation_id: profile.operation_id
+        })
+      )
+    else
+      Map.merge(base, Map.take(extra, [:purged_boundaries, :source_database_uuid]))
+    end
+  end
+
+  defp max_chain_source_sequence(chains) do
+    chains
+    |> Enum.map(&MapAccess.get(&1, :source_update_sequence))
+    |> Enum.filter(&(is_integer(&1) and &1 >= 0))
+    |> case do
+      [] -> 0
+      values -> Enum.max(values)
+    end
+  end
+
+  defp shadow_profile?(%Profile{kind: :shadow}), do: true
+  defp shadow_profile?(value), do: value in [:shadow, "shadow"]
+
+  defp normalize_profile(%Profile{} = profile), do: profile
+  defp normalize_profile(value) when value in [nil, :peer, "peer"], do: Profile.peer()
+
+  defp normalize_profile(%{kind: kind} = attrs) when kind in [:shadow, "shadow"],
+    do: Profile.shadow(attrs)
+
+  defp normalize_profile(%{"kind" => kind} = attrs) when kind in [:shadow, "shadow"],
+    do: Profile.shadow(attrs)
+
+  defp normalize_profile(value), do: value
 end

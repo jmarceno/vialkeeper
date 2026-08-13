@@ -53,6 +53,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
               trace_context: nil,
               phase_hook: nil,
               replication_id: nil,
+              blob_mode: :replicated,
               blob_obligations: [],
               seen_blob_digests: %{},
               chain_chunks_total: 0,
@@ -89,6 +90,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
             trace_context: term(),
             phase_hook: (atom(), map() -> :ok | {:error, Error.t()}) | nil,
             replication_id: binary() | nil,
+            blob_mode: :replicated | :external,
             blob_obligations: [BlobObligation.t()],
             seen_blob_digests: %{optional(binary()) => non_neg_integer()},
             chain_chunks_total: non_neg_integer(),
@@ -255,8 +257,10 @@ defmodule ElixirDB.Replication.TransferPipeline do
          chunks,
          preloaded_chains
        ) do
+    blob_mode = Map.get(config, :blob_mode, :replicated)
+
     with {:ok, {completed_chains, blob_diff_queue, seen_blob_digests}} <-
-           preloaded_state(chunks, preloaded_chains),
+           preloaded_state(chunks, preloaded_chains, blob_mode),
          {:ok, task_supervisor} <- Task.Supervisor.start_link() do
       state = %State{
         phase: {:chain, 0},
@@ -276,6 +280,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
         trace_context: OpenTelemetry.Ctx.get_current(),
         phase_hook: Map.get(config, :phase_hook),
         replication_id: MapAccess.get(context, :replication_id) || Map.get(config, :replication_id),
+        blob_mode: blob_mode,
         chain_chunks_total: length(chunks),
         max_chain_concurrency_observed: 0,
         blob_count: 0,
@@ -298,14 +303,16 @@ defmodule ElixirDB.Replication.TransferPipeline do
     end
   end
 
-  defp preloaded_state([], chains) do
+  defp preloaded_state([], chains, :external), do: {:ok, {%{0 => chains}, [], %{}}}
+
+  defp preloaded_state([], chains, _blob_mode) do
     with {:ok, obligations} <- blob_obligations(chains),
          {:ok, new_obligations, seen} <- discover_new_obligations(obligations, %{}) do
       {:ok, {%{0 => chains}, new_obligations, seen}}
     end
   end
 
-  defp preloaded_state(_chunks, _chains), do: {:ok, {%{}, [], %{}}}
+  defp preloaded_state(_chunks, _chains, _blob_mode), do: {:ok, {%{}, [], %{}}}
 
   defp run_transfer_loop(state) do
     state = receive_cancel(state)
@@ -330,7 +337,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
       state ->
         state
-        |> schedule_blob_diff_tasks()
+        |> maybe_schedule_blob_diff_tasks()
         |> continue_after_diff_schedule()
     end
   end
@@ -342,7 +349,7 @@ defmodule ElixirDB.Replication.TransferPipeline do
 
       state ->
         state
-        |> schedule_blob_tasks()
+        |> maybe_schedule_blob_tasks()
         |> finish_scheduled_transfer(state)
     end
   end
@@ -400,6 +407,9 @@ defmodule ElixirDB.Replication.TransferPipeline do
     end
   end
 
+  defp maybe_schedule_blob_diff_tasks(%State{blob_mode: :external} = state), do: state
+  defp maybe_schedule_blob_diff_tasks(state), do: schedule_blob_diff_tasks(state)
+
   defp start_blob_diff_task(state, queue, batch) do
     task =
       Task.Supervisor.async_nolink(state.task_supervisor, fn ->
@@ -420,6 +430,9 @@ defmodule ElixirDB.Replication.TransferPipeline do
       schedule_blob_tasks_admitted(state)
     end
   end
+
+  defp maybe_schedule_blob_tasks(%State{blob_mode: :external} = state), do: state
+  defp maybe_schedule_blob_tasks(state), do: schedule_blob_tasks(state)
 
   defp schedule_blob_tasks_admitted(%State{} = state) do
     available = max(state.max_blob_transfers - map_size(state.blob_tasks), 0)
@@ -632,8 +645,11 @@ defmodule ElixirDB.Replication.TransferPipeline do
   end
 
   defp discover_blob_obligations(state, chains) do
-    with {:ok, obligations} <- blob_obligations(chains) do
-      with {:ok, new_obligations, seen} <-
+    if state.blob_mode == :external do
+      {:ok, state}
+    else
+      with {:ok, obligations} <- blob_obligations(chains),
+           {:ok, new_obligations, seen} <-
              discover_new_obligations(obligations, state.seen_blob_digests) do
         {:ok,
          %{

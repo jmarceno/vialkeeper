@@ -56,7 +56,10 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
   end
 
   @spec allowed?(CommandContext.class(), module(), term()) :: boolean()
-  def allowed?(:shadow_read, command_type, _command), do: MapSet.member?(@shadow_read, command_type)
+  def allowed?(:shadow_read, command_type, command) do
+    MapSet.member?(@shadow_read, command_type) or
+      (command_type == Commands.GetLocalRecord and valid_shadow_state_read?(command))
+  end
 
   def allowed?(:shadow_replication, command_type, command) do
     MapSet.member?(@shadow_replication, command_type) and valid_checkpoint_command?(command)
@@ -106,6 +109,14 @@ defmodule ElixirDB.Runtime.DatabaseCommandPolicy do
   end
 
   defp valid_checkpoint_command?(_), do: true
+
+  defp valid_shadow_state_read?(%Commands.GetLocalRecord{
+         namespace: "shadow_state",
+         key: "watermark"
+       }),
+       do: true
+
+  defp valid_shadow_state_read?(_), do: false
 
   defp policy_set(:shadow_read), do: @shadow_read
   defp policy_set(:shadow_replication), do: @shadow_replication

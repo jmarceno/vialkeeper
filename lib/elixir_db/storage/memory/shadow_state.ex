@@ -37,6 +37,24 @@ defmodule ElixirDB.Storage.Memory.ShadowState do
   def put_origin(_context, _document_id, _sequence),
     do: {:error, ElixirDB.Error.invalid_request("shadow origin is invalid")}
 
+  @impl true
+  def watermark(%BackendContext{} = context) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      {:ok, Store.get(adapter.store).shadow_watermark}
+    end
+  end
+
+  @impl true
+  def put_watermark(%BackendContext{} = context, sequence)
+      when is_integer(sequence) and sequence >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Store.update(adapter.store, &put_watermark_state(&1, sequence))
+    end
+  end
+
+  def put_watermark(_context, _sequence),
+    do: {:error, ElixirDB.Error.invalid_request("shadow watermark is invalid")}
+
   defp put_metadata_state(state, metadata) do
     case Map.get(state, :shadow_metadata) do
       nil -> {:ok, %{state | shadow_metadata: metadata}, metadata}
@@ -59,4 +77,16 @@ defmodule ElixirDB.Storage.Memory.ShadowState do
        )}
     end
   end
+
+  defp put_watermark_state(state, sequence) when sequence >= state.shadow_watermark do
+    {:ok, %{state | shadow_watermark: sequence}, sequence}
+  end
+
+  defp put_watermark_state(state, sequence),
+    do:
+      {:error,
+       ElixirDB.Error.shadow_generation_conflict(
+         "shadow watermark cannot move backwards",
+         %{current: state.shadow_watermark, requested: sequence}
+       )}
 end

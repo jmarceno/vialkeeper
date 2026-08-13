@@ -10,6 +10,7 @@ defmodule ElixirDB.Storage.Services do
 
   alias ElixirDB.MapAccess
   alias ElixirDB.Query.{Normalizer, SubscriptionRequest}
+  alias ElixirDB.Replication.Profile
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Access
   alias ElixirDB.Storage.RequestValidation
@@ -25,6 +26,7 @@ defmodule ElixirDB.Storage.Services do
     Mutations,
     Query,
     Retention,
+    Shadows,
     Views
   }
 
@@ -265,7 +267,12 @@ defmodule ElixirDB.Storage.Services do
   @spec apply_local_mutation(BackendContext.t(), map()) ::
           {:ok, map()} | {:error, ElixirDB.Error.t()}
   def apply_local_mutation(%BackendContext{} = context, request) when is_map(request) do
-    with_ports(context, @mutation_port_families, fn ->
+    families =
+      if shadow_profile?(request),
+        do: @mutation_port_families ++ [:shadow_state],
+        else: @mutation_port_families
+
+    with_ports(context, families, fn ->
       Transaction.run(context, &Mutations.apply_local_tx(&1, request))
     end)
   end
@@ -323,11 +330,40 @@ defmodule ElixirDB.Storage.Services do
                MapAccess.get(request, :purged_boundaries, []),
                MapAccess.get(request, :source_database_uuid)
              ),
-           :ok <- Import.ensure_physical_blobs(context, chains) do
+           :ok <- maybe_ensure_physical_blobs(context, chains, request) do
         Transaction.run(context, &Import.import_tx(&1, request))
       end
     end)
   end
+
+  @doc "Reads the immutable shadow binding metadata."
+  @spec shadow_metadata(BackendContext.t()) ::
+          {:ok, map() | nil} | {:error, ElixirDB.Error.t()}
+  def shadow_metadata(%BackendContext{} = context), do: Shadows.metadata(context)
+
+  @doc "Reads one durable source document origin sequence."
+  @spec shadow_origin(BackendContext.t(), binary()) ::
+          {:ok, non_neg_integer() | nil} | {:error, ElixirDB.Error.t()}
+  def shadow_origin(%BackendContext{} = context, document_id),
+    do: Shadows.origin(context, document_id)
+
+  @doc "Reads the durable shadow applied source watermark."
+  @spec shadow_watermark(BackendContext.t()) ::
+          {:ok, non_neg_integer()} | {:error, ElixirDB.Error.t()}
+  def shadow_watermark(%BackendContext{} = context), do: Shadows.watermark(context)
+
+  defp maybe_ensure_physical_blobs(context, chains, request) do
+    if shadow_profile?(MapAccess.get(request, :profile)),
+      do: :ok,
+      else: Import.ensure_physical_blobs(context, chains)
+  end
+
+  defp shadow_profile?(%Profile{kind: :shadow}), do: true
+
+  defp shadow_profile?(value) when is_map(value),
+    do: shadow_profile?(MapAccess.get(value, :profile))
+
+  defp shadow_profile?(value), do: value in [:shadow, "shadow"]
 
   @doc "Compacts retention to the stable frontier."
   @spec compact_retention(BackendContext.t(), map()) ::

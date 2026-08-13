@@ -4,7 +4,7 @@ defmodule ElixirDB.Storage.SQLite.ShadowStatePort do
 
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Ports.Errors
-  alias ElixirDB.Storage.SQLite.{Connection, Context, Transaction}
+  alias ElixirDB.Storage.SQLite.{Connection, Context, LocalRecords, Transaction}
 
   @impl true
   def metadata(%BackendContext{} = context) do
@@ -44,12 +44,50 @@ defmodule ElixirDB.Storage.SQLite.ShadowStatePort do
   def put_origin(%BackendContext{} = context, document_id, sequence)
       when is_binary(document_id) and is_integer(sequence) and sequence >= 0 do
     with {:ok, adapter} <- Context.unwrap(context) do
-      Transaction.run_on_adapter(adapter, &put_origin_tx(&1, context, document_id, sequence))
+      put_origin_tx(adapter, context, document_id, sequence)
     end
   end
 
   def put_origin(_context, _document_id, _sequence),
     do: {:error, ElixirDB.Error.invalid_request("shadow origin is invalid")}
+
+  @impl true
+  def watermark(%BackendContext{} = context) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      case LocalRecords.fetch(adapter.conn, "shadow_state", "watermark") do
+        {:ok, nil} -> {:ok, 0}
+        {:ok, %{value: value}} when is_integer(value) and value >= 0 -> {:ok, value}
+        {:ok, _} -> {:error, ElixirDB.Error.integrity_violation("shadow watermark is invalid")}
+        {:error, reason} -> {:error, Errors.normalize(reason)}
+      end
+    end
+  end
+
+  @impl true
+  def put_watermark(%BackendContext{} = context, sequence)
+      when is_integer(sequence) and sequence >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, current} <- watermark(context),
+         true <- sequence >= current,
+         {:ok, record} <- LocalRecords.fetch(adapter.conn, "shadow_state", "watermark"),
+         request <- watermark_request(record, sequence),
+         {:ok, result} <- LocalRecords.put_cas_tx(adapter, request) do
+      {:ok, result.value}
+    else
+      false ->
+        {:error,
+         ElixirDB.Error.shadow_generation_conflict("shadow watermark cannot move backwards")}
+
+      {:error, %ElixirDB.Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error, Errors.normalize(reason)}
+    end
+  end
+
+  def put_watermark(_context, _sequence),
+    do: {:error, ElixirDB.Error.invalid_request("shadow watermark is invalid")}
 
   defp query_metadata(conn) do
     case Connection.query(
@@ -210,4 +248,10 @@ defmodule ElixirDB.Storage.SQLite.ShadowStatePort do
       _ -> {:error, ElixirDB.Error.invalid_request("shadow creation time is invalid")}
     end
   end
+
+  defp watermark_request(nil, sequence),
+    do: %{namespace: "shadow_state", key: "watermark", expected_version: 0, value: sequence}
+
+  defp watermark_request(%{version: version}, sequence),
+    do: %{namespace: "shadow_state", key: "watermark", expected_version: version, value: sequence}
 end

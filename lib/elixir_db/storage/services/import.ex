@@ -11,9 +11,11 @@ defmodule ElixirDB.Storage.Services.Import do
   alias ElixirDB.JSON.Canonical
   alias ElixirDB.MapAccess
   alias ElixirDB.Observability.Instrumentation.Import, as: ImportInstrumentation
+  alias ElixirDB.Replication.Profile
   alias ElixirDB.Revisions.{Id, Winner}
   alias ElixirDB.Storage.BackendContext
   alias ElixirDB.Storage.Services.Facts
+  alias ElixirDB.Storage.Services.Shadows
 
   @doc """
   Validates host limits for a replication chain batch.
@@ -36,11 +38,13 @@ defmodule ElixirDB.Storage.Services.Import do
               :document_id,
               :history_id,
               :leaf_revision,
+              :source_update_sequence,
               :revisions,
               :truncated,
               "document_id",
               "history_id",
               "leaf_revision",
+              "source_update_sequence",
               "revisions",
               "truncated"
             ])
@@ -106,16 +110,28 @@ defmodule ElixirDB.Storage.Services.Import do
     chains = MapAccess.get(request, :chains, [])
     purged_boundaries = MapAccess.get(request, :purged_boundaries, [])
     source_database_uuid = MapAccess.get(request, :source_database_uuid)
+    profile = request_profile(request)
+    shadow? = Profile.shadow?(profile)
 
-    with :ok <- validate_purged_boundaries(purged_boundaries, source_database_uuid),
+    with :ok <- validate_profile_request(context, request, profile),
+         :ok <- validate_purged_boundaries(purged_boundaries, source_database_uuid),
          :ok <- validate_purge_safety(context, purged_boundaries),
          :ok <- Facts.install_imported_boundaries(context, purged_boundaries),
+         {:ok, source_origins} <- source_origins(chains, shadow?),
          {:ok, revisions} <- validate_chains(chains),
          {:ok, %{affected: affected, inserted: inserted}} <-
            insert_imported_revisions(context, revisions),
          {:ok, purged_affected} <- purge_imported_histories(context, purged_boundaries),
-         :ok <- remove_pending_for_revisions(context, revisions) do
-      finalize_imports(context, MapSet.union(affected, purged_affected), inserted)
+         :ok <- remove_pending_for_revisions(context, revisions, shadow?),
+         :ok <- put_shadow_origins(context, source_origins, shadow?),
+         :ok <- put_shadow_watermark(context, request, source_origins, shadow?) do
+      finalize_imports(
+        context,
+        MapSet.union(affected, purged_affected),
+        inserted,
+        profile,
+        source_origins
+      )
     end
   end
 
@@ -219,11 +235,13 @@ defmodule ElixirDB.Storage.Services.Import do
       :document_id,
       :history_id,
       :leaf_revision,
+      :source_update_sequence,
       :revisions,
       :truncated,
       "document_id",
       "history_id",
       "leaf_revision",
+      "source_update_sequence",
       "revisions",
       "truncated"
     ]
@@ -342,7 +360,9 @@ defmodule ElixirDB.Storage.Services.Import do
     end
   end
 
-  defp remove_pending_for_revisions(context, revisions) do
+  defp remove_pending_for_revisions(_context, _revisions, true), do: :ok
+
+  defp remove_pending_for_revisions(context, revisions, false) do
     Enum.reduce_while(revisions, :ok, fn {revision, _allow_dangling_parent}, :ok ->
       case Facts.clear_pending_for_manifest(context, revision.attachments) do
         :ok -> {:cont, :ok}
@@ -509,8 +529,7 @@ defmodule ElixirDB.Storage.Services.Import do
 
     with {:ok, _doc} <- Facts.ensure_document(context, document_id),
          :ok <- ensure_import_parent(context, document_id, revision, allow_dangling_parent),
-         :ok <- Facts.insert_revision(context, document_id, revision),
-         :ok <- Facts.clear_pending_for_manifest(context, revision.attachments) do
+         :ok <- Facts.insert_revision(context, document_id, revision) do
       {:cont, {:ok, MapSet.put(affected, document_id), inserted + 1, stale, fenced}}
     else
       {:error, error} -> {:halt, {:error, error}}
@@ -539,8 +558,7 @@ defmodule ElixirDB.Storage.Services.Import do
                  revision,
                  allow_dangling_parent
                ),
-             :ok <- Facts.insert_revision(context, doc.document_id, revision),
-             :ok <- Facts.clear_pending_for_manifest(context, revision.attachments) do
+             :ok <- Facts.insert_revision(context, doc.document_id, revision) do
           {:cont, {:ok, MapSet.put(affected, revision.document_id), inserted + 1, stale, fenced}}
         else
           {:error, error} -> {:halt, {:error, error}}
@@ -667,14 +685,14 @@ defmodule ElixirDB.Storage.Services.Import do
     end
   end
 
-  defp finalize_imports(context, affected, inserted) do
+  defp finalize_imports(context, affected, inserted, profile, source_origins) do
     affected = Enum.sort(MapSet.to_list(affected))
 
     Enum.reduce_while(
       affected,
       {:ok, %{documents_changed: 0, revisions_inserted: inserted, last_sequence: 0}},
       fn document_id, {:ok, acc} ->
-        finalize_import_document(context, document_id, acc)
+        finalize_import_document(context, document_id, acc, profile, source_origins)
       end
     )
     |> case do
@@ -683,11 +701,12 @@ defmodule ElixirDB.Storage.Services.Import do
     end
   end
 
-  defp finalize_import_document(context, document_id, acc) do
+  defp finalize_import_document(context, document_id, acc, profile, source_origins) do
     case Facts.list_leaves(context, document_id) do
       {:ok, []} ->
         with :ok <- Facts.empty_document(context, document_id),
-             :ok <- Facts.refresh_document(context, document_id, %{body: nil, deleted: true}) do
+             :ok <- Facts.refresh_document(context, document_id, %{body: nil, deleted: true}),
+             :ok <- put_empty_shadow_origin(context, profile, source_origins, document_id) do
           {:cont, {:ok, %{acc | documents_changed: acc.documents_changed + 1}}}
         else
           {:error, error} -> {:halt, {:error, error}}
@@ -700,7 +719,9 @@ defmodule ElixirDB.Storage.Services.Import do
              :ok <- Facts.update_winning(context, document_id, winner, 0),
              :ok <- Facts.refresh_document(context, document_id, winner),
              {:ok, sequence} <- Facts.allocate_sequence(context),
-             :ok <- Facts.update_winning(context, document_id, winner, sequence),
+             {:ok, document_sequence} <-
+               imported_document_sequence(context, profile, source_origins, document_id, sequence),
+             :ok <- Facts.update_winning(context, document_id, winner, document_sequence),
              :ok <-
                Facts.append_change(
                  context,
@@ -728,6 +749,201 @@ defmodule ElixirDB.Storage.Services.Import do
         {:halt, {:error, error}}
     end
   end
+
+  defp imported_document_sequence(
+         _context,
+         %Profile{kind: :peer},
+         _origins,
+         _document_id,
+         sequence
+       ),
+       do: {:ok, sequence}
+
+  defp imported_document_sequence(context, %Profile{kind: :shadow}, origins, document_id, _sequence) do
+    case Map.fetch(origins, document_id) do
+      {:ok, sequence} ->
+        {:ok, sequence}
+
+      :error ->
+        case Shadows.origin(context, document_id) do
+          {:ok, sequence} when is_integer(sequence) ->
+            {:ok, sequence}
+
+          {:ok, nil} ->
+            {:error,
+             ElixirDB.Error.integrity_violation("shadow document has no durable source origin")}
+
+          {:error, error} ->
+            {:error, error}
+        end
+    end
+  end
+
+  defp put_empty_shadow_origin(_context, %Profile{kind: :peer}, _origins, _document_id), do: :ok
+
+  defp put_empty_shadow_origin(context, %Profile{kind: :shadow}, origins, document_id) do
+    case Map.fetch(origins, document_id) do
+      {:ok, sequence} ->
+        case Shadows.put_origin(context, document_id, sequence) do
+          {:ok, _} -> :ok
+          {:error, error} -> {:error, error}
+        end
+
+      :error ->
+        case Shadows.origin(context, document_id) do
+          {:ok, sequence} when is_integer(sequence) ->
+            :ok
+
+          {:ok, nil} ->
+            {:error,
+             ElixirDB.Error.integrity_violation("shadow deleted document has no source origin")}
+
+          {:error, error} ->
+            {:error, error}
+        end
+    end
+  end
+
+  defp request_profile(request) do
+    case MapAccess.get(request, :profile) do
+      %Profile{} = profile ->
+        profile
+
+      value when value in [:peer, "peer", nil] ->
+        Profile.peer()
+
+      value when value in [:shadow, "shadow"] ->
+        Profile.shadow(
+          source_database_uuid: MapAccess.get(request, :source_database_uuid),
+          target_database_uuid:
+            MapAccess.get(request, :shadow_database_uuid) ||
+              MapAccess.get(request, :target_database_uuid),
+          generation:
+            MapAccess.get(request, :shadow_generation) || MapAccess.get(request, :generation),
+          operation_id: MapAccess.get(request, :operation_id)
+        )
+
+      _ ->
+        :invalid
+    end
+  end
+
+  defp validate_profile_request(_context, request, %Profile{kind: :peer}) do
+    if is_nil(MapAccess.get(request, :shadow_database_uuid)),
+      do: :ok,
+      else: {:error, ElixirDB.Error.invalid_request("peer import cannot target a shadow database")}
+  end
+
+  defp validate_profile_request(context, request, %Profile{kind: :shadow} = profile) do
+    with :ok <- Profile.validate(profile),
+         {:ok, identity} <- {:ok, Facts.identity(context)},
+         true <- MapAccess.get(identity, :database_kind) in [:shadow, "shadow"],
+         true <- MapAccess.get(identity, :database_uuid) == profile.target_database_uuid,
+         true <- MapAccess.get(request, :source_database_uuid) == profile.source_database_uuid,
+         true <-
+           (MapAccess.get(request, :shadow_database_uuid) ||
+              MapAccess.get(request, :target_database_uuid)) == profile.target_database_uuid,
+         :ok <- validate_shadow_metadata(context, profile),
+         :ok <- validate_source_watermark(request) do
+      :ok
+    else
+      false ->
+        {:error, ElixirDB.Error.shadow_incompatible("shadow import binding does not match target")}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp validate_profile_request(_context, _request, _profile),
+    do: {:error, ElixirDB.Error.invalid_request("replication profile is invalid")}
+
+  defp validate_shadow_metadata(context, profile) do
+    case Shadows.metadata(context) do
+      {:ok, metadata} when is_map(metadata) ->
+        if metadata_field(metadata, :source_database_uuid) == profile.source_database_uuid and
+             metadata_field(metadata, :shadow_database_uuid) == profile.target_database_uuid and
+             metadata_field(metadata, :generation) == profile.generation and
+             metadata_field(metadata, :operation_id) == profile.operation_id do
+          :ok
+        else
+          {:error,
+           ElixirDB.Error.shadow_identity_conflict("shadow metadata binding does not match")}
+        end
+
+      {:ok, nil} ->
+        {:error, ElixirDB.Error.shadow_identity_conflict("shadow metadata is missing")}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp validate_source_watermark(request) do
+    case MapAccess.get(request, :source_watermark) do
+      value when is_integer(value) and value >= 0 -> :ok
+      nil -> :ok
+      _ -> {:error, ElixirDB.Error.invalid_request("shadow source watermark is invalid")}
+    end
+  end
+
+  defp source_origins(_chains, false), do: {:ok, %{}}
+
+  defp source_origins(chains, true) when is_list(chains) do
+    Enum.reduce_while(chains, {:ok, %{}}, fn chain, {:ok, origins} ->
+      document_id = MapAccess.get(chain, :document_id)
+      sequence = MapAccess.get(chain, :source_update_sequence)
+
+      cond do
+        not is_binary(document_id) or document_id == "" ->
+          {:halt, {:error, ElixirDB.Error.invalid_request("shadow chain document_id is invalid")}}
+
+        not is_integer(sequence) or sequence < 0 ->
+          {:halt,
+           {:error,
+            ElixirDB.Error.invalid_request("shadow chain source_update_sequence is required")}}
+
+        Map.get(origins, document_id) in [nil, sequence] ->
+          {:cont, {:ok, Map.put(origins, document_id, sequence)}}
+
+        true ->
+          {:halt,
+           {:error,
+            ElixirDB.Error.integrity_violation("shadow chains disagree on source_update_sequence")}}
+      end
+    end)
+  end
+
+  defp source_origins(_chains, true),
+    do: {:error, ElixirDB.Error.invalid_request("shadow chains must be an array")}
+
+  defp put_shadow_origins(_context, _origins, false), do: :ok
+
+  defp put_shadow_origins(context, origins, true) do
+    Enum.reduce_while(Enum.sort(origins), :ok, fn {document_id, sequence}, :ok ->
+      case Shadows.put_origin(context, document_id, sequence) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp put_shadow_watermark(_context, _request, _origins, false), do: :ok
+
+  defp put_shadow_watermark(context, request, origins, true) do
+    watermark = MapAccess.get(request, :source_watermark) || max_origin(origins)
+
+    case Shadows.put_watermark(context, watermark) do
+      {:ok, _} -> :ok
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp max_origin(origins) when map_size(origins) == 0, do: 0
+  defp max_origin(origins), do: origins |> Map.values() |> Enum.max()
+
+  defp metadata_field(metadata, key),
+    do: Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
 
   defp digest(id), do: id |> String.split("-", parts: 2) |> List.last()
 

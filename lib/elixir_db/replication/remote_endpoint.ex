@@ -144,6 +144,15 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
       )
 
   @impl true
+  def get_shadow_checkpoint(endpoint, replication_id),
+    do:
+      call(
+        endpoint,
+        :get,
+        "/v1/databases/#{endpoint.database_uuid}/replication/local-records/shadow_checkpoints/#{URI.encode_www_form(replication_id)}"
+      )
+
+  @impl true
   def get_local_record(endpoint, namespace, key) do
     path =
       if namespace == "peer_ledger" do
@@ -162,6 +171,16 @@ defmodule ElixirDB.Replication.RemoteEndpoint do
         endpoint,
         :put,
         "/v1/databases/#{endpoint.database_uuid}/replication/checkpoints/#{replication_id}",
+        checkpoint
+      )
+
+  @impl true
+  def put_shadow_checkpoint(endpoint, replication_id, checkpoint),
+    do:
+      call(
+        endpoint,
+        :put,
+        "/v1/databases/#{endpoint.database_uuid}/replication/local-records/shadow_checkpoints/#{URI.encode_www_form(replication_id)}",
         checkpoint
       )
 
