@@ -174,11 +174,15 @@ defmodule ElixirDB.Runtime.DatabaseOwner do
   def handle_call(:reader_source, _from, state), do: {:reply, {:ok, state.context}, state}
 
   def handle_call({:command_context, %CommandContext{} = context, command}, from, state) do
-    dispatch_command(context, command, from, state)
+    safe_dispatch(context, command, from, state)
   end
 
   def handle_call(command, from, state) do
-    dispatch_command(CommandContext.public(), command, from, state)
+    safe_dispatch(CommandContext.public(), command, from, state)
+  end
+
+  defp safe_dispatch(context, command, from, state) do
+    dispatch_command(context, command, from, state)
   catch
     kind, reason ->
       Logger.error("database owner command raised",
