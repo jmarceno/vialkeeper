@@ -355,7 +355,9 @@ defmodule ElixirDB.Replication.RemoteTransport do
       |> Map.keys()
       |> Enum.find(:internal_error, &(Atom.to_string(&1) == error["code"]))
 
-    Error.new(code, error["message"] || "remote request failed", error["details"] || %{},
+    details = if is_binary(error["code"]), do: %{remote_code: error["code"]}, else: %{}
+
+    Error.new(code, "remote endpoint returned an error", details,
       retryable: error["retryable"] || false
     )
   rescue
