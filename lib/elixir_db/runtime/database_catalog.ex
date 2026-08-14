@@ -1029,9 +1029,11 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
       close_runtime_after_admission_drain(uuid)
     else
       true ->
+        _ = ReadPool.cancel_close(uuid)
         {:error, ElixirDB.Error.database_not_closable("database has active replication jobs")}
 
       {:error, _} = error ->
+        _ = ReadPool.cancel_close(uuid)
         error
     end
   end
@@ -1055,6 +1057,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
   defp close_runtime_after_admission_drain(uuid) do
     try do
       with :ok <- close_external_services(uuid),
+           :ok <- ReadPool.close_readers(uuid),
            :ok <- stop_read_pool(uuid) do
         stop_owner(uuid)
         stop_runtime_supervisor(uuid)
@@ -1095,6 +1098,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   defp abort_close_on_error({:error, _} = error, uuid) do
     _ = DatabaseAdmission.cancel_close(uuid)
+    _ = ReadPool.cancel_close(uuid)
     error
   end
 
@@ -1172,12 +1176,14 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
 
   defp drain_read_pool(uuid) do
     case ReadPool.begin_close(uuid) do
-      :ok -> ReadPool.close_readers(uuid)
+      :ok -> :ok
       {:error, %ElixirDB.Error{code: :database_closed}} -> :ok
       {:error, _} = error -> error
     end
   catch
     :exit, reason ->
+      _ = ReadPool.cancel_close(uuid)
+
       {:error,
        ElixirDB.Error.internal_error("database read pool drain failed during close", %{
          cause: inspect(reason)

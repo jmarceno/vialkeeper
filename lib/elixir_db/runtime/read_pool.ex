@@ -120,6 +120,14 @@ defmodule ElixirDB.Runtime.ReadPool do
     end
   end
 
+  @spec cancel_close(binary()) :: :ok | {:error, Error.t()}
+  def cancel_close(uuid) when is_binary(uuid) do
+    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid}) do
+      [{_pid, _}] -> call(uuid, :cancel_close, ElixirDB.Config.shutdown_timeout())
+      [] -> :ok
+    end
+  end
+
   @spec close_readers(binary()) :: :ok | {:error, Error.t()}
   def close_readers(uuid) when is_binary(uuid) do
     case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid}) do
@@ -214,6 +222,17 @@ defmodule ElixirDB.Runtime.ReadPool do
     else
       {:noreply, %{state | close_from: from}}
     end
+  end
+
+  def handle_call(:cancel_close, _from, state) do
+    state =
+      state
+      |> maybe_reply_close_waiter()
+      |> Map.put(:closing?, false)
+      |> mark_registry(:enabled)
+      |> maybe_resume_grants()
+
+    {:reply, :ok, state}
   end
 
   def handle_call({:quiesce, token}, from, state) do
@@ -647,6 +666,13 @@ defmodule ElixirDB.Runtime.ReadPool do
   end
 
   defp maybe_finish_close(state), do: state
+
+  defp maybe_reply_close_waiter(%{close_from: from} = state) when not is_nil(from) do
+    GenServer.reply(from, :ok)
+    %{state | close_from: nil}
+  end
+
+  defp maybe_reply_close_waiter(state), do: state
 
   defp maybe_finish_quiesce(%{quiesce_froms: [_ | _] = froms} = state)
        when map_size(state.busy) == 0 do
