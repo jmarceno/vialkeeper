@@ -62,7 +62,8 @@ defmodule ElixirDB.Query.SubscriptionHub do
          read_task: nil,
          resetting: false,
          reset_floor: nil,
-         consecutive_read_failures: 0
+         consecutive_read_failures: 0,
+         retry_timer: nil
        }}
 
   @impl true
@@ -219,13 +220,19 @@ defmodule ElixirDB.Query.SubscriptionHub do
      %{state | subscriptions: %{}, notifier_ref: nil, reading: false, read_task: nil}}
   end
 
-  def handle_info(:retry_read, %{resetting: true} = state), do: {:noreply, state}
+  def handle_info({:retry_read, token}, %{retry_timer: {_timer_ref, token}} = state) do
+    handle_retry_read(%{state | retry_timer: nil})
+  end
 
-  def handle_info(:retry_read, %{reading: true} = state), do: {:noreply, state}
+  def handle_info({:retry_read, _stale_token}, state), do: {:noreply, state}
 
-  def handle_info(:retry_read, %{read_task: %Task{}} = state), do: {:noreply, state}
+  defp handle_retry_read(%{resetting: true} = state), do: {:noreply, state}
 
-  def handle_info(:retry_read, state) do
+  defp handle_retry_read(%{reading: true} = state), do: {:noreply, state}
+
+  defp handle_retry_read(%{read_task: %Task{}} = state), do: {:noreply, state}
+
+  defp handle_retry_read(state) do
     if map_size(state.subscriptions) == 0 do
       {:noreply, finish_read(state)}
     else
@@ -299,13 +306,23 @@ defmodule ElixirDB.Query.SubscriptionHub do
     end
   end
 
-  defp schedule_read(%{resetting: true} = state), do: state
+  defp schedule_read(%{resetting: true} = state), do: cancel_retry_timer(state)
 
-  defp schedule_read(%{reading: true} = state), do: %{state | read_pending: true}
+  defp schedule_read(%{reading: true} = state) do
+    state
+    |> cancel_retry_timer()
+    |> Map.put(:read_pending, true)
+  end
 
-  defp schedule_read(%{read_task: %Task{}} = state), do: %{state | read_pending: true}
+  defp schedule_read(%{read_task: %Task{}} = state) do
+    state
+    |> cancel_retry_timer()
+    |> Map.put(:read_pending, true)
+  end
 
   defp schedule_read(state) do
+    state = cancel_retry_timer(state)
+
     if subscription_hub_reads_paused?(state.uuid) do
       %{state | read_pending: true}
     else
@@ -340,7 +357,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
   defp finish_read(%{read_pending: true} = state),
     do: schedule_read(%{state | read_pending: false})
 
-  defp finish_read(state), do: state
+  defp finish_read(state), do: cancel_retry_timer(state)
 
   defp fetch_batch(uuid, since) do
     cond do
@@ -472,8 +489,10 @@ defmodule ElixirDB.Query.SubscriptionHub do
       true ->
         failures = state.consecutive_read_failures + 1
         delay = min(@retry_base_ms * Integer.pow(2, failures - 1), @retry_max_ms)
-        Process.send_after(self(), :retry_read, delay)
-        %{state | consecutive_read_failures: failures}
+        token = make_ref()
+        timer_ref = Process.send_after(self(), {:retry_read, token}, delay)
+
+        %{state | consecutive_read_failures: failures, retry_timer: {timer_ref, token}}
     end
   end
 
@@ -706,7 +725,10 @@ defmodule ElixirDB.Query.SubscriptionHub do
   defp maybe_release_notifier(%{subscriptions: subscriptions, notifier_ref: ref} = state)
        when map_size(subscriptions) == 0 and is_reference(ref) do
     ChangeNotifier.unsubscribe(state.uuid, ref)
-    %{state | notifier_ref: nil}
+
+    state
+    |> cancel_retry_timer()
+    |> Map.put(:notifier_ref, nil)
   end
 
   defp maybe_release_notifier(state), do: state
@@ -714,8 +736,18 @@ defmodule ElixirDB.Query.SubscriptionHub do
   defp cancel_read_task(%{read_task: %Task{pid: pid} = task} = state) do
     _ = Task.Supervisor.terminate_child(ElixirDB.TaskSupervisor, pid)
     Process.demonitor(task.ref, [:flush])
-    %{state | reading: false, read_task: nil, read_pending: false}
+
+    state
+    |> cancel_retry_timer()
+    |> Map.merge(%{reading: false, read_task: nil, read_pending: false})
   end
 
-  defp cancel_read_task(state), do: state
+  defp cancel_read_task(state), do: cancel_retry_timer(state)
+
+  defp cancel_retry_timer(%{retry_timer: {timer_ref, _token}} = state) do
+    _ = Process.cancel_timer(timer_ref)
+    %{state | retry_timer: nil}
+  end
+
+  defp cancel_retry_timer(state), do: state
 end

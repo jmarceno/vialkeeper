@@ -6,6 +6,7 @@ defmodule ElixirDB.Observability.FederationSignalTest do
   @moduletag :integration
 
   alias ElixirDB.Error
+  alias ElixirDB.Eventual
   alias ElixirDB.Federation
   alias ElixirDB.TestServer
 
@@ -16,12 +17,18 @@ defmodule ElixirDB.Observability.FederationSignalTest do
     assert {:error, %Error{code: :database_not_registered}} =
              Federation.query(%{databases: [@source], query: %{limit: 1}})
 
-    # FLAKE: `TestExporter.spans_named(...)` is a single non-retried snapshot of the
-    # async exporter. The matching span may not be exported yet under full-suite load, so
-    # `assert [span] = ...` fails even though the query ran (passes in isolation). The metric
-    # assertion below is properly `eventually`-guarded; this span read is not. Rewrite to poll
-    # for the span with `Eventual.eventually` or flush the exporter before asserting.
-    assert [span] = TestExporter.spans_named("elixir_db.federation.query")
+    span =
+      Eventual.eventually(
+        fn ->
+          TestExporter.spans_named("elixir_db.federation.query")
+          |> Enum.find(fn candidate ->
+            TestExporter.span_attr(candidate, :"federation.source_count") == 1 and
+              TestExporter.span_attr(candidate, :outcome) == :rejected
+          end)
+        end,
+        message: "federation query span missing"
+      )
+
     assert TestExporter.span_attr(span, :"federation.source_count") == 1
     assert TestExporter.span_attr(span, :outcome) == :rejected
     assert TestExporter.span_attr(span, :"error.code") == :database_not_registered
@@ -49,16 +56,16 @@ defmodule ElixirDB.Observability.FederationSignalTest do
              )
 
     span =
-      TestExporter.spans_named("elixir_db.http.request")
-      |> Enum.find(fn candidate ->
-        TestExporter.span_attr(candidate, :"http.route") == "/v1/federation/query"
-      end)
+      Eventual.eventually(
+        fn ->
+          TestExporter.spans_named("elixir_db.http.request")
+          |> Enum.find(fn candidate ->
+            TestExporter.span_attr(candidate, :"http.route") == "/v1/federation/query"
+          end)
+        end,
+        message: "federation HTTP span missing"
+      )
 
-    # FLAKE: this HTTP span is read once from the async exporter with no retry; under
-    # full-suite load it may not be exported yet (`span == nil`), the same exporter race as
-    # the test above. `assert span != nil` then fails spuriously. Poll with
-    # `Eventual.eventually` (or flush) so the request's span is definitely exported.
-    assert span != nil
     refute String.contains?(inspect(span), secret)
   end
 end

@@ -12,6 +12,7 @@ defmodule ElixirDB.Observability.PrivacyTest do
   @moduletag :integration
 
   alias ElixirDB.Documents
+  alias ElixirDB.Eventual
   alias ElixirDB.Observability.TestExporter
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.TestServer
@@ -54,25 +55,21 @@ defmodule ElixirDB.Observability.PrivacyTest do
         "limit" => 10
       })
 
-    all_spans = TestExporter.spans()
-    assert [_ | _] = all_spans, "expected some spans to be recorded"
+    {all_spans, query_span} =
+      Eventual.eventually(
+        fn ->
+          all_spans = TestExporter.spans()
 
-    query_span =
-      Enum.find(all_spans, fn span ->
-        span[:name] == "elixir_db.query.execute" and
-          TestExporter.span_attr(span, :"db.uuid") == uuid
-      end)
+          query_span =
+            Enum.find(all_spans, fn span ->
+              span[:name] == "elixir_db.query.execute" and
+                TestExporter.span_attr(span, :"db.uuid") == uuid
+            end)
 
-    # FLAKE: this entire test reads spans from the async exporter with a single,
-    # non-retried snapshot (`TestExporter.spans()`), racing span export. Under full-suite
-    # load a fresh span may not be published yet, so `query_span` is nil or `all_spans` is
-    # empty, failing even though the command/query ran. `assert_no_leaks` has the same
-    # window: a span exported just after the snapshot isn't checked. Passes in isolation;
-    # intermittently fails in the full gate. Rewrite to (a) trigger a deterministic exporter
-    # flush, or (b) poll with `ElixirDB.Eventual.eventually` until the target span for `uuid`
-    # appears, then assert no forbidden value within it (and all currently-exported spans).
-    assert query_span,
-           "expected a query.execute span for the test database to exercise the search-text path"
+          if query_span, do: {:ok, {all_spans, query_span}}, else: false
+        end,
+        message: "expected a query.execute span for the test database"
+      )
 
     assert TestExporter.span_attr(query_span, :plan_kind) == :bounded_scan
     assert TestExporter.span_attr(query_span, :selected_index_count) == 0
@@ -97,9 +94,19 @@ defmodule ElixirDB.Observability.PrivacyTest do
 
     assert status_b in [400, 404]
 
-    all_spans = TestExporter.spans()
-    http_spans = Enum.filter(all_spans, &(&1[:name] == "elixir_db.http.request"))
-    assert [_, _ | _] = http_spans
+    {_all_spans, http_spans} =
+      Eventual.eventually(
+        fn ->
+          all_spans = TestExporter.spans()
+          http_spans = Enum.filter(all_spans, &(&1[:name] == "elixir_db.http.request"))
+
+          case http_spans do
+            [_, _ | _] -> {:ok, {all_spans, http_spans}}
+            _ -> false
+          end
+        end,
+        message: "expected both unknown-route HTTP spans"
+      )
 
     assert_no_leaks(http_spans, [path_secret, @doc_id])
 
@@ -107,13 +114,6 @@ defmodule ElixirDB.Observability.PrivacyTest do
     refute Enum.any?(routes, &is_nil/1), "every http span must carry a route template"
     refute Enum.any?(routes, fn r -> String.contains?(to_string(r), path_secret) end)
   end
-
-  # FLAKE: same async span-export race as the test above — `TestExporter.spans()`
-  # is a single non-retried snapshot. Under full-suite load the two HTTP spans may not be
-  # exported yet when this snapshot runs (`Refute [`assert [_, _ | _]`) or a third request's
-  # span sneaks in. Passes in isolation; intermittently fails in the full gate. Rewrite to
-  # flush the exporter or poll with `ElixirDB.Eventual.eventually` for the two expected
-  # `elixir_db.http.request` spans for this request pair before asserting no leaks.
 
   defp assert_no_leaks(spans, forbidden) do
     leaks =

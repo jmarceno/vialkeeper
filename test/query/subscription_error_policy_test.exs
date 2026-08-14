@@ -47,6 +47,37 @@ defmodule ElixirDB.Query.SubscriptionErrorPolicyTest do
     assert 1 = SubscriptionHub.count(uuid)
   end
 
+  test "recovery cancels a pending retry timer", %{uuid: uuid} do
+    assert {:ok, subscription} = open_subscription(uuid)
+    assert {:ok, %{type: :caught_up}} = drain_snapshot(subscription)
+
+    set_fail_reads(uuid, ElixirDB.Error.database_overloaded("read pool busy"))
+    assert {:ok, %{revision: _}} = put(uuid, "failed-once", %{"value" => 1})
+
+    [{hub, _}] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+
+    Eventual.eventually(
+      fn ->
+        state = :sys.get_state(hub)
+        Map.has_key?(state, :retry_timer) and is_tuple(state.retry_timer)
+      end,
+      message: "retry timer was not scheduled"
+    )
+
+    clear_fail_reads()
+    assert {:ok, %{revision: _}} = put(uuid, "recovered", %{"value" => 2})
+
+    assert {:ok, %{type: :upsert}} = Subscriptions.next(subscription, 10_000)
+
+    Eventual.eventually(
+      fn ->
+        state = :sys.get_state(hub)
+        state.retry_timer == nil and state.consecutive_read_failures == 0
+      end,
+      message: "successful read did not clear retry state"
+    )
+  end
+
   test "fatal failure still terminates the subscription", %{uuid: uuid} do
     assert {:ok, subscription} = open_subscription(uuid)
     assert {:ok, %{type: :caught_up}} = drain_snapshot(subscription)

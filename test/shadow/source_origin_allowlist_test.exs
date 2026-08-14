@@ -45,6 +45,16 @@ defmodule ElixirDB.Shadow.SourceOriginAllowlistTest do
     assert {:error, _} = HostConfig.canonical_origin("http://host/path")
     assert {:error, _} = HostConfig.canonical_origin("ftp://host/")
     assert {:error, _} = HostConfig.canonical_origin("http://")
+
+    for origin <- [
+          "http://host:",
+          "http://host:abc",
+          "http://host:+80",
+          "http://host:0",
+          "http://host:65536"
+        ] do
+      assert {:error, _} = HostConfig.canonical_origin(origin)
+    end
   end
 
   test "provision with an empty allow-list and a remote source is rejected and writes nothing to the journal",

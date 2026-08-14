@@ -79,7 +79,13 @@ defmodule ElixirDB.TestSupport.AdmissionClassProbe do
       {^ref, :admission_grant, class, op} -> drain_loop(ref, [{class, op} | acc], remaining)
       {^ref, :read_pool_grant, class, op} -> drain_loop(ref, [{class, op} | acc], remaining)
     after
-      0 -> Enum.reverse(acc)
+      0 ->
+        if remaining <= 0 do
+          Enum.reverse(acc)
+        else
+          Process.sleep(min(remaining, 10))
+          drain_loop(ref, acc, remaining - 10)
+        end
     end
   end
 

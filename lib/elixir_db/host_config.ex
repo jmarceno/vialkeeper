@@ -763,6 +763,9 @@ defmodule ElixirDB.HostConfig do
       uri.path not in [nil, "", "/"] ->
         {:error, "must not include a path"}
 
+      not valid_origin_authority?(uri) ->
+        {:error, "must include a valid port"}
+
       true ->
         {:ok, canonical_authority(uri)}
     end
@@ -789,6 +792,41 @@ defmodule ElixirDB.HostConfig do
   defp default_port(_), do: 80
 
   defp origin_host?(host), do: is_binary(host) and host != ""
+
+  defp valid_origin_authority?(%URI{authority: authority, host: host})
+       when is_binary(authority) and is_binary(host) do
+    host_prefix = if String.contains?(host, ":"), do: "[#{host}]", else: host
+
+    if String.starts_with?(authority, host_prefix) do
+      suffix =
+        binary_part(
+          authority,
+          byte_size(host_prefix),
+          byte_size(authority) - byte_size(host_prefix)
+        )
+
+      valid_origin_port_suffix?(suffix)
+    else
+      false
+    end
+  end
+
+  defp valid_origin_authority?(_uri), do: false
+
+  defp valid_origin_port_suffix?(""), do: true
+
+  defp valid_origin_port_suffix?(":" <> digits) when digits != "" do
+    if Enum.all?(String.to_charlist(digits), &(&1 in ?0..?9)) do
+      case Integer.parse(digits) do
+        {port, ""} -> port in 1..65_535
+        _ -> false
+      end
+    else
+      false
+    end
+  end
+
+  defp valid_origin_port_suffix?(_suffix), do: false
 
   defp validate_origins(nil, _field), do: {:ok, []}
 

@@ -9,7 +9,8 @@ defmodule ElixirDB.Observability.DatabaseOpenSpanTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Observability.{OtelCase, TestExporter}
+  alias ElixirDB.Eventual
+  alias ElixirDB.Observability.TestExporter
   alias ElixirDB.Runtime.DatabaseCatalog
 
   setup do
@@ -32,14 +33,14 @@ defmodule ElixirDB.Observability.DatabaseOpenSpanTest do
   test "open emits a span with outcome: :ok", %{uuid: uuid} do
     assert {:ok, _} = DatabaseCatalog.open(uuid)
 
-    OtelCase.flush()
-
-    spans = TestExporter.spans_named("elixir_db.database.open")
-    # Filter to the span for THIS uuid (other DBs may be opened by the catalog).
-    span = Enum.find(spans, fn s -> TestExporter.span_attr(s, :"db.uuid") == uuid end)
-
-    assert span != nil,
-           "expected an open span for #{uuid}, got uuids: #{inspect(Enum.map(spans, &TestExporter.span_attr(&1, :"db.uuid")))}"
+    span =
+      Eventual.eventually(
+        fn ->
+          TestExporter.spans_named("elixir_db.database.open")
+          |> Enum.find(fn s -> TestExporter.span_attr(s, :"db.uuid") == uuid end)
+        end,
+        message: "expected an open span for #{uuid}"
+      )
 
     assert TestExporter.span_attr(span, :"db.uuid") == uuid
     assert TestExporter.span_attr(span, :outcome) == :ok
@@ -49,13 +50,14 @@ defmodule ElixirDB.Observability.DatabaseOpenSpanTest do
     # Open a non-registered uuid to trigger a rejection.
     assert {:error, %ElixirDB.Error{}} = DatabaseCatalog.open(ElixirDB.UUID.v4())
 
-    OtelCase.flush()
-
-    spans = TestExporter.spans_named("elixir_db.database.open")
-    rejected = Enum.filter(spans, fn s -> TestExporter.span_attr(s, :outcome) == :rejected end)
-    assert [_ | _] = rejected
-
-    span = List.last(rejected)
+    span =
+      Eventual.eventually(
+        fn ->
+          TestExporter.spans_named("elixir_db.database.open")
+          |> Enum.find(fn s -> TestExporter.span_attr(s, :outcome) == :rejected end)
+        end,
+        message: "expected a rejected open span"
+      )
 
     # Rejected opens must NOT set span status to ERROR (expected outcome).
     # The status is read from the recorded span view's :status field — not

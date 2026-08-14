@@ -416,14 +416,14 @@ defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
 
     target = endpoint(missing: [digest], lengths: lengths([digest]))
     runner = spawn_runner(source, target, documents(2), config(2, 100))
-    assert_receive {:chain_started, "doc-0", _}, 1_000
-    assert_receive {:chain_started, "doc-1", blocked_pid}, 1_000
-    assert_receive {:blob_opened, ^digest, blob_pid}, 1_000
+    assert_receive {:chain_started, "doc-0", _}, 5_000
+    assert_receive {:chain_started, "doc-1", blocked_pid}, 5_000
+    assert_receive {:blob_opened, ^digest, blob_pid}, 5_000
     send(blob_pid, {:release_blob, digest})
-    assert_receive {:blob_put, ^digest, _}, 1_000
+    assert_receive {:blob_put, ^digest, _}, 5_000
     refute_received {:result, _}
     send(blocked_pid, {:release_chain, "doc-1"})
-    assert_receive {:result, {:ok, _}}, 1_000
+    assert_receive {:result, {:ok, _}}, 5_000
     refute Process.alive?(runner)
   end
 

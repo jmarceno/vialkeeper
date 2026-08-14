@@ -425,18 +425,18 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   @impl true
   def list_compaction_documents(%BackendContext{} = context, candidate_floor)
       when is_integer(candidate_floor) and candidate_floor >= 0 do
-    with {:ok, adapter} <- Context.unwrap(context) do
-      case Connection.query(
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, rows} <-
+           Connection.query(
              adapter.conn,
              "SELECT doc_key, document_id, winning_revision, update_sequence FROM documents WHERE update_sequence <= ?",
              [candidate_floor]
-           ) do
-        {:ok, rows} ->
-          {:ok, compaction_documents(adapter.conn, rows)}
-
-        {:error, reason} ->
-          {:error, Errors.normalize(reason)}
-      end
+           ),
+         {:ok, documents} <- compaction_documents(adapter.conn, rows) do
+      {:ok, documents}
+    else
+      {:error, reason} ->
+        {:error, Errors.normalize(reason)}
     end
   end
 
@@ -451,7 +451,7 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
     end
   end
 
-  defp compaction_documents(_conn, []), do: []
+  defp compaction_documents(_conn, []), do: {:ok, []}
 
   defp compaction_documents(conn, rows) do
     doc_keys =
@@ -462,20 +462,25 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
         {doc_key, document_id}
       end)
 
-    metadata =
-      load_compaction_revisions(conn, doc_keys, doc_key_to_id)
-      |> Enum.group_by(fn {doc_key, _revision} -> doc_key end, fn {_doc_key, revision} ->
-        revision
-      end)
+    with {:ok, revision_rows} <- load_compaction_revisions(conn, doc_keys, doc_key_to_id) do
+      metadata =
+        Enum.group_by(revision_rows, fn {doc_key, _revision} -> doc_key end, fn {
+                                                                                  _doc_key,
+                                                                                  revision
+                                                                                } ->
+          revision
+        end)
 
-    Enum.map(rows, fn [doc_key, document_id, winning_revision, update_sequence] ->
-      %{
-        document_id: document_id,
-        latest_change_sequence: update_sequence,
-        winning_revision: winning_revision,
-        revisions: Map.get(metadata, doc_key, [])
-      }
-    end)
+      {:ok,
+       Enum.map(rows, fn [doc_key, document_id, winning_revision, update_sequence] ->
+         %{
+           document_id: document_id,
+           latest_change_sequence: update_sequence,
+           winning_revision: winning_revision,
+           revisions: Map.get(metadata, doc_key, [])
+         }
+       end)}
+    end
   end
 
   defp load_compaction_revisions(conn, doc_keys, doc_key_to_id) do
@@ -487,33 +492,34 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
            doc_keys
          ) do
       {:ok, rows} ->
-        Enum.map(rows, fn [
-                            doc_key,
-                            revision_id,
-                            generation,
-                            parent,
-                            history_id,
-                            digest,
-                            deleted,
-                            sequence
-                          ] ->
-          {doc_key,
-           %Revision{
-             document_id: Map.fetch!(doc_key_to_id, doc_key),
-             revision_id: revision_id,
-             generation: generation,
-             parent_revision: parent,
-             history_id: history_id,
-             digest: digest,
-             deleted: deleted == 1,
-             body: nil,
-             attachments: %{},
-             insertion_sequence: sequence
-           }}
-        end)
+        {:ok,
+         Enum.map(rows, fn [
+                             doc_key,
+                             revision_id,
+                             generation,
+                             parent,
+                             history_id,
+                             digest,
+                             deleted,
+                             sequence
+                           ] ->
+           {doc_key,
+            %Revision{
+              document_id: Map.fetch!(doc_key_to_id, doc_key),
+              revision_id: revision_id,
+              generation: generation,
+              parent_revision: parent,
+              history_id: history_id,
+              digest: digest,
+              deleted: deleted == 1,
+              body: nil,
+              attachments: %{},
+              insertion_sequence: sequence
+            }}
+         end)}
 
-      _ ->
-        []
+      {:error, reason} ->
+        {:error, Errors.normalize(reason)}
     end
   end
 

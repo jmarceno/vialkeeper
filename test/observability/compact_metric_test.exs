@@ -6,7 +6,6 @@ defmodule ElixirDB.Observability.CompactMetricTest do
   @moduletag :integration
 
   alias ElixirDB.Eventual
-  alias ElixirDB.Eventual
   alias ElixirDB.Observability.{TestExporter, TestMetricExporter}
   alias ElixirDB.Runtime.DatabaseCatalog
 
@@ -63,13 +62,13 @@ defmodule ElixirDB.Observability.CompactMetricTest do
       message: "compact noop counter missing"
     )
 
-    # FLAKE: This single, non-retried read of the async-exported span races the OTel
-    # exporter: under full-suite load the span may not be exported yet and `spans` is `[]`,
-    # failing despite the counter check above passing (span export lags metric export). The
-    # `Eventual.eventually` above is retried; this read is not. Rewrite to poll for the span
-    # with `Eventual.eventually` (or assert once on a deterministically flushed exporter) so
-    # the guard matches how the exporter actually publishes spans.
-    spans = TestExporter.spans_named("elixir_db.database.compact")
-    assert Enum.any?(spans, fn s -> TestExporter.span_attr(s, :"db.uuid") == uuid end)
+    Eventual.eventually(
+      fn ->
+        TestExporter.spans_named("elixir_db.database.compact")
+        |> Enum.find(fn s -> TestExporter.span_attr(s, :"db.uuid") == uuid end)
+      end,
+      timeout: 2_000,
+      message: "compact span missing"
+    )
   end
 end
