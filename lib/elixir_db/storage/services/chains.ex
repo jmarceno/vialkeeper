@@ -354,30 +354,38 @@ defmodule ElixirDB.Storage.Services.Chains do
   defp chain(_context, _document_id, %Revision{parent_revision: nil} = revision, acc, _opts),
     do: {:ok, [revision | acc], false}
 
-  defp chain(context, document_id, %Revision{parent_revision: parent} = revision, acc, opts) do
+  defp chain(context, document_id, revision, acc, opts) do
     truncated = Keyword.get(opts, :truncated, false)
 
+    if truncated do
+      chain_truncated(context, document_id, revision, acc, opts)
+    else
+      case Facts.list_ancestors(context, document_id, revision.revision_id) do
+        {:ok, ancestors} ->
+          {:ok, Enum.reverse(ancestors, [revision | acc]), false}
+
+        {:error, error} ->
+          {:error, error}
+      end
+    end
+  end
+
+  defp chain_truncated(
+         context,
+         document_id,
+         %Revision{parent_revision: parent} = revision,
+         acc,
+         opts
+       ) do
     case Facts.find_revision(context, document_id, parent) do
       {:ok, parent_revision} when not is_nil(parent_revision) ->
-        chain(context, document_id, parent_revision, [revision | acc], opts)
-
-      {:ok, nil} when truncated ->
-        {:ok, [revision | acc], true}
-
-      {:error, _} when truncated ->
-        {:ok, [revision | acc], true}
+        chain_truncated(context, document_id, parent_revision, [revision | acc], opts)
 
       {:ok, nil} ->
-        {:error,
-         ElixirDB.Error.integrity_violation("revision chain contains a dangling parent", %{
-           parent_revision: parent
-         })}
+        {:ok, [revision | acc], true}
 
       {:error, _} ->
-        {:error,
-         ElixirDB.Error.integrity_violation("revision chain contains a dangling parent", %{
-           parent_revision: parent
-         })}
+        {:ok, [revision | acc], true}
     end
   end
 
