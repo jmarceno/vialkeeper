@@ -421,7 +421,8 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
 
     assert {:ok, updated} = JobManager.get(first_uuid, job.job_id)
     stored = get_in(updated.definition, ["endpoint", "auth_token"])
-    assert stored == secret
+    assert stored == "[redacted]"
+    assert JobManager.stored_remote_auth_token(first_uuid, job.job_id) == secret
   end
 
   test "maintenance preserves domain errors and runs integrity through facades", %{

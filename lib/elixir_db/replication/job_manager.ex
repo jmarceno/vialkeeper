@@ -38,13 +38,16 @@ defmodule ElixirDB.Replication.JobManager do
   def list(uuid) do
     table = ensure_table()
 
-    with {:ok, jobs} <- DatabaseCatalog.command(uuid, {:command, :list_jobs, %{}}) do
-      {:ok, Enum.map(jobs, &Map.put(&1, :state, runtime_state(table, &1.job_id, &1.enabled)))}
+    with {:ok, jobs} <- list_persisted_jobs(uuid) do
+      {:ok,
+       jobs
+       |> Enum.map(&running_job(&1, table))
+       |> Enum.map(&redact_job/1)}
     end
   end
 
   def resume(uuid) do
-    case DatabaseCatalog.command(uuid, {:command, :list_jobs, %{}}) do
+    case list_persisted_jobs(uuid) do
       {:ok, jobs} ->
         Enum.each(jobs, &resume_job(uuid, &1))
 
@@ -68,6 +71,26 @@ defmodule ElixirDB.Replication.JobManager do
         nil -> {:error, ElixirDB.Error.replication_job_not_found("replication job not found")}
         job -> {:ok, job}
       end
+    end
+  end
+
+  @doc """
+  Returns the stored remote token for the same-node Web UI edit merge.
+
+  This raw value must never be included in an HTTP response.
+  """
+  @spec stored_remote_auth_token(binary(), binary()) :: binary() | nil
+  def stored_remote_auth_token(uuid, job_id) do
+    case fetch_job(uuid, job_id) do
+      {:ok, job} ->
+        job
+        |> Map.get(:definition, %{})
+        |> Map.get("endpoint", %{})
+        |> Map.get("auth_token")
+        |> present_token()
+
+      _ ->
+        nil
     end
   end
 
@@ -115,7 +138,8 @@ defmodule ElixirDB.Replication.JobManager do
          persist <- option(normalized, :persist, true),
          mode <- option(normalized, :mode, "one_shot"),
          true <- is_boolean(persist),
-         :ok <- validate_persistence(persist, mode) do
+         :ok <- validate_persistence(persist, mode),
+         normalized <- preserve_roundtrip_token(uuid, normalized) do
       job_id = option(normalized, :job_id, ElixirDB.UUID.v4())
       normalized = Map.put(normalized, "job_id", job_id)
 
@@ -144,7 +168,7 @@ defmodule ElixirDB.Replication.JobManager do
   def start(uuid, job_id) do
     table = ensure_table()
 
-    with {:ok, jobs} <- DatabaseCatalog.command(uuid, {:command, :list_jobs, %{}}),
+    with {:ok, jobs} <- list_persisted_jobs(uuid),
          {:ok, job} <- find_job(jobs, job_id),
          :ok <-
            if(job.enabled,
@@ -191,7 +215,7 @@ defmodule ElixirDB.Replication.JobManager do
   def cancel(job_id), do: cancel(nil, job_id)
 
   def enable(uuid, job_id) do
-    with {:ok, job} <- get(uuid, job_id),
+    with {:ok, job} <- fetch_job(uuid, job_id),
          definition <- Map.put(job.definition, "enabled", true),
          {:ok, _} <- put_persisted(uuid, job_id, definition, true) do
       start(uuid, job_id)
@@ -199,7 +223,7 @@ defmodule ElixirDB.Replication.JobManager do
   end
 
   def disable(uuid, job_id) do
-    with {:ok, job} <- get(uuid, job_id),
+    with {:ok, job} <- fetch_job(uuid, job_id),
          :ok <- cancel_if_active(uuid, job_id),
          definition <- Map.put(job.definition, "enabled", false),
          {:ok, _} <- put_persisted(uuid, job_id, definition, false) do
@@ -386,6 +410,71 @@ defmodule ElixirDB.Replication.JobManager do
 
   defp job_record(job_id, definition, enabled),
     do: %{job_id: job_id, definition: definition, enabled: enabled}
+
+  @redacted_token "[redacted]"
+
+  defp list_persisted_jobs(uuid),
+    do: DatabaseCatalog.command(uuid, {:command, :list_jobs, %{}})
+
+  defp fetch_job(uuid, job_id) do
+    with {:ok, jobs} <- list_persisted_jobs(uuid) do
+      find_job(jobs, job_id)
+    end
+  end
+
+  defp running_job(job, table) when is_map(job),
+    do: Map.put(job, :state, runtime_state(table, job.job_id, job.enabled))
+
+  defp redact_job(job) when is_map(job),
+    do: Map.update(job, :definition, %{}, &redact_definition/1)
+
+  defp redact_definition(%{"endpoint" => %{"auth_token" => token} = endpoint} = definition)
+       when is_binary(token) and token != "" do
+    %{definition | "endpoint" => %{endpoint | "auth_token" => @redacted_token}}
+  end
+
+  defp redact_definition(definition), do: definition
+
+  defp present_token(token) when is_binary(token) and token != "", do: token
+  defp present_token(_), do: nil
+
+  defp preserve_roundtrip_token(uuid, definition) do
+    case roundtrip_target(definition) do
+      {:preserve, job_id, endpoint} ->
+        merge_stored_token(uuid, job_id, endpoint, definition)
+
+      nil ->
+        definition
+    end
+  end
+
+  defp roundtrip_target(definition) do
+    job_id = Map.get(definition, "job_id")
+
+    if is_binary(job_id) and job_id != "" do
+      endpoint = Map.get(definition, "endpoint", %{})
+      kind = Map.get(endpoint, "kind")
+      presented = Map.get(endpoint, "auth_token")
+
+      if kind == "remote" and (not is_binary(presented) or presented in ["", @redacted_token]) do
+        {:preserve, job_id, endpoint}
+      else
+        nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp merge_stored_token(uuid, job_id, endpoint, definition) do
+    case stored_remote_auth_token(uuid, job_id) do
+      token when is_binary(token) and token != "" ->
+        Map.put(definition, "endpoint", Map.put(endpoint, "auth_token", token))
+
+      _ ->
+        definition
+    end
+  end
 
   defp find_job(jobs, job_id) do
     case Enum.find(jobs, &(&1.job_id == job_id)) do

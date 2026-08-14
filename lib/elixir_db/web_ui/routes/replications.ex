@@ -175,26 +175,13 @@ defmodule ElixirDB.WebUI.Routes.Replications do
   defp preserve_stored_auth_token(_uuid, definition), do: {:ok, definition}
 
   defp merge_stored_remote_auth(uuid, job_id, definition, endpoint) do
-    case JobManager.get(uuid, job_id) do
-      {:ok, job} ->
-        case stored_remote_auth_token(job) do
-          token when is_binary(token) and token != "" ->
-            {:ok, put_endpoint_auth_token(definition, endpoint, token)}
+    case JobManager.stored_remote_auth_token(uuid, job_id) do
+      token when is_binary(token) and token != "" ->
+        {:ok, put_endpoint_auth_token(definition, endpoint, token)}
 
-          _ ->
-            {:ok, definition}
-        end
-
-      {:error, _} ->
+      _ ->
         {:ok, definition}
     end
-  end
-
-  defp stored_remote_auth_token(job) do
-    job
-    |> MapAccess.get(:definition, %{})
-    |> MapAccess.get(:endpoint, %{})
-    |> MapAccess.get(:auth_token)
   end
 
   defp put_endpoint_auth_token(definition, endpoint, token) do
