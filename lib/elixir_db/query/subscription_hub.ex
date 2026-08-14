@@ -85,6 +85,11 @@ defmodule ElixirDB.Query.SubscriptionHub do
       nil ->
         {:reply, {:error, ElixirDB.Error.invalid_request("subscription is not registered")}, state}
 
+      %{mode: :pending_snapshot} ->
+        {:reply,
+         {:error,
+          ElixirDB.Error.history_truncated("subscription was reset before activation", %{})}, state}
+
       %{mode: mode} ->
         {:reply,
          {:error, ElixirDB.Error.invalid_request("subscription cannot activate from #{mode}")},

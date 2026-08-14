@@ -334,10 +334,16 @@ defmodule ElixirDB.Query.Subscription do
 
   defp drain_next_reply(_state), do: :wait
 
-  defp activate_after_snapshot(%{snapshot_sequence: sequence} = state) do
+  defp activate_after_snapshot(%{snapshot_sequence: sequence, uuid: uuid} = state) do
+    sync_activate_barrier(uuid)
+
     case SubscriptionHub.activate(state.uuid, self(), sequence) do
       :ok ->
         {:reply, {:ok, Events.caught_up(sequence)}, %{state | status: :active}}
+
+      {:error, %ElixirDB.Error{code: :history_truncated}} ->
+        {:reply, {:ok, Events.reset(state.snapshot_sequence || 0)},
+         %{state | status: :awaiting_snapshot, waiter: nil, terminal: nil}}
 
       {:error, %ElixirDB.Error{} = error} ->
         cancel_timer(state)
@@ -420,6 +426,27 @@ defmodule ElixirDB.Query.Subscription do
 
       {pid, ref} when is_pid(pid) and is_reference(ref) ->
         send(pid, {ref, :execute_snapshot_ready, self()})
+
+        receive do
+          {:go, ^ref} -> :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp sync_activate_barrier(uuid) when is_binary(uuid) do
+    case Application.get_env(:elixir_db, :subscription_activate_sync) do
+      {pid, ref, ^uuid} when is_pid(pid) and is_reference(ref) ->
+        send(pid, {ref, :activate_ready, self()})
+
+        receive do
+          {:go, ^ref} -> :ok
+        end
+
+      {pid, ref} when is_pid(pid) and is_reference(ref) ->
+        send(pid, {ref, :activate_ready, self()})
 
         receive do
           {:go, ^ref} -> :ok
