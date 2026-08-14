@@ -227,6 +227,12 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   def open_reader(_adapter), do: {:error, :unsupported_readers}
 
+  @doc "Interrupts a statement running on this SQLite reader connection."
+  @spec interrupt_reader(t()) :: :ok | {:error, term()}
+  def interrupt_reader(%__MODULE__{storage_mode: :memory}), do: {:error, :unsupported_readers}
+
+  def interrupt_reader(%__MODULE__{conn: conn, reader?: true}), do: Connection.interrupt(conn)
+
   @doc false
   @spec invalidate_identity_cache(Connection.handle()) :: term()
   def invalidate_identity_cache(conn), do: Process.delete({@identity_cache_key, conn})

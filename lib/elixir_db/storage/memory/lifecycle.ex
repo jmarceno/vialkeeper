@@ -61,4 +61,7 @@ defmodule ElixirDB.Storage.Memory.Lifecycle do
 
   @impl true
   def close_reader(%BackendContext{} = context), do: close(context)
+
+  @impl true
+  def interrupt_reader(%BackendContext{}), do: :unsupported
 end

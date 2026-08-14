@@ -19,6 +19,7 @@ defmodule ElixirDB.Storage.Ports.Lifecycle do
               | {:error, :unsupported_readers}
               | {:error, ElixirDB.Error.t()}
   @callback close_reader(BackendContext.t()) :: :ok | {:error, ElixirDB.Error.t()}
+  @callback interrupt_reader(BackendContext.t()) :: :ok | :unsupported
   @callback identity(BackendContext.t()) :: result(map())
   @callback update_config(BackendContext.t(), map()) :: result(map())
   @callback capabilities(BackendContext.t()) :: map()

@@ -40,4 +40,7 @@ defmodule ElixirDB.Storage.Sentinel.Lifecycle do
 
   @impl true
   def close_reader(%BackendContext{} = context), do: close(context)
+
+  @impl true
+  def interrupt_reader(%BackendContext{capabilities: _capabilities}), do: :unsupported
 end

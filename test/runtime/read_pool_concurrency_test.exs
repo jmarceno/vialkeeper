@@ -5,7 +5,7 @@ defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
   use ExUnit.Case, async: false
 
   alias ElixirDB.Eventual
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.Runtime.{DatabaseCatalog, Deadline}
   alias ElixirDB.View.Manager
 
   setup do
@@ -91,6 +91,75 @@ defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
 
     assert {:ok, %{revision: ^rev, body: %{"v" => "after"}}} =
              ElixirDB.Documents.get(uuid, %{id: "seen"})
+  end
+
+  test "expired direct pool request returns a deadline error and reuses its reader", %{uuid: uuid} do
+    assert {:ok, _} = ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+
+    gate = make_ref()
+    request_ref = make_ref()
+    Application.put_env(:elixir_db, :read_pool_owner_body_sync, {self(), gate, uuid})
+
+    [{pool, _}] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid})
+
+    caller =
+      Task.async(fn ->
+        GenServer.call(
+          pool,
+          {:execute, request_ref, :foreground, {:command, :get_document, %{document_id: "doc"}},
+           Deadline.from_timeout(25), OpenTelemetry.Ctx.get_current()},
+          5_000
+        )
+      end)
+
+    assert_receive {^gate, :owner_body, worker}, 2_000
+    timer = Process.send_after(self(), :deadline_probe, 40)
+    assert_receive :deadline_probe, 1_000
+    Process.cancel_timer(timer)
+    send(worker, {:go, gate})
+
+    assert {:error,
+            %ElixirDB.Error{
+              code: :internal_error,
+              details: %{reason: :deadline_exhausted},
+              retryable: true
+            }} =
+             Task.await(caller, 5_000)
+
+    Application.delete_env(:elixir_db, :read_pool_owner_body_sync)
+    assert {:ok, %{id: "doc"}} = ElixirDB.Documents.get(uuid, %{id: "doc"})
+  end
+
+  test "cancelled direct pool request does not reply and interrupts its reader", %{uuid: uuid} do
+    assert {:ok, _} = ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+
+    gate = make_ref()
+    request_ref = make_ref()
+    parent = self()
+    Application.put_env(:elixir_db, :read_pool_owner_body_sync, {self(), gate, uuid})
+    [{pool, _}] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid})
+
+    pid =
+      spawn(fn ->
+        result =
+          GenServer.call(
+            pool,
+            {:execute, request_ref, :foreground, {:command, :get_document, %{document_id: "doc"}},
+             :infinity, OpenTelemetry.Ctx.get_current()},
+            5_000
+          )
+
+        send(parent, {:cancelled_pool_result, result})
+      end)
+
+    assert_receive {^gate, :owner_body, worker}, 2_000
+    assert :ok = GenServer.call(pool, {:cancel, request_ref})
+    send(worker, {:go, gate})
+    refute_receive {:cancelled_pool_result, _}, 500
+
+    Process.exit(pid, :kill)
+    Application.delete_env(:elixir_db, :read_pool_owner_body_sync)
+    assert {:ok, %{id: "doc"}} = ElixirDB.Documents.get(uuid, %{id: "doc"})
   end
 
   defp drain_grants(ref, acc \\ []) do

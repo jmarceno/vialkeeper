@@ -12,6 +12,7 @@ defmodule ElixirDB.Storage.PortsTest do
     RetentionRecords
   }
 
+  alias ElixirDB.Storage.Memory.Lifecycle, as: MemoryLifecycle
   alias ElixirDB.Storage.Sentinel.Adapter, as: Sentinel
   alias ElixirDB.Storage.Sentinel.Lifecycle, as: SentinelLifecycle
   alias ElixirDB.Storage.SQLite.Adapter, as: SQLite
@@ -86,6 +87,25 @@ defmodule ElixirDB.Storage.PortsTest do
              end)
 
     assert :ok = SentinelLifecycle.close(context)
+  end
+
+  test "reader interruption is supported by SQLite and unsupported by memory and sentinel" do
+    assert {:ok, sqlite} = SQLiteLifecycle.create(":memory:", %{storage_mode: :memory})
+    assert :unsupported = SQLiteLifecycle.interrupt_reader(sqlite)
+    assert :ok = SQLiteLifecycle.close(sqlite)
+
+    root =
+      Path.join(System.tmp_dir!(), "elixirdb-ports-memory-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, memory} = MemoryLifecycle.create(root, %{})
+    assert :unsupported = MemoryLifecycle.interrupt_reader(memory)
+    assert :ok = MemoryLifecycle.close(memory)
+
+    assert {:ok, sentinel} = SentinelLifecycle.create(root <> "-sentinel", %{})
+    assert :unsupported = SentinelLifecycle.interrupt_reader(sentinel)
+    assert :ok = SentinelLifecycle.close(sentinel)
   end
 
   test "SQLite lifecycle context keeps backend_ref opaque" do
