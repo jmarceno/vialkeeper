@@ -3,7 +3,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
   Proves trusted operation origins acquire the intended service class and do not
   silently fall back to foreground.
 
-  TODO(flake): this suite is load-sensitive under the full gate. It drives real
+  FLAKE: this suite is load-sensitive under the full gate. It drives real
   subscription/attachment/retention work against live services and asserts their
   observed admission class with `Eventual.eventually` timeouts that are tuned for a
   lightly-loaded run; under concurrent full-suite load a service can take longer to

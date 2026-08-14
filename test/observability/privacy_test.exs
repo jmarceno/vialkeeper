@@ -63,7 +63,7 @@ defmodule ElixirDB.Observability.PrivacyTest do
           TestExporter.span_attr(span, :"db.uuid") == uuid
       end)
 
-    # TODO(flake): this entire test reads spans from the async exporter with a single,
+    # FLAKE: this entire test reads spans from the async exporter with a single,
     # non-retried snapshot (`TestExporter.spans()`), racing span export. Under full-suite
     # load a fresh span may not be published yet, so `query_span` is nil or `all_spans` is
     # empty, failing even though the command/query ran. `assert_no_leaks` has the same
@@ -108,7 +108,7 @@ defmodule ElixirDB.Observability.PrivacyTest do
     refute Enum.any?(routes, fn r -> String.contains?(to_string(r), path_secret) end)
   end
 
-  # TODO(flake): same async span-export race as the test above — `TestExporter.spans()`
+  # FLAKE: same async span-export race as the test above — `TestExporter.spans()`
   # is a single non-retried snapshot. Under full-suite load the two HTTP spans may not be
   # exported yet when this snapshot runs (`Refute [`assert [_, _ | _]`) or a third request's
   # span sneaks in. Passes in isolation; intermittently fails in the full gate. Rewrite to

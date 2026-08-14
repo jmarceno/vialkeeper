@@ -63,7 +63,7 @@ defmodule ElixirDB.Observability.CompactMetricTest do
       message: "compact noop counter missing"
     )
 
-    # TODO(flake): This single, non-retried read of the async-exported span races the OTel
+    # FLAKE: This single, non-retried read of the async-exported span races the OTel
     # exporter: under full-suite load the span may not be exported yet and `spans` is `[]`,
     # failing despite the counter check above passing (span export lags metric export). The
     # `Eventual.eventually` above is retried; this read is not. Rewrite to poll for the span

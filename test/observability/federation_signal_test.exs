@@ -16,7 +16,7 @@ defmodule ElixirDB.Observability.FederationSignalTest do
     assert {:error, %Error{code: :database_not_registered}} =
              Federation.query(%{databases: [@source], query: %{limit: 1}})
 
-    # TODO(flake): `TestExporter.spans_named(...)` is a single non-retried snapshot of the
+    # FLAKE: `TestExporter.spans_named(...)` is a single non-retried snapshot of the
     # async exporter. The matching span may not be exported yet under full-suite load, so
     # `assert [span] = ...` fails even though the query ran (passes in isolation). The metric
     # assertion below is properly `eventually`-guarded; this span read is not. Rewrite to poll
@@ -54,7 +54,7 @@ defmodule ElixirDB.Observability.FederationSignalTest do
         TestExporter.span_attr(candidate, :"http.route") == "/v1/federation/query"
       end)
 
-    # TODO(flake): this HTTP span is read once from the async exporter with no retry; under
+    # FLAKE: this HTTP span is read once from the async exporter with no retry; under
     # full-suite load it may not be exported yet (`span == nil`), the same exporter race as
     # the test above. `assert span != nil` then fails spuriously. Poll with
     # `Eventual.eventually` (or flush) so the request's span is definitely exported.

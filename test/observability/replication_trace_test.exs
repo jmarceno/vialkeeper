@@ -277,7 +277,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
       message: "local batch duration was not exported"
     )
 
-    # TODO(flake): these `== []` assertions race the shared async metrics exporter. The local
+    # FLAKE: these `== []` assertions race the shared async metrics exporter. The local
     # replication above must not set wire bytes/codec, but under full-suite load a
     # *concurrent* test's remote run can publish those datapoints just before this snapshot,
     # making them non-empty and failing spuriously (passes in isolation). The positive check

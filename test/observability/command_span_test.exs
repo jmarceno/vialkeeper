@@ -102,7 +102,7 @@ defmodule ElixirDB.Observability.CommandSpanTest do
   end
 
   defp command_span(uuid, predicate) when is_function(predicate, 1) do
-    # TODO(flake): `Eventual.eventually` polls until a matching span appears, but under
+    # FLAKE: `Eventual.eventually` polls until a matching span appears, but under
     # full-suite load a span from a *different* test with the same uuid (leftover) can be
     # found first, or the expected span can be flushed late. This helper masks most races
     # but the "get"/"put" tests still flirt with the async exporter. Prefer a deterministic
