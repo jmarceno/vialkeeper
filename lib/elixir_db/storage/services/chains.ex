@@ -364,11 +364,26 @@ defmodule ElixirDB.Storage.Services.Chains do
         {:ok, ancestors} ->
           {:ok, Enum.reverse(ancestors, [revision | acc]), false}
 
+        {:error, %ElixirDB.Error{code: :revision_not_found, details: details}} ->
+          {:error,
+           ElixirDB.Error.integrity_violation("revision chain contains a dangling parent", %{
+             parent_revision: Map.get(details, :revision) || revision.parent_revision
+           })}
+
         {:error, error} ->
           {:error, error}
       end
     end
   end
+
+  defp chain_truncated(
+         _context,
+         _document_id,
+         %Revision{parent_revision: nil} = revision,
+         acc,
+         _opts
+       ),
+       do: {:ok, [revision | acc], false}
 
   defp chain_truncated(
          context,

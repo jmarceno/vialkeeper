@@ -231,10 +231,21 @@ for {name, adapter_module} <- [
             documents: [%{document_id: document_id, leaf_revisions: [leaf]}]
           })
 
-        expected_ids = Enum.map(revisions, & &1)
+        expected_ids = revisions
 
         assert Enum.map(chain.revisions, & &1.revision_id) == expected_ids
+        assert chain.truncated == false
         assert chain_via_find(context, document_id, leaf) == expected_ids
+
+        {:ok, %{chains: [complete_truncated_request]}} =
+          @adapter.get_revision_chains(adapter, %{
+            documents: [
+              %{document_id: document_id, leaf_revisions: [leaf], truncated: true}
+            ]
+          })
+
+        assert complete_truncated_request.truncated == false
+        assert Enum.map(complete_truncated_request.revisions, & &1.revision_id) == expected_ids
 
         {:ok, ancestors} = Facts.list_ancestors(context, document_id, leaf)
 
