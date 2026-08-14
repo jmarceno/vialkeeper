@@ -11,6 +11,11 @@ defmodule ElixirDB.Query.SubscriptionHub do
   @retry_base_ms 100
   @retry_max_ms 5_000
 
+  @batch_pruned_messages [
+    "changes entry references a missing revision",
+    "changes entry references a missing document"
+  ]
+
   def child_spec(uuid),
     do: ChildSpec.worker({__MODULE__, uuid}, {__MODULE__, :start_link, [uuid]}, :permanent)
 
@@ -437,6 +442,14 @@ defmodule ElixirDB.Query.SubscriptionHub do
     finish_read(begin_history_reset(state, error))
   end
 
+  defp apply_read_result(state, {:error, %ElixirDB.Error{code: :integrity_violation} = error}) do
+    if batch_pruned_by_retention?(error) do
+      finish_read(begin_history_reset(state, error))
+    else
+      finish_read(fail_all(state, error))
+    end
+  end
+
   defp apply_read_result(state, {:error, %ElixirDB.Error{retryable: true} = error}) do
     retry_read(state, error)
   end
@@ -518,6 +531,9 @@ defmodule ElixirDB.Query.SubscriptionHub do
   end
 
   defp advance_cursor_after_snapshot(state, _sequence), do: state
+
+  defp batch_pruned_by_retention?(%ElixirDB.Error{message: message}),
+    do: message in @batch_pruned_messages
 
   defp retention_floor(%ElixirDB.Error{details: details}) when is_map(details) do
     MapAccess.get(details, :retention_floor)
