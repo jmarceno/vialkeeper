@@ -32,6 +32,28 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
   end
 
   @impl true
+  def find_revision_batch(%BackendContext{} = context, requests) when is_list(requests) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      state = Store.get(adapter.store)
+
+      {:ok,
+       Enum.map(requests, fn %{document_id: document_id, revision_id: revision_id} ->
+         document = Store.find_document(state, document_id)
+
+         revision =
+           if document, do: lookup_revision_value(state, document_id, revision_id), else: nil
+
+         %{
+           document_id: document_id,
+           revision_id: revision_id,
+           document: document,
+           revision: revision
+         }
+       end)}
+    end
+  end
+
+  @impl true
   def list_leaves(%BackendContext{} = context, document_id) when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context) do
       state = Store.get(adapter.store)
@@ -119,6 +141,10 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
   end
 
   @impl true
+  def insert_revision_with_body(%BackendContext{} = context, document_id, revision, _body_json),
+    do: insert_revision(context, document_id, revision)
+
+  @impl true
   def insert_revision_for_document(
         %BackendContext{} = context,
         %{document_id: document_id},
@@ -143,6 +169,16 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
       apply_store_ok(adapter, &Store.update_winning(&1, document_id, winner, sequence))
     end
   end
+
+  @impl true
+  def update_winning_with_body(
+        %BackendContext{} = context,
+        document_id,
+        winner,
+        sequence,
+        _body_json
+      ),
+      do: update_winning(context, document_id, winner, sequence)
 
   @impl true
   def update_winning_for_document(
@@ -205,6 +241,13 @@ defmodule ElixirDB.Storage.Memory.DocumentFacts do
           {:ok, revision} -> {:ok, revision}
           {:error, reason} -> {:error, Errors.normalize(reason)}
         end
+    end
+  end
+
+  defp lookup_revision_value(state, document_id, revision_id) do
+    case Store.find_revision(state, document_id, revision_id) do
+      {:ok, revision} -> revision
+      {:error, _} -> nil
     end
   end
 

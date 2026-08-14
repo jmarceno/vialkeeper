@@ -83,8 +83,9 @@ defmodule ElixirDB.Storage.Services.Chains do
          {:ok, identity} <- {:ok, Facts.identity(context)},
          {:ok, %{document_ids: document_ids, next_cursor: next_cursor}} <-
            Facts.list_document_page(context, cursor, limit),
-         {:ok, chains} <- bootstrap_chains(context, document_ids),
-         {:ok, purged_boundaries} <- bootstrap_purged_boundaries(context, document_ids) do
+         {:ok, boundaries} <- Facts.list_boundaries(context),
+         {:ok, chains} <- bootstrap_chains(context, document_ids, boundaries),
+         {:ok, purged_boundaries} <- bootstrap_purged_boundaries(context, document_ids, boundaries) do
       {:ok,
        %{
          source_history_epoch: Map.get(identity, :history_epoch),
@@ -102,57 +103,55 @@ defmodule ElixirDB.Storage.Services.Chains do
     ElixirDB.Config.host_limits()[:max_bulk_operations] || 500
   end
 
-  defp bootstrap_chains(context, document_ids) do
+  defp bootstrap_chains(context, document_ids, boundaries) do
     Enum.reduce_while(document_ids, {:ok, []}, fn document_id, {:ok, acc} ->
-      bootstrap_document_chain(context, document_id, acc)
+      bootstrap_document_chain(context, document_id, boundaries, acc)
     end)
   end
 
-  defp bootstrap_purged_boundaries(context, document_ids) do
+  defp bootstrap_purged_boundaries(context, document_ids, boundaries) do
     document_ids = MapSet.new(document_ids)
 
-    with {:ok, boundaries} <- Facts.list_boundaries(context) do
-      {:ok,
-       boundaries
-       |> Enum.filter(fn %{boundary: boundary} ->
-         boundary.retired and MapSet.member?(document_ids, boundary.document_id)
-       end)
-       |> Enum.map(&Facts.encode_stored_boundary(context, &1))}
-    end
+    {:ok,
+     boundaries
+     |> Enum.filter(fn %{boundary: boundary} ->
+       boundary.retired and MapSet.member?(document_ids, boundary.document_id)
+     end)
+     |> Enum.map(&Facts.encode_stored_boundary(context, &1))}
   end
 
-  defp bootstrap_document_chain(context, document_id, acc) do
+  defp bootstrap_document_chain(context, document_id, boundaries, acc) do
     case Facts.find_document(context, document_id) do
       {:ok, nil} ->
         {:cont, {:ok, acc}}
 
       {:ok, doc} ->
-        append_bootstrap_chains(context, doc, acc)
+        append_bootstrap_chains(context, doc, boundaries, acc)
 
       {:error, error} ->
         {:halt, {:error, error}}
     end
   end
 
-  defp append_bootstrap_chains(context, doc, acc) do
-    case bootstrap_document_chains(context, doc) do
+  defp append_bootstrap_chains(context, doc, boundaries, acc) do
+    case bootstrap_document_chains(context, doc, boundaries) do
       {:ok, chains} -> {:cont, {:ok, acc ++ chains}}
       {:error, error} -> {:halt, {:error, error}}
     end
   end
 
-  defp bootstrap_document_chains(context, doc) do
+  defp bootstrap_document_chains(context, doc, boundaries) do
     case leaves(context, doc.document_id) do
       [] ->
         {:ok, []}
 
       leaves ->
-        build_bootstrap_chains(context, doc, leaves)
+        build_bootstrap_chains(context, doc, leaves, boundaries)
     end
   end
 
-  defp build_bootstrap_chains(context, doc, leaves) do
-    truncated = truncated_history?(context, doc.document_id)
+  defp build_bootstrap_chains(context, doc, leaves, boundaries) do
+    truncated = truncated_history?(boundaries, doc.document_id)
 
     Enum.reduce_while(leaves, {:ok, []}, fn leaf, {:ok, acc} ->
       append_leaf_chain(context, Map.put(doc, :truncated, truncated), leaf, truncated, acc)
@@ -170,17 +169,11 @@ defmodule ElixirDB.Storage.Services.Chains do
     end
   end
 
-  defp truncated_history?(context, document_id) do
-    case Facts.list_boundaries(context) do
-      {:ok, boundaries} ->
-        Enum.any?(boundaries, fn %{boundary: boundary} ->
-          boundary.document_id == document_id and boundary.retired
-        end)
-
-      _ ->
-        false
-    end
-  end
+  defp truncated_history?(boundaries, document_id),
+    do:
+      Enum.any?(boundaries, fn %{boundary: boundary} ->
+        boundary.document_id == document_id and boundary.retired
+      end)
 
   defp diff_document(context, entry, boundaries, acc) do
     id = MapAccess.get(entry, :document_id)

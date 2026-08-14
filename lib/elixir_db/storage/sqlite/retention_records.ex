@@ -910,23 +910,21 @@ defmodule ElixirDB.Storage.SQLite.RetentionRecords do
   end
 
   defp delete_revision_ids(conn, doc_key, revision_ids) do
-    Enum.reduce_while(revision_ids, :ok, fn revision_id, :ok ->
-      delete_single_revision(conn, doc_key, revision_id)
+    Enum.reduce_while(Enum.chunk_every(revision_ids, 100), :ok, fn chunk, :ok ->
+      placeholders = Enum.map_join(chunk, ",", fn _ -> "?" end)
+
+      case Connection.execute(
+             conn,
+             "DELETE FROM revisions WHERE doc_key = ? AND revision_id IN (#{placeholders})",
+             [doc_key | chunk]
+           ) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
+      end
     end)
     |> case do
       :ok -> {:cont, :ok}
       {:error, error} -> {:halt, {:error, error}}
-    end
-  end
-
-  defp delete_single_revision(conn, doc_key, revision_id) do
-    case Connection.execute(
-           conn,
-           "DELETE FROM revisions WHERE doc_key = ? AND revision_id = ?",
-           [doc_key, revision_id]
-         ) do
-      :ok -> {:cont, :ok}
-      {:error, reason} -> {:halt, {:error, normalize_error(reason)}}
     end
   end
 

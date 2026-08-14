@@ -368,7 +368,13 @@ defmodule ElixirDB.Storage.Services.Mutations do
     document_id = candidate.document_id
 
     with {:ok, _doc} <- Facts.ensure_document(context, document_id),
-         :ok <- Facts.insert_revision(context, document_id, candidate),
+         :ok <-
+           Facts.insert_revision_with_body(
+             context,
+             document_id,
+             candidate,
+             revision_body_json(candidate)
+           ),
          :ok <- Facts.clear_pending_for_manifest(context, candidate.attachments),
          {:ok, result} <- finalize_document(context, document_id, candidate) do
       {:ok, Map.put(result, :replayed, false)}
@@ -382,7 +388,13 @@ defmodule ElixirDB.Storage.Services.Mutations do
 
       {:error, %ElixirDB.Error{code: :revision_not_found}} ->
         with :ok <- Facts.ensure_parent(context, doc.document_id, candidate.parent_revision),
-             :ok <- Facts.insert_revision(context, doc.document_id, candidate),
+             :ok <-
+               Facts.insert_revision_with_body(
+                 context,
+                 doc.document_id,
+                 candidate,
+                 revision_body_json(candidate)
+               ),
              :ok <- Facts.clear_pending_for_manifest(context, candidate.attachments),
              {:ok, result} <-
                finalize_document(context, candidate.document_id, candidate) do
@@ -427,10 +439,16 @@ defmodule ElixirDB.Storage.Services.Mutations do
          {:ok, all_leaves} <- Facts.list_leaves(context, document_id),
          {:ok, winner} <- Winner.select(all_leaves),
          {:ok, leaf_json} <- Facts.encode_leaf_set(all_leaves),
-         :ok <- Facts.update_winning(context, document_id, winner, 0),
-         :ok <- refresh_ready_indexes(context, document_id, winner, ready_indexes),
          {:ok, sequence} <- allocated_or_new_sequence(context, allocated_sequence),
-         :ok <- Facts.update_winning(context, document_id, winner, sequence),
+         :ok <-
+           Facts.update_winning_with_body(
+             context,
+             document_id,
+             winner,
+             sequence,
+             revision_body_json(winner)
+           ),
+         :ok <- refresh_ready_indexes(context, document_id, winner, ready_indexes),
          :ok <-
            Facts.append_change(
              context,
@@ -669,7 +687,13 @@ defmodule ElixirDB.Storage.Services.Mutations do
 
       {:error, %ElixirDB.Error{code: :revision_not_found}} ->
         with :ok <- Facts.ensure_parent(context, doc.document_id, candidate.parent_revision),
-             :ok <- Facts.insert_revision(context, doc.document_id, candidate),
+             :ok <-
+               Facts.insert_revision_with_body(
+                 context,
+                 doc.document_id,
+                 candidate,
+                 revision_body_json(candidate)
+               ),
              :ok <- Facts.clear_pending_for_manifest(context, candidate.attachments),
              :ok <-
                maybe_update_pending_document(

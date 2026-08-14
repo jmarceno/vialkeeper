@@ -553,7 +553,13 @@ defmodule ElixirDB.Storage.Services.Import do
 
     with {:ok, _doc} <- Facts.ensure_document(context, document_id),
          :ok <- ensure_import_parent(context, document_id, revision, allow_dangling_parent),
-         :ok <- Facts.insert_revision(context, document_id, revision) do
+         :ok <-
+           Facts.insert_revision_with_body(
+             context,
+             document_id,
+             revision,
+             imported_body_json(revision)
+           ) do
       {:cont, {:ok, MapSet.put(affected, document_id), inserted + 1, stale, fenced}}
     else
       {:error, error} -> {:halt, {:error, error}}
@@ -582,7 +588,13 @@ defmodule ElixirDB.Storage.Services.Import do
                  revision,
                  allow_dangling_parent
                ),
-             :ok <- Facts.insert_revision(context, doc.document_id, revision) do
+             :ok <-
+               Facts.insert_revision_with_body(
+                 context,
+                 doc.document_id,
+                 revision,
+                 imported_body_json(revision)
+               ) do
           {:cont, {:ok, MapSet.put(affected, revision.document_id), inserted + 1, stale, fenced}}
         else
           {:error, error} -> {:halt, {:error, error}}
@@ -740,12 +752,18 @@ defmodule ElixirDB.Storage.Services.Import do
         with {:ok, doc} <- Facts.find_document(context, document_id),
              {:ok, winner} <- Winner.select(leaves_now),
              {:ok, leaf_json} <- Facts.encode_leaf_set(leaves_now),
-             :ok <- Facts.update_winning(context, document_id, winner, 0),
-             :ok <- Facts.refresh_document(context, document_id, winner),
              {:ok, sequence} <- Facts.allocate_sequence(context),
              {:ok, document_sequence} <-
                imported_document_sequence(context, profile, source_origins, document_id, sequence),
-             :ok <- Facts.update_winning(context, document_id, winner, document_sequence),
+             :ok <-
+               Facts.update_winning_with_body(
+                 context,
+                 document_id,
+                 winner,
+                 document_sequence,
+                 imported_body_json(winner)
+               ),
+             :ok <- Facts.refresh_document(context, document_id, winner),
              :ok <-
                Facts.append_change(
                  context,
@@ -773,6 +791,9 @@ defmodule ElixirDB.Storage.Services.Import do
         {:halt, {:error, error}}
     end
   end
+
+  defp imported_body_json(%Revision{deleted: true}), do: nil
+  defp imported_body_json(%Revision{body: body}), do: Canonical.encode!(body)
 
   defp imported_document_sequence(
          _context,

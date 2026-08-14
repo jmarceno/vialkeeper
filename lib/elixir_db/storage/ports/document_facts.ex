@@ -24,6 +24,17 @@ defmodule ElixirDB.Storage.Ports.DocumentFacts do
   @callback find_documents(BackendContext.t(), [binary()]) ::
               result(%{optional(binary()) => document_fact() | nil})
   @callback find_revision(BackendContext.t(), binary(), binary()) :: result(Revision.t() | nil)
+  @callback find_revision_batch(BackendContext.t(), [
+              %{document_id: binary(), revision_id: binary()}
+            ]) ::
+              result([
+                %{
+                  document_id: binary(),
+                  revision_id: binary(),
+                  document: document_fact() | nil,
+                  revision: Revision.t() | nil
+                }
+              ])
   @callback list_leaves(BackendContext.t(), binary()) :: result([Revision.t()])
   @callback list_ancestors(BackendContext.t(), binary(), binary()) :: result([Revision.t()])
   @callback list_document_page(BackendContext.t(), binary() | nil, pos_integer()) ::
@@ -40,12 +51,21 @@ defmodule ElixirDB.Storage.Ports.DocumentFacts do
               :ok | {:error, ElixirDB.Error.t()}
   @callback insert_revision(BackendContext.t(), binary(), Revision.t()) ::
               :ok | {:error, ElixirDB.Error.t()}
+  @callback insert_revision_with_body(BackendContext.t(), binary(), Revision.t(), binary() | nil) ::
+              :ok | {:error, ElixirDB.Error.t()}
   @callback insert_revision_for_document(BackendContext.t(), document_fact(), Revision.t()) ::
               :ok | {:error, ElixirDB.Error.t()}
   @callback insert_or_accept_revision(BackendContext.t(), binary(), Revision.t()) ::
               :ok | {:error, ElixirDB.Error.t()}
   @callback update_winning(BackendContext.t(), binary(), Revision.t(), non_neg_integer()) ::
               :ok | {:error, ElixirDB.Error.t()}
+  @callback update_winning_with_body(
+              BackendContext.t(),
+              binary(),
+              Revision.t(),
+              non_neg_integer(),
+              binary() | nil
+            ) :: :ok | {:error, ElixirDB.Error.t()}
   @callback update_winning_for_document(
               BackendContext.t(),
               document_fact(),

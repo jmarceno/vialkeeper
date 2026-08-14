@@ -52,6 +52,99 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   end
 
   @impl true
+  def find_revision_batch(%BackendContext{} = context, requests) when is_list(requests) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         ids = Enum.map(requests, & &1.document_id),
+         {:ok, raw_documents} <- Documents.find_many(adapter.conn, ids),
+         {:ok, revisions} <- find_batch_revisions(adapter.conn, requests, raw_documents),
+         documents <- Map.new(raw_documents, fn {id, doc} -> {id, shape_document(doc)} end) do
+      {:ok,
+       Enum.map(requests, fn %{document_id: document_id, revision_id: revision_id} ->
+         %{
+           document_id: document_id,
+           revision_id: revision_id,
+           document: Map.get(documents, document_id),
+           revision: Map.get(revisions, {document_id, revision_id})
+         }
+       end)}
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  defp find_batch_revisions(_conn, [], _documents), do: {:ok, %{}}
+
+  defp find_batch_revisions(conn, requests, documents) do
+    pairs =
+      requests
+      |> Enum.uniq()
+      |> Enum.filter(fn %{document_id: document_id} ->
+        not is_nil(Map.get(documents, document_id))
+      end)
+
+    Enum.reduce_while(Enum.chunk_every(pairs, 100), {:ok, %{}}, fn chunk, {:ok, acc} ->
+      case find_batch_revision_chunk(conn, chunk, documents) do
+        {:ok, revisions} -> {:cont, {:ok, Map.merge(acc, revisions)}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp find_batch_revision_chunk(conn, chunk, documents) do
+    conditions = Enum.map_join(chunk, " OR ", fn _ -> "(r.doc_key = ? AND r.revision_id = ?)" end)
+
+    sql =
+      "SELECT r.doc_key, r.revision_id, r.generation, r.parent_revision, r.history_id, r.digest, r.deleted, r.body_json, r.body_term, r.insertion_sequence FROM revisions AS r WHERE #{conditions}"
+
+    params =
+      Enum.flat_map(chunk, fn %{document_id: document_id, revision_id: revision_id} ->
+        [documents[document_id].doc_key, revision_id]
+      end)
+
+    case Connection.query(conn, sql, params) do
+      {:ok, rows} -> {:ok, Map.new(rows, &batch_revision_from_row(&1, documents))}
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  defp batch_revision_from_row(
+         [
+           doc_key,
+           revision_id,
+           generation,
+           parent,
+           history_id,
+           digest,
+           deleted,
+           body_json,
+           body_term,
+           sequence
+         ],
+         documents
+       ) do
+    document_id =
+      Enum.find_value(documents, fn {id, doc} -> if doc && doc.doc_key == doc_key, do: id end)
+
+    revision =
+      Revisions.from_row(
+        [
+          revision_id,
+          generation,
+          parent,
+          history_id,
+          digest,
+          deleted,
+          body_json,
+          body_term,
+          sequence
+        ],
+        %{}
+      )
+
+    {{document_id, revision.revision_id}, revision}
+  end
+
+  @impl true
   def list_leaves(%BackendContext{} = context, document_id) when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context),
          {:ok, doc} <- Documents.find(adapter.conn, document_id),
@@ -187,6 +280,25 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
   end
 
   @impl true
+  def insert_revision_with_body(
+        %BackendContext{} = context,
+        document_id,
+        %Revision{} = revision,
+        body_json
+      )
+      when is_binary(document_id) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, doc} <- require_document(doc),
+         {:ok, doc_key} <- require_doc_key(doc) do
+      Errors.wrap(Revisions.insert(adapter.conn, doc_key, revision, body_json))
+    else
+      :missing_document -> {:error, ElixirDB.Error.document_not_found("document not found")}
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
   def insert_revision_for_document(
         %BackendContext{} = context,
         document,
@@ -231,6 +343,26 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
 
       {:error, reason} ->
         {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
+  def update_winning_with_body(
+        %BackendContext{} = context,
+        document_id,
+        %Revision{} = winner,
+        sequence,
+        body_json
+      )
+      when is_binary(document_id) and is_integer(sequence) and sequence >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc} <- Documents.find(adapter.conn, document_id),
+         {:ok, doc} <- require_document(doc),
+         {:ok, doc_key} <- require_doc_key(doc) do
+      Errors.wrap(Documents.update(adapter.conn, doc_key, winner, sequence, body_json))
+    else
+      :missing_document -> {:error, ElixirDB.Error.document_not_found("document not found")}
+      {:error, reason} -> {:error, Errors.normalize(reason)}
     end
   end
 
@@ -300,7 +432,7 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
              [candidate_floor]
            ) do
         {:ok, rows} ->
-          {:ok, Enum.map(rows, &compaction_document(adapter.conn, &1))}
+          {:ok, compaction_documents(adapter.conn, rows)}
 
         {:error, reason} ->
           {:error, Errors.normalize(reason)}
@@ -319,13 +451,70 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
     end
   end
 
-  defp compaction_document(conn, [doc_key, document_id, winning_revision, update_sequence]) do
-    %{
-      document_id: document_id,
-      latest_change_sequence: update_sequence,
-      winning_revision: winning_revision,
-      revisions: load_document_revisions(conn, doc_key)
-    }
+  defp compaction_documents(_conn, []), do: []
+
+  defp compaction_documents(conn, rows) do
+    doc_keys =
+      Enum.map(rows, fn [doc_key, _document_id, _winning_revision, _update_sequence] -> doc_key end)
+
+    doc_key_to_id =
+      Map.new(rows, fn [doc_key, document_id, _winning_revision, _update_sequence] ->
+        {doc_key, document_id}
+      end)
+
+    metadata =
+      load_compaction_revisions(conn, doc_keys, doc_key_to_id)
+      |> Enum.group_by(fn {doc_key, _revision} -> doc_key end, fn {_doc_key, revision} ->
+        revision
+      end)
+
+    Enum.map(rows, fn [doc_key, document_id, winning_revision, update_sequence] ->
+      %{
+        document_id: document_id,
+        latest_change_sequence: update_sequence,
+        winning_revision: winning_revision,
+        revisions: Map.get(metadata, doc_key, [])
+      }
+    end)
+  end
+
+  defp load_compaction_revisions(conn, doc_keys, doc_key_to_id) do
+    placeholders = Enum.map_join(doc_keys, ",", fn _ -> "?" end)
+
+    case Connection.query(
+           conn,
+           "SELECT doc_key, revision_id, generation, parent_revision, history_id, digest, deleted, insertion_sequence FROM revisions WHERE doc_key IN (#{placeholders})",
+           doc_keys
+         ) do
+      {:ok, rows} ->
+        Enum.map(rows, fn [
+                            doc_key,
+                            revision_id,
+                            generation,
+                            parent,
+                            history_id,
+                            digest,
+                            deleted,
+                            sequence
+                          ] ->
+          {doc_key,
+           %Revision{
+             document_id: Map.fetch!(doc_key_to_id, doc_key),
+             revision_id: revision_id,
+             generation: generation,
+             parent_revision: parent,
+             history_id: history_id,
+             digest: digest,
+             deleted: deleted == 1,
+             body: nil,
+             attachments: %{},
+             insertion_sequence: sequence
+           }}
+        end)
+
+      _ ->
+        []
+    end
   end
 
   defp delete_document_revisions(_conn, nil, _revision_ids), do: :ok
@@ -336,25 +525,16 @@ defmodule ElixirDB.Storage.SQLite.DocumentFacts do
     end
   end
 
-  defp load_document_revisions(conn, doc_key) do
-    case Connection.query(
-           conn,
-           "SELECT revision_id, generation, parent_revision, history_id, digest, deleted, body_json, body_term, insertion_sequence FROM revisions WHERE doc_key = ?",
-           [doc_key]
-         ) do
-      {:ok, rows} -> Enum.map(rows, fn row -> Revisions.from_row(row) end)
-      _ -> []
-    end
-  end
-
   defp delete_revision_ids(_conn, _doc_key, []), do: :ok
 
   defp delete_revision_ids(conn, doc_key, revision_ids) do
-    Enum.reduce_while(revision_ids, :ok, fn revision_id, :ok ->
+    Enum.reduce_while(Enum.chunk_every(revision_ids, 100), :ok, fn chunk, :ok ->
+      placeholders = Enum.map_join(chunk, ",", fn _ -> "?" end)
+
       case Connection.execute(
              conn,
-             "DELETE FROM revisions WHERE doc_key = ? AND revision_id = ?",
-             [doc_key, revision_id]
+             "DELETE FROM revisions WHERE doc_key = ? AND revision_id IN (#{placeholders})",
+             [doc_key | chunk]
            ) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, Errors.normalize(reason)}}

@@ -637,16 +637,22 @@ defmodule ElixirDB.Storage.Services do
   end
 
   defp revision_batch_results(context, requests) do
-    Enum.reduce_while(requests, {:ok, []}, fn request, {:ok, acc} ->
-      case revision_batch_item(context, request) do
-        {:ok, result} -> {:cont, {:ok, [result | acc]}}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
+    with {:ok, results} <- Facts.find_revision_batch(context, requests) do
+      reduce_revision_batch_results(results)
+    end
     |> case do
       {:ok, results} -> {:ok, Enum.reverse(results)}
       {:error, _} = error -> error
     end
+  end
+
+  defp reduce_revision_batch_results(results) do
+    Enum.reduce_while(results, {:ok, []}, fn result, {:ok, acc} ->
+      case revision_batch_result(result) do
+        {:ok, envelope} -> {:cont, {:ok, [envelope | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp maybe_document_leaves(_context, _document_id, false), do: {:ok, []}
@@ -656,39 +662,35 @@ defmodule ElixirDB.Storage.Services do
 
   defp maybe_document_leaves(_context, _document_id, _), do: {:ok, []}
 
-  defp revision_batch_item(%BackendContext{} = context, request) when is_map(request) do
-    document_id = MapAccess.get(request, :document_id)
-    revision_id = MapAccess.get(request, :revision_id)
-
-    with :ok <- validate_identifier(document_id, "document_id"),
-         :ok <- validate_identifier(revision_id, "revision_id"),
-         {:ok, document} <- Facts.find_document(context, document_id),
-         {:ok, document} <- require_document(document),
-         {:ok, revision} <- Facts.find_revision(context, document_id, revision_id) do
-      {:ok,
-       %{
-         id: document.document_id,
-         revision: revision.revision_id,
-         deleted: revision.deleted,
-         body: revision.body
-       }}
-    else
-      {:error, %ElixirDB.Error{code: :document_not_found}} ->
+  defp revision_batch_result(%{
+         document_id: document_id,
+         revision_id: revision_id,
+         document: document,
+         revision: revision
+       }) do
+    cond do
+      is_nil(document) ->
         {:error,
          ElixirDB.Error.integrity_violation("changes entry references a missing document", %{
            document_id: document_id,
            revision_id: revision_id
          })}
 
-      {:error, %ElixirDB.Error{code: :revision_not_found}} ->
+      is_nil(revision) ->
         {:error,
          ElixirDB.Error.integrity_violation("changes entry references a missing revision", %{
            document_id: document_id,
            revision_id: revision_id
          })}
 
-      {:error, _} = error ->
-        error
+      true ->
+        {:ok,
+         %{
+           id: document.document_id,
+           revision: revision.revision_id,
+           deleted: revision.deleted,
+           body: revision.body
+         }}
     end
   end
 

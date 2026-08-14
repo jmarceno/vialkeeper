@@ -39,6 +39,12 @@ defmodule ElixirDB.Storage.Services.Facts do
   def find_revision(%BackendContext{} = ctx, document_id, revision_id),
     do: Access.port(ctx, :document_facts).find_revision(ctx, document_id, revision_id)
 
+  @doc "Loads requested document/revision pairs in request order."
+  @spec find_revision_batch(BackendContext.t(), list()) ::
+          {:ok, list()} | {:error, ElixirDB.Error.t()}
+  def find_revision_batch(%BackendContext{} = ctx, requests),
+    do: Access.port(ctx, :document_facts).find_revision_batch(ctx, requests)
+
   @doc "Lists leaf revisions for a document."
   @spec list_leaves(BackendContext.t(), binary()) ::
           {:ok, [Revision.t()]} | {:error, ElixirDB.Error.t()}
@@ -99,6 +105,18 @@ defmodule ElixirDB.Storage.Services.Facts do
   def insert_revision(%BackendContext{} = ctx, document_id, revision),
     do: Access.port(ctx, :document_facts).insert_revision(ctx, document_id, revision)
 
+  @doc "Inserts a revision using a pre-encoded body when available."
+  @spec insert_revision_with_body(BackendContext.t(), binary(), Revision.t(), binary() | nil) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def insert_revision_with_body(%BackendContext{} = ctx, document_id, revision, body_json),
+    do:
+      Access.port(ctx, :document_facts).insert_revision_with_body(
+        ctx,
+        document_id,
+        revision,
+        body_json
+      )
+
   @doc "Inserts a revision using an already loaded document fact."
   @spec insert_revision_for_document(BackendContext.t(), map(), Revision.t()) ::
           :ok | {:error, ElixirDB.Error.t()}
@@ -116,6 +134,25 @@ defmodule ElixirDB.Storage.Services.Facts do
           :ok | {:error, ElixirDB.Error.t()}
   def update_winning(%BackendContext{} = ctx, document_id, winner, sequence),
     do: Access.port(ctx, :document_facts).update_winning(ctx, document_id, winner, sequence)
+
+  @doc "Updates the winning projection using a pre-encoded live body."
+  @spec update_winning_with_body(
+          BackendContext.t(),
+          binary(),
+          Revision.t(),
+          non_neg_integer(),
+          binary() | nil
+        ) ::
+          :ok | {:error, ElixirDB.Error.t()}
+  def update_winning_with_body(%BackendContext{} = ctx, document_id, winner, sequence, body_json),
+    do:
+      Access.port(ctx, :document_facts).update_winning_with_body(
+        ctx,
+        document_id,
+        winner,
+        sequence,
+        body_json
+      )
 
   @doc "Updates the winning projection using an already loaded document fact."
   @spec update_winning_for_document(BackendContext.t(), map(), Revision.t(), non_neg_integer()) ::
