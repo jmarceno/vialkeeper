@@ -736,13 +736,67 @@ defmodule ElixirDB.HostConfig do
 
   defp validate_allowed_roots(_, field), do: {:error, "host.toml: #{field} must be an array"}
 
+  @doc """
+  Canonicalizes an allow-list entry or a provision-time source origin so
+  configuration and requests are compared under one rule.
+
+  Accepts only a bare HTTP(S) origin: a non-empty host, no userinfo or query
+  or fragment, and an empty or `/` path. Lowercases the scheme and host, drops
+  default ports (80 for `http`, 443 for `https`), preserves non-default ports,
+  and wraps IPv6 hosts in brackets. Returns `{:ok, canonical}` or
+  `{:error, reason}`.
+  """
+  @spec canonical_origin(String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def canonical_origin(value) when is_binary(value) do
+    uri = URI.parse(String.trim(value))
+
+    cond do
+      uri.scheme not in ["http", "https"] ->
+        {:error, "must be an HTTP(S) origin"}
+
+      not origin_host?(uri.host) ->
+        {:error, "must include a non-empty host"}
+
+      uri.userinfo != nil or uri.query != nil or uri.fragment != nil ->
+        {:error, "must not include userinfo, query, or fragment"}
+
+      uri.path not in [nil, "", "/"] ->
+        {:error, "must not include a path"}
+
+      true ->
+        {:ok, canonical_authority(uri)}
+    end
+  end
+
+  def canonical_origin(_), do: {:error, "must be an HTTP(S) origin string"}
+
+  defp canonical_authority(uri) do
+    host = canonical_host(uri.host)
+    default = default_port(uri.scheme)
+
+    case uri.port do
+      ^default -> "#{uri.scheme}://#{host}"
+      port -> "#{uri.scheme}://#{host}:#{port}"
+    end
+  end
+
+  defp canonical_host(host) do
+    host = String.downcase(host)
+    if String.contains?(host, ":"), do: "[#{host}]", else: host
+  end
+
+  defp default_port("https"), do: 443
+  defp default_port(_), do: 80
+
+  defp origin_host?(host), do: is_binary(host) and host != ""
+
   defp validate_origins(nil, _field), do: {:ok, []}
 
   defp validate_origins(values, field) when is_list(values) do
     Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
-      case validate_url(value, field) do
-        :ok -> {:cont, {:ok, [String.trim(value) | acc]}}
-        {:error, _} = error -> {:halt, error}
+      case canonical_origin(value) do
+        {:ok, canonical} -> {:cont, {:ok, [canonical | acc]}}
+        {:error, reason} -> {:halt, {:error, "host.toml: #{field} #{reason}"}}
       end
     end)
     |> case do

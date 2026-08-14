@@ -5,6 +5,7 @@ defmodule ElixirDB.Shadow.Worker do
 
   alias ElixirDB.Attachments.{FilesystemStore, Manifest, Representation, StoreRef}
   alias ElixirDB.Error
+  alias ElixirDB.HostConfig
   alias ElixirDB.JSON.{Canonical, StrictDecoder}
   alias ElixirDB.NodeIdentity
   alias ElixirDB.PathSafety
@@ -218,6 +219,7 @@ defmodule ElixirDB.Shadow.Worker do
   defp provision_state(request, state) do
     with {:ok, request} <- normalize_provision(request),
          :ok <- validate_attachment_root(request, state),
+         :ok <- validate_source_origin(request, state),
          {:ok, journal} <- read_journal(state.journal_path),
          {:ok, result, next_journal} <- provision_existing_or_new(request, journal, state),
          :ok <- write_journal(state.journal_path, next_journal) do
@@ -744,6 +746,42 @@ defmodule ElixirDB.Shadow.Worker do
       {:error, %Error{} = error} ->
         {:error, error}
     end
+  end
+
+  defp validate_source_origin(request, state) do
+    case request["source_base_url"] do
+      url when is_binary(url) ->
+        if blank_source_url?(url),
+          do: :ok,
+          else: validate_remote_source_origin(url, state)
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp blank_source_url?(url), do: String.trim(url) == ""
+
+  defp validate_remote_source_origin(url, state) do
+    with {:ok, canonical} <- HostConfig.canonical_origin(url),
+         true <- canonical in source_origins(state) do
+      :ok
+    else
+      false ->
+        {:error,
+         Error.invalid_request(
+           "source_base_url origin is not in the shadow worker source origin allow-list"
+         )}
+
+      {:error, reason} ->
+        {:error, Error.invalid_request("source_base_url #{reason}")}
+    end
+  end
+
+  defp source_origins(state) do
+    Keyword.get(state.options, :allowed_source_origins) ||
+      Application.get_env(:elixir_db, :shadow_worker, [])[:allowed_source_origins] ||
+      []
   end
 
   defp validate_managed_entry(entry, request, state) do

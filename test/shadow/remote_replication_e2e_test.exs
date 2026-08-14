@@ -35,7 +35,7 @@ defmodule ElixirDB.Shadow.RemoteReplicationE2ETest do
       storage_root: worker_storage_root,
       control_token_digests: [control_token_digest],
       allowed_attachment_roots: [source_absolute],
-      allowed_source_origins: []
+      allowed_source_origins: [server.base_url]
     )
 
     request = %{
