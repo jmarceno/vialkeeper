@@ -85,7 +85,8 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
     request("POST", path,
       body: body,
       headers: [
-        {"content-type", "application/x-www-form-urlencoded"} | Keyword.get(opts, :headers, [])
+        {"content-type", "application/x-www-form-urlencoded"},
+        {"hx-request", "true"} | Keyword.get(opts, :headers, [])
       ],
       token: Keyword.get(opts, :token)
     )

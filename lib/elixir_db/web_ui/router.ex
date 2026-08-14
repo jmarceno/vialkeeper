@@ -27,6 +27,7 @@ defmodule ElixirDB.WebUI.Router do
     Views
   }
 
+  plug(:reject_foreign_actions)
   plug(:match)
   plug(:dispatch)
 
@@ -260,6 +261,29 @@ defmodule ElixirDB.WebUI.Router do
 
   match _ do
     not_found(conn)
+  end
+
+  @state_changing_methods ["POST", "PUT", "PATCH", "DELETE"]
+
+  defp reject_foreign_actions(conn, _opts) do
+    if foreign_action?(conn) do
+      conn
+      |> not_found()
+      |> Plug.Conn.halt()
+    else
+      conn
+    end
+  end
+
+  defp foreign_action?(conn) do
+    conn.method in @state_changing_methods and match?(["actions" | _], conn.path_info) and
+      not htmx_request?(conn)
+  end
+
+  defp htmx_request?(conn) do
+    conn
+    |> Plug.Conn.get_req_header("hx-request")
+    |> Enum.any?(&(&1 == "true"))
   end
 
   defp serve_when_enabled(conn, fun) do
