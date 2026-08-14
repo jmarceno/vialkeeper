@@ -7,6 +7,9 @@ defmodule ElixirDB.Query.SubscriptionHub do
   alias ElixirDB.Runtime.{ChangeNotifier, ChildSpec, DatabaseCatalog}
 
   @batch_limit 100
+  @max_read_retries 8
+  @retry_base_ms 100
+  @retry_max_ms 5_000
 
   def child_spec(uuid),
     do: ChildSpec.worker({__MODULE__, uuid}, {__MODULE__, :start_link, [uuid]}, :permanent)
@@ -53,7 +56,8 @@ defmodule ElixirDB.Query.SubscriptionHub do
          read_pending: false,
          read_task: nil,
          resetting: false,
-         reset_floor: nil
+         reset_floor: nil,
+         consecutive_read_failures: 0
        }}
 
   @impl true
@@ -205,6 +209,20 @@ defmodule ElixirDB.Query.SubscriptionHub do
      %{state | subscriptions: %{}, notifier_ref: nil, reading: false, read_task: nil}}
   end
 
+  def handle_info(:retry_read, %{resetting: true} = state), do: {:noreply, state}
+
+  def handle_info(:retry_read, %{reading: true} = state), do: {:noreply, state}
+
+  def handle_info(:retry_read, %{read_task: %Task{}} = state), do: {:noreply, state}
+
+  def handle_info(:retry_read, state) do
+    if map_size(state.subscriptions) == 0 do
+      {:noreply, finish_read(state)}
+    else
+      {:noreply, schedule_read(state)}
+    end
+  end
+
   defp ensure_notifier(%{notifier_ref: nil} = state) do
     with {:ok, identity} <-
            DatabaseCatalog.command_as(state.uuid, :subscription, {:command, :identity, %{}}),
@@ -301,17 +319,29 @@ defmodule ElixirDB.Query.SubscriptionHub do
     end
   end
 
+  defp subscription_hub_read_error(uuid) when is_binary(uuid) do
+    case Application.get_env(:elixir_db, :subscription_hub_fail_reads) do
+      {^uuid, %ElixirDB.Error{} = error} -> error
+      {true, %ElixirDB.Error{} = error} -> error
+      _ -> nil
+    end
+  end
+
   defp finish_read(%{read_pending: true} = state),
     do: schedule_read(%{state | read_pending: false})
 
   defp finish_read(state), do: state
 
   defp fetch_batch(uuid, since) do
-    # Test barrier: in-flight hub tasks must not acquire after pause is set.
-    if subscription_hub_reads_paused?(uuid) do
-      {:ok, %{normalize_changes_result(%{}) | last_sequence: since}}
-    else
-      fetch_batch_unpaused(uuid, since)
+    cond do
+      subscription_hub_reads_paused?(uuid) ->
+        {:ok, %{normalize_changes_result(%{}) | last_sequence: since}}
+
+      error = subscription_hub_read_error(uuid) ->
+        {:error, error}
+
+      true ->
+        fetch_batch_unpaused(uuid, since)
     end
   end
 
@@ -385,6 +415,8 @@ defmodule ElixirDB.Query.SubscriptionHub do
         do: %{state | cursor_sequence: max(state.cursor_sequence, last_sequence)},
         else: state
 
+    state = %{state | consecutive_read_failures: 0}
+
     if has_more, do: schedule_read(state), else: finish_read(state)
   end
 
@@ -396,6 +428,7 @@ defmodule ElixirDB.Query.SubscriptionHub do
       state
       |> fanout(results, envelopes)
       |> Map.put(:cursor_sequence, last_sequence)
+      |> Map.put(:consecutive_read_failures, 0)
 
     if has_more, do: schedule_read(state), else: finish_read(state)
   end
@@ -404,7 +437,27 @@ defmodule ElixirDB.Query.SubscriptionHub do
     finish_read(begin_history_reset(state, error))
   end
 
+  defp apply_read_result(state, {:error, %ElixirDB.Error{retryable: true} = error}) do
+    retry_read(state, error)
+  end
+
   defp apply_read_result(state, {:error, error}), do: finish_read(fail_all(state, error))
+
+  defp retry_read(state, error) do
+    cond do
+      map_size(state.subscriptions) == 0 ->
+        finish_read(state)
+
+      state.consecutive_read_failures >= @max_read_retries ->
+        finish_read(fail_all(state, error))
+
+      true ->
+        failures = state.consecutive_read_failures + 1
+        delay = min(@retry_base_ms * Integer.pow(2, failures - 1), @retry_max_ms)
+        Process.send_after(self(), :retry_read, delay)
+        %{state | consecutive_read_failures: failures}
+    end
+  end
 
   defp begin_history_reset(%{resetting: true} = state, error) do
     floor = retention_floor(error)
