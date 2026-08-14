@@ -55,7 +55,7 @@ defmodule ElixirDB.WebUI.Routes.Observability do
       "  <div class=\"panel\">\n",
       "    <p>",
       HTML.escape(
-        "The observability dashboard is disabled on this node. Enable observability_dashboard in host configuration to view bounded runtime metrics."
+        "The observability dashboard is disabled on this node. Set application env :observability_dashboard to true to view bounded runtime metrics."
       ),
       "</p>\n",
       "  </div>\n",
