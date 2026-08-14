@@ -466,6 +466,7 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
     disabled = request("GET", "/ui/fragments/observability")
     assert disabled.status == 200
     assert disabled.resp_body =~ "disabled"
+    assert disabled.resp_body =~ "Set application env :observability_dashboard to true"
     refute disabled.resp_body =~ "memory_bytes"
 
     Application.put_env(:elixir_db, :observability_dashboard, true)
