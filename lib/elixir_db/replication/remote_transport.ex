@@ -7,6 +7,10 @@ defmodule ElixirDB.Replication.RemoteTransport do
   alias ElixirDB.Replication.BlobRepresentationStream
   alias ElixirDB.Replication.WireCompression
 
+  @bounded_bytes_private_key :transport_bounded_bytes
+  @bounded_overflow_private_key :transport_bounded_overflow
+  @bounded_body_key :transport_bounded_body
+
   def request(base_url, method, path, body \\ nil, auth_token \\ nil) do
     request(
       base_url,
@@ -123,6 +127,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
         body: stream.body,
         decode_body: false,
         compressed: false,
+        into: bounded_collector(encoded_limit()),
         headers:
           [
             {"accept", "application/json"},
@@ -133,20 +138,24 @@ defmodule ElixirDB.Replication.RemoteTransport do
 
     case Req.request(options) do
       {:ok, %{status: status} = result} when status in 200..299 ->
-        case decode_wire_json(result) do
-          {:ok, _body} ->
-            ReplicationInstr.wire_bytes(:egress, :blob, stream.encoding, stream.payload_length)
-            :ok
-
-          {:error, _} = error ->
-            error
-        end
+        put_stream_success(result, stream)
 
       {:ok, %{status: status} = result} ->
-        {:error, error_response(status, result)}
+        case bounded_result(result) do
+          {:ok, result} -> {:error, error_response(status, result)}
+          {:error, _} = error -> error
+        end
 
       {:error, reason} ->
         transport_error(reason)
+    end
+  end
+
+  defp put_stream_success(result, stream) do
+    with {:ok, result} <- bounded_result(result),
+         {:ok, _body} <- decode_wire_json(result) do
+      ReplicationInstr.wire_bytes(:egress, :blob, stream.encoding, stream.payload_length)
+      :ok
     end
   end
 
@@ -158,8 +167,15 @@ defmodule ElixirDB.Replication.RemoteTransport do
   end
 
   defp open_stream_error(status, body, result) do
-    binary = consume_error_body(body)
-    {:error, error_response(status, %{result | body: binary})}
+    encoded_limit = WireCompression.encoded_limit(decoded_limit())
+
+    case consume_error_body(body, encoded_limit) do
+      {:ok, binary} ->
+        {:error, error_response(status, %{result | body: binary})}
+
+      :too_large ->
+        {:error, Error.payload_too_large("remote endpoint response is too large")}
+    end
   end
 
   # Non-2xx bodies are not guaranteed to use the compressed wire encoding:
@@ -173,23 +189,83 @@ defmodule ElixirDB.Replication.RemoteTransport do
     end
   end
 
-  defp consume_error_body(body) do
+  defp consume_error_body(body, encoded_limit) do
     if enumerable_body?(body) do
-      body
-      |> Enum.to_list()
-      |> IO.iodata_to_binary()
+      consume_enumerable_error_body(body, encoded_limit)
     else
-      IO.iodata_to_binary(body)
+      materialized_error_body(body, encoded_limit)
     end
   rescue
     exception in [ArgumentError, ErlangError, Protocol.UndefinedError, RuntimeError] ->
       _ = exception
-      ""
+      {:ok, ""}
   end
+
+  defp consume_enumerable_error_body(body, encoded_limit) do
+    body
+    |> Enum.reduce_while({0, []}, fn chunk, {total, acc} ->
+      binary = IO.iodata_to_binary(chunk)
+      total = total + byte_size(binary)
+
+      if total > encoded_limit do
+        {:halt, :too_large}
+      else
+        {:cont, {total, [binary | acc]}}
+      end
+    end)
+    |> case do
+      :too_large -> :too_large
+      {_total, acc} -> {:ok, IO.iodata_to_binary(Enum.reverse(acc))}
+    end
+  end
+
+  defp materialized_error_body(body, encoded_limit) do
+    binary = IO.iodata_to_binary(body)
+
+    if byte_size(binary) > encoded_limit do
+      :too_large
+    else
+      {:ok, binary}
+    end
+  end
+
+  defp decoded_limit,
+    do: ElixirDB.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
 
   defp enumerable_body?(%Req.Response.Async{}), do: true
   defp enumerable_body?(body) when is_struct(body), do: true
   defp enumerable_body?(_), do: false
+
+  defp encoded_limit, do: WireCompression.encoded_limit(decoded_limit())
+
+  defp bounded_collector(encoded_limit) do
+    fn
+      {:data, data}, {request, response} ->
+        bytes = Req.Response.get_private(response, @bounded_bytes_private_key, 0)
+        body = Req.Response.get_private(response, @bounded_body_key, [])
+
+        if bytes + byte_size(data) > encoded_limit do
+          {:halt,
+           {request, Req.Response.put_private(response, @bounded_overflow_private_key, true)}}
+        else
+          response =
+            response
+            |> Req.Response.put_private(@bounded_bytes_private_key, bytes + byte_size(data))
+            |> Req.Response.put_private(@bounded_body_key, [data | body])
+
+          {:cont, {request, response}}
+        end
+    end
+  end
+
+  defp bounded_result(%Req.Response{private: private} = response) do
+    if Map.get(private, @bounded_overflow_private_key) do
+      {:error, Error.payload_too_large("remote endpoint response is too large")}
+    else
+      body = Map.get(private, @bounded_body_key, []) |> Enum.reverse() |> IO.iodata_to_binary()
+      {:ok, %{response | body: body}}
+    end
+  end
 
   defp stream_base_options(base_url, method, path) do
     timeout = ElixirDB.Config.host_limits()[:max_request_timeout_ms] || 30_000
@@ -215,6 +291,7 @@ defmodule ElixirDB.Replication.RemoteTransport do
       connect_options: [timeout: min(timeout, 5_000)],
       decode_body: false,
       compressed: false,
+      into: bounded_collector(encoded_limit()),
       headers: json_request_headers(auth_headers, trace_headers)
     ]
 
@@ -279,11 +356,17 @@ defmodule ElixirDB.Replication.RemoteTransport do
   end
 
   defp handle_task_result({:ok, {:ok, %{status: status} = result}}) when status in 200..299 do
-    decode_wire_json(result)
+    case bounded_result(result) do
+      {:ok, result} -> decode_wire_json(result)
+      {:error, _} = error -> error
+    end
   end
 
   defp handle_task_result({:ok, {:ok, %{status: status} = result}}) do
-    {:error, error_response(status, result)}
+    case bounded_result(result) do
+      {:ok, result} -> {:error, error_response(status, result)}
+      {:error, _} = error -> error
+    end
   end
 
   defp handle_task_result({:ok, {:error, reason}}), do: transport_error(reason)
@@ -380,9 +463,6 @@ defmodule ElixirDB.Replication.RemoteTransport do
       Error.new(:internal_error, "remote endpoint returned HTTP #{status}", %{},
         retryable: status >= 500
       )
-
-  defp decoded_limit,
-    do: ElixirDB.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
 
   defp auth_headers(nil), do: []
   defp auth_headers(token) when is_binary(token), do: [{"authorization", "Bearer " <> token}]
