@@ -18,6 +18,7 @@
       "ElixirDB.Replication",
       "ElixirDB.Replication.WireCompression",
       "ElixirDB.Attachments",
+      "ElixirDB.Maintenance",
       "ElixirDB.Observability.Dashboard"
     ],
     runtime: [
