@@ -9,7 +9,7 @@ defmodule ElixirDB.Runtime.OwnerCrashTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Runtime.{DatabaseCatalog, Ownership}
+  alias ElixirDB.Runtime.{CommandContext, DatabaseCatalog, DatabaseOwner, Ownership}
 
   setup do
     relative = "owner-crash-#{System.unique_integer([:positive])}.elixirdb"
@@ -112,6 +112,32 @@ defmodule ElixirDB.Runtime.OwnerCrashTest do
 
     assert {:ok, %{body: %{"n" => 2}}} =
              ElixirDB.Documents.get(uuid, %{id: "crash-doc"})
+  end
+
+  test "contextual command raise is caught as internal_error and owner survives", %{
+    uuid: uuid
+  } do
+    assert {:ok, _} = DatabaseCatalog.open(uuid)
+
+    assert [{owner_before, _}] =
+             Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+
+    assert Process.alive?(owner_before)
+
+    result =
+      DatabaseOwner.command_with_context(
+        uuid,
+        CommandContext.public(),
+        {:command, :put, nil}
+      )
+
+    assert {:error, %ElixirDB.Error{code: :internal_error}} = result
+
+    assert [{owner_after, _}] =
+             Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+
+    assert owner_after == owner_before
+    assert Process.alive?(owner_after)
   end
 
   defp file_lease_pid(runtime) do
