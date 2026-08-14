@@ -584,69 +584,11 @@ defmodule ElixirDB.Storage.SQLite.Adapter do
 
   @impl true
   def get_revisions_batch(%__MODULE__{} = adapter, requests) when is_list(requests) do
-    with {:ok, identity} <- identity(adapter),
-         :ok <-
-           SubscriptionRequest.validate_revisions_batch(requests, Map.get(identity, :config, %{})) do
-      fetch_revision_batch(adapter, requests)
-    end
+    Services.get_revisions_batch(to_context(adapter), requests)
   end
 
   def get_revisions_batch(_adapter, _requests),
     do: {:error, ElixirDB.Error.invalid_request("revision batch requests must be a list")}
-
-  defp fetch_revision_batch(adapter, requests) do
-    Enum.reduce_while(requests, {:ok, []}, fn request, {:ok, acc} ->
-      case fetch_revision_batch_item(adapter, request) do
-        {:ok, envelope} -> {:cont, {:ok, [envelope | acc]}}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, results} -> {:ok, Enum.reverse(results)}
-      error -> error
-    end
-  end
-
-  defp fetch_revision_batch_item(adapter, request) do
-    document_id = MapAccess.get(request, :document_id)
-    revision_id = MapAccess.get(request, :revision_id)
-
-    with {:ok, doc} <- Documents.find(adapter.conn, document_id),
-         {:ok, revision} <- fetch_batch_revision(adapter, doc, revision_id) do
-      envelope = Documents.to_result(doc, revision, [])
-
-      {:ok,
-       %{
-         id: envelope.id,
-         revision: envelope.revision,
-         deleted: envelope.deleted,
-         body: envelope.body
-       }}
-    else
-      {:error, %ElixirDB.Error{code: :revision_not_found}} ->
-        {:error,
-         ElixirDB.Error.integrity_violation("changes entry references a missing revision", %{
-           document_id: document_id,
-           revision_id: revision_id
-         })}
-
-      {:error, %ElixirDB.Error{code: :document_not_found}} ->
-        {:error,
-         ElixirDB.Error.integrity_violation("changes entry references a missing document", %{
-           document_id: document_id,
-           revision_id: revision_id
-         })}
-
-      {:error, %ElixirDB.Error{} = error} ->
-        {:error, error}
-    end
-  end
-
-  defp fetch_batch_revision(_adapter, nil, _revision_id),
-    do: {:error, ElixirDB.Error.document_not_found("document not found")}
-
-  defp fetch_batch_revision(adapter, doc, revision_id),
-    do: Revisions.find(adapter.conn, doc.doc_key, revision_id)
 
   @impl true
   def explain_query(%__MODULE__{} = adapter, request) when is_map(request) do

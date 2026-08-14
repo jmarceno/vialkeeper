@@ -106,17 +106,27 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
   def load_leaves(conn, doc_key) do
     case Connection.query(
            conn,
-           "SELECT revision_id, generation, parent_revision, history_id, digest, deleted, body_json, body_term, insertion_sequence FROM revisions WHERE doc_key = ? AND is_leaf = 1 ORDER BY revision_id",
+           "SELECT r.revision_id, r.generation, r.parent_revision, r.history_id, r.digest, r.deleted, r.body_json, r.body_term, r.insertion_sequence, a.attachment_name, a.blob_digest, a.logical_size, a.content_type FROM revisions AS r LEFT JOIN revision_attachments AS a ON a.doc_key = r.doc_key AND a.revision_id = r.revision_id WHERE r.doc_key = ? AND r.is_leaf = 1 ORDER BY r.revision_id, a.attachment_name",
            [doc_key]
          ) do
       {:ok, rows} ->
-        rows
-        |> Enum.reduce_while({:ok, []}, &append_leaf_revision(conn, doc_key, &1, &2))
-        |> reverse_leaves()
+        rows |> leaf_revisions() |> reverse_leaves()
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
     end
+  end
+
+  defp leaf_revisions(rows) do
+    Enum.reduce_while(Enum.chunk_by(rows, &Enum.take(&1, 9)), {:ok, []}, fn grouped, {:ok, acc} ->
+      case manifest_from_rows(grouped) do
+        {:ok, attachments} ->
+          {:cont, {:ok, [from_row(Enum.take(hd(grouped), 9), attachments) | acc]}}
+
+        {:error, error} ->
+          {:halt, {:error, error}}
+      end
+    end)
   end
 
   @doc """
@@ -170,35 +180,6 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
           {:error, reason} ->
             {:error, normalize_error(reason)}
         end
-    end
-  end
-
-  defp append_leaf_revision(conn, doc_key, row, {:ok, acc}) do
-    [id, generation, parent, history_id, digest_value, deleted, body_json, body_term, sequence] =
-      row
-
-    case Attachments.load_manifest(conn, doc_key, id) do
-      {:ok, attachments} ->
-        revision =
-          from_row(
-            [
-              id,
-              generation,
-              parent,
-              history_id,
-              digest_value,
-              deleted,
-              body_json,
-              body_term,
-              sequence
-            ],
-            attachments
-          )
-
-        {:cont, {:ok, [revision | acc]}}
-
-      {:error, error} ->
-        {:halt, {:error, error}}
     end
   end
 
