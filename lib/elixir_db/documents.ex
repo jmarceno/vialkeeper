@@ -8,6 +8,44 @@ defmodule ElixirDB.Documents do
   alias ElixirDB.Runtime.DatabaseCatalog
   alias ElixirDB.Shadow.ReadRouter
 
+  @bulk_put_keys [
+    :type,
+    :id,
+    :body,
+    :if_revision,
+    :attachments,
+    "type",
+    "id",
+    "body",
+    "if_revision",
+    "attachments"
+  ]
+  @bulk_delete_keys [:type, :id, :if_revision, "type", "id", "if_revision"]
+  @bulk_resolve_keys [
+    :type,
+    :id,
+    :expected_live_revisions,
+    :chosen_parent_revision,
+    :body,
+    :attachments,
+    "type",
+    "id",
+    "expected_live_revisions",
+    "chosen_parent_revision",
+    "body",
+    "attachments"
+  ]
+  @bulk_resolve_delete_all_keys [
+    :type,
+    :id,
+    :expected_live_revisions,
+    :delete_all,
+    "type",
+    "id",
+    "expected_live_revisions",
+    "delete_all"
+  ]
+
   def get(uuid, request), do: get(uuid, request, [])
 
   def get(uuid, request, opts) when is_list(opts) do
@@ -446,36 +484,26 @@ defmodule ElixirDB.Documents do
   end
 
   defp normalize_bulk_operation(%{"type" => "delete", "id" => id} = operation) do
-    {:ok, %{operation: :delete, document_id: id, if_revision: bulk_if_revision(operation)}}
+    with :ok <- known(operation, @bulk_delete_keys) do
+      {:ok, %{operation: :delete, document_id: id, if_revision: bulk_if_revision(operation)}}
+    end
   end
 
   defp normalize_bulk_operation(%{"type" => "put", "id" => id, "body" => body} = operation) do
-    with {:ok, attachments} <- parse_attachments_field(operation) do
-      {:ok,
-       %{
-         operation: :put,
-         document_id: id,
-         if_revision: bulk_if_revision(operation),
-         body: body,
-         attachments: attachments
-       }}
+    with :ok <- known(operation, @bulk_put_keys) do
+      normalize_bulk_put(id, body, operation)
     end
   end
 
   defp normalize_bulk_operation(%{type: :delete, id: id} = operation) do
-    {:ok, %{operation: :delete, document_id: id, if_revision: bulk_if_revision(operation)}}
+    with :ok <- known(operation, @bulk_delete_keys) do
+      {:ok, %{operation: :delete, document_id: id, if_revision: bulk_if_revision(operation)}}
+    end
   end
 
   defp normalize_bulk_operation(%{type: :put, id: id, body: body} = operation) do
-    with {:ok, attachments} <- parse_attachments_field(operation) do
-      {:ok,
-       %{
-         operation: :put,
-         document_id: id,
-         if_revision: bulk_if_revision(operation),
-         body: body,
-         attachments: attachments
-       }}
+    with :ok <- known(operation, @bulk_put_keys) do
+      normalize_bulk_put(id, body, operation)
     end
   end
 
@@ -488,24 +516,30 @@ defmodule ElixirDB.Documents do
            "body" => body
          } = operation
        ) do
-    normalize_bulk_resolve(id, expected, chosen, body, operation)
+    with :ok <- known(operation, @bulk_resolve_keys) do
+      normalize_bulk_resolve(id, expected, chosen, body, operation)
+    end
   end
 
-  defp normalize_bulk_operation(%{
-         "type" => "resolve",
-         "id" => id,
-         "expected_live_revisions" => expected,
-         "delete_all" => true
-       }),
-       do:
-         {:ok,
-          %{
-            operation: :resolve,
-            document_id: id,
-            expected_live_revisions: expected,
-            delete_all: true,
-            attachments: %{}
-          }}
+  defp normalize_bulk_operation(
+         %{
+           "type" => "resolve",
+           "id" => id,
+           "expected_live_revisions" => expected,
+           "delete_all" => true
+         } = operation
+       ) do
+    with :ok <- known(operation, @bulk_resolve_delete_all_keys) do
+      {:ok,
+       %{
+         operation: :resolve,
+         document_id: id,
+         expected_live_revisions: expected,
+         delete_all: true,
+         attachments: %{}
+       }}
+    end
+  end
 
   defp normalize_bulk_operation(
          %{
@@ -516,24 +550,30 @@ defmodule ElixirDB.Documents do
            body: body
          } = operation
        ) do
-    normalize_bulk_resolve(id, expected, chosen, body, operation)
+    with :ok <- known(operation, @bulk_resolve_keys) do
+      normalize_bulk_resolve(id, expected, chosen, body, operation)
+    end
   end
 
-  defp normalize_bulk_operation(%{
-         type: :resolve,
-         id: id,
+  defp normalize_bulk_operation(
+         %{
+           type: :resolve,
+           id: id,
+           expected_live_revisions: expected,
+           delete_all: true
+         } = operation
+       ) do
+    with :ok <- known(operation, @bulk_resolve_delete_all_keys) do
+      {:ok,
+       %{
+         operation: :resolve,
+         document_id: id,
          expected_live_revisions: expected,
-         delete_all: true
-       }),
-       do:
-         {:ok,
-          %{
-            operation: :resolve,
-            document_id: id,
-            expected_live_revisions: expected,
-            delete_all: true,
-            attachments: %{}
-          }}
+         delete_all: true,
+         attachments: %{}
+       }}
+    end
+  end
 
   defp normalize_bulk_operation(operation),
     do:
@@ -552,6 +592,19 @@ defmodule ElixirDB.Documents do
          chosen_parent_revision: chosen,
          body: body,
          delete_all: false,
+         attachments: attachments
+       }}
+    end
+  end
+
+  defp normalize_bulk_put(id, body, operation) do
+    with {:ok, attachments} <- parse_attachments_field(operation) do
+      {:ok,
+       %{
+         operation: :put,
+         document_id: id,
+         if_revision: bulk_if_revision(operation),
+         body: body,
          attachments: attachments
        }}
     end
