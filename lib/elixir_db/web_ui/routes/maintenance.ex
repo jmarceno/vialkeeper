@@ -2,15 +2,13 @@ defmodule ElixirDB.WebUI.Routes.Maintenance do
   @moduledoc """
   Database maintenance fragments for integrity, compaction, and attachment GC.
 
-  Operations call existing facades and catalog commands. Domain errors and
+  Operations call existing facades. Domain errors and
   admission safety boundaries are preserved; the UI does not bypass them.
   """
 
-  alias ElixirDB.Attachments
   alias ElixirDB.Error
   alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Replication.Wire
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias ElixirDB.Maintenance
   alias ElixirDB.WebUI.{Components, HTML, Request, Response}
 
   @doc "Renders the maintenance console for a database."
@@ -22,35 +20,35 @@ defmodule ElixirDB.WebUI.Routes.Maintenance do
     end
   end
 
-  @doc "Runs an integrity check through DatabaseCatalog."
+  @doc "Runs an integrity check through the maintenance facade."
   @spec integrity_check(Plug.Conn.t()) :: Plug.Conn.t()
   def integrity_check(conn) do
     with {:ok, uuid} <- Request.require_uuid(conn.path_params["uuid"]),
-         {:ok, data} <- DatabaseCatalog.command(uuid, {:command, :integrity_check, %{}}) do
+         {:ok, data} <- Maintenance.integrity_check(uuid) do
       Response.fragment(conn, render_console(uuid, {:integrity, data}))
     else
       {:error, %Error{} = error} -> Response.error_fragment(conn, error)
     end
   end
 
-  @doc "Runs compact retention through DatabaseCatalog."
+  @doc "Runs compact retention through the maintenance facade."
   @spec compact(Plug.Conn.t()) :: Plug.Conn.t()
   def compact(conn) do
     with {:ok, uuid} <- Request.require_uuid(conn.path_params["uuid"]),
          {:ok, params, conn} <- Request.fetch_params(conn),
          {:ok, request} <- decode_optional_json(params, "request"),
-         {:ok, stats} <- DatabaseCatalog.command(uuid, {:command, :compact_retention, request}) do
-      Response.fragment(conn, render_console(uuid, {:compact, Wire.compact_stats(stats)}))
+         {:ok, stats} <- Maintenance.compact(uuid, request) do
+      Response.fragment(conn, render_console(uuid, {:compact, stats}))
     else
       {:error, %Error{} = error} -> Response.error_fragment(conn, error)
     end
   end
 
-  @doc "Runs attachment garbage collection through Attachments.gc/1."
+  @doc "Runs attachment garbage collection through the maintenance facade."
   @spec attachment_gc(Plug.Conn.t()) :: Plug.Conn.t()
   def attachment_gc(conn) do
     with {:ok, uuid} <- Request.require_uuid(conn.path_params["uuid"]),
-         {:ok, stats} <- Attachments.gc(uuid) do
+         {:ok, stats} <- Maintenance.attachment_gc(uuid) do
       Response.fragment(conn, render_console(uuid, {:attachment_gc, public_stats(stats)}))
     else
       {:error, %Error{} = error} -> Response.error_fragment(conn, error)
@@ -184,8 +182,6 @@ defmodule ElixirDB.WebUI.Routes.Maintenance do
       {key, value} -> {to_string(key), public_value(value)}
     end)
   end
-
-  defp public_stats(other), do: other
 
   defp public_value(map) when is_map(map) and not is_struct(map), do: public_stats(map)
   defp public_value(list) when is_list(list), do: Enum.map(list, &public_value/1)

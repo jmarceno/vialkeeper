@@ -3,7 +3,7 @@ defmodule ElixirDB.HTTP.Routes.Databases do
   use Plug.Router
   alias ElixirDB.HTTP.{Request, Response}
   alias ElixirDB.HTTP.Schemas
-  alias ElixirDB.Replication.Wire
+  alias ElixirDB.Maintenance
   alias ElixirDB.Runtime.DatabaseCatalog
   plug(:match)
   plug(:dispatch)
@@ -84,10 +84,7 @@ defmodule ElixirDB.HTTP.Routes.Databases do
   end
 
   post "/:uuid/integrity-check" do
-    case DatabaseCatalog.command(
-           Request.uuid(conn),
-           {:command, :integrity_check, %{}}
-         ) do
+    case Maintenance.integrity_check(Request.uuid(conn)) do
       {:ok, data} -> Response.ok(conn, data)
       {:error, error} -> Response.error(conn, error)
     end
@@ -100,7 +97,7 @@ defmodule ElixirDB.HTTP.Routes.Databases do
       fn body, conn ->
         Response.result(
           conn,
-          compact_result(Request.uuid(conn), body || %{})
+          Maintenance.compact(Request.uuid(conn), body || %{})
         )
       end
     )
@@ -137,12 +134,5 @@ defmodule ElixirDB.HTTP.Routes.Databases do
       conn,
       ElixirDB.Error.invalid_request("route not found", %{path: conn.request_path})
     )
-  end
-
-  defp compact_result(uuid, request) do
-    case DatabaseCatalog.command(uuid, {:command, :compact_retention, request}) do
-      {:ok, stats} -> {:ok, Wire.compact_stats(stats)}
-      error -> error
-    end
   end
 end
