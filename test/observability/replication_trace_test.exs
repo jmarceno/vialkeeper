@@ -277,6 +277,13 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
       message: "local batch duration was not exported"
     )
 
+    # TODO(flake): these `== []` assertions race the shared async metrics exporter. The local
+    # replication above must not set wire bytes/codec, but under full-suite load a
+    # *concurrent* test's remote run can publish those datapoints just before this snapshot,
+    # making them non-empty and failing spuriously (passes in isolation). The positive check
+    # above is `eventually`-guarded; this negative check is not. Rewrite to scope the metric
+    # assertion to this replication_id/uuid (e.g. by a distinguishing attribute), or emit
+    # within an isolated exporter registry, instead of asserting global emptiness.
     assert TestMetricExporter.datapoints("elixir_db.replication.wire.bytes") == []
     assert TestMetricExporter.datapoints("elixir_db.replication.wire.codec.duration") == []
 

@@ -2,6 +2,15 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
   @moduledoc """
   Proves trusted operation origins acquire the intended service class and do not
   silently fall back to foreground.
+
+  TODO(flake): this suite is load-sensitive under the full gate. It drives real
+  subscription/attachment/retention work against live services and asserts their
+  observed admission class with `Eventual.eventually` timeouts that are tuned for a
+  lightly-loaded run; under concurrent full-suite load a service can take longer to
+  surface its class and the eventual assertions time out, failing intermittently while
+  passing in isolation. When revisiting, tighten these to deterministic service barriers
+  (e.g. wait on `AdmissionClassProbe` state rather than wall-clock eventual timeouts) so
+  the class is sampled after the op actually acquires it, not on schedule.
   """
   use ExUnit.Case, async: false
 
