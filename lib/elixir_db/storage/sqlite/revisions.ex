@@ -136,50 +136,73 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
           {:ok, [Revision.t()]} | {:error, ElixirDB.Error.t()}
   def load_ancestors(conn, doc_key, revision_id)
       when is_integer(doc_key) and is_binary(revision_id) do
-    walk_ancestors(conn, doc_key, revision_id, %{}, [])
+    with {:ok, revisions_by_id} <- load_revisions_by_id(conn, doc_key) do
+      case Map.fetch(revisions_by_id, revision_id) do
+        {:ok, %Revision{parent_revision: parent}} ->
+          walk_ancestors_map(revisions_by_id, parent, %{}, [])
+
+        :error ->
+          {:error,
+           ElixirDB.Error.revision_not_found("revision not found", %{revision: revision_id})}
+      end
+    end
   end
 
-  @spec walk_ancestors(
-          Connection.handle(),
-          integer(),
-          binary(),
-          %{optional(binary()) => true},
-          [Revision.t()]
-        ) :: {:ok, [Revision.t()]} | {:error, ElixirDB.Error.t()}
-  defp walk_ancestors(conn, doc_key, revision_id, seen, acc) do
+  defp load_revisions_by_id(conn, doc_key) do
+    case Connection.query(
+           conn,
+           """
+           SELECT r.revision_id, r.generation, r.parent_revision, r.history_id,
+                  r.digest, r.deleted, r.body_json, r.body_term, r.insertion_sequence,
+                  a.attachment_name, a.blob_digest, a.logical_size, a.content_type
+           FROM revisions AS r
+           LEFT JOIN revision_attachments AS a
+             ON a.doc_key = r.doc_key AND a.revision_id = r.revision_id
+           WHERE r.doc_key = ?
+           ORDER BY r.revision_id, a.attachment_name
+           """,
+           [doc_key]
+         ) do
+      {:ok, rows} ->
+        rows
+        |> Enum.chunk_by(&Enum.take(&1, 9))
+        |> Enum.reduce_while({:ok, %{}}, &accumulate_revision_row/2)
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp accumulate_revision_row(grouped, {:ok, acc}) do
+    case manifest_from_rows(grouped) do
+      {:ok, attachments} ->
+        revision = from_row(Enum.take(hd(grouped), 9), attachments)
+        {:cont, {:ok, Map.put(acc, revision.revision_id, revision)}}
+
+      {:error, error} ->
+        {:halt, {:error, error}}
+    end
+  end
+
+  defp walk_ancestors_map(_revisions_by_id, nil, _seen, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp walk_ancestors_map(revisions_by_id, revision_id, seen, acc) do
     if Map.has_key?(seen, revision_id) do
       {:error, ElixirDB.Error.integrity_violation("revision ancestry cycle detected")}
     else
-      continue_ancestors(conn, doc_key, revision_id, seen, acc)
-    end
-  end
+      case Map.fetch(revisions_by_id, revision_id) do
+        {:ok, revision} ->
+          walk_ancestors_map(
+            revisions_by_id,
+            revision.parent_revision,
+            Map.put(seen, revision_id, true),
+            [revision | acc]
+          )
 
-  defp continue_ancestors(conn, doc_key, revision_id, seen, acc) do
-    case find(conn, doc_key, revision_id) do
-      {:ok, revision} -> append_parent_ancestor(conn, doc_key, revision, seen, acc)
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
-
-  defp append_parent_ancestor(conn, doc_key, revision, seen, acc) do
-    case revision.parent_revision do
-      nil ->
-        {:ok, Enum.reverse(acc)}
-
-      parent when is_binary(parent) ->
-        case find(conn, doc_key, parent) do
-          {:ok, parent_revision} ->
-            walk_ancestors(
-              conn,
-              doc_key,
-              parent,
-              Map.put(seen, revision.revision_id, true),
-              [parent_revision | acc]
-            )
-
-          {:error, reason} ->
-            {:error, normalize_error(reason)}
-        end
+        :error ->
+          {:error,
+           ElixirDB.Error.revision_not_found("revision not found", %{revision: revision_id})}
+      end
     end
   end
 

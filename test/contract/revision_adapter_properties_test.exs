@@ -216,6 +216,46 @@ for {name, adapter_module} <- [
       end
     end
 
+    test "list_ancestors and get_revision_chains agree on depth-8 chain" do
+      {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-depth8")
+      path = AdapterCase.adapter_path(@adapter, bundle_path)
+      {:ok, adapter} = @adapter.create(path, %{})
+
+      try do
+        document_id = "depth-8"
+        {leaf, revisions} = build_linear_chain(adapter, document_id, 8)
+        context = @adapter.to_context(adapter)
+
+        {:ok, %{chains: [chain]}} =
+          @adapter.get_revision_chains(adapter, %{
+            documents: [%{document_id: document_id, leaf_revisions: [leaf]}]
+          })
+
+        expected_ids = revisions
+
+        assert Enum.map(chain.revisions, & &1.revision_id) == expected_ids
+        assert chain.truncated == false
+        assert chain_via_find(context, document_id, leaf) == expected_ids
+
+        {:ok, %{chains: [complete_truncated_request]}} =
+          @adapter.get_revision_chains(adapter, %{
+            documents: [
+              %{document_id: document_id, leaf_revisions: [leaf], truncated: true}
+            ]
+          })
+
+        assert complete_truncated_request.truncated == false
+        assert Enum.map(complete_truncated_request.revisions, & &1.revision_id) == expected_ids
+
+        {:ok, ancestors} = Facts.list_ancestors(context, document_id, leaf)
+
+        assert Enum.map(Enum.reverse(ancestors), & &1.revision_id) ++ [leaf] == expected_ids
+      after
+        _ = @adapter.close(adapter)
+        ElixirDB.TempDatabase.cleanup(bundle_path)
+      end
+    end
+
     defp sibling_history(mode) do
       StreamData.bind(ModelGenerators.document_id(), fn document_id ->
         StreamData.bind(
@@ -649,6 +689,38 @@ for {name, adapter_module} <- [
 
     defp wire(document_id, revision_id, parent, deleted, body) do
       AdapterCase.wire_revision(document_id, revision_id, parent, deleted, body)
+    end
+
+    defp build_linear_chain(adapter, document_id, depth) when is_integer(depth) and depth > 0 do
+      {revisions, leaf} =
+        Enum.reduce(1..depth, {[], nil}, fn n, {revs, parent} ->
+          body = %{"n" => n}
+
+          mutation =
+            if parent do
+              %{operation: :put, document_id: document_id, if_revision: parent, body: body}
+            else
+              %{operation: :put, document_id: document_id, body: body}
+            end
+
+          {:ok, %{revision: revision}} = @adapter.apply_local_mutation(adapter, mutation)
+          {[revision | revs], revision}
+        end)
+
+      {leaf, Enum.reverse(revisions)}
+    end
+
+    defp chain_via_find(context, document_id, leaf_id) do
+      context
+      |> chain_via_find_walk(document_id, leaf_id, [])
+      |> Enum.map(& &1.revision_id)
+    end
+
+    defp chain_via_find_walk(_context, _document_id, nil, acc), do: acc
+
+    defp chain_via_find_walk(context, document_id, revision_id, acc) do
+      {:ok, revision} = Facts.find_revision(context, document_id, revision_id)
+      chain_via_find_walk(context, document_id, revision.parent_revision, [revision | acc])
     end
 
     defp import_order_permutations do
