@@ -24,6 +24,9 @@ defmodule ElixirDB.Storage.SQLite.Connection do
     Sqlite3.close(handle)
   end
 
+  @spec interrupt(handle()) :: :ok | {:error, term()}
+  def interrupt(handle), do: Sqlite3.cancel(handle)
+
   @spec execute(handle(), iodata(), list()) :: :ok | {:error, term()}
   def execute(conn, sql, params \\ []) do
     case run(conn, sql, params, false) do

@@ -45,4 +45,18 @@ defmodule ElixirDB.Storage.SQLite.Lifecycle do
 
   @impl true
   def close_reader(%BackendContext{} = context), do: close(context)
+
+  @impl true
+  def interrupt_reader(%BackendContext{} = context) do
+    case Context.unwrap(context) do
+      {:ok, adapter} ->
+        case Adapter.interrupt_reader(adapter) do
+          :ok -> :ok
+          {:error, _reason} -> :unsupported
+        end
+
+      {:error, _reason} ->
+        :unsupported
+    end
+  end
 end

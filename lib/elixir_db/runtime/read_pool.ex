@@ -57,7 +57,8 @@ defmodule ElixirDB.Runtime.ReadPool do
       :deadline_ms,
       :probe_op,
       :trace_context,
-      :cancelled?
+      :cancelled?,
+      :timer_ref
     ]
     defstruct @enforce_keys
 
@@ -70,7 +71,8 @@ defmodule ElixirDB.Runtime.ReadPool do
             deadline_ms: Deadline.t(),
             probe_op: term() | nil,
             trace_context: term(),
-            cancelled?: boolean()
+            cancelled?: boolean(),
+            timer_ref: reference() | nil
           }
   end
 
@@ -98,9 +100,10 @@ defmodule ElixirDB.Runtime.ReadPool do
     do_execute(uuid, class, command, deadline_ms)
   end
 
-  @spec register(binary(), pid()) :: :ok | {:error, Error.t()}
-  def register(uuid, worker_pid) when is_binary(uuid) and is_pid(worker_pid) do
-    call(uuid, {:register, worker_pid}, 5_000)
+  @spec register(binary(), pid(), (-> :ok | :unsupported)) :: :ok | {:error, Error.t()}
+  def register(uuid, worker_pid, interrupt_fun)
+      when is_binary(uuid) and is_pid(worker_pid) and is_function(interrupt_fun, 0) do
+    call(uuid, {:register, worker_pid, interrupt_fun}, 5_000)
   end
 
   @spec complete(binary(), pid(), Job.t(), term()) :: :ok
@@ -185,6 +188,7 @@ defmodule ElixirDB.Runtime.ReadPool do
        waiters: :queue.new(),
        waiting_by_ref: %{},
        worker_monitors: %{},
+       interrupts: %{},
        closing?: false,
        close_from: nil,
        quiesce_tokens: %{},
@@ -193,8 +197,9 @@ defmodule ElixirDB.Runtime.ReadPool do
   end
 
   @impl true
-  def handle_call({:register, worker_pid}, _from, state) when is_pid(worker_pid) do
-    {:reply, :ok, register_worker(state, worker_pid)}
+  def handle_call({:register, worker_pid, interrupt_fun}, _from, state)
+      when is_pid(worker_pid) and is_function(interrupt_fun, 0) do
+    {:reply, :ok, register_worker(state, worker_pid, interrupt_fun)}
   end
 
   def handle_call(:begin_close, from, state) do
@@ -292,6 +297,18 @@ defmodule ElixirDB.Runtime.ReadPool do
   @impl true
   def handle_cast({:complete, worker_pid, %Job{} = job, result}, state) do
     {:noreply, complete_job(state, worker_pid, job, result)}
+  end
+
+  @impl true
+  def handle_info({:interrupt_expired, worker_pid, request_ref}, state) do
+    case Map.get(state.busy, worker_pid) do
+      %Job{request_ref: ^request_ref} ->
+        interrupt_worker(state, worker_pid)
+
+      _ ->
+        state
+    end
+    |> then(&{:noreply, &1})
   end
 
   @impl true
@@ -415,6 +432,7 @@ defmodule ElixirDB.Runtime.ReadPool do
 
   defp grant(state, worker_pid, %Waiter{} = waiter) do
     Process.demonitor(waiter.monitor_ref, [:flush])
+    timer_ref = schedule_interrupt(worker_pid, waiter)
 
     job = %Job{
       request_ref: waiter.request_ref,
@@ -425,7 +443,8 @@ defmodule ElixirDB.Runtime.ReadPool do
       deadline_ms: waiter.deadline_ms,
       probe_op: waiter.probe_op,
       trace_context: waiter.trace_context,
-      cancelled?: false
+      cancelled?: false,
+      timer_ref: timer_ref
     }
 
     record_wait(state.uuid, waiter, :granted, queued_count(state))
@@ -434,6 +453,16 @@ defmodule ElixirDB.Runtime.ReadPool do
     GenServer.cast(worker_pid, {:run, job})
 
     %{state | busy: Map.put(state.busy, worker_pid, job)}
+  end
+
+  defp schedule_interrupt(_worker_pid, %Waiter{deadline_ms: :infinity}), do: nil
+
+  defp schedule_interrupt(worker_pid, %Waiter{} = waiter) do
+    Process.send_after(
+      self(),
+      {:interrupt_expired, worker_pid, waiter.request_ref},
+      Deadline.remaining(waiter.deadline_ms)
+    )
   end
 
   defp enqueue(state, %Waiter{} = waiter) do
@@ -452,6 +481,7 @@ defmodule ElixirDB.Runtime.ReadPool do
         recycle_worker(state, worker_pid)
 
       {%Job{} = active, busy} ->
+        cancel_timer(active.timer_ref)
         DatabaseInstrumentation.read_pool_active(state.uuid, -1)
         probe_release(active.probe_op)
 
@@ -514,12 +544,13 @@ defmodule ElixirDB.Runtime.ReadPool do
     end
   end
 
-  defp register_worker(state, worker_pid) do
+  defp register_worker(state, worker_pid, interrupt_fun) do
     monitor_ref = Process.monitor(worker_pid)
 
     state
     |> Map.update!(:idle, &:queue.in(worker_pid, &1))
     |> Map.update!(:worker_monitors, &Map.put(&1, monitor_ref, worker_pid))
+    |> Map.update!(:interrupts, &Map.put(&1, worker_pid, interrupt_fun))
     |> mark_registry(:enabled)
     |> grant_loop()
   end
@@ -532,11 +563,13 @@ defmodule ElixirDB.Runtime.ReadPool do
 
     case Map.pop(state.busy, pid) do
       {nil, busy} ->
-        %{state | busy: busy}
+        %{state | busy: busy, interrupts: Map.delete(state.interrupts, pid)}
         |> maybe_disable()
         |> maybe_finish_drain()
 
       {%Job{} = job, busy} ->
+        cancel_timer(job.timer_ref)
+
         unless job.cancelled? do
           GenServer.reply(
             job.from,
@@ -547,7 +580,7 @@ defmodule ElixirDB.Runtime.ReadPool do
         DatabaseInstrumentation.read_pool_active(state.uuid, -1)
         probe_release(job.probe_op)
 
-        %{state | busy: busy}
+        %{state | busy: busy, interrupts: Map.delete(state.interrupts, pid)}
         |> maybe_disable()
         |> maybe_finish_drain()
     end
@@ -578,14 +611,13 @@ defmodule ElixirDB.Runtime.ReadPool do
   end
 
   defp mark_busy_cancelled(state, request_ref) do
-    busy =
-      Enum.reduce(state.busy, %{}, fn {pid, %Job{} = job}, acc ->
-        if job.request_ref == request_ref,
-          do: Map.put(acc, pid, %{job | cancelled?: true}),
-          else: Map.put(acc, pid, job)
-      end)
-
-    %{state | busy: busy}
+    Enum.reduce(state.busy, state, fn {pid, %Job{} = job}, acc ->
+      if job.request_ref == request_ref do
+        interrupt_worker(%{acc | busy: Map.put(acc.busy, pid, %{job | cancelled?: true})}, pid)
+      else
+        acc
+      end
+    end)
   end
 
   defp fail_waiters(state) do
@@ -727,6 +759,21 @@ defmodule ElixirDB.Runtime.ReadPool do
   defp busy_ref?(state, request_ref) do
     Enum.any?(state.busy, fn {_pid, %Job{request_ref: ref}} -> ref == request_ref end)
   end
+
+  defp interrupt_worker(state, worker_pid) do
+    case Map.get(state.interrupts, worker_pid) do
+      interrupt_fun when is_function(interrupt_fun, 0) ->
+        _ = interrupt_fun.()
+
+      _ ->
+        :ok
+    end
+
+    state
+  end
+
+  defp cancel_timer(nil), do: :ok
+  defp cancel_timer(timer_ref), do: Process.cancel_timer(timer_ref)
 
   defp unwrap_authority({:command_context, %CommandContext{} = authority, command}),
     do: {authority, command}

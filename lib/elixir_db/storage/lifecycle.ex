@@ -34,4 +34,10 @@ defmodule ElixirDB.Storage.Lifecycle do
   def close_reader(%BackendContext{} = context) do
     Errors.wrap(Access.port(context, :lifecycle).close_reader(context))
   end
+
+  @doc "Interrupts a statement running on a reader, when supported by the backend."
+  @spec interrupt_reader(BackendContext.t()) :: :ok | :unsupported
+  def interrupt_reader(%BackendContext{} = context) do
+    Access.port(context, :lifecycle).interrupt_reader(context)
+  end
 end

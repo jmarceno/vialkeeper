@@ -25,6 +25,7 @@ defmodule ElixirDB.StorageAdapter.ReadPoolConnectionTest do
              })
 
     assert {:ok, reader_ctx} = Lifecycle.open_reader(Adapter.to_context(writer))
+    assert :ok = Lifecycle.interrupt_reader(reader_ctx)
     assert {:ok, reader} = Context.unwrap(reader_ctx)
     assert reader.reader?
     assert {:ok, [[1]]} = Connection.pragma(reader.conn, "query_only")

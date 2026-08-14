@@ -2,8 +2,10 @@ defmodule ElixirDB.Runtime.ReadWorker do
   @moduledoc """
   Owns one readonly snapshot connection and runs classified reads on it.
 
-  The connection never leaves this process. Snapshot bodies are bounded by the
-  caller's existing query/wait deadline.
+  The connection never leaves this process. Snapshot bodies are interrupted by
+  the pool when their deadline expires or their request is cancelled. The
+  interrupted job returns the retryable deadline error and its snapshot is
+  rolled back before the worker serves the next job.
   """
   use GenServer
 
@@ -48,7 +50,8 @@ defmodule ElixirDB.Runtime.ReadWorker do
 
   @impl true
   def init({uuid, index, %BackendContext{} = context}) do
-    :ok = ReadPool.register(uuid, self())
+    interrupt_fun = fn -> Lifecycle.interrupt_reader(context) end
+    :ok = ReadPool.register(uuid, self(), interrupt_fun)
     {:ok, %{uuid: uuid, index: index, context: context}}
   end
 
@@ -74,7 +77,7 @@ defmodule ElixirDB.Runtime.ReadWorker do
 
   def handle_cast({:run, job}, state) do
     result = execute_job(state, job)
-    ReadPool.complete(state.uuid, self(), job, result)
+    ReadPool.complete(state.uuid, self(), job, enforce_deadline(result, job))
     {:noreply, state}
   end
 
@@ -125,6 +128,10 @@ defmodule ElixirDB.Runtime.ReadWorker do
         run_read(state, authority, command, probe_op)
       end)
     end
+  end
+
+  defp enforce_deadline(result, %{deadline_ms: deadline_ms}) do
+    if Deadline.exhausted?(deadline_ms), do: {:error, deadline_error()}, else: result
   end
 
   defp run_read(state, authority, command, probe_op) do
