@@ -23,7 +23,6 @@ defmodule ElixirDB.Storage.Ports.IndexCandidates do
                 [candidate()]
                 | %{candidates: [candidate()], examined: non_neg_integer()}
                 | %{count: non_neg_integer()}
-                | [binary()]
               )
   @callback full_text_candidates(BackendContext.t(), map()) :: result([candidate()])
   @callback ready_definitions(BackendContext.t()) :: result([term()])

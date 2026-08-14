@@ -134,14 +134,9 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
   @impl true
   def range_scan_candidates(%BackendContext{} = context, request) when is_map(request) do
     SQLite.trace_sqlite_phase(:query_candidates, candidate_attrs(request), fn ->
-      with {:ok, adapter} <- Context.unwrap(context),
-           {:ok, indexes} <- Adapter.list_indexes(adapter),
-           {:ok, selected} <- resolve_index(indexes, request),
-           scan when is_map(scan) <- MapAccess.get(request, :scan) do
-        structured_candidates(adapter, selected, scan, request)
-      else
-        nil ->
-          {:error, ElixirDB.Error.invalid_request("range scan requires a scan descriptor")}
+      case Context.unwrap(context) do
+        {:ok, adapter} ->
+          range_scan_on_adapter(adapter, request)
 
         {:error, reason} ->
           {:error, Errors.normalize(reason)}
@@ -175,6 +170,28 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
     end
   end
 
+  defp range_scan_on_adapter(adapter, request) do
+    if MapAccess.get(request, :union_count, false) do
+      structured_union_candidate_count(adapter, request)
+    else
+      range_scan_structured_index(adapter, request)
+    end
+  end
+
+  defp range_scan_structured_index(adapter, request) do
+    with {:ok, indexes} <- Adapter.list_indexes(adapter),
+         {:ok, selected} <- resolve_index(indexes, request),
+         scan when is_map(scan) <- MapAccess.get(request, :scan) do
+      structured_candidates(adapter, selected, scan, request)
+    else
+      nil ->
+        {:error, ElixirDB.Error.invalid_request("range scan requires a scan descriptor")}
+
+      {:error, reason} ->
+        {:error, Errors.normalize(reason)}
+    end
+  end
+
   defp structured_candidates(adapter, selected, scan, request) do
     plan = MapAccess.get(request, :plan)
     query_request = MapAccess.get(request, :request) || %{}
@@ -184,9 +201,6 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
     cond do
       MapAccess.get(request, :count_only, false) ->
         structured_candidate_count(adapter, selected, scan)
-
-      MapAccess.get(request, :ids_only, false) ->
-        structured_candidate_ids(adapter, selected, scan)
 
       pageable_structured_scan?(plan, query_request, limit) ->
         structured_candidate_page(adapter, selected, scan, limit, deadline)
@@ -269,15 +283,59 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
     end
   end
 
-  defp structured_candidate_ids(adapter, selected, scan) do
-    with {:ok, {where, params}} <- structured_candidate_query(selected, scan),
-         {:ok, rows} <-
+  defp structured_union_candidate_count(adapter, request) do
+    case compile_union_count_clauses(MapAccess.get(request, :arms) || []) do
+      {:ok, []} ->
+        {:ok, %{count: 0}}
+
+      {:ok, clauses} ->
+        query_union_candidate_count(adapter, clauses)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp compile_union_count_clauses(arms) do
+    Enum.reduce_while(arms, {:ok, []}, fn arm, {:ok, acc} ->
+      case compile_union_arm_clause(arm) do
+        {:ok, clause} -> {:cont, {:ok, [clause | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> reverse_union_count_clauses()
+  end
+
+  defp reverse_union_count_clauses({:ok, clauses}), do: {:ok, Enum.reverse(clauses)}
+  defp reverse_union_count_clauses(error), do: error
+
+  defp compile_union_arm_clause(arm) when is_map(arm) do
+    case {MapAccess.get(arm, :index), MapAccess.get(arm, :scan)} do
+      {selected, scan} when is_map(selected) and is_map(scan) ->
+        structured_candidate_query(selected, scan)
+
+      {selected, _scan} when not is_map(selected) ->
+        {:error, ElixirDB.Error.index_not_found("index not found")}
+
+      _ ->
+        {:error, ElixirDB.Error.invalid_request("range scan requires a scan descriptor")}
+    end
+  end
+
+  defp compile_union_arm_clause(_arm),
+    do: {:error, ElixirDB.Error.invalid_request("range scan requires a scan descriptor")}
+
+  defp query_union_candidate_count(adapter, clauses) do
+    where = Enum.map_join(clauses, " OR ", fn {fragment, _params} -> "(#{fragment})" end)
+    params = Enum.flat_map(clauses, fn {_fragment, arm_params} -> arm_params end)
+
+    with {:ok, [[count]]} <-
            Connection.query(
              adapter.conn,
-             "SELECT document_id FROM documents WHERE #{where}",
+             "SELECT count(*) FROM documents WHERE #{where}",
              params
            ) do
-      {:ok, Enum.map(rows, fn [id] -> id end)}
+      {:ok, %{count: count}}
     end
   end
 

@@ -310,27 +310,15 @@ defmodule ElixirDB.Storage.Services.Query do
          _count,
          deadline
        ) do
-    Enum.reduce_while(plan.scans, {:ok, MapSet.new()}, fn scan, {:ok, ids} ->
-      selected = selected_index(indexes, scan["index_id"])
-
-      with :ok <- Executor.check_deadline(deadline),
-           {:ok, arm_ids} <-
-             Access.port(context, :index_candidates).range_scan_candidates(context, %{
-               index_id: scan["index_id"],
-               index: selected,
-               scan: scan,
-               ids_only: true,
-               deadline: deadline
-             }),
-           :ok <- Executor.check_deadline(deadline) do
-        {:cont, {:ok, MapSet.union(ids, MapSet.new(arm_ids))}}
-      else
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, ids} -> {:ok, MapSet.size(ids)}
-      error -> error
+    with :ok <- Executor.check_deadline(deadline),
+         {:ok, %{count: count}} <-
+           Access.port(context, :index_candidates).range_scan_candidates(context, %{
+             union_count: true,
+             arms: union_count_arms(plan, indexes),
+             plan_kind: :union,
+             deadline: deadline
+           }) do
+      {:ok, count}
     end
   end
 
@@ -369,6 +357,12 @@ defmodule ElixirDB.Storage.Services.Query do
   end
 
   defp attach_full_text_index(request, _plan, _indexes), do: request
+
+  defp union_count_arms(%Plan{scans: scans}, indexes) do
+    Enum.map(scans, fn scan ->
+      %{index: selected_index(indexes, scan["index_id"]), scan: scan}
+    end)
+  end
 
   defp selected_index(indexes, %Plan{selected_indexes: [binding | _]}),
     do: selected_index(indexes, binding.index_id)

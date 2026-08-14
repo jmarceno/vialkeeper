@@ -177,21 +177,25 @@ defmodule ElixirDB.Query.QueryTest do
                "fields" => [%{"path" => "/priority", "type" => "number", "direction" => "asc"}]
              })
 
+    selector = %{
+      "$or" => [
+        %{"/status" => "open"},
+        %{"/priority" => %{"$gte" => 5}}
+      ]
+    }
+
     assert {:ok,
             %{plan_kind: :union, results: results, index_bindings: selected, examined: examined}} =
-             Adapter.execute_query(adapter, %{
-               selector: %{
-                 "$or" => [
-                   %{"/status" => "open"},
-                   %{"/priority" => %{"$gte" => 5}}
-                 ]
-               },
-               limit: 10
-             })
+             Adapter.execute_query(adapter, %{selector: selector, limit: 10})
 
     assert Enum.map(results, & &1.id) |> Enum.sort() == ["both", "high", "open"]
     assert [_, _] = selected
     assert examined == 3
+
+    assert {:ok, %{plan_kind: :union, candidate_count: 3} = explanation} =
+             Adapter.explain_query(adapter, %{selector: selector})
+
+    refute inspect(explanation) =~ "SELECT"
   end
 
   test "indexed pagination preserves the next-page signal", %{adapter: adapter} do
