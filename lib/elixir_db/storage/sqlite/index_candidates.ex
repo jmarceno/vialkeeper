@@ -218,15 +218,19 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
     end
   end
 
-  defp enforce_candidate_threshold(rows, threshold) when length(rows) > threshold do
-    {:error,
-     ElixirDB.Error.index_required("query requires a compatible index", %{
-       candidate_count: length(rows),
-       threshold: threshold
-     })}
-  end
+  defp enforce_candidate_threshold(rows, threshold) do
+    count = length(rows)
 
-  defp enforce_candidate_threshold(_rows, _threshold), do: :ok
+    if count > threshold do
+      {:error,
+       ElixirDB.Error.index_required("query requires a compatible index", %{
+         candidate_count: count,
+         threshold: threshold
+       })}
+    else
+      :ok
+    end
+  end
 
   defp pageable_structured_scan?(%Plan{} = plan, request, limit)
        when is_integer(limit) and limit >= 0 do

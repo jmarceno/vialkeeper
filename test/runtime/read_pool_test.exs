@@ -164,8 +164,13 @@ defmodule ElixirDB.Runtime.ReadPoolTest do
     uuid: uuid
   } do
     assert {:ok, _} = ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+    assert ReadPool.enabled?(uuid)
+
+    assert :ok = ReadPool.cancel_close(uuid)
+    assert ReadPool.enabled?(uuid)
 
     assert :ok = ReadPool.begin_close(uuid)
+    refute ReadPool.enabled?(uuid)
     assert {:ok, %{closing?: true}} = ReadPool.stats(uuid)
 
     assert {:error, %ElixirDB.Error{code: :database_closed}} =
@@ -177,7 +182,16 @@ defmodule ElixirDB.Runtime.ReadPoolTest do
              )
 
     assert :ok = ReadPool.cancel_close(uuid)
+    assert ReadPool.enabled?(uuid)
     assert {:ok, %{closing?: false}} = ReadPool.stats(uuid)
+
+    assert {:ok, %{body: %{"n" => 1}}} =
+             ReadPool.execute(
+               uuid,
+               :foreground,
+               {:command, :get_document, %{document_id: "doc"}},
+               Deadline.from_timeout(5_000)
+             )
 
     assert {:ok, %{body: %{"n" => 1}}} = ElixirDB.Documents.get(uuid, %{id: "doc"})
   end

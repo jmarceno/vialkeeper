@@ -224,6 +224,10 @@ defmodule ElixirDB.Runtime.ReadPool do
     end
   end
 
+  def handle_call(:cancel_close, _from, %{closing?: false, close_from: nil} = state) do
+    {:reply, :ok, state}
+  end
+
   def handle_call(:cancel_close, _from, state) do
     state =
       state

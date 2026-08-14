@@ -1300,7 +1300,7 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
     end
   catch
     kind, reason ->
-      _ = maybe_cancel_admission_close(uuid)
+      _ = rollback_aborted_close(uuid)
 
       {:error,
        ElixirDB.Error.internal_error("database close failed", %{
@@ -1309,7 +1309,9 @@ defmodule ElixirDB.Runtime.DatabaseCatalog do
        })}
   end
 
-  defp maybe_cancel_admission_close(uuid) do
+  defp rollback_aborted_close(uuid) do
+    _ = ReadPool.cancel_close(uuid)
+
     case DatabaseAdmission.closing?(uuid) do
       {:ok, true} -> DatabaseAdmission.cancel_close(uuid)
       _ -> :ok

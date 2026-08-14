@@ -136,10 +136,10 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
           {:ok, [Revision.t()]} | {:error, ElixirDB.Error.t()}
   def load_ancestors(conn, doc_key, revision_id)
       when is_integer(doc_key) and is_binary(revision_id) do
-    with {:ok, revisions_by_id} <- load_revisions_by_id(conn, doc_key) do
-      case Map.fetch(revisions_by_id, revision_id) do
-        {:ok, %Revision{parent_revision: parent}} ->
-          walk_ancestors_map(revisions_by_id, parent, %{}, [])
+    with {:ok, rows_by_id} <- load_revision_rows_by_id(conn, doc_key) do
+      case Map.fetch(rows_by_id, revision_id) do
+        {:ok, grouped} ->
+          walk_ancestor_rows(rows_by_id, row_parent(hd(grouped)), %{}, [])
 
         :error ->
           {:error,
@@ -148,7 +148,7 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
     end
   end
 
-  defp load_revisions_by_id(conn, doc_key) do
+  defp load_revision_rows_by_id(conn, doc_key) do
     case Connection.query(
            conn,
            """
@@ -164,45 +164,56 @@ defmodule ElixirDB.Storage.SQLite.Revisions do
            [doc_key]
          ) do
       {:ok, rows} ->
-        rows
-        |> Enum.chunk_by(&Enum.take(&1, 9))
-        |> Enum.reduce_while({:ok, %{}}, &accumulate_revision_row/2)
+        {:ok,
+         rows
+         |> Enum.chunk_by(&hd/1)
+         |> Map.new(fn grouped -> {hd(hd(grouped)), grouped} end)}
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
     end
   end
 
-  defp accumulate_revision_row(grouped, {:ok, acc}) do
-    case manifest_from_rows(grouped) do
-      {:ok, attachments} ->
-        revision = from_row(Enum.take(hd(grouped), 9), attachments)
-        {:cont, {:ok, Map.put(acc, revision.revision_id, revision)}}
+  defp walk_ancestor_rows(_rows_by_id, nil, _seen, acc), do: {:ok, Enum.reverse(acc)}
 
-      {:error, error} ->
-        {:halt, {:error, error}}
-    end
-  end
-
-  defp walk_ancestors_map(_revisions_by_id, nil, _seen, acc), do: {:ok, Enum.reverse(acc)}
-
-  defp walk_ancestors_map(revisions_by_id, revision_id, seen, acc) do
+  defp walk_ancestor_rows(rows_by_id, revision_id, seen, acc) do
     if Map.has_key?(seen, revision_id) do
       {:error, ElixirDB.Error.integrity_violation("revision ancestry cycle detected")}
     else
-      case Map.fetch(revisions_by_id, revision_id) do
-        {:ok, revision} ->
-          walk_ancestors_map(
-            revisions_by_id,
-            revision.parent_revision,
-            Map.put(seen, revision_id, true),
-            [revision | acc]
-          )
+      continue_ancestor_rows(rows_by_id, revision_id, seen, acc)
+    end
+  end
 
-        :error ->
-          {:error,
-           ElixirDB.Error.revision_not_found("revision not found", %{revision: revision_id})}
-      end
+  defp continue_ancestor_rows(rows_by_id, revision_id, seen, acc) do
+    case Map.fetch(rows_by_id, revision_id) do
+      {:ok, grouped} ->
+        append_ancestor_row(rows_by_id, grouped, revision_id, seen, acc)
+
+      :error ->
+        {:error, ElixirDB.Error.revision_not_found("revision not found", %{revision: revision_id})}
+    end
+  end
+
+  defp append_ancestor_row(rows_by_id, grouped, revision_id, seen, acc) do
+    with {:ok, revision} <- revision_from_grouped_rows(grouped) do
+      walk_ancestor_rows(
+        rows_by_id,
+        revision.parent_revision,
+        Map.put(seen, revision_id, true),
+        [revision | acc]
+      )
+    end
+  end
+
+  defp row_parent([_id, _generation, parent | _]), do: parent
+
+  defp revision_from_grouped_rows(grouped) do
+    case manifest_from_rows(grouped) do
+      {:ok, attachments} ->
+        {:ok, from_row(Enum.take(hd(grouped), 9), attachments)}
+
+      {:error, _} = error ->
+        error
     end
   end
 

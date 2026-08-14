@@ -9,7 +9,14 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
 
   alias ElixirDB.Eventual
   alias ElixirDB.Replication.JobManager
-  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseAdmission, DatabaseCatalog, ReadPool}
+
+  alias ElixirDB.Runtime.{
+    AttachmentCoordinator,
+    DatabaseAdmission,
+    DatabaseCatalog,
+    Deadline,
+    ReadPool
+  }
 
   setup do
     prefix = "catalog-close-admission-#{System.unique_integer([:positive])}"
@@ -158,6 +165,15 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
 
     assert {:ok, false} = DatabaseAdmission.closing?(uuid)
     assert {:ok, %{closing?: false}} = ReadPool.stats(uuid)
+    assert ReadPool.enabled?(uuid)
+
+    assert {:ok, %{body: %{"n" => 1}}} =
+             ReadPool.execute(
+               uuid,
+               :foreground,
+               {:command, :get_document, %{document_id: "doc"}},
+               Deadline.from_timeout(5_000)
+             )
 
     assert {:ok, %{body: %{"n" => 1}}} = ElixirDB.Documents.get(uuid, %{id: "doc"})
   end
