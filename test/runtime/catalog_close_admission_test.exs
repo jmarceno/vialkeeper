@@ -9,7 +9,7 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
 
   alias ElixirDB.Eventual
   alias ElixirDB.Replication.JobManager
-  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseAdmission, DatabaseCatalog}
+  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseAdmission, DatabaseCatalog, ReadPool}
 
   setup do
     prefix = "catalog-close-admission-#{System.unique_integer([:positive])}"
@@ -127,5 +127,38 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
 
     assert :still_open =
              DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :still_open end)
+  end
+
+  test "aborted admission drain leaves read pool open for classified reads", %{a_uuid: uuid} do
+    assert {:ok, _} = ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+
+    previous_shutdown_timeout = Application.get_env(:elixir_db, :shutdown_timeout, 30_000)
+    Application.put_env(:elixir_db, :shutdown_timeout, 200)
+
+    on_exit(fn ->
+      Application.put_env(:elixir_db, :shutdown_timeout, previous_shutdown_timeout)
+    end)
+
+    parent = self()
+
+    blocker =
+      Task.async(fn ->
+        DatabaseAdmission.execute_owner(uuid, :foreground, fn ->
+          send(parent, {:blocked, self()})
+          receive(do: (:finish -> :done))
+        end)
+      end)
+
+    assert_receive {:blocked, executor_pid}, 2_000
+
+    assert {:error, %ElixirDB.Error{}} = DatabaseCatalog.close(uuid)
+
+    send(executor_pid, :finish)
+    assert :done = Task.await(blocker, 5_000)
+
+    assert {:ok, false} = DatabaseAdmission.closing?(uuid)
+    assert {:ok, %{closing?: false}} = ReadPool.stats(uuid)
+
+    assert {:ok, %{body: %{"n" => 1}}} = ElixirDB.Documents.get(uuid, %{id: "doc"})
   end
 end

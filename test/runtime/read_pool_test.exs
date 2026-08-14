@@ -6,7 +6,7 @@ defmodule ElixirDB.Runtime.ReadPoolTest do
   use ExUnit.Case, async: false
 
   alias ElixirDB.Eventual
-  alias ElixirDB.Runtime.{DatabaseCatalog, ReadPool}
+  alias ElixirDB.Runtime.{DatabaseCatalog, Deadline, ReadPool}
   alias ElixirDB.View.Manager
 
   setup do
@@ -158,5 +158,27 @@ defmodule ElixirDB.Runtime.ReadPoolTest do
     send(worker, {:go, gate})
     assert {:ok, %{id: "doc"}} = Task.await(holder, 5_000)
     assert :ok = Task.await(closer, 10_000)
+  end
+
+  test "cancel_close after begin_close restores classified reads without close_readers", %{
+    uuid: uuid
+  } do
+    assert {:ok, _} = ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+
+    assert :ok = ReadPool.begin_close(uuid)
+    assert {:ok, %{closing?: true}} = ReadPool.stats(uuid)
+
+    assert {:error, %ElixirDB.Error{code: :database_closed}} =
+             ReadPool.execute(
+               uuid,
+               :foreground,
+               {:command, :get_document, %{document_id: "doc"}},
+               Deadline.from_timeout(5_000)
+             )
+
+    assert :ok = ReadPool.cancel_close(uuid)
+    assert {:ok, %{closing?: false}} = ReadPool.stats(uuid)
+
+    assert {:ok, %{body: %{"n" => 1}}} = ElixirDB.Documents.get(uuid, %{id: "doc"})
   end
 end
