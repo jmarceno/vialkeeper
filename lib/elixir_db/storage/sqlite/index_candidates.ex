@@ -181,15 +181,52 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
     limit = MapAccess.get(request, :limit)
     deadline = MapAccess.get(request, :deadline)
 
-    if pageable_structured_scan?(plan, query_request, limit) do
-      structured_candidate_page(adapter, selected, scan, limit, deadline)
-    else
-      with {:ok, rows} <- structured_candidate_rows(adapter, selected, scan),
-           {:ok, documents} <- decode_query_documents(rows) do
-        {:ok, Enum.map(documents, &public_candidate/1)}
-      end
+    cond do
+      MapAccess.get(request, :count_only, false) ->
+        structured_candidate_count(adapter, selected, scan)
+
+      MapAccess.get(request, :ids_only, false) ->
+        structured_candidate_ids(adapter, selected, scan)
+
+      pageable_structured_scan?(plan, query_request, limit) ->
+        structured_candidate_page(adapter, selected, scan, limit, deadline)
+
+      true ->
+        threshold = candidate_scan_threshold(request)
+
+        with {:ok, rows} <- structured_candidate_rows(adapter, selected, scan, threshold),
+             :ok <- enforce_candidate_threshold(rows, threshold),
+             {:ok, documents} <- decode_query_documents(rows) do
+          {:ok, Enum.map(documents, &public_candidate/1)}
+        end
     end
   end
+
+  defp candidate_scan_threshold(request) do
+    case MapAccess.get(request, :threshold) do
+      threshold when is_integer(threshold) and threshold > 0 ->
+        threshold
+
+      _ ->
+        identity = MapAccess.get(request, :identity)
+
+        if is_map(identity) do
+          Executor.scan_threshold(identity)
+        else
+          1_000
+        end
+    end
+  end
+
+  defp enforce_candidate_threshold(rows, threshold) when length(rows) > threshold do
+    {:error,
+     ElixirDB.Error.index_required("query requires a compatible index", %{
+       candidate_count: length(rows),
+       threshold: threshold
+     })}
+  end
+
+  defp enforce_candidate_threshold(_rows, _threshold), do: :ok
 
   defp pageable_structured_scan?(%Plan{} = plan, request, limit)
        when is_integer(limit) and limit >= 0 do
@@ -206,13 +243,37 @@ defmodule ElixirDB.Storage.SQLite.IndexCandidates do
       Executor.no_post_filter?(plan, request)
   end
 
-  defp structured_candidate_rows(adapter, selected, scan) do
+  defp structured_candidate_rows(adapter, selected, scan, threshold) do
     with {:ok, {where, params}} <- structured_candidate_query(selected, scan) do
       Connection.query(
         adapter.conn,
-        "SELECT document_id, winning_revision, winning_body_term FROM documents WHERE #{where}",
-        params
+        "SELECT document_id, winning_revision, winning_body_term FROM documents WHERE #{where} ORDER BY document_id LIMIT ?",
+        params ++ [threshold + 1]
       )
+    end
+  end
+
+  defp structured_candidate_count(adapter, selected, scan) do
+    with {:ok, {where, params}} <- structured_candidate_query(selected, scan),
+         {:ok, [[count]]} <-
+           Connection.query(
+             adapter.conn,
+             "SELECT count(*) FROM documents WHERE #{where}",
+             params
+           ) do
+      {:ok, %{count: count}}
+    end
+  end
+
+  defp structured_candidate_ids(adapter, selected, scan) do
+    with {:ok, {where, params}} <- structured_candidate_query(selected, scan),
+         {:ok, rows} <-
+           Connection.query(
+             adapter.conn,
+             "SELECT document_id FROM documents WHERE #{where}",
+             params
+           ) do
+      {:ok, Enum.map(rows, fn [id] -> id end)}
     end
   end
 

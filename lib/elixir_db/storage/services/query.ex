@@ -84,7 +84,10 @@ defmodule ElixirDB.Storage.Services.Query do
          {:ok, plan} <- plan_request(identity, indexes, request),
          :ok <- Executor.check_deadline(deadline),
          candidate_limit <-
-           if(Executor.no_post_filter?(plan, request), do: max_members + 1, else: nil),
+           if(Executor.no_post_filter?(plan, request),
+             do: max_members + 1,
+             else: Executor.scan_threshold(identity)
+           ),
          {:ok, documents, examined} <-
            gather_candidates(
              context,
@@ -187,12 +190,13 @@ defmodule ElixirDB.Storage.Services.Query do
          %Plan{kind: :single} = plan,
          indexes,
          request,
-         _identity,
+         identity,
          deadline,
          limit
        ) do
     selected = selected_index(indexes, plan)
     scan = List.first(plan.scans)
+    threshold = Executor.scan_threshold(identity)
 
     with {:ok, rows} <-
            Access.port(context, :index_candidates).range_scan_candidates(context, %{
@@ -202,6 +206,8 @@ defmodule ElixirDB.Storage.Services.Query do
              plan: plan,
              request: request,
              limit: limit,
+             threshold: threshold,
+             identity: identity,
              deadline: deadline
            }),
          :ok <- Executor.check_deadline(deadline) do
@@ -215,10 +221,12 @@ defmodule ElixirDB.Storage.Services.Query do
          %Plan{kind: :union} = plan,
          indexes,
          _request,
-         _identity,
+         identity,
          deadline,
          _limit
        ) do
+    threshold = Executor.scan_threshold(identity)
+
     Enum.reduce_while(plan.scans, {:ok, [], 0}, fn scan, {:ok, candidates, examined} ->
       selected = selected_index(indexes, scan["index_id"])
 
@@ -228,6 +236,8 @@ defmodule ElixirDB.Storage.Services.Query do
                index_id: scan["index_id"],
                index: selected,
                scan: scan,
+               threshold: threshold,
+               identity: identity,
                deadline: deadline
              }),
            :ok <- Executor.check_deadline(deadline) do
@@ -264,6 +274,65 @@ defmodule ElixirDB.Storage.Services.Query do
          _deadline
        ),
        do: {:ok, count}
+
+  defp explain_candidate_count(
+         context,
+         %Plan{kind: :single} = plan,
+         indexes,
+         request,
+         _identity,
+         _count,
+         deadline
+       ) do
+    selected = selected_index(indexes, plan)
+    scan = List.first(plan.scans)
+
+    with {:ok, %{count: count}} <-
+           Access.port(context, :index_candidates).range_scan_candidates(context, %{
+             index_id: MapAccess.get(selected, :index_id) || MapAccess.get(selected, "index_id"),
+             index: selected,
+             scan: scan,
+             plan: plan,
+             request: request,
+             count_only: true,
+             deadline: deadline
+           }) do
+      {:ok, count}
+    end
+  end
+
+  defp explain_candidate_count(
+         context,
+         %Plan{kind: :union} = plan,
+         indexes,
+         _request,
+         _identity,
+         _count,
+         deadline
+       ) do
+    Enum.reduce_while(plan.scans, {:ok, MapSet.new()}, fn scan, {:ok, ids} ->
+      selected = selected_index(indexes, scan["index_id"])
+
+      with :ok <- Executor.check_deadline(deadline),
+           {:ok, arm_ids} <-
+             Access.port(context, :index_candidates).range_scan_candidates(context, %{
+               index_id: scan["index_id"],
+               index: selected,
+               scan: scan,
+               ids_only: true,
+               deadline: deadline
+             }),
+           :ok <- Executor.check_deadline(deadline) do
+        {:cont, {:ok, MapSet.union(ids, MapSet.new(arm_ids))}}
+      else
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, ids} -> {:ok, MapSet.size(ids)}
+      error -> error
+    end
+  end
 
   defp explain_candidate_count(context, plan, indexes, request, identity, _count, deadline) do
     case gather_candidates(context, plan, indexes, request, identity, deadline, nil) do

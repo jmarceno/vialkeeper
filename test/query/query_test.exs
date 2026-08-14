@@ -504,4 +504,88 @@ defmodule ElixirDB.Query.QueryTest do
     refute inspect(explanation) =~ "physical_name"
     refute inspect(explanation) =~ "sqlite_private"
   end
+
+  describe "indexed post-filter candidate threshold" do
+    @post_filter_selector %{
+      "$and" => [
+        %{"/status" => "open"},
+        %{"$not" => %{"/priority" => 9}}
+      ]
+    }
+
+    setup do
+      {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-query-threshold")
+      path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
+      {:ok, adapter} = Adapter.create(path, %{config: %{"queries" => %{"scan_threshold" => 5}}})
+
+      on_exit(fn ->
+        Adapter.close(adapter)
+        ElixirDB.TempDatabase.cleanup(bundle_path)
+      end)
+
+      assert {:ok, _} =
+               Adapter.create_index(adapter, %{
+                 "name" => "by-status",
+                 "type" => "structured",
+                 "fields" => [%{"path" => "/status", "type" => "string", "direction" => "asc"}]
+               })
+
+      {:ok, adapter: adapter}
+    end
+
+    test "returns matching page below scan_threshold", %{adapter: adapter} do
+      for n <- 1..5 do
+        assert {:ok, _} =
+                 Adapter.apply_local_mutation(adapter, %{
+                   operation: :put,
+                   document_id: "doc-#{n}",
+                   body: %{"status" => "open", "priority" => n}
+                 })
+      end
+
+      assert {:ok, %{plan_kind: :single, results: results}} =
+               Adapter.execute_query(adapter, %{
+                 selector: @post_filter_selector,
+                 limit: 10
+               })
+
+      assert Enum.map(results, & &1.id) |> Enum.sort() ==
+               ["doc-1", "doc-2", "doc-3", "doc-4", "doc-5"]
+    end
+
+    test "returns index_required above scan_threshold", %{adapter: adapter} do
+      for n <- 1..6 do
+        assert {:ok, _} =
+                 Adapter.apply_local_mutation(adapter, %{
+                   operation: :put,
+                   document_id: "doc-#{n}",
+                   body: %{"status" => "open", "priority" => n}
+                 })
+      end
+
+      assert {:error,
+              %ElixirDB.Error{
+                code: :index_required,
+                details: %{candidate_count: 6, threshold: 5}
+              }} =
+               Adapter.execute_query(adapter, %{
+                 selector: @post_filter_selector,
+                 limit: 10
+               })
+    end
+
+    test "explain reports sql candidate_count above scan_threshold", %{adapter: adapter} do
+      for n <- 1..6 do
+        assert {:ok, _} =
+                 Adapter.apply_local_mutation(adapter, %{
+                   operation: :put,
+                   document_id: "doc-#{n}",
+                   body: %{"status" => "open", "priority" => n}
+                 })
+      end
+
+      assert {:ok, %{plan_kind: :single, candidate_count: 6}} =
+               Adapter.explain_query(adapter, %{selector: @post_filter_selector})
+    end
+  end
 end
