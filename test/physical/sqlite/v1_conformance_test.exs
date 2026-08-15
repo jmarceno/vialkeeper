@@ -132,21 +132,30 @@ defmodule VialKeeper.StorageAdapter.V1ConformanceTest do
 
     assert {:ok, %{ok: true, indexes: 2}} = @adapter.integrity_check(adapter, %{})
 
+    {:ok, [[fts_tables]]} =
+      Connection.query(
+        adapter.conn,
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'fts_%'"
+      )
+
+    assert fts_tables == 0
+
     {:ok, indexes} = @adapter.list_indexes(adapter)
     full_text = Enum.find(indexes, &(&1["type"] == "full_text"))
-    physical = full_text["_metadata"]["physical_name"]
-    assert physical == "fts_" <> binary_part(String.trim_leading(full_text_id, "idx_"), 0, 24)
-    assert full_text["_metadata"]["fts_table_kind"] == "contentless_delete"
-    assert :ok = Connection.execute(adapter.conn, ~s(DELETE FROM "#{physical}"))
-
-    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
-             @adapter.integrity_check(adapter, %{})
+    refute get_in(full_text, ["_metadata", "physical_name"])
+    assert get_in(full_text, ["_metadata", "engine"]) == "ets"
 
     assert {:ok, %{rebuilt: true}} = @adapter.rebuild_index(adapter, full_text_id)
     assert {:ok, %{ok: true}} = @adapter.integrity_check(adapter, %{})
+
+    assert {:ok, %{results: [%{id: "a"}], selected_index: ^full_text_id}} =
+             @adapter.execute_query(adapter, %{
+               search: %{index: "titles", text: "hello", mode: "all"},
+               limit: 10
+             })
   end
 
-  test "full-text search post-filters with unicode_words_v1 matcher (QUERY-015/017)", %{
+  test "full-text search matches winning document tokens (QUERY-015/017)", %{
     adapter: adapter
   } do
     assert {:ok, _} =
@@ -164,34 +173,15 @@ defmodule VialKeeper.StorageAdapter.V1ConformanceTest do
                "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
              })
 
-    {:ok, indexes} = @adapter.list_indexes(adapter)
-    full_text = Enum.find(indexes, &(&1["type"] == "full_text"))
-    physical = full_text["_metadata"]["physical_name"]
-
-    # Poison the FTS row so MATCH would over-match relative to the document body.
-    {:ok, [[doc_key]]} =
-      Connection.query(
-        adapter.conn,
-        "SELECT doc_key FROM documents WHERE document_id = ?",
-        ["doc"]
-      )
-
-    assert :ok =
-             Connection.execute(adapter.conn, ~s(DELETE FROM "#{physical}" WHERE rowid = ?), [
-               doc_key
-             ])
-
-    assert :ok =
-             Connection.execute(
-               adapter.conn,
-               "INSERT INTO \"#{physical}\"(rowid, content) VALUES (?, 'secret token')",
-               [doc_key]
-             )
-
-    # FTS5 MATCH finds "secret"; project-owned matcher rejects because body has no such token.
     assert {:ok, %{results: []}} =
              @adapter.execute_query(adapter, %{
                search: %{index: "titles", text: "secret", mode: "all"},
+               limit: 10
+             })
+
+    assert {:ok, %{results: [%{id: "doc"}]}} =
+             @adapter.execute_query(adapter, %{
+               search: %{index: "titles", text: "hello", mode: "all"},
                limit: 10
              })
   end

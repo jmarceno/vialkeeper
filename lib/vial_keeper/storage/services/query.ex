@@ -43,7 +43,6 @@ defmodule VialKeeper.Storage.Services.Query do
          limit <- Executor.page_limit(request, identity),
          {:ok, documents, examined} <-
            gather_candidates(context, plan, indexes, request, identity, deadline, limit),
-         request <- attach_full_text_index(request, plan, indexes),
          {:ok, matched} <- Executor.filter_query(documents, request, plan, deadline),
          :ok <- Executor.check_deadline(deadline),
          :ok <- Executor.enforce_scan_limit(plan, examined, identity),
@@ -98,7 +97,6 @@ defmodule VialKeeper.Storage.Services.Query do
              deadline,
              candidate_limit
            ),
-         request <- attach_full_text_index(request, plan, indexes),
          {:ok, matched} <- Executor.filter_query(documents, request, plan, deadline),
          :ok <- Executor.check_deadline(deadline),
          :ok <- Executor.enforce_scan_limit(plan, examined, identity),
@@ -167,7 +165,7 @@ defmodule VialKeeper.Storage.Services.Query do
          request,
          _identity,
          deadline,
-         _limit
+         limit
        ) do
     selected = selected_index(indexes, plan)
     search = MapAccess.get(request, :search)
@@ -178,7 +176,12 @@ defmodule VialKeeper.Storage.Services.Query do
                index_id: MapAccess.get(selected, :index_id) || MapAccess.get(selected, "index_id"),
                text: MapAccess.get(search, :text),
                mode: MapAccess.get(search, :mode, "all"),
-               deadline: deadline
+               deadline: deadline,
+               limit: limit,
+               sort: MapAccess.get(request, :sort, []),
+               after_ordering: MapAccess.get(request, :after_ordering),
+               selector: MapAccess.get(request, :selector),
+               predicate: MapAccess.get(request, :predicate)
              }),
            :ok <- Executor.check_deadline(deadline) do
         {:ok, normalize_candidates(rows), length(rows)}
@@ -390,15 +393,6 @@ defmodule VialKeeper.Storage.Services.Query do
       end
     )
   end
-
-  defp attach_full_text_index(request, %Plan{kind: :full_text} = plan, indexes) do
-    case selected_index(indexes, plan) do
-      nil -> request
-      index -> Map.put(request, :full_text_index, index)
-    end
-  end
-
-  defp attach_full_text_index(request, _plan, _indexes), do: request
 
   defp union_count_arms(%Plan{scans: scans}, indexes) do
     Enum.map(scans, fn scan ->

@@ -271,6 +271,10 @@ Create a named `full_text` index over JSON Pointers into the document body.
 (default) or `remove`. `search.text` is ordinary words — not an engine query
 language; punctuation is not syntax.
 
+Matching uses rebuildable Elixir posting lists (`unicode_words_v1`), not a
+SQLite FTS table. The index is reconstructed from winning documents when the
+cache under the bundle `tmp/` directory is missing.
+
 ```typescript
 await postJson(`/v1/databases/${uuid}/indexes`, {
   name: "body_fts",

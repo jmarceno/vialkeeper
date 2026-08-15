@@ -21,6 +21,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.{Query, SQLite}
   alias VialKeeper.Query.{Normalizer, Prepared, SubscriptionRequest}
+  alias VialKeeper.Search
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.OpaqueHandle
   alias VialKeeper.Storage.Ports.Errors
@@ -41,6 +42,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     Retention,
     Revisions,
     Schema,
+    SearchIndexes,
     Transaction,
     Views
   }
@@ -249,7 +251,16 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   @impl true
+  def close(%__MODULE__{conn: conn, context_ref: context_ref, reader?: true} = adapter) do
+    close_sqlite(adapter, conn, context_ref)
+  end
+
   def close(%__MODULE__{conn: conn, context_ref: context_ref} = adapter) do
+    Search.stop(to_context(adapter))
+    close_sqlite(adapter, conn, context_ref)
+  end
+
+  defp close_sqlite(adapter, conn, context_ref) do
     IndexCatalog.clear_cache(conn)
     Views.clear_cache(conn)
     QueryRunner.clear_cache(conn)
@@ -524,13 +535,27 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     index_type = MapAccess.get(definition, :type)
 
     Query.build_index(uuid, index_id, index_type, fn ->
-      transaction(adapter, fn -> IndexCatalog.create_tx(conn, definition) end)
+      create_catalog_and_search(adapter, conn, definition)
     end)
+  end
+
+  defp create_catalog_and_search(adapter, conn, definition) do
+    with {:ok, index} <- transaction(adapter, fn -> IndexCatalog.create_tx(conn, definition) end),
+         :ok <- SearchIndexes.rebuild(to_context(adapter), index, definition) do
+      {:ok, index}
+    end
   end
 
   @impl true
   def delete_index(%__MODULE__{} = adapter, index_id) do
-    transaction(adapter, fn -> IndexCatalog.delete_tx(adapter.conn, index_id) end)
+    case transaction(adapter, fn -> IndexCatalog.delete_tx(adapter.conn, index_id) end) do
+      {:ok, _} = ok ->
+        _ = SearchIndexes.drop(to_context(adapter), index_id)
+        ok
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   @impl true
@@ -538,8 +563,15 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     uuid = adapter_identity_uuid(adapter)
 
     Query.build_index(uuid, index_id, nil, fn ->
-      transaction(adapter, fn -> IndexCatalog.rebuild_tx(conn, index_id) end)
+      rebuild_catalog_and_search(adapter, conn, index_id)
     end)
+  end
+
+  defp rebuild_catalog_and_search(adapter, conn, index_id) do
+    with {:ok, result} <- transaction(adapter, fn -> IndexCatalog.rebuild_tx(conn, index_id) end),
+         :ok <- SearchIndexes.rebuild_id(to_context(adapter), index_id) do
+      {:ok, result}
+    end
   end
 
   @impl true

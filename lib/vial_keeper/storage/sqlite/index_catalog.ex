@@ -2,8 +2,8 @@ defmodule VialKeeper.Storage.SQLite.IndexCatalog do
   @moduledoc """
   Index-definition catalog SQL for the Version 1 SQLite adapter.
 
-  Owns create/delete/rebuild/list against `index_definitions` and ready-index
-  document refresh. Transaction boundaries remain in the adapter.
+  Owns create/delete/rebuild/list against `index_definitions`. Transaction
+  boundaries remain in the adapter.
   """
 
   alias VialKeeper.JSON.{Canonical, StrictDecoder, Stringify}
@@ -155,16 +155,6 @@ defmodule VialKeeper.Storage.SQLite.IndexCatalog do
     end
   end
 
-  @doc """
-  Refreshes all ready indexes for one document after winner materialization.
-  """
-  @spec refresh_ready(Connection.handle(), integer(), map()) :: :ok | {:error, VialKeeper.Error.t()}
-  def refresh_ready(conn, doc_key, winner) do
-    with {:ok, rows} <- ready_definitions(conn) do
-      refresh_ready(conn, doc_key, winner, rows)
-    end
-  end
-
   @doc "Loads ready-index metadata for reuse within one SQLite transaction."
   @spec ready_definitions(Connection.handle()) :: {:ok, [[term()]]} | {:error, term()}
   def ready_definitions(conn) do
@@ -181,32 +171,6 @@ defmodule VialKeeper.Storage.SQLite.IndexCatalog do
 
         if match?({:ok, _}, result), do: Process.put({@ready_cache_key, conn}, result)
         result
-    end
-  end
-
-  @doc false
-  @spec refresh_ready(Connection.handle(), integer(), map(), [[term()]]) ::
-          :ok | {:error, VialKeeper.Error.t()}
-  def refresh_ready(conn, doc_key, winner, rows) when is_list(rows) do
-    Enum.reduce_while(rows, :ok, fn [index_id, definition_json, metadata_json], :ok ->
-      refresh_index_row(conn, doc_key, winner, index_id, definition_json, metadata_json)
-    end)
-  end
-
-  defp refresh_index_row(conn, doc_key, winner, index_id, definition_json, metadata_json) do
-    with {:ok, definition} <- decode_json(definition_json),
-         {:ok, metadata} <- decode_json(metadata_json),
-         :ok <-
-           FullTextIndexes.refresh_document(
-             conn,
-             Map.merge(Map.put(metadata, "index_id", index_id), definition),
-             doc_key,
-             winner.body,
-             winner.deleted
-           ) do
-      {:cont, :ok}
-    else
-      {:error, error} -> {:halt, {:error, error}}
     end
   end
 

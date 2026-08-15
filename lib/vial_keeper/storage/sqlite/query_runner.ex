@@ -2,10 +2,11 @@ defmodule VialKeeper.Storage.SQLite.QueryRunner do
   @moduledoc """
   SQLite adapter entry for query and explain.
 
-  Candidate SQL, FTS5 MATCH, term-blob decoding, and index DDL remain in
-  `VialKeeper.Storage.SQLite.IndexCandidates` and related SQLite modules. Shared
-  filtering, ordering, cursors, projection, deadlines, and explain shaping live
-  in `VialKeeper.Query.Executor` via `VialKeeper.Storage.Services.Query`.
+  Candidate retrieval, term-blob decoding, and index DDL remain in
+  `VialKeeper.Storage.SQLite.IndexCandidates` and related SQLite modules. Full-text
+  posting lists live in `VialKeeper.Search`. Shared filtering, ordering, cursors,
+  projection, deadlines, and explain shaping live in `VialKeeper.Query.Executor`
+  via `VialKeeper.Storage.Services.Query`.
   """
 
   alias VialKeeper.Storage.Services

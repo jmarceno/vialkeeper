@@ -51,6 +51,8 @@
       "VialKeeper.Storage.Memory.*",
       "VialKeeper.Storage.Services",
       "VialKeeper.Storage.Services.*",
+      "VialKeeper.Search",
+      "VialKeeper.Search.*",
       "VialKeeper.Attachments.FilesystemStore",
       "VialKeeper.Attachments.Compression"
     ],

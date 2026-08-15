@@ -55,6 +55,8 @@ dataset. They are trend evidence, not portable hardware-independent promises.
   is one `all`-mode search that matches about a quarter of the dataset and
   returns a 50-hit page. This is part of `--scenario all` so a default
   `mix bench` run includes FTS alongside the other sequential metrics.
+  Default `--dataset 500` is a smoke size. The design horizon is about 50k
+  winning documents; measure that with `--dataset 50000 --scenario fts_query`.
 - `concurrent_point_read`: **opt-in** catalog-path point reads (not part of
   `--scenario all`). Disk only. Measures 1/2/4/8 concurrent readers, each with
   and without a steady writer, through `DatabaseCatalog` so the snapshot read

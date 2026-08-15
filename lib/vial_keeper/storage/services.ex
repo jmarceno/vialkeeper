@@ -11,6 +11,7 @@ defmodule VialKeeper.Storage.Services do
   alias VialKeeper.MapAccess
   alias VialKeeper.Query.{Normalizer, SubscriptionRequest}
   alias VialKeeper.Replication.Profile
+  alias VialKeeper.Search
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Ports.Access
   alias VialKeeper.Storage.RequestValidation
@@ -250,7 +251,9 @@ defmodule VialKeeper.Storage.Services do
         else: @mutation_port_families
 
     with_ports(context, families, fn ->
-      Transaction.run(context, &Mutations.apply_local_tx(&1, request))
+      Search.with_pending(context, fn ->
+        Transaction.run(context, &Mutations.apply_local_tx(&1, request))
+      end)
     end)
   end
 
@@ -261,9 +264,7 @@ defmodule VialKeeper.Storage.Services do
     operations = MapAccess.get(request, :operations)
 
     with_ports(context, @mutation_port_families, fn ->
-      with :ok <- Mutations.validate_operation_batch(operations) do
-        Transaction.run(context, &Mutations.bulk_tx(&1, operations))
-      end
+      bulk_mutation_with_search(context, operations)
     end)
   end
 
@@ -272,7 +273,9 @@ defmodule VialKeeper.Storage.Services do
           {:ok, map()} | {:error, VialKeeper.Error.t()}
   def resolve_conflict(%BackendContext{} = context, request) when is_map(request) do
     with_ports(context, @mutation_port_families, fn ->
-      Transaction.run(context, &Mutations.resolve_conflict_tx(&1, request))
+      Search.with_pending(context, fn ->
+        Transaction.run(context, &Mutations.resolve_conflict_tx(&1, request))
+      end)
     end)
   end
 
@@ -301,15 +304,7 @@ defmodule VialKeeper.Storage.Services do
     chains = MapAccess.get(request, :chains, [])
 
     with_ports(context, @mutation_port_families, fn ->
-      with :ok <- Import.validate_chain_batch(chains),
-           :ok <-
-             Import.validate_purged_boundaries(
-               MapAccess.get(request, :purged_boundaries, []),
-               MapAccess.get(request, :source_database_uuid)
-             ),
-           :ok <- maybe_ensure_physical_blobs(context, chains, request) do
-        Transaction.run(context, &Import.import_tx(&1, request))
-      end
+      import_with_search(context, request, chains)
     end)
   end
 
@@ -333,6 +328,28 @@ defmodule VialKeeper.Storage.Services do
     if shadow_profile?(MapAccess.get(request, :profile)),
       do: :ok,
       else: Import.ensure_physical_blobs(context, chains)
+  end
+
+  defp bulk_mutation_with_search(context, operations) do
+    with :ok <- Mutations.validate_operation_batch(operations) do
+      Search.with_pending(context, fn ->
+        Transaction.run(context, &Mutations.bulk_tx(&1, operations))
+      end)
+    end
+  end
+
+  defp import_with_search(context, request, chains) do
+    with :ok <- Import.validate_chain_batch(chains),
+         :ok <-
+           Import.validate_purged_boundaries(
+             MapAccess.get(request, :purged_boundaries, []),
+             MapAccess.get(request, :source_database_uuid)
+           ),
+         :ok <- maybe_ensure_physical_blobs(context, chains, request) do
+      Search.with_pending(context, fn ->
+        Transaction.run(context, &Import.import_tx(&1, request))
+      end)
+    end
   end
 
   defp shadow_profile?(%Profile{kind: :shadow}), do: true

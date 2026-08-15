@@ -15,7 +15,8 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
   alias VialKeeper.JSON.StrictCache
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.SQLite
-  alias VialKeeper.Query.{Executor, Plan, Projection}
+  alias VialKeeper.Query.{Executor, Ordering, Plan}
+  alias VialKeeper.Search
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Ports.Errors
   alias VialKeeper.Storage.SQLite.Adapter
@@ -23,15 +24,13 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
   alias VialKeeper.Storage.SQLite.{
     Connection,
     Context,
-    Documents,
     IndexCatalog,
-    Indexes,
     QueryCompiler,
-    TermBlob
+    SearchIndexes
   }
 
   @candidate_query_cache_limit 16
-  @query_body_term_cache_limit 256
+  @hydrate_id_chunk 500
 
   @impl true
   def list_indexes(%BackendContext{} = context) do
@@ -94,7 +93,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
                adapter.conn,
                "SELECT document_id, winning_revision, winning_body_term FROM documents WHERE winning_deleted = 0"
              ),
-           {:ok, documents} <- decode_query_documents(rows) do
+           {:ok, documents} <- SearchIndexes.decode_query_documents(rows) do
         {:ok, Enum.map(documents, &public_candidate/1)}
       else
         {:error, reason} -> {:error, Errors.normalize(reason)}
@@ -117,11 +116,13 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
     with {:ok, adapter} <- Context.unwrap(context),
          {:ok, indexes} <- Adapter.list_indexes(adapter),
          {:ok, metadata} <- find_index(indexes, MapAccess.get(request, :index_id)),
-         true <- is_binary(text) do
-      case Indexes.search(adapter.conn, metadata, text, mode, deadline) do
-        {:ok, rows} -> {:ok, Enum.map(rows, &public_candidate/1)}
-        {:error, reason} -> {:error, Errors.normalize(reason)}
-      end
+         true <- is_binary(text),
+         :ok <- Executor.check_deadline(deadline),
+         {:ok, hits} <- search_hits(context, metadata, text, to_string(mode)),
+         hits <- page_hits(hits, request),
+         :ok <- Executor.check_deadline(deadline),
+         {:ok, rows} <- hydrate_hits(adapter, hits, deadline) do
+      {:ok, Enum.map(rows, &public_candidate/1)}
     else
       false ->
         {:error, VialKeeper.Error.invalid_request("index candidate text is required")}
@@ -152,22 +153,9 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
   end
 
   @impl true
-  def refresh_document(%BackendContext{} = context, document_id, winner, ready)
+  def refresh_document(%BackendContext{} = _context, document_id, winner, _ready)
       when is_binary(document_id) and is_map(winner) do
-    with {:ok, adapter} <- Context.unwrap(context),
-         {:ok, doc} <- Documents.find(adapter.conn, document_id),
-         {:ok, doc} <- require_document(doc) do
-      case ready do
-        :load ->
-          Errors.wrap(IndexCatalog.refresh_ready(adapter.conn, doc.doc_key, winner))
-
-        rows when is_list(rows) ->
-          Errors.wrap(IndexCatalog.refresh_ready(adapter.conn, doc.doc_key, winner, rows))
-      end
-    else
-      :missing_document -> :ok
-      {:error, reason} -> {:error, Errors.normalize(reason)}
-    end
+    Search.record_winner(document_id, winner)
   end
 
   defp range_scan_on_adapter(adapter, request) do
@@ -210,7 +198,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
 
         with {:ok, rows} <- structured_candidate_rows(adapter, selected, scan, threshold),
              :ok <- enforce_candidate_threshold(rows, threshold),
-             {:ok, documents} <- decode_query_documents(rows) do
+             {:ok, documents} <- SearchIndexes.decode_query_documents(rows) do
           {:ok, Enum.map(documents, &public_candidate/1)}
         end
     end
@@ -349,7 +337,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
            ),
          :ok <- maybe_check_deadline(deadline),
          {:ok, page_rows, examined} <- page_rows(rows),
-         {:ok, documents} <- decode_query_documents(page_rows) do
+         {:ok, documents} <- SearchIndexes.decode_query_documents(page_rows) do
       {:ok, %{candidates: Enum.map(documents, &public_candidate/1), examined: examined}}
     end
   end
@@ -386,32 +374,6 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
       params = Enum.flat_map(conditions, fn {_sql, value} -> List.wrap(value) end)
 
       {:ok, {where, params}}
-    end
-  end
-
-  defp decode_query_documents(rows) do
-    max_depth = VialKeeper.Config.host_limits()[:max_json_nesting_depth] || 100
-    decode_query_documents(rows, [], max_depth)
-  end
-
-  defp decode_query_documents([], acc, _max_depth), do: {:ok, :lists.reverse(acc)}
-
-  defp decode_query_documents([[id, revision, body_term] | rows], acc, max_depth) do
-    case TermBlob.decode_trusted_with_cache(
-           body_term,
-           :query_body_term,
-           max_depth,
-           @query_body_term_cache_limit
-         ) do
-      {:ok, body} ->
-        decode_query_documents(
-          rows,
-          [Projection.document(id, revision, body) | acc],
-          max_depth
-        )
-
-      {:error, error} ->
-        {:error, error}
     end
   end
 
@@ -486,8 +448,108 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
     |> Map.put(:backend_meta, %{doc_key: doc_key})
   end
 
-  defp require_document(nil), do: :missing_document
-  defp require_document(doc), do: {:ok, doc}
+  defp search_hits(context, metadata, text, mode) do
+    index_id = MapAccess.get(metadata, :index_id)
+
+    case Search.search(context, index_id, text, mode) do
+      {:ok, hits} ->
+        {:ok, hits}
+
+      {:error, %VialKeeper.Error{code: :index_not_found}} ->
+        with :ok <- SearchIndexes.rebuild(context, metadata, metadata) do
+          Search.search(context, index_id, text, mode)
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp page_hits(hits, request) when is_list(hits) do
+    sort = MapAccess.get(request, :sort, [])
+    limit = MapAccess.get(request, :limit)
+
+    if pageable_full_text?(sort, request, limit) do
+      hits
+      |> drop_before_cursor(MapAccess.get(request, :after_ordering))
+      |> Enum.take(limit + 1)
+    else
+      hits
+    end
+  end
+
+  defp pageable_full_text?(sort, request, limit)
+       when sort in [nil, []] and is_integer(limit) and limit >= 0 do
+    blank_filter?(MapAccess.get(request, :selector)) and
+      is_nil(MapAccess.get(request, :predicate))
+  end
+
+  defp pageable_full_text?(_sort, _request, _limit), do: false
+
+  defp blank_filter?(nil), do: true
+  defp blank_filter?(selector) when selector == %{}, do: true
+  defp blank_filter?(_selector), do: false
+
+  defp drop_before_cursor(hits, nil), do: hits
+
+  defp drop_before_cursor(hits, cursor) when is_map(cursor) do
+    Enum.drop_while(hits, fn hit ->
+      Ordering.compare_cursor(
+        %{"sort" => [], "id" => hit.id, "rank" => hit.rank},
+        cursor,
+        []
+      ) != :gt
+    end)
+  end
+
+  defp hydrate_hits(_adapter, [], _deadline), do: {:ok, []}
+
+  defp hydrate_hits(adapter, hits, deadline) do
+    ranks = Map.new(hits, &{&1.id, &1.rank})
+
+    hits
+    |> Enum.map(& &1.id)
+    |> Enum.chunk_every(@hydrate_id_chunk)
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, %{}}, fn {ids, index}, {:ok, acc} ->
+      case hydrate_chunk(adapter, ids, deadline, index) do
+        {:ok, documents} ->
+          {:cont, {:ok, Map.merge(acc, Map.new(documents, &{&1.id, &1}))}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, by_id} ->
+        {:ok,
+         Enum.flat_map(hits, fn hit ->
+           case Map.fetch(by_id, hit.id) do
+             {:ok, document} -> [Map.put(document, :rank, ranks[hit.id])]
+             :error -> []
+           end
+         end)}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp hydrate_chunk(adapter, ids, deadline, index) do
+    with :ok <- maybe_check_deadline(deadline, index),
+         {:ok, rows} <-
+           Connection.query(
+             adapter.conn,
+             "SELECT document_id, winning_revision, winning_body_term FROM documents WHERE winning_deleted = 0 AND document_id IN (" <>
+               Enum.map_join(ids, ",", fn _id -> "?" end) <> ")",
+             ids
+           ) do
+      SearchIndexes.decode_query_documents(rows)
+    end
+  end
+
+  defp maybe_check_deadline(deadline, 0), do: Executor.check_deadline(deadline)
+  defp maybe_check_deadline(deadline, index), do: Executor.periodic_deadline_check(deadline, index)
 
   defp maybe_check_deadline(nil), do: :ok
   defp maybe_check_deadline(deadline), do: Executor.check_deadline(deadline)

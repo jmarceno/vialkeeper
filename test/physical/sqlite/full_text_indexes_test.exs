@@ -5,8 +5,6 @@ defmodule VialKeeper.StorageAdapter.FullTextIndexesTest do
 
   @moduletag :sqlite_physical
 
-  alias VialKeeper.Storage.SQLite.Connection
-
   @fts_definition %{
     "name" => "titles",
     "type" => "full_text",
@@ -269,7 +267,7 @@ defmodule VialKeeper.StorageAdapter.FullTextIndexesTest do
              })
   end
 
-  test "unicode_words_v1 matcher post-filters FTS5 over-matches", %{adapter: adapter} do
+  test "missing search cache rebuilds from winning documents", %{adapter: adapter} do
     assert {:ok, _} =
              @adapter.apply_local_mutation(adapter, %{
                operation: :put,
@@ -279,30 +277,18 @@ defmodule VialKeeper.StorageAdapter.FullTextIndexesTest do
 
     assert {:ok, %{"index_id" => _index_id}} = @adapter.create_index(adapter, @fts_definition)
 
-    {:ok, indexes} = @adapter.list_indexes(adapter)
-    full_text = Enum.find(indexes, &(&1["type"] == "full_text"))
-    physical = full_text["_metadata"]["physical_name"]
+    context = @adapter.to_context(adapter)
+    assert :ok = VialKeeper.Search.stop(context)
 
-    {:ok, [[doc_key]]} =
-      Connection.query(
-        adapter.conn,
-        "SELECT doc_key FROM documents WHERE document_id = ?",
-        ["doc"]
-      )
+    persist = Path.join(context.bundle_root, "tmp/search-index.etf")
+    _ = File.rm(persist)
 
-    assert :ok =
-             Connection.execute(adapter.conn, ~s(DELETE FROM "#{physical}" WHERE rowid = ?), [
-               doc_key
-             ])
+    assert {:ok, %{results: [%{id: "doc"}]}} =
+             @adapter.execute_query(adapter, %{
+               search: %{index: "titles", text: "hello", mode: "all"},
+               limit: 10
+             })
 
-    assert :ok =
-             Connection.execute(
-               adapter.conn,
-               "INSERT INTO \"#{physical}\"(rowid, content) VALUES (?, 'secret token')",
-               [doc_key]
-             )
-
-    # FTS5 MATCH finds "secret"; project-owned matcher rejects because body has no such token.
     assert {:ok, %{results: []}} =
              @adapter.execute_query(adapter, %{
                search: %{index: "titles", text: "secret", mode: "all"},

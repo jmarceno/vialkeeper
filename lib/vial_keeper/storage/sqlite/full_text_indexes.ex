@@ -2,30 +2,10 @@ defmodule VialKeeper.Storage.SQLite.FullTextIndexes do
   @moduledoc """
   Full-text logical-index facade for the Version 1 SQLite adapter.
 
-  Physical FTS5 DDL, search, and refresh live in `Indexes`. Catalog-row
-  transactions remain in the adapter; this module thin-wraps the FTS path.
+  Catalog rows and adapter metadata live in SQLite. Token posting lists are
+  owned by `VialKeeper.Search`; this module only wraps catalog physical create
+  and drop (no SQLite FTS table).
   """
 
   use VialKeeper.Storage.SQLite.IndexFacade
-  alias VialKeeper.Storage.SQLite.{Connection, Indexes}
-
-  @doc """
-  Refreshes FTS rows for one document.
-  """
-  @spec refresh_document(Connection.handle(), map(), integer(), map() | nil, boolean()) ::
-          :ok | {:error, VialKeeper.Error.t()}
-  def refresh_document(conn, metadata, doc_key, body, deleted),
-    do: Indexes.refresh_document(conn, metadata, doc_key, body, deleted)
-
-  @doc """
-  Runs a compiled full-text search against the physical FTS table.
-  """
-  @spec search(Connection.handle(), map(), binary(), binary()) ::
-          {:ok, list()} | {:error, VialKeeper.Error.t()}
-  def search(conn, metadata, text, mode), do: Indexes.search(conn, metadata, text, mode)
-
-  @spec search(Connection.handle(), map(), binary(), binary(), term()) ::
-          {:ok, list()} | {:error, VialKeeper.Error.t()}
-  def search(conn, metadata, text, mode, deadline),
-    do: Indexes.search(conn, metadata, text, mode, deadline)
 end

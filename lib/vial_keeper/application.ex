@@ -18,6 +18,8 @@ defmodule VialKeeper.Application do
       # Starts the OpenTelemetry SDK + exporter if configured, else no-op.
       VialKeeper.Observability.Supervisor,
       {Registry, keys: :unique, name: VialKeeper.Runtime.DatabaseRegistry},
+      {Registry, keys: :unique, name: VialKeeper.Search.Registry},
+      VialKeeper.Search.Supervisor,
       VialKeeper.Runtime.DatabaseSupervisor,
       {Registry, keys: :unique, name: VialKeeper.Replication.WorkerRegistry},
       VialKeeper.Replication.WorkerSupervisor,

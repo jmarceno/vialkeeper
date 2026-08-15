@@ -3,14 +3,15 @@ defmodule VialKeeper.Query.Executor do
   Shared query execution after candidate retrieval.
 
   Owns deadline handling, bookmark validation, selector post-filtering,
-  full-text authoritative matching, canonical ordering, cursors, projection,
-  limit/has-more assembly, and public explain shaping. Candidate gathering stays
-  behind storage ports; this module never assumes an engine query language,
-  physical identifiers, or scan order.
+  canonical ordering, cursors, projection, limit/has-more assembly, and public
+  explain shaping. Full-text matching is authoritative in the search engine
+  that produced the candidates. Candidate gathering stays behind storage ports;
+  this module never assumes an engine query language, physical identifiers, or
+  scan order.
   """
 
   alias VialKeeper.MapAccess
-  alias VialKeeper.Query.{FullText, Ordering, Plan, Predicate, Projection, Selector}
+  alias VialKeeper.Query.{Ordering, Plan, Predicate, Projection, Selector}
 
   @type deadline :: {integer(), pos_integer()}
   @type document :: map()
@@ -113,7 +114,8 @@ defmodule VialKeeper.Query.Executor do
   end
 
   @doc """
-  Filters candidates with selector post-filters and authoritative full-text matching.
+  Filters candidates with selector post-filters. Full-text plans trust the
+  search engine's candidate set.
   """
   @spec filter_query([document()], map(), Plan.t(), deadline()) ::
           {:ok, [document()]} | {:error, VialKeeper.Error.t()}
@@ -283,45 +285,19 @@ defmodule VialKeeper.Query.Executor do
     end
   end
 
-  defp maybe_filter_full_text(documents, request, %Plan{kind: :full_text} = plan, deadline) do
-    search = MapAccess.get(request, :search)
-
-    case search do
+  defp maybe_filter_full_text(documents, request, %Plan{kind: :full_text}, deadline) do
+    case MapAccess.get(request, :search) do
       nil ->
         {:error, VialKeeper.Error.invalid_index_hint("full-text plan cannot be executed", %{})}
 
-      search ->
-        definition = full_text_match_definition(plan, request, search)
-        text = MapAccess.get(search, :text)
-        filter_full_text_documents(documents, definition, text, deadline)
+      _search ->
+        with :ok <- check_deadline(deadline) do
+          {:ok, documents}
+        end
     end
   end
 
   defp maybe_filter_full_text(documents, _request, _plan, _deadline), do: {:ok, documents}
-
-  defp filter_full_text_documents(documents, definition, text, deadline) do
-    documents
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {document, index}, {:ok, acc} ->
-      filter_full_text_document(document, index, acc, definition, text, deadline)
-    end)
-    |> case do
-      {:ok, values} -> {:ok, Enum.reverse(values)}
-      error -> error
-    end
-  end
-
-  defp filter_full_text_document(document, index, acc, definition, text, deadline) do
-    case periodic_deadline_check(deadline, index) do
-      :ok ->
-        if FullText.matches?(document.body, definition, text),
-          do: {:cont, {:ok, [document | acc]}},
-          else: {:cont, {:ok, acc}}
-
-      {:error, _} = error ->
-        {:halt, error}
-    end
-  end
 
   defp maybe_filter_selector(documents, request, plan, deadline) do
     predicate = MapAccess.get(request, :predicate)
@@ -376,30 +352,6 @@ defmodule VialKeeper.Query.Executor do
         end
     end
   end
-
-  defp full_text_match_definition(plan, request, search) do
-    mode = MapAccess.get(search, :mode, "all")
-    index = MapAccess.get(request, :full_text_index) || %{}
-
-    index
-    |> Map.merge(nested_metadata(index))
-    |> Map.put("mode", mode)
-    |> Map.put_new("fields", MapAccess.get(index, :fields) || [])
-    |> maybe_put_plan_index(plan)
-  end
-
-  defp nested_metadata(index) when is_map(index) do
-    case Map.fetch(index, "_metadata") do
-      {:ok, nested} when is_map(nested) -> nested
-      :error -> %{}
-    end
-  end
-
-  defp maybe_put_plan_index(definition, %Plan{selected_indexes: [binding | _]}) do
-    Map.put_new(definition, "index_id", binding.index_id)
-  end
-
-  defp maybe_put_plan_index(definition, _plan), do: definition
 
   defp rejected_index_reasons(indexes, plan, request) do
     selected = MapSet.new(Enum.map(Plan.index_bindings(plan), & &1.index_id))

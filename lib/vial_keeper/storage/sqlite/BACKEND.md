@@ -65,8 +65,10 @@ owns the artifact.
 ## Integrity probes
 
 Product integrity rules run over normalized domain facts. The SQLite backend
-additionally reports engine probes (foreign keys, required tables, FTS
-consistency). Failures surface as `integrity_violation`.
+additionally reports engine probes (foreign keys, required tables). Failures
+surface as `integrity_violation`. Full-text indexes are Elixir posting lists
+outside SQLite; integrity records them as external rather than comparing FTS
+rows.
 
 ## Diagnostics
 

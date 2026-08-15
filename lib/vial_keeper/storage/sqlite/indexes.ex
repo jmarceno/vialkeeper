@@ -1,88 +1,34 @@
 defmodule VialKeeper.Storage.SQLite.Indexes do
-  @moduledoc "SQLite-derived structured and FTS5 index management."
+  @moduledoc "SQLite-derived structured index management and full-text catalog metadata."
 
-  alias VialKeeper.JSON.{Pointer, StrictCache}
   alias VialKeeper.MapAccess
-  alias VialKeeper.Query.FullText
-  alias VialKeeper.Storage.SQLite.{Capabilities, Connection, QueryCompiler, TermBlob}
+  alias VialKeeper.Storage.SQLite.{Connection, QueryCompiler}
 
   @physical_version 1
-  @fts_body_term_cache_limit 256
 
   @spec create(Connection.handle(), binary(), map()) ::
           {:ok, map()} | {:error, VialKeeper.Error.t()}
   def create(conn, index_id, definition) do
     case type(definition) do
       :structured -> create_structured(conn, index_id, definition)
-      :full_text -> create_full_text(conn, index_id, definition)
+      :full_text -> create_full_text(index_id, definition)
       _ -> {:error, VialKeeper.Error.invalid_request("unknown logical index type")}
     end
   end
 
   @spec drop(Connection.handle(), map()) :: :ok | {:error, VialKeeper.Error.t()}
   def drop(conn, metadata) do
-    name = MapAccess.get(metadata, :physical_name)
-
-    if valid_identifier?(name) do
-      Connection.execute(conn, "DROP #{drop_kind(metadata)} #{quote_identifier(name)}")
-      |> normalize_result()
-    else
-      {:error, VialKeeper.Error.integrity_violation("index physical metadata is invalid")}
-    end
-  end
-
-  @spec refresh_document(Connection.handle(), map(), integer(), map() | nil, boolean()) ::
-          :ok | {:error, VialKeeper.Error.t()}
-  def refresh_document(conn, metadata, doc_key, body, deleted) do
     if type(metadata) == :full_text do
+      :ok
+    else
       name = MapAccess.get(metadata, :physical_name)
 
-      with true <- valid_identifier?(name),
-           :ok <- delete_fts_row(conn, name, metadata, doc_key),
-           :ok <- insert_text_if_present(conn, name, metadata, doc_key, body, deleted) do
-        :ok
+      if valid_identifier?(name) do
+        Connection.execute(conn, "DROP INDEX #{quote_identifier(name)}")
+        |> normalize_result()
       else
-        false ->
-          {:error, VialKeeper.Error.integrity_violation("index physical metadata is invalid")}
-
-        {:error, reason} ->
-          normalize_result({:error, reason})
+        {:error, VialKeeper.Error.integrity_violation("index physical metadata is invalid")}
       end
-    else
-      :ok
-    end
-  end
-
-  @spec search(Connection.handle(), map(), binary(), binary()) ::
-          {:ok, list()} | {:error, VialKeeper.Error.t()}
-  def search(conn, metadata, text, mode) do
-    search(conn, metadata, text, mode, nil)
-  end
-
-  @spec search(Connection.handle(), map(), binary(), binary(), term()) ::
-          {:ok, list()} | {:error, VialKeeper.Error.t()}
-  def search(conn, metadata, text, mode, deadline) do
-    # FTS5 retrieves unordered/rank-tagged candidates only. Shared Query.Executor
-    # applies unicode_words_v1 via FullText.matches?/3 and canonical Ordering.
-    name = MapAccess.get(metadata, :physical_name)
-
-    with true <- valid_identifier?(name),
-         {:ok, query} <- compile_search(text, metadata, mode),
-         :ok <- check_deadline(deadline),
-         {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT d.doc_key, d.document_id, d.winning_revision, d.winning_body_json, d.winning_body_term, bm25(#{quote_identifier(name)}) FROM #{quote_identifier(name)} AS f JOIN documents AS d ON d.doc_key = f.rowid WHERE #{quote_identifier(name)} MATCH ? AND d.winning_deleted = 0",
-             [query]
-           ),
-         :ok <- check_deadline(deadline),
-         {:ok, candidates} <- decode_search_rows(rows, deadline) do
-      _ = {metadata, mode}
-      {:ok, candidates}
-    else
-      false -> {:error, VialKeeper.Error.integrity_violation("index physical metadata is invalid")}
-      {:error, %VialKeeper.Error{} = error} -> {:error, error}
-      {:error, reason} -> normalize_result({:error, reason})
     end
   end
 
@@ -95,11 +41,19 @@ defmodule VialKeeper.Storage.SQLite.Indexes do
   @spec integrity(Connection.handle(), map()) ::
           {:ok, map()} | {:error, VialKeeper.Error.t()}
   def integrity(conn, metadata) do
+    if type(metadata) == :full_text do
+      {:ok, %{index_id: MapAccess.get(metadata, :index_id), physical: :external}}
+    else
+      structured_integrity(conn, metadata)
+    end
+  end
+
+  def physical_name(index_id, :structured), do: "exdb_s_" <> suffix(index_id)
+
+  defp structured_integrity(conn, metadata) do
     name = MapAccess.get(metadata, :physical_name)
     index_id = MapAccess.get(metadata, :index_id)
-
-    expected_name =
-      physical_name(index_id, if(type(metadata) == :full_text, do: :full_text, else: :structured))
+    expected_name = physical_name(index_id, :structured)
 
     with true <- valid_identifier?(name) and name == expected_name,
          {:ok, [[kind, sql]]} <-
@@ -108,16 +62,8 @@ defmodule VialKeeper.Storage.SQLite.Indexes do
              "SELECT type, sql FROM sqlite_master WHERE name = ?",
              [name]
            ),
-         true <-
-           (type(metadata) == :full_text and kind == "table") or
-             (type(metadata) == :structured and kind == "index"),
-         true <- is_binary(sql),
-         true <- full_text_sql_ok?(metadata, sql) do
-      if type(metadata) == :full_text do
-        check_full_text_integrity(conn, metadata, name)
-      else
-        {:ok, %{index_id: index_id, physical: :present}}
-      end
+         true <- kind == "index" and is_binary(sql) do
+      {:ok, %{index_id: index_id, physical: :present}}
     else
       false ->
         {:error,
@@ -131,10 +77,6 @@ defmodule VialKeeper.Storage.SQLite.Indexes do
         normalize_result({:error, reason})
     end
   end
-
-  def physical_name(index_id, :structured), do: "exdb_s_" <> suffix(index_id)
-
-  def physical_name(index_id, :full_text), do: "fts_" <> digest24(index_id)
 
   defp create_structured(conn, index_id, definition) do
     fields = MapAccess.get(definition, :fields, [])
@@ -172,264 +114,24 @@ defmodule VialKeeper.Storage.SQLite.Indexes do
     end
   end
 
-  defp create_full_text(conn, index_id, definition) do
-    name = physical_name(index_id, :full_text)
-    diacritics = get_in(definition, ["tokenization", "diacritics"]) || "preserve"
-    remove = if diacritics == "remove", do: "2", else: "0"
-    kind = fts_table_kind()
-
-    sql = full_text_create_sql(name, remove, kind)
-
-    with :ok <- Connection.execute(conn, sql),
-         :ok <- rebuild_full_text_rows(conn, name, definition),
-         {:ok, metadata} <- metadata(index_id, definition, name, kind) do
-      {:ok, metadata}
-    else
-      {:error, reason} -> normalize_result({:error, reason})
-    end
+  defp create_full_text(index_id, definition) do
+    metadata(index_id, definition, nil)
   end
 
-  defp fts_table_kind do
-    if Capabilities.fts5_contentless_delete_supported?() do
-      "contentless_delete"
-    else
-      "contentless"
-    end
-  end
-
-  defp full_text_create_sql(name, remove, "contentless_delete") do
-    "CREATE VIRTUAL TABLE #{quote_identifier(name)} USING fts5(content, tokenize = 'unicode61 remove_diacritics #{remove}', content='', contentless_delete=1)"
-  end
-
-  defp full_text_create_sql(name, remove, "contentless") do
-    "CREATE VIRTUAL TABLE #{quote_identifier(name)} USING fts5(content, tokenize = 'unicode61 remove_diacritics #{remove}', content='')"
-  end
-
-  defp metadata(index_id, definition, name, fts_kind \\ nil) do
+  defp metadata(index_id, definition, name) do
     base = %{
       "index_id" => index_id,
-      "physical_name" => name,
       "physical_version" => @physical_version,
       "type" => type_string(definition),
       "fields" => MapAccess.get(definition, :fields, []),
       "tokenization" => MapAccess.get(definition, :tokenization, %{})
     }
 
-    {:ok, if(fts_kind, do: Map.put(base, "fts_table_kind", fts_kind), else: base)}
+    base = if is_binary(name), do: Map.put(base, "physical_name", name), else: base
+    base = if type(definition) == :full_text, do: Map.put(base, "engine", "ets"), else: base
+    {:ok, base}
   end
 
-  defp rebuild_full_text_rows(conn, name, definition) do
-    with {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT doc_key, winning_body_json, winning_body_term FROM documents WHERE winning_deleted = 0"
-           ) do
-      Enum.reduce_while(rows, :ok, fn [doc_key, body_json, body_term], :ok ->
-        rebuild_full_text_row(conn, name, definition, doc_key, body_json, body_term)
-      end)
-    end
-  end
-
-  defp rebuild_full_text_row(conn, name, definition, doc_key, body_json, body_term) do
-    case decode_body(body_json, body_term) do
-      {:ok, body} ->
-        case insert_text_if_present(conn, name, definition, doc_key, body, false) do
-          :ok -> {:cont, :ok}
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-
-      {:error, error} ->
-        {:halt, {:error, error}}
-    end
-  end
-
-  defp delete_fts_row(conn, name, metadata, doc_key) do
-    case MapAccess.get(metadata, :fts_table_kind, fts_table_kind()) do
-      "contentless_delete" ->
-        Connection.execute(conn, "DELETE FROM #{quote_identifier(name)} WHERE rowid = ?", [doc_key])
-
-      "contentless" ->
-        # Ordinary contentless tables reject DELETE; use the FTS5 delete command.
-        # Without prior content we cannot remove tokens precisely — prefer contentless-delete.
-        Connection.execute(
-          conn,
-          "INSERT INTO #{quote_identifier(name)}(#{quote_identifier(name)}, rowid, content) VALUES ('delete', ?, ?)",
-          [doc_key, ""]
-        )
-    end
-  end
-
-  defp insert_text_if_present(_conn, _name, _definition, _doc_key, _body, true), do: :ok
-
-  defp insert_text_if_present(conn, name, definition, doc_key, body, false) do
-    content = extract_text(body, definition)
-
-    if content == "" do
-      :ok
-    else
-      Connection.execute(
-        conn,
-        "INSERT INTO #{quote_identifier(name)} (rowid, content) VALUES (?, ?)",
-        [doc_key, content]
-      )
-    end
-  end
-
-  defp extract_text(body, definition) do
-    fields = MapAccess.get(definition, :fields, [])
-
-    fields
-    |> Enum.map(fn
-      field when is_binary(field) -> field
-      field -> MapAccess.get(field, :path)
-    end)
-    |> Enum.flat_map(fn path ->
-      case Pointer.get(body, path) do
-        {:ok, value} when is_binary(value) -> [value]
-        _ -> []
-      end
-    end)
-    |> Enum.join("\n")
-  end
-
-  defp compile_search(text, metadata, mode) do
-    fields = MapAccess.get(metadata, :fields, [])
-    diacritics = get_in(metadata, ["tokenization", "diacritics"]) || "preserve"
-    terms = FullText.tokens(text, if(diacritics == "remove", do: :remove, else: :preserve))
-
-    if terms == [] do
-      {:error, VialKeeper.Error.invalid_request("full-text search requires at least one term")}
-    else
-      escaped = Enum.map(terms, &quote_term/1)
-
-      query =
-        case mode do
-          "any" ->
-            Enum.join(escaped, " OR ")
-
-          "phrase" ->
-            "\"" <> Enum.map_join(terms, " ", &String.replace(&1, "\"", "\"\"")) <> "\""
-
-          "prefix" ->
-            Enum.map_join(terms, " AND ", &prefix_term/1)
-
-          _ ->
-            Enum.join(escaped, " AND ")
-        end
-
-      _ = fields
-      {:ok, query}
-    end
-  end
-
-  defp decode_search_rows(rows, deadline) do
-    rows
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {row, index}, {:ok, acc} ->
-      case periodic_deadline_check(deadline, index) do
-        :ok -> decode_search_row(row, acc)
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, values} -> {:ok, Enum.reverse(values)}
-      error -> error
-    end
-  end
-
-  defp decode_search_row([doc_key, id, revision, body_json, body_term, rank], acc) do
-    case decode_body(body_json, body_term) do
-      {:ok, body} ->
-        {:cont,
-         {:ok, [%{doc_key: doc_key, id: id, revision: revision, body: body, rank: rank} | acc]}}
-
-      {:error, error} ->
-        {:halt, {:error, error}}
-    end
-  end
-
-  defp check_full_text_integrity(conn, metadata, name) do
-    expected =
-      case Connection.query(
-             conn,
-             "SELECT doc_key, winning_body_json, winning_body_term FROM documents WHERE winning_deleted = 0"
-           ) do
-        {:ok, rows} ->
-          rows
-          |> Enum.filter(fn [_key, json, term] -> expected_text?(json, term, metadata) end)
-          |> Enum.map(&List.first/1)
-          |> MapSet.new()
-
-        {:error, reason} ->
-          throw({:error, reason})
-      end
-
-    with {:ok, rows} <- Connection.query(conn, "SELECT rowid FROM #{quote_identifier(name)}"),
-         actual <- rows |> Enum.map(&List.first/1) |> MapSet.new(),
-         true <- actual == expected do
-      {:ok, %{index_id: MapAccess.get(metadata, :index_id), physical: :consistent}}
-    else
-      false ->
-        {:error,
-         VialKeeper.Error.integrity_violation("full-text index contents are stale", %{index: name})}
-
-      {:error, reason} ->
-        normalize_result({:error, reason})
-    end
-  catch
-    {:error, reason} -> normalize_result({:error, reason})
-  end
-
-  defp full_text_sql_ok?(metadata, sql) do
-    if type(metadata) != :full_text do
-      true
-    else
-      kind = MapAccess.get(metadata, :fts_table_kind, fts_table_kind())
-      lowered = String.downcase(sql)
-
-      case kind do
-        "contentless_delete" ->
-          String.contains?(lowered, "content=''") and
-            String.contains?(lowered, "contentless_delete=1")
-
-        "contentless" ->
-          String.contains?(lowered, "content=''") and
-            not String.contains?(lowered, "contentless_delete")
-
-        _ ->
-          false
-      end
-    end
-  end
-
-  defp expected_text?(json, term, definition) do
-    with {:ok, body} <- decode_body(json, term),
-         text when text != "" <- extract_text(body, definition) do
-      true
-    else
-      _ -> false
-    end
-  end
-
-  defp decode_body(json, term) do
-    max_depth = VialKeeper.Config.host_limits()[:max_json_nesting_depth] || 100
-
-    case StrictCache.fetch_cached(json, max_depth, :fts_body_json) do
-      {:ok, body} ->
-        {:ok, body}
-
-      :miss ->
-        case TermBlob.decode_with_cache(term, json, :fts_body_term, @fts_body_term_cache_limit) do
-          {:ok, body} ->
-            {:ok, body}
-
-          {:fallback, _reason} ->
-            StrictCache.decode_with_cache(json, max_depth, :fts_body_json, 256)
-        end
-    end
-  end
-
-  defp drop_kind(metadata), do: if(type(metadata) == :full_text, do: "TABLE", else: "INDEX")
   defp type(%{"type" => "structured"}), do: :structured
   defp type(%{"type" => "full_text"}), do: :full_text
   defp type(%{type: :structured}), do: :structured
@@ -447,50 +149,13 @@ defmodule VialKeeper.Storage.SQLite.Indexes do
     |> String.replace(~r/[^a-zA-Z0-9_]/, "_")
   end
 
-  defp digest24(index_id) do
-    case to_string(index_id) do
-      <<"idx_", digest::binary-size(24)>> ->
-        digest
-
-      other ->
-        other
-        |> then(&:crypto.hash(:sha256, &1))
-        |> Base.encode16(case: :lower)
-        |> binary_part(0, 24)
-    end
-  end
-
   defp valid_identifier?(value) do
-    is_binary(value) and
-      (Regex.match?(~r/^exdb_s_[a-zA-Z0-9_]+$/, value) or
-         Regex.match?(~r/^fts_[0-9a-f]{24}$/, value))
-  end
-
-  defp check_deadline(nil), do: :ok
-
-  defp check_deadline({deadline, maximum_ms}) do
-    if System.monotonic_time() < deadline do
-      :ok
-    else
-      {:error,
-       VialKeeper.Error.resource_limit("query execution exceeded the configured limit", %{
-         maximum_ms: maximum_ms
-       })}
-    end
-  end
-
-  defp periodic_deadline_check(nil, _index), do: :ok
-
-  defp periodic_deadline_check(deadline, index) do
-    if rem(index, 32) == 0, do: check_deadline(deadline), else: :ok
+    is_binary(value) and Regex.match?(~r/^exdb_s_[a-zA-Z0-9_]+$/, value)
   end
 
   defp quote_identifier(value), do: "\"" <> String.replace(value, "\"", "\"\"") <> "\""
-  defp quote_term(value), do: "\"" <> String.replace(value, "\"", "\"\"") <> "\""
-  defp prefix_term(value), do: quote_term(value) <> "*"
 
   defp normalize_result(:ok), do: :ok
-  defp normalize_result({:error, %VialKeeper.Error{} = error}), do: {:error, error}
 
   defp normalize_result({:error, reason}),
     do:
