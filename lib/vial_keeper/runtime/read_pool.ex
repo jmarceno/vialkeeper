@@ -106,10 +106,10 @@ defmodule VialKeeper.Runtime.ReadPool do
     call(uuid, {:register, worker_pid, interrupt_fun}, 5_000)
   end
 
-  @spec complete(binary(), pid(), Job.t(), term()) :: :ok
-  def complete(uuid, worker_pid, %Job{} = job, result)
+  @spec complete(binary(), pid(), Job.t()) :: :reply | :discard | {:error, Error.t()}
+  def complete(uuid, worker_pid, %Job{} = job)
       when is_binary(uuid) and is_pid(worker_pid) do
-    GenServer.cast(via(uuid), {:complete, worker_pid, job, result})
+    call(uuid, {:complete, worker_pid, job}, 5_000)
   end
 
   @spec begin_close(binary()) :: :ok | {:error, Error.t()}
@@ -317,9 +317,9 @@ defmodule VialKeeper.Runtime.ReadPool do
     {:reply, :ok, cancel_request(state, request_ref)}
   end
 
-  @impl true
-  def handle_cast({:complete, worker_pid, %Job{} = job, result}, state) do
-    {:noreply, complete_job(state, worker_pid, job, result)}
+  def handle_call({:complete, worker_pid, %Job{} = job}, _from, state) do
+    {reply, state} = complete_job(state, worker_pid, job)
+    {:reply, reply, state}
   end
 
   @impl true
@@ -498,23 +498,24 @@ defmodule VialKeeper.Runtime.ReadPool do
     }
   end
 
-  defp complete_job(state, worker_pid, %Job{}, result) do
+  defp complete_job(state, worker_pid, %Job{}) do
     case Map.pop(state.busy, worker_pid) do
       {nil, _} ->
-        recycle_worker(state, worker_pid)
+        {:discard, recycle_worker(state, worker_pid)}
 
       {%Job{} = active, busy} ->
         cancel_timer(active.timer_ref)
         DatabaseInstrumentation.read_pool_active(state.uuid, -1)
         probe_release(active.probe_op)
 
-        unless active.cancelled? do
-          GenServer.reply(active.from, result)
-        end
+        reply = if active.cancelled?, do: :discard, else: :reply
 
-        %{state | busy: busy}
-        |> recycle_worker(worker_pid)
-        |> maybe_finish_drain()
+        state =
+          %{state | busy: busy}
+          |> recycle_worker(worker_pid)
+          |> maybe_finish_drain()
+
+        {reply, state}
     end
   end
 

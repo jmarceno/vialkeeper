@@ -65,19 +65,14 @@ defmodule VialKeeper.Runtime.ReadWorker do
 
   @impl true
   def handle_cast({:run, job}, %{context: nil} = state) do
-    ReadPool.complete(
-      state.uuid,
-      self(),
-      job,
-      {:error, Error.database_closed("database is closed")}
-    )
+    complete_read(state.uuid, job, {:error, Error.database_closed("database is closed")})
 
     {:noreply, state}
   end
 
   def handle_cast({:run, job}, state) do
     result = execute_job(state, job)
-    ReadPool.complete(state.uuid, self(), job, enforce_deadline(result, job))
+    complete_read(state.uuid, job, enforce_deadline(result, job))
     {:noreply, state}
   end
 
@@ -128,6 +123,14 @@ defmodule VialKeeper.Runtime.ReadWorker do
         run_read(state, authority, command, probe_op)
       end)
     end
+  end
+
+  defp complete_read(uuid, job, result) do
+    if ReadPool.complete(uuid, self(), job) == :reply do
+      GenServer.reply(job.from, result)
+    end
+
+    :ok
   end
 
   defp enforce_deadline(result, %{deadline_ms: deadline_ms}) do
