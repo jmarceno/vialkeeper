@@ -130,7 +130,7 @@ defmodule VialKeeper.Query.Executor do
           {:ok, [document()]} | {:error, VialKeeper.Error.t()}
   def sort_documents(documents, request, deadline)
       when is_list(documents) and is_map(request) do
-    sort = MapAccess.get(request, :sort, [])
+    sort = Ordering.compile_sort(MapAccess.get(request, :sort, []))
 
     with :ok <- check_deadline(deadline),
          sorted <- Ordering.sort_documents(documents, sort),
@@ -193,7 +193,10 @@ defmodule VialKeeper.Query.Executor do
       index_bindings: index_bindings,
       selected_indexes: Enum.map(index_bindings, & &1.index_id),
       last_ordering_key:
-        Ordering.ordering_key(List.last(page_source), MapAccess.get(request, :sort, []))
+        Ordering.ordering_key(
+          List.last(page_source),
+          Ordering.compile_sort(MapAccess.get(request, :sort, []))
+        )
     }
   end
 
@@ -333,12 +336,14 @@ defmodule VialKeeper.Query.Executor do
   end
 
   defp filter_documents(documents, predicate, deadline) do
-    documents
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, &filter_document(&1, &2, predicate, deadline))
-    |> case do
-      {:ok, values} -> {:ok, Enum.reverse(values)}
-      error -> error
+    with {:ok, compiled} <- Selector.compile(predicate) do
+      documents
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, []}, &filter_document(&1, &2, compiled, deadline))
+      |> case do
+        {:ok, values} -> {:ok, Enum.reverse(values)}
+        error -> error
+      end
     end
   end
 
@@ -358,7 +363,7 @@ defmodule VialKeeper.Query.Executor do
   defp cursor_values(documents, request) do
     case MapAccess.get(request, :after_ordering) do
       after_ordering when is_map(after_ordering) ->
-        sort = MapAccess.get(request, :sort, [])
+        sort = Ordering.compile_sort(MapAccess.get(request, :sort, []))
 
         Enum.drop_while(documents, fn document ->
           Ordering.compare_cursor(document, after_ordering, sort) != :gt

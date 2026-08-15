@@ -20,6 +20,9 @@ defmodule VialKeeper.View.DefinitionTest do
     assert first.name == "by-type"
     assert first.reducer == :_count
     assert first.value == nil
+    assert first.compiled_predicate == :match_all
+    assert first.compiled_key == [{:path, ["type"]}]
+    assert first.compiled_value == nil
   end
 
   test "rejects unknown fields" do

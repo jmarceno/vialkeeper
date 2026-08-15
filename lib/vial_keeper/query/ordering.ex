@@ -6,13 +6,20 @@ defmodule VialKeeper.Query.Ordering do
 
   @type comparison :: :lt | :eq | :gt
 
+  @doc "Parses each sort JSON Pointer once so key extraction can reuse tokens."
+  @spec compile_sort(list()) :: list()
+  def compile_sort(sort) when is_list(sort), do: Enum.map(sort, &compile_sort_field/1)
+  def compile_sort(_sort), do: []
+
   @doc "Builds the opaque ordering key used by ordinary query bookmarks."
   def ordering_key(nil, _sort), do: nil
 
   def ordering_key(document, sort) do
+    sort = compile_sort(sort)
+
     values =
       Enum.map(sort, fn field ->
-        case Pointer.get(MapAccess.get(document, :body), MapAccess.get(field, :path)) do
+        case sort_field_value(document, field) do
           {:ok, value} -> %{"present" => true, "value" => value}
           :missing -> %{"present" => false}
         end
@@ -35,6 +42,8 @@ defmodule VialKeeper.Query.Ordering do
   @doc "Sorts documents while computing each document's ordering key once."
   @spec sort_documents([map()], list()) :: [map()]
   def sort_documents(documents, sort) when is_list(documents) and is_list(sort) do
+    sort = compile_sort(sort)
+
     documents
     |> Enum.map(fn document -> {ordering_key(document, sort), document} end)
     |> Enum.sort(fn {left_key, _left_document}, {right_key, _right_document} ->
@@ -68,6 +77,38 @@ defmodule VialKeeper.Query.Ordering do
   end
 
   defp maybe_put_rank(key, _document, _sort), do: key
+
+  defp compile_sort_field(field) when is_map(field) do
+    case MapAccess.get(field, :tokens) do
+      tokens when is_list(tokens) ->
+        field
+
+      _ ->
+        path = MapAccess.get(field, :path)
+
+        tokens =
+          case Pointer.parse(path || "") do
+            {:ok, tokens} -> tokens
+            _ -> []
+          end
+
+        Map.put(field, :tokens, tokens)
+    end
+  end
+
+  defp compile_sort_field(field), do: field
+
+  defp sort_field_value(document, field) do
+    body = MapAccess.get(document, :body)
+
+    case MapAccess.get(field, :tokens) do
+      tokens when is_list(tokens) ->
+        Pointer.get_tokens(body, tokens)
+
+      _ ->
+        Pointer.get(body, MapAccess.get(field, :path))
+    end
+  end
 
   defp ordering_key?(%{"sort" => sort, "id" => id}) when is_list(sort) and is_binary(id), do: true
   defp ordering_key?(%{sort: sort, id: id}) when is_list(sort) and is_binary(id), do: true

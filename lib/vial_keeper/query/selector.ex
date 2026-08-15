@@ -6,13 +6,86 @@ defmodule VialKeeper.Query.Selector do
 
   @safe_integer 9_007_199_254_740_991
 
-  @spec matches?(map(), Predicate.t()) :: {:ok, boolean()} | {:error, VialKeeper.Error.t()}
+  @type compiled ::
+          :match_all
+          | {:and, [compiled()]}
+          | {:or, [compiled()]}
+          | {:not, compiled()}
+          | {:compiled_field, [binary()], [Predicate.field_predicate() | {:elem_match, compiled()}]}
+
+  @spec matches?(map(), Predicate.t() | compiled()) ::
+          {:ok, boolean()} | {:error, VialKeeper.Error.t()}
   def matches?(document, predicate) when is_map(document) do
     evaluate(document, predicate)
   end
 
   def matches?(_, _),
     do: {:error, VialKeeper.Error.invalid_request("selector predicate is invalid")}
+
+  @doc "Parses each selector JSON Pointer once so evaluation can reuse tokens."
+  @spec compile(Predicate.t() | compiled()) ::
+          {:ok, compiled()} | {:error, VialKeeper.Error.t()}
+  def compile(:match_all), do: {:ok, :match_all}
+
+  def compile({:and, children}) when is_list(children), do: compile_children(:and, children)
+
+  def compile({:or, children}) when is_list(children), do: compile_children(:or, children)
+
+  def compile({:not, child}) do
+    with {:ok, compiled} <- compile(child), do: {:ok, {:not, compiled}}
+  end
+
+  def compile({:compiled_field, tokens, predicates})
+      when is_list(tokens) and is_list(predicates),
+      do: {:ok, {:compiled_field, tokens, predicates}}
+
+  def compile({:field, path, predicates}) when is_binary(path) and is_list(predicates) do
+    case Pointer.parse(path) do
+      {:ok, [_ | _] = tokens} ->
+        with {:ok, predicates} <- compile_field_predicates(predicates) do
+          {:ok, {:compiled_field, tokens, predicates}}
+        end
+
+      {:ok, []} ->
+        {:error, VialKeeper.Error.invalid_request("selector path is invalid")}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  def compile(_),
+    do: {:error, VialKeeper.Error.invalid_request("selector predicate is invalid")}
+
+  defp compile_children(operator, children) do
+    Enum.reduce_while(children, {:ok, []}, fn child, {:ok, acc} ->
+      case compile(child) do
+        {:ok, compiled} -> {:cont, {:ok, [compiled | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, compiled} -> {:ok, {operator, Enum.reverse(compiled)}}
+      error -> error
+    end
+  end
+
+  defp compile_field_predicates(predicates) do
+    Enum.reduce_while(predicates, {:ok, []}, fn
+      {:elem_match, inner}, {:ok, acc} ->
+        case compile(inner) do
+          {:ok, compiled} -> {:cont, {:ok, [{:elem_match, compiled} | acc]}}
+          {:error, _} = error -> {:halt, error}
+        end
+
+      predicate, {:ok, acc} ->
+        {:cont, {:ok, [predicate | acc]}}
+    end)
+    |> case do
+      {:ok, compiled} -> {:ok, Enum.reverse(compiled)}
+      error -> error
+    end
+  end
 
   defp evaluate(_document, :match_all), do: {:ok, true}
 
@@ -29,13 +102,15 @@ defmodule VialKeeper.Query.Selector do
     end
   end
 
+  defp evaluate(document, {:compiled_field, tokens, predicates})
+       when is_list(tokens) and tokens != [] do
+    evaluate_field_predicates(Pointer.get_tokens(document, tokens), predicates)
+  end
+
   defp evaluate(document, {:field, path, predicates}) when is_binary(path) do
-    with {:ok, [_ | _]} <- Pointer.parse(path),
-         value <- Pointer.get(document, path) do
-      evaluate_field_predicates(value, predicates)
-    else
+    case compile({:field, path, predicates}) do
+      {:ok, compiled} -> evaluate(document, compiled)
       {:error, _} = error -> error
-      _ -> {:error, VialKeeper.Error.invalid_request("selector path is invalid")}
     end
   end
 

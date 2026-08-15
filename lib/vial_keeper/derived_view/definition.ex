@@ -21,8 +21,11 @@ defmodule VialKeeper.DerivedView.Definition do
           required(:sources) => [binary()],
           required(:selector) => map(),
           required(:predicate) => term(),
+          required(:compiled_predicate) => term(),
           required(:key) => [map()],
+          required(:compiled_key) => [term()],
           required(:value) => map() | nil,
+          required(:compiled_value) => term() | nil,
           required(:reducer) => atom() | nil,
           required(:group_level) => non_neg_integer() | nil,
           required(:options) => map(),
@@ -61,8 +64,11 @@ defmodule VialKeeper.DerivedView.Definition do
          sources: sources,
          selector: map_definition.selector,
          predicate: map_definition.predicate,
+         compiled_predicate: map_definition.compiled_predicate,
          key: map_definition.key,
+         compiled_key: map_definition.compiled_key,
          value: map_definition.value,
+         compiled_value: map_definition.compiled_value,
          reducer: reducer,
          group_level: group_level,
          options: options,
@@ -201,8 +207,11 @@ defmodule VialKeeper.DerivedView.Definition do
            %{
              selector: normalized.selector,
              predicate: normalized.predicate,
+             compiled_predicate: normalized.compiled_predicate,
              key: normalized.key,
-             value: normalized.value
+             compiled_key: normalized.compiled_key,
+             value: normalized.value,
+             compiled_value: normalized.compiled_value
            }}
 
         {:error, _} = error ->

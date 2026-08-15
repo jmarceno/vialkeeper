@@ -202,4 +202,25 @@ defmodule VialKeeper.Query.SelectorTest do
                ]}}
            ) == {:ok, false}
   end
+
+  test "compiled predicates match the uncompiled evaluator" do
+    body = %{
+      "state" => "open",
+      "priority" => 4,
+      "items" => [%{"ok" => true, "state" => "open"}]
+    }
+
+    predicate =
+      {:and,
+       [
+         {:field, "/state", [{:eq, "open"}]},
+         {:field, "/priority", [{:gte, 3}, {:lt, 5}]},
+         {:field, "/items", [{:elem_match, {:field, "/ok", [{:eq, true}]}}]}
+       ]}
+
+    assert {:ok, compiled} = Selector.compile(predicate)
+    assert Selector.matches?(body, predicate) == {:ok, true}
+    assert Selector.matches?(body, compiled) == {:ok, true}
+    assert Selector.compile(compiled) == {:ok, compiled}
+  end
 end

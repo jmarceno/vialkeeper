@@ -2,7 +2,7 @@ defmodule VialKeeper.View.Definition do
   @moduledoc "Strict normalize/validate/digest for declarative view definitions."
 
   alias VialKeeper.JSON.Canonical
-  alias VialKeeper.Query.Normalizer
+  alias VialKeeper.Query.{Normalizer, Selector}
   alias VialKeeper.View.{Expression, Reducer}
 
   @known_fields ~w(name selector key value reducer)
@@ -13,8 +13,11 @@ defmodule VialKeeper.View.Definition do
           required(:name) => binary(),
           required(:selector) => map(),
           required(:predicate) => term(),
+          required(:compiled_predicate) => term(),
           required(:key) => [map()],
+          required(:compiled_key) => [term()],
           optional(:value) => map() | nil,
+          optional(:compiled_value) => term(),
           required(:reducer) => Reducer.reducer(),
           required(:definition_json) => binary(),
           required(:definition_digest) => binary()
@@ -34,14 +37,20 @@ defmodule VialKeeper.View.Definition do
          canonical <- canonical_definition(name, selector, key, value, reducer),
          {:ok, definition_json} <- Canonical.encode(canonical),
          definition_digest <-
-           :crypto.hash(:sha256, definition_json) |> Base.encode16(case: :lower) do
+           :crypto.hash(:sha256, definition_json) |> Base.encode16(case: :lower),
+         {:ok, compiled_predicate} <- Selector.compile(predicate),
+         {:ok, compiled_key} <- Expression.compile_many(key),
+         {:ok, compiled_value} <- Expression.compile_optional(value) do
       {:ok,
        %{
          name: name,
          selector: selector,
          predicate: predicate,
+         compiled_predicate: compiled_predicate,
          key: key,
+         compiled_key: compiled_key,
          value: value,
+         compiled_value: compiled_value,
          reducer: reducer,
          definition_json: definition_json,
          definition_digest: definition_digest

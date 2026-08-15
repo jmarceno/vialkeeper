@@ -5,17 +5,57 @@ defmodule VialKeeper.View.Expression do
   alias VialKeeper.View.Number
 
   @type t :: %{required(:path) => binary()} | %{required(:literal) => term()}
+  @type compiled :: {:path, [binary()]} | {:literal, term()}
 
-  @spec evaluate(t(), map()) :: {:ok, term()} | :missing | {:error, VialKeeper.Error.t()}
+  @spec compile(t()) :: {:ok, compiled()} | {:error, VialKeeper.Error.t()}
+  def compile(%{"path" => path}) when is_binary(path), do: compile(%{path: path})
+
+  def compile(%{path: path}) when is_binary(path) do
+    case Pointer.parse(path) do
+      {:ok, tokens} -> {:ok, {:path, tokens}}
+      {:error, _} = error -> error
+    end
+  end
+
+  def compile(%{"literal" => literal}), do: {:ok, {:literal, literal}}
+  def compile(%{literal: literal}), do: {:ok, {:literal, literal}}
+
+  def compile(_),
+    do: {:error, VialKeeper.Error.invalid_request("view expression is invalid")}
+
+  @spec compile_many([t()]) :: {:ok, [compiled()]} | {:error, VialKeeper.Error.t()}
+  def compile_many(expressions) when is_list(expressions),
+    do: compile_many(expressions, [])
+
+  defp compile_many([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp compile_many([expression | rest], acc) do
+    case compile(expression) do
+      {:ok, compiled} -> compile_many(rest, [compiled | acc])
+      {:error, _} = error -> error
+    end
+  end
+
+  @spec compile_optional(t() | nil) :: {:ok, compiled() | nil} | {:error, VialKeeper.Error.t()}
+  def compile_optional(nil), do: {:ok, nil}
+  def compile_optional(expression), do: compile(expression)
+
+  @spec evaluate(t() | compiled(), map()) ::
+          {:ok, term()} | :missing | {:error, VialKeeper.Error.t()}
+  def evaluate({:path, []}, document), do: {:ok, document}
+
+  def evaluate({:path, tokens}, document) when is_list(tokens),
+    do: Pointer.get_tokens(document, tokens)
+
+  def evaluate({:literal, literal}, _document), do: {:ok, literal}
+
   def evaluate(%{"path" => path}, document) when is_binary(path),
     do: evaluate(%{path: path}, document)
 
   def evaluate(%{path: path}, document) when is_binary(path) do
-    with {:ok, tokens} <- Pointer.parse(path) do
-      case tokens do
-        [] -> {:ok, document}
-        _ -> resolve_pointer(document, path)
-      end
+    case compile(%{path: path}) do
+      {:ok, compiled} -> evaluate(compiled, document)
+      {:error, _} = error -> error
     end
   end
 
@@ -82,12 +122,4 @@ defmodule VialKeeper.View.Expression do
 
   defp normalize_literal(_),
     do: {:error, VialKeeper.Error.invalid_request("view expression literal must be a JSON scalar")}
-
-  defp resolve_pointer(document, path) do
-    case Pointer.get(document, path) do
-      {:ok, value} -> {:ok, value}
-      :missing -> :missing
-      {:error, _} = error -> error
-    end
-  end
 end
