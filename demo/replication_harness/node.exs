@@ -20,6 +20,9 @@ Application.put_env(
 defmodule VialKeeper.ReplicationHarness.Node do
   alias VialKeeper.Runtime.DatabaseCatalog
 
+  @frankenstein_path Path.join([__DIR__, "fixtures", "frankenstein.md"])
+  @frankenstein_index "frankenstein"
+
   @poll_interval 100
 
   def main([mode]) when mode in ["web", "cli", "worker"] do
@@ -76,6 +79,7 @@ defmodule VialKeeper.ReplicationHarness.Node do
 
     a = create!("web-a.db")
     b = create!("web-b.db")
+    fts = create!("web-fts.db")
 
     assert_ok!(
       VialKeeper.Documents.put(a.database_uuid, %{
@@ -84,6 +88,7 @@ defmodule VialKeeper.ReplicationHarness.Node do
       })
     )
 
+    seed_frankenstein!(fts.database_uuid)
     attachment_location = attachment_location!(a.database_uuid)
 
     write_json!(main_config, %{
@@ -92,6 +97,7 @@ defmodule VialKeeper.ReplicationHarness.Node do
         client_config("a", "Client A", "Database A", a.database_uuid, server_url),
         client_config("b", "Client B", "Database B", b.database_uuid, server_url)
       ],
+      "fts" => fts_config(fts.database_uuid, server_url),
       "native_client" => nil,
       "shadow" => %{
         "source_database_uuid" => a.database_uuid,
@@ -102,6 +108,7 @@ defmodule VialKeeper.ReplicationHarness.Node do
     IO.puts("Web database node started")
     IO.puts("  Client A: #{a.database_uuid}")
     IO.puts("  Client B: #{b.database_uuid}")
+    IO.puts("  Full-text corpus: #{fts.database_uuid}")
     IO.puts("  HTTP: #{server_url}")
     IO.puts("Waiting for the native Elixir node at #{cli_config}…")
 
@@ -123,6 +130,7 @@ defmodule VialKeeper.ReplicationHarness.Node do
         client_config("a", "Client A", "Database A", a.database_uuid, server_url),
         client_config("b", "Client B", "Database B", b.database_uuid, server_url)
       ],
+      "fts" => fts_config(fts.database_uuid, server_url),
       "native_client" => Map.merge(cli, %{"replication_source" => a.database_uuid}),
       "jobs" => jobs,
       "shadow" => %{
@@ -262,6 +270,37 @@ defmodule VialKeeper.ReplicationHarness.Node do
       "database_uuid" => uuid,
       "endpoint" => endpoint
     }
+
+  defp fts_config(uuid, endpoint),
+    do: %{
+      "key" => "fts",
+      "label" => "Frankenstein",
+      "database_label" => "Full-text corpus",
+      "database_uuid" => uuid,
+      "endpoint" => endpoint,
+      "index" => @frankenstein_index
+    }
+
+  defp seed_frankenstein!(uuid) do
+    Code.require_file("frankenstein_corpus.exs", __DIR__)
+
+    operations =
+      Enum.map(
+        VialKeeper.ReplicationHarness.FrankensteinCorpus.documents!(@frankenstein_path),
+        fn %{id: id, body: body} -> %{type: :put, id: id, body: body} end
+      )
+
+    assert_ok!(VialKeeper.Documents.bulk_write(uuid, operations))
+
+    assert_ok!(
+      VialKeeper.Query.create_index(uuid, %{
+        "name" => @frankenstein_index,
+        "type" => "full_text",
+        "fields" => ["/text"],
+        "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+      })
+    )
+  end
 
   defp private_worker_config(key, config_path) do
     worker = wait_for_json!(config_path, 120_000)

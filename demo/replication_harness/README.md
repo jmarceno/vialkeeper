@@ -60,6 +60,16 @@ The recipes cover:
 - authenticated replication identities, durable replication jobs, control-plane
   capabilities, ordinary database visibility, and integrity boundaries.
 
+The page also has a search-as-you-type panel against a dedicated corpus
+database. Startup loads Mary Shelley’s *Frankenstein* from
+`demo/replication_harness/fixtures/frankenstein.md` as one document per letter
+and chapter, then creates a `full_text` index named `frankenstein`. Typing in
+the search field issues prefix-mode `POST /v1/databases/:uuid/query` requests
+through the same authenticated proxy as Clients A and B. The panel records
+client-side timings for the debounce wait, query round-trip, total delay after
+the last keystroke, returned/examined counts, and document-open latency so a
+slow typeahead can be split into UI wait versus engine work.
+
 Worker cards also expose Stop and Restart actions. These actions are bounded by
 the launcher-owned worker process and are useful for observing route
 invalidation and generation recovery without editing production configuration.

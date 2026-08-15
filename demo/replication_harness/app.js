@@ -6,6 +6,11 @@ const state = {
   labState: null,
   scenarios: [],
   scenarioRunning: false,
+  ftsTimer: null,
+  ftsAbort: null,
+  ftsSelectedId: null,
+  ftsKeystrokeAt: null,
+  ftsRecentMs: [],
 };
 
 const elements = {
@@ -28,6 +33,13 @@ const elements = {
   scenarioResult: document.querySelector("#scenario-result"),
   resultStatus: document.querySelector('[data-role="result-status"]'),
   resultBody: document.querySelector('[data-role="result-body"]'),
+  ftsPanel: document.querySelector("#fts-panel"),
+  ftsStatus: document.querySelector("#fts-status"),
+  ftsStatusText: document.querySelector("#fts-status-text"),
+  ftsQuery: document.querySelector("#fts-query"),
+  ftsResults: document.querySelector("#fts-results"),
+  ftsReader: document.querySelector("#fts-reader"),
+  ftsTiming: document.querySelector("#fts-timing"),
 };
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -685,6 +697,266 @@ function renderNativeInfo(nativeClient) {
   `;
 }
 
+const ftsMinQueryLength = 2;
+const ftsDebounceMs = 160;
+
+function ftsTimingNode(role) {
+  return elements.ftsTiming?.querySelector(`[data-role="${role}"]`);
+}
+
+function setFtsTimingText(role, value) {
+  const node = ftsTimingNode(role);
+  if (node) node.textContent = value;
+}
+
+function ftsLatencyBand(milliseconds) {
+  if (!Number.isFinite(milliseconds)) return "idle";
+  if (milliseconds >= 200) return "slow";
+  if (milliseconds >= 50) return "watch";
+  return "fast";
+}
+
+function setFtsTiming(update) {
+  if (!elements.ftsTiming) return;
+  const phase = update.phase || elements.ftsTiming.dataset.phase || "idle";
+  elements.ftsTiming.dataset.phase = phase;
+  setFtsTimingText("fts-debounce", formatDuration(ftsDebounceMs));
+
+  if (update.phase === "idle") {
+    setFtsTimingText("fts-phase", "Idle");
+    setFtsTimingText("fts-query-ms", "—");
+    setFtsTimingText("fts-total-ms", "—");
+    setFtsTimingText("fts-counts", "—");
+    elements.ftsTiming.dataset.band = "idle";
+    return;
+  }
+
+  if (update.phase === "debounce") {
+    setFtsTimingText("fts-phase", `Debounce ${formatDuration(ftsDebounceMs)}`);
+    setFtsTimingText("fts-query-ms", "—");
+    setFtsTimingText("fts-total-ms", "—");
+    elements.ftsTiming.dataset.band = "idle";
+    return;
+  }
+
+  if (update.phase === "query") {
+    setFtsTimingText("fts-phase", "Query in flight");
+    setFtsTimingText("fts-query-ms", "…");
+    setFtsTimingText("fts-total-ms", "…");
+    elements.ftsTiming.dataset.band = "idle";
+    return;
+  }
+
+  if (update.phase === "error") {
+    setFtsTimingText("fts-phase", "Error");
+    if (update.queryMs != null) setFtsTimingText("fts-query-ms", formatDuration(update.queryMs));
+    if (update.totalMs != null) setFtsTimingText("fts-total-ms", formatDuration(update.totalMs));
+    elements.ftsTiming.dataset.band = ftsLatencyBand(update.queryMs ?? update.totalMs);
+    return;
+  }
+
+  setFtsTimingText("fts-phase", "Done");
+  setFtsTimingText("fts-query-ms", formatDuration(update.queryMs));
+  setFtsTimingText("fts-total-ms", formatDuration(update.totalMs));
+  if (update.returned != null || update.examined != null) {
+    const returned = update.returned ?? "—";
+    const examined = update.examined ?? "—";
+    setFtsTimingText("fts-counts", `${returned} / ${examined}`);
+  }
+  elements.ftsTiming.dataset.band = ftsLatencyBand(update.queryMs);
+}
+
+function recordFtsQueryMs(milliseconds) {
+  if (!Number.isFinite(milliseconds)) return;
+  state.ftsRecentMs = [...state.ftsRecentMs, milliseconds].slice(-8);
+  setFtsTimingText(
+    "fts-recent",
+    state.ftsRecentMs.map((value) => formatDuration(value)).join(" · ") || "—",
+  );
+}
+
+function setFtsStatus(stateName, text) {
+  if (!elements.ftsStatus) return;
+  elements.ftsStatus.dataset.state = stateName;
+  elements.ftsStatusText.textContent = text;
+}
+
+function highlightMatches(text, query) {
+  const escaped = escapeHtml(text);
+  const tokens = query
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
+  return tokens.reduce((html, token) => {
+    const pattern = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return html.replace(new RegExp(`(${pattern})`, "gi"), "<mark>$1</mark>");
+  }, escaped);
+}
+
+function ftsField(documentValue, pointer, fallbackKey) {
+  return documentValue?.fields?.[pointer] ?? documentValue?.body?.[fallbackKey] ?? "";
+}
+
+async function ftsRequest(path, body, signal) {
+  const options = { headers: { accept: "application/json" }, signal };
+  if (body !== undefined) {
+    options.method = "POST";
+    options.headers["content-type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+
+  const started = performance.now();
+  const response = await fetch(`/api/fts${path}`, options);
+  let envelope;
+  try {
+    envelope = await response.json();
+  } catch {
+    throw Object.assign(new Error(`HTTP ${response.status} returned a non-JSON response`), {
+      elapsedMs: performance.now() - started,
+    });
+  }
+  const elapsedMs = performance.now() - started;
+  if (!response.ok || envelope.error) {
+    throw Object.assign(new Error(envelope.error?.message || `HTTP ${response.status}`), {
+      elapsedMs,
+    });
+  }
+  return { data: envelope.data, elapsedMs };
+}
+
+function renderFtsIdle(message) {
+  elements.ftsResults.innerHTML = `<p class="fts-empty">${escapeHtml(message)}</p>`;
+  if (!state.ftsSelectedId) {
+    elements.ftsReader.innerHTML = `<p class="fts-empty">Select a match to read the full letter or chapter.</p>`;
+  }
+}
+
+function renderFtsHits(hits, query) {
+  if (hits.length === 0) {
+    renderFtsIdle("No letters or chapters matched that prefix.");
+    return;
+  }
+
+  elements.ftsResults.innerHTML = hits
+    .map((hit) => {
+      const title = ftsField(hit, "/title", "title") || hit.id;
+      const excerpt = ftsField(hit, "/excerpt", "excerpt");
+      const selected = hit.id === state.ftsSelectedId ? "true" : "false";
+      return `
+        <button type="button" class="fts-hit" data-id="${escapeHtml(hit.id)}" aria-selected="${selected}">
+          <h3>${highlightMatches(title, query)}</h3>
+          <p>${highlightMatches(excerpt, query)}</p>
+        </button>
+      `;
+    })
+    .join("");
+
+  for (const button of elements.ftsResults.querySelectorAll("[data-id]")) {
+    button.addEventListener("click", () => void openFtsDocument(button.dataset.id, query));
+  }
+}
+
+async function openFtsDocument(id, query) {
+  const fts = state.config?.fts;
+  if (!fts) return;
+  state.ftsSelectedId = id;
+  for (const button of elements.ftsResults.querySelectorAll("[data-id]")) {
+    button.setAttribute("aria-selected", button.dataset.id === id ? "true" : "false");
+  }
+
+  try {
+    const { data: documentValue, elapsedMs } = await ftsRequest(
+      `/v1/databases/${fts.database_uuid}/documents/get`,
+      { id },
+    );
+    setFtsTimingText("fts-open-ms", formatDuration(elapsedMs));
+    const title = documentValue.body?.title || documentValue.id;
+    const text = documentValue.body?.text || "";
+    elements.ftsReader.innerHTML = `
+      <h3>${highlightMatches(title, query)}</h3>
+      <pre class="fts-reader-body">${highlightMatches(text, query)}</pre>
+    `;
+  } catch (error) {
+    if (Number.isFinite(error.elapsedMs)) setFtsTimingText("fts-open-ms", formatDuration(error.elapsedMs));
+    elements.ftsReader.innerHTML = `<p class="fts-empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function searchFts(rawQuery) {
+  const fts = state.config?.fts;
+  if (!fts) return;
+  const query = rawQuery.trim();
+  state.ftsAbort?.abort();
+
+  if (query.length < ftsMinQueryLength) {
+    setFtsStatus("connected", "Corpus indexed");
+    setFtsTiming({ phase: "idle" });
+    renderFtsIdle("Type at least two letters to search the seeded corpus.");
+    return;
+  }
+
+  const abort = new AbortController();
+  state.ftsAbort = abort;
+  setFtsStatus("working", "Searching…");
+  setFtsTiming({ phase: "query" });
+
+  try {
+    const { data: page, elapsedMs } = await ftsRequest(
+      `/v1/databases/${fts.database_uuid}/query`,
+      {
+        search: { index: fts.index, text: query, mode: "prefix" },
+        fields: ["/title", "/excerpt"],
+        limit: 12,
+      },
+      abort.signal,
+    );
+    if (abort.signal.aborted) return;
+    const hits = page.documents || page.results || [];
+    const totalMs =
+      state.ftsKeystrokeAt == null ? elapsedMs + ftsDebounceMs : performance.now() - state.ftsKeystrokeAt;
+    recordFtsQueryMs(elapsedMs);
+    setFtsTiming({
+      phase: "done",
+      queryMs: elapsedMs,
+      totalMs,
+      returned: hits.length,
+      examined: page.examined,
+    });
+    setFtsStatus(
+      "connected",
+      `${hits.length} match${hits.length === 1 ? "" : "es"} · ${formatDuration(elapsedMs)}`,
+    );
+    renderFtsHits(hits, query);
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    const totalMs =
+      state.ftsKeystrokeAt == null ? error.elapsedMs : performance.now() - state.ftsKeystrokeAt;
+    setFtsTiming({ phase: "error", queryMs: error.elapsedMs, totalMs });
+    setFtsStatus("error", error.message);
+    renderFtsIdle(error.message);
+  }
+}
+
+function bindFtsSearch() {
+  const fts = state.config?.fts;
+  if (!fts || !elements.ftsPanel) return;
+  elements.ftsPanel.hidden = false;
+  setFtsStatus("connected", "Corpus indexed");
+  setFtsTiming({ phase: "idle" });
+  elements.ftsQuery.addEventListener("input", (event) => {
+    clearTimeout(state.ftsTimer);
+    const value = event.target.value;
+    state.ftsKeystrokeAt = performance.now();
+    if (value.trim().length >= ftsMinQueryLength) {
+      setFtsStatus("working", `Waiting ${formatDuration(ftsDebounceMs)} debounce…`);
+      setFtsTiming({ phase: "debounce" });
+    } else {
+      setFtsTiming({ phase: "idle" });
+    }
+    state.ftsTimer = window.setTimeout(() => void searchFts(value), ftsDebounceMs);
+  });
+}
+
 async function start() {
   try {
     const response = await fetch("/config.json", { cache: "no-store" });
@@ -700,6 +972,7 @@ async function start() {
     }
     renderClients();
     renderNativeInfo(state.config.native_client);
+    bindFtsSearch();
     await Promise.all([loadScenarios(), refreshLabState()]);
 
     const checks = await Promise.all([...state.clients.values()].map(checkConnection));

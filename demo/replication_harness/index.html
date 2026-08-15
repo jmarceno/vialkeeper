@@ -145,6 +145,76 @@
         </p>
       </section>
 
+      <section class="fts-panel" id="fts-panel" aria-labelledby="fts-heading" hidden>
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Full-text search · unicode_words_v1 · prefix</p>
+            <h2 id="fts-heading">Search Frankenstein as you type</h2>
+            <p class="fts-copy">
+              A dedicated corpus database is seeded with Mary Shelley’s <em>Frankenstein</em>
+              as one document per letter and chapter, then indexed with the product full-text
+              engine. Queries use the same authenticated HTTP <code>/v1</code> search contract.
+            </p>
+          </div>
+          <div class="fts-status" id="fts-status" data-state="starting">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="fts-status-text">Waiting for the corpus…</span>
+          </div>
+        </div>
+
+        <label class="fts-search-label">
+          <span class="field-label">Search the seeded book</span>
+          <input
+            id="fts-query"
+            class="text-input fts-search-input"
+            type="search"
+            autocomplete="off"
+            spellcheck="true"
+            placeholder="Try monster, Walton, or lightn…"
+          />
+        </label>
+
+        <div class="fts-timing" id="fts-timing" data-phase="idle">
+          <div>
+            <span class="field-label">Phase</span>
+            <strong data-role="fts-phase">Idle</strong>
+          </div>
+          <div>
+            <span class="field-label">Debounce</span>
+            <strong data-role="fts-debounce">160 ms</strong>
+          </div>
+          <div data-role="fts-query-cell">
+            <span class="field-label">Query RTT</span>
+            <strong data-role="fts-query-ms">—</strong>
+          </div>
+          <div>
+            <span class="field-label">Total after keystroke</span>
+            <strong data-role="fts-total-ms">—</strong>
+          </div>
+          <div>
+            <span class="field-label">Returned / examined</span>
+            <strong data-role="fts-counts">—</strong>
+          </div>
+          <div>
+            <span class="field-label">Open document</span>
+            <strong data-role="fts-open-ms">—</strong>
+          </div>
+          <div class="fts-timing-recent">
+            <span class="field-label">Recent query RTTs</span>
+            <strong data-role="fts-recent">—</strong>
+          </div>
+        </div>
+
+        <div class="fts-layout">
+          <div class="fts-results" id="fts-results" aria-live="polite">
+            <p class="fts-empty">Type at least two letters to search the seeded corpus.</p>
+          </div>
+          <article class="fts-reader" id="fts-reader">
+            <p class="fts-empty">Select a match to read the full letter or chapter.</p>
+          </article>
+        </div>
+      </section>
+
       <section class="lab-panel" aria-labelledby="lab-heading">
         <div class="panel-heading">
           <div>

@@ -138,9 +138,14 @@ async function proxyEndpoint(request, response, endpoint, suffix, authToken) {
 
 async function proxy(request, response, clientKey, suffix) {
   const [config, privateConfig] = await Promise.all([readConfig(), readPrivateConfig()]);
-  const client = config.clients.find((value) => value.key === clientKey);
+  const client = demoClient(config, clientKey);
   if (!client) return sendJson(response, 404, { error: "unknown demo client" });
   return proxyEndpoint(request, response, client.endpoint, suffix, privateConfig.source_token);
+}
+
+function demoClient(config, clientKey) {
+  if (clientKey === "fts") return config.fts || null;
+  return (config.clients || []).find((value) => value.key === clientKey);
 }
 
 async function probe(endpoint, token, path, options = {}) {
@@ -420,7 +425,7 @@ const server = createServer(async (request, response) => {
       return sendJson(response, 200, { data: await workerAction(workerActionMatch[1], body.action) });
     }
 
-    const proxyMatch = url.pathname.match(/^\/api\/(a|b)(\/.*)?$/);
+    const proxyMatch = url.pathname.match(/^\/api\/(a|b|fts)(\/.*)?$/);
     if (proxyMatch) return await proxy(request, response, proxyMatch[1], proxyMatch[2] || "/");
 
     if (url.pathname === "/api/observability/web") {

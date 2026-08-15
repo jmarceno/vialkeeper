@@ -50,6 +50,11 @@ dataset. They are trend evidence, not portable hardware-independent promises.
 - `index_build`: measure structured-index creation while deleting the index
   outside the timed region.
 - `indexed_query`: measure a query using an existing structured index.
+- `fts_query`: measure a full-text query using an existing `unicode_words_v1`
+  index. Setup seeds ~2 KiB ASCII bodies and indexes `/text`; the timed region
+  is one `all`-mode search that matches about a quarter of the dataset and
+  returns a 50-hit page. This is part of `--scenario all` so a default
+  `mix bench` run includes FTS alongside the other sequential metrics.
 - `concurrent_point_read`: **opt-in** catalog-path point reads (not part of
   `--scenario all`). Disk only. Measures 1/2/4/8 concurrent readers, each with
   and without a steady writer, through `DatabaseCatalog` so the snapshot read

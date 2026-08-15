@@ -14,12 +14,16 @@ defmodule VialKeeper.Benchmarks.Runner do
   alias VialKeeper.Storage.SQLite.Adapter
   alias VialKeeper.View.Manager
 
-  @scenarios [:bulk_write, :point_read, :changes_read, :index_build, :indexed_query]
+  @scenarios [:bulk_write, :point_read, :changes_read, :index_build, :indexed_query, :fts_query]
   @catalog_scenarios [:concurrent_point_read, :multi_writer]
   @allowed_scenarios @scenarios ++ @catalog_scenarios
   @concurrent_reader_counts [1, 2, 4, 8]
   @multi_writer_counts [1, 2, 4, 8]
   @modes [:disk, :memory]
+  @fts_index_name "by-text"
+  @fts_query_term "lighthouse"
+  @fts_filler_sentence "The harbour log recorded wind, tide, and vessel traffic each morning. "
+  @fts_filler String.duplicate(@fts_filler_sentence, 29)
   @span_names [
     "vial_keeper.database.command",
     "vial_keeper.changes.read",
@@ -574,20 +578,33 @@ defmodule VialKeeper.Benchmarks.Runner do
     end
   end
 
+  defp setup_scenario(adapter, uuid, :fts_query, config) do
+    seed_documents(
+      adapter,
+      uuid,
+      config["dataset_size"],
+      config["batch_size"],
+      &fts_put_operation/2
+    )
+
+    create_named_index(adapter, uuid, fts_index_definition(@fts_index_name))
+    :ok
+  end
+
   defp setup_scenario(adapter, uuid, scenario, config)
        when scenario in [:bulk_write, :point_read, :changes_read, :index_build, :indexed_query] do
     seed_documents(adapter, uuid, config["dataset_size"], config["batch_size"])
 
     if scenario == :indexed_query do
-      create_category_index(adapter, uuid, "by-category")
+      create_named_index(adapter, uuid, category_index_definition("by-category"))
     end
 
     :ok
   end
 
-  defp seed_documents(adapter, uuid, count, batch_size) do
+  defp seed_documents(adapter, uuid, count, batch_size, operation_fun \\ &put_operation/2) do
     0..(count - 1)
-    |> Enum.map(&put_operation("seed-#{&1}", &1))
+    |> Enum.map(&operation_fun.("seed-#{&1}", &1))
     |> Enum.chunk_every(batch_size)
     |> Enum.each(fn operations ->
       assert_ok!(Adapter.apply_bulk_mutation(adapter, %{operations: operations}), :seed)
@@ -691,9 +708,23 @@ defmodule VialKeeper.Benchmarks.Runner do
     {1, operation, &noop_cleanup/1, %{"index" => "by-category", "selector" => "/category=task"}}
   end
 
-  defp create_category_index(adapter, uuid, name) do
-    definition = category_index_definition(name)
+  defp scenario_operation(adapter, uuid, :fts_query, _config) do
+    request = %{
+      search: %{index: @fts_index_name, text: @fts_query_term, mode: "all"},
+      limit: 50
+    }
 
+    operation = fn _token ->
+      observable_command(uuid, {:command, :query, request}, fn ->
+        Adapter.execute_query(adapter, request)
+      end)
+    end
+
+    {1, operation, &noop_cleanup/1,
+     %{"index" => @fts_index_name, "search" => @fts_query_term, "mode" => "all"}}
+  end
+
+  defp create_named_index(adapter, uuid, definition) do
     assert_ok!(
       observable_command(uuid, {:command, :create_index, definition}, fn ->
         Adapter.create_index(adapter, definition)
@@ -710,6 +741,15 @@ defmodule VialKeeper.Benchmarks.Runner do
     }
   end
 
+  defp fts_index_definition(name) do
+    %{
+      "name" => name,
+      "type" => "full_text",
+      "fields" => ["/text"],
+      "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+    }
+  end
+
   defp put_operation(id, value) do
     %{
       operation: :put,
@@ -719,6 +759,19 @@ defmodule VialKeeper.Benchmarks.Runner do
         "priority" => rem(value, 100),
         "title" => "Benchmark document #{value}",
         "tags" => ["benchmark", "v1"]
+      }
+    }
+  end
+
+  defp fts_put_operation(id, value) do
+    distinctive = if rem(value, 4) == 0, do: @fts_query_term <> " ", else: ""
+
+    %{
+      operation: :put,
+      document_id: id,
+      body: %{
+        "title" => "Benchmark document #{value}",
+        "text" => distinctive <> @fts_filler
       }
     }
   end
@@ -1087,7 +1140,9 @@ defmodule VialKeeper.Benchmarks.Runner do
       --mode disk|memory|both        Storage mode (default: both)
       --scenario NAME|all             Comma-separated sequential scenarios (default: all)
                                       concurrent_point_read and multi_writer are opt-in
-                                      catalog-path scenarios
+                                      catalog-path scenarios. Sequential names:
+                                      bulk_write, point_read, changes_read,
+                                      index_build, indexed_query, fts_query
       --iterations N                  Measured samples (default: 15)
       --warmup N                      Warmup samples excluded from results (default: 3)
       --dataset N                     Seeded documents (default: 500)
