@@ -7,6 +7,8 @@ When receiving a document as a wiki link, doc-id, folder-id, column-id, card-id 
 **Authoritative source docs and plans are inside folder `folder-id:4007e0d9-3cf2-4f17-a694-5680200d6547` in UnboundMark.**
 **All supporting docs must be created and maintained inside UnboundMark and not on this repo. Execeptions are READMEs and Operations.md, those docs must be kept local**
 
+**READ doc-id:f16c093b-2c0f-4e1f-814b-6a282431461c before you start working**
+
 **This in an unreleased product no backward compatibility is needed.**
 
 When done with a change, check if it has any effect on README.md or Operations.md, if so, update the affected section.
@@ -40,3 +42,5 @@ After each change, verify if the following documents need any update:
     - `README.md`
 	- `bench/README.md`
 	- Documents inside folder UnboundMark folder-id:4007e0d9-3cf2-4f17-a694-5680200d6547
+
+# IMPORTANT - Always consult .agents/MEMORIES.md to learn more about the repository, application, past discoveries and issues
