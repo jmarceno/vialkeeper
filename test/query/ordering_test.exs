@@ -23,6 +23,35 @@ defmodule VialKeeper.Query.OrderingTest do
     assert Ordering.compare_documents(%{id: "a", body: %{}}, %{id: "b", body: %{}}, []) == :lt
   end
 
+  test "sorts documents with the same ordering semantics as pairwise comparison" do
+    documents = [
+      %{id: "missing", revision: "r", body: %{}},
+      %{id: "null", revision: "r", body: %{"value" => nil}},
+      %{id: "two", revision: "r", body: %{"value" => 2}},
+      %{id: "one", revision: "r", body: %{"value" => 1}},
+      %{id: "ranked", revision: "r", body: %{}, rank: -1.5},
+      %{id: "ranked-other", revision: "r", body: %{}, rank: -2.0}
+    ]
+
+    sort = [%{path: "/value", direction: "asc"}]
+
+    expected =
+      Enum.sort(
+        documents,
+        &(Ordering.compare_documents(&1, &2, sort) == :lt)
+      )
+
+    assert Ordering.sort_documents(documents, sort) == expected
+
+    expected_ranked =
+      Enum.sort(
+        documents,
+        &(Ordering.compare_documents(&1, &2, []) == :lt)
+      )
+
+    assert Ordering.sort_documents(documents, []) == expected_ranked
+  end
+
   test "cursor comparison accepts decoded string-key and atom-key cursors" do
     sort = [%{path: "/priority", direction: "desc"}]
     document = %{id: "next", body: %{"priority" => 3}}

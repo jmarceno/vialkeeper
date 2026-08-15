@@ -32,6 +32,17 @@ defmodule VialKeeper.Query.Ordering do
     compare_ordering_keys(left, right, sort)
   end
 
+  @doc "Sorts documents while computing each document's ordering key once."
+  @spec sort_documents([map()], list()) :: [map()]
+  def sort_documents(documents, sort) when is_list(documents) and is_list(sort) do
+    documents
+    |> Enum.map(fn document -> {ordering_key(document, sort), document} end)
+    |> Enum.sort(fn {left_key, _left_document}, {right_key, _right_document} ->
+      compare_ordering_keys(left_key, right_key, sort) == :lt
+    end)
+    |> Enum.map(&elem(&1, 1))
+  end
+
   @doc "Compares two documents using ordinary query ordering semantics."
   @spec compare_documents(map(), map(), list()) :: comparison()
   def compare_documents(left, right, sort) do

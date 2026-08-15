@@ -133,10 +133,7 @@ defmodule VialKeeper.Query.Executor do
     sort = MapAccess.get(request, :sort, [])
 
     with :ok <- check_deadline(deadline),
-         sorted <-
-           Enum.sort(documents, fn left, right ->
-             Ordering.compare_documents(left, right, sort) == :lt
-           end),
+         sorted <- Ordering.sort_documents(documents, sort),
          :ok <- check_deadline(deadline) do
       {:ok, sorted}
     end
