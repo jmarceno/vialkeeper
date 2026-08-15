@@ -591,5 +591,44 @@ defmodule ElixirDB.Query.QueryTest do
       assert {:ok, %{plan_kind: :single, candidate_count: 6}} =
                Adapter.explain_query(adapter, %{selector: @post_filter_selector})
     end
+
+    test "caps the combined indexed OR candidates at scan_threshold", %{adapter: adapter} do
+      assert {:ok, _} =
+               Adapter.create_index(adapter, %{
+                 "name" => "by-priority",
+                 "type" => "structured",
+                 "fields" => [%{"path" => "/priority", "type" => "number", "direction" => "asc"}]
+               })
+
+      for n <- 1..3 do
+        assert {:ok, _} =
+                 Adapter.apply_local_mutation(adapter, %{
+                   operation: :put,
+                   document_id: "open-#{n}",
+                   body: %{"status" => "open", "priority" => 1}
+                 })
+
+        assert {:ok, _} =
+                 Adapter.apply_local_mutation(adapter, %{
+                   operation: :put,
+                   document_id: "high-#{n}",
+                   body: %{"status" => "closed", "priority" => 5}
+                 })
+      end
+
+      selector = %{
+        "$or" => [
+          %{"/status" => "open"},
+          %{"/priority" => %{"$gte" => 5}}
+        ]
+      }
+
+      assert {:error,
+              %ElixirDB.Error{
+                code: :index_required,
+                details: %{candidate_count: 6, threshold: 5}
+              }} =
+               Adapter.execute_query(adapter, %{selector: selector, limit: 10})
+    end
   end
 end

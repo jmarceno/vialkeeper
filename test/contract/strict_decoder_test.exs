@@ -4,7 +4,7 @@ defmodule ElixirDB.Contract.StrictDecoderTest do
 
   These cases are the proof corpus for strict-decoder compatibility behavior.
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias ElixirDB.JSON.{StrictCache, StrictDecoder}
 

@@ -119,8 +119,11 @@ defmodule ElixirDB.Storage.Services.Query do
     deadline = Executor.deadline(identity, System.monotonic_time())
 
     with {:ok, indexes} <- list_indexes(context),
+         :ok <- Executor.check_deadline(deadline),
          {:ok, plan} <- Planner.plan(indexes, request),
+         :ok <- Executor.check_deadline(deadline),
          {:ok, winning_count} <- winning_document_count(context),
+         :ok <- Executor.check_deadline(deadline),
          {:ok, candidate_count} <-
            explain_candidate_count(
              context,
@@ -227,7 +230,7 @@ defmodule ElixirDB.Storage.Services.Query do
        ) do
     threshold = Executor.scan_threshold(identity)
 
-    Enum.reduce_while(plan.scans, {:ok, [], 0}, fn scan, {:ok, candidates, examined} ->
+    Enum.reduce_while(plan.scans, {:ok, [], MapSet.new()}, fn scan, {:ok, candidates, seen} ->
       selected = selected_index(indexes, scan["index_id"])
 
       with :ok <- Executor.check_deadline(deadline),
@@ -242,18 +245,17 @@ defmodule ElixirDB.Storage.Services.Query do
              }),
            :ok <- Executor.check_deadline(deadline) do
         docs = normalize_candidates(candidate_list(rows))
-        {:cont, {:ok, [docs | candidates], examined + length(docs)}}
+        append_union_candidate_batch(docs, candidates, seen, threshold)
       else
         {:error, _} = error -> {:halt, error}
       end
     end)
     |> case do
-      {:ok, batches, _examined} ->
+      {:ok, batches, _seen} ->
         documents =
           batches
           |> Enum.reverse()
           |> Enum.concat()
-          |> Enum.uniq_by(& &1.id)
 
         with :ok <- Executor.check_deadline(deadline) do
           {:ok, documents, length(documents)}
@@ -296,7 +298,8 @@ defmodule ElixirDB.Storage.Services.Query do
              request: request,
              count_only: true,
              deadline: deadline
-           }) do
+           }),
+         :ok <- Executor.check_deadline(deadline) do
       {:ok, count}
     end
   end
@@ -317,7 +320,8 @@ defmodule ElixirDB.Storage.Services.Query do
              arms: union_count_arms(plan, indexes),
              plan_kind: :union,
              deadline: deadline
-           }) do
+           }),
+         :ok <- Executor.check_deadline(deadline) do
       {:ok, count}
     end
   end
@@ -326,6 +330,44 @@ defmodule ElixirDB.Storage.Services.Query do
     case gather_candidates(context, plan, indexes, request, identity, deadline, nil) do
       {:ok, _documents, examined} -> {:ok, examined}
       {:error, _} = error -> error
+    end
+  end
+
+  defp append_unique_candidates(candidates, seen, threshold) do
+    append_unique_candidates(candidates, seen, threshold, [])
+  end
+
+  defp append_unique_candidates([], seen, _threshold, unique),
+    do: {:ok, Enum.reverse(unique), seen}
+
+  defp append_unique_candidates([candidate | rest], seen, threshold, unique) do
+    candidate_id = candidate.id
+    next_seen = MapSet.put(seen, candidate_id)
+
+    cond do
+      MapSet.member?(seen, candidate_id) ->
+        append_unique_candidates(rest, seen, threshold, unique)
+
+      MapSet.size(next_seen) > threshold ->
+        {:error, MapSet.size(next_seen)}
+
+      true ->
+        append_unique_candidates(rest, next_seen, threshold, [candidate | unique])
+    end
+  end
+
+  defp append_union_candidate_batch(docs, candidates, seen, threshold) do
+    case append_unique_candidates(docs, seen, threshold) do
+      {:ok, unique_docs, seen} ->
+        {:cont, {:ok, [unique_docs | candidates], seen}}
+
+      {:error, candidate_count} ->
+        {:halt,
+         {:error,
+          ElixirDB.Error.index_required("query requires a compatible index", %{
+            candidate_count: candidate_count,
+            threshold: threshold
+          })}}
     end
   end
 
