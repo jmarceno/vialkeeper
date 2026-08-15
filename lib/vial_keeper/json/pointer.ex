@@ -27,6 +27,11 @@ defmodule VialKeeper.JSON.Pointer do
     end
   end
 
+  @doc "Looks up a value using tokens returned by `parse/1`."
+  @spec get_tokens(map() | list(), [binary()]) :: {:ok, term()} | :missing
+  def get_tokens(value, []), do: {:ok, value}
+  def get_tokens(value, tokens) when is_list(tokens), do: descend(value, tokens)
+
   defp descend(value, []), do: {:ok, value}
 
   defp descend(value, [token | rest]) when is_map(value) do

@@ -157,7 +157,8 @@ defmodule VialKeeper.Query.Executor do
   def project_documents(values, request, deadline)
       when is_list(values) and is_map(request) do
     with :ok <- check_deadline(deadline),
-         projected <- Enum.map(values, &Projection.project(&1, request)),
+         {:ok, fields} <- Projection.compile_fields(MapAccess.get(request, :fields)),
+         projected <- Enum.map(values, &Projection.project_compiled(&1, fields)),
          :ok <- check_deadline(deadline) do
       {:ok, projected}
     end

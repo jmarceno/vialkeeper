@@ -142,6 +142,22 @@ defmodule VialKeeper.Query.PlannerTest do
            }
   end
 
+  test "compiled projection pointers preserve projected values" do
+    document = %{
+      id: "doc-1",
+      revision: "1-abc",
+      body: %{"profile" => %{"name" => "Ada"}, "count" => 3}
+    }
+
+    assert {:ok, fields} = Projection.compile_fields(["/profile/name", "/count"])
+
+    assert Projection.project_compiled(document, fields) == %{
+             id: "doc-1",
+             revision: "1-abc",
+             fields: %{"/profile/name" => "Ada", "/count" => 3}
+           }
+  end
+
   test "plan digest is storage-neutral and preserves ordered bindings" do
     assert {:ok, regex} = Regex.compile("^open$")
 
