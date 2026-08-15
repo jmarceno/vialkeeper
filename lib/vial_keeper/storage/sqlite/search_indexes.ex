@@ -7,6 +7,7 @@ defmodule VialKeeper.Storage.SQLite.SearchIndexes do
   """
 
   alias VialKeeper.MapAccess
+  alias VialKeeper.Observability.Instrumentation.Search, as: SearchInstrumentation
   alias VialKeeper.Query.Projection
   alias VialKeeper.Search
   alias VialKeeper.Storage.BackendContext
@@ -14,21 +15,21 @@ defmodule VialKeeper.Storage.SQLite.SearchIndexes do
 
   @query_body_term_cache_limit 256
 
+  @type rebuild_trigger :: :create | :rebuild | :cache_miss
+
   @spec rebuild(BackendContext.t(), map(), map()) :: :ok | {:error, VialKeeper.Error.t()}
   def rebuild(%BackendContext{} = context, index, definition)
       when is_map(index) and is_map(definition) do
+    rebuild(context, index, definition, :rebuild)
+  end
+
+  @spec rebuild(BackendContext.t(), map(), map(), rebuild_trigger()) ::
+          :ok | {:error, VialKeeper.Error.t()}
+  def rebuild(%BackendContext{} = context, index, definition, trigger)
+      when is_map(index) and is_map(definition) and
+             trigger in [:create, :rebuild, :cache_miss] do
     if full_text?(index) or full_text?(definition) do
-      with {:ok, adapter} <- Context.unwrap(context),
-           {:ok, documents} <- winning_documents(adapter.conn) do
-        index_id = MapAccess.get(index, :index_id)
-
-        definition =
-          definition
-          |> Map.merge(nested_metadata(index))
-          |> Map.put("index_id", index_id)
-
-        Search.rebuild(context, index_id, definition, documents)
-      end
+      rebuild_full_text(context, index, definition, trigger)
     else
       :ok
     end
@@ -83,6 +84,33 @@ defmodule VialKeeper.Storage.SQLite.SearchIndexes do
 
       {:error, error} ->
         {:error, error}
+    end
+  end
+
+  defp rebuild_full_text(context, index, definition, trigger) do
+    index_id = MapAccess.get(index, :index_id)
+    uuid = MapAccess.get(context.identity, :database_uuid)
+
+    case SearchInstrumentation.rebuild(uuid, index_id, trigger, fn ->
+           rebuild_posting_lists(context, index, definition, index_id)
+         end) do
+      {:ok, _entries} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp rebuild_posting_lists(context, index, definition, index_id) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, documents} <- winning_documents(adapter.conn) do
+      definition =
+        definition
+        |> Map.merge(nested_metadata(index))
+        |> Map.put("index_id", index_id)
+
+      case Search.rebuild(context, index_id, definition, documents) do
+        :ok -> {:ok, length(documents)}
+        {:error, _} = error -> error
+      end
     end
   end
 

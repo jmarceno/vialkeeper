@@ -15,7 +15,7 @@ Inside an `.vialkeeper` directory the SQLite backend stores:
 notes.vialkeeper/
 ├── database.sqlite3   # revisions, indexes, views, jobs, metadata
 ├── blobs/             # attachment bytes (product path; not SQL)
-└── tmp/               # incomplete uploads
+└── tmp/               # incomplete uploads and rebuildable search-index.etf
 ```
 
 The artifact filename and SQL schema are owned by this backend. Generic

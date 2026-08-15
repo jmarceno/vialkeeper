@@ -456,7 +456,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
         {:ok, hits}
 
       {:error, %VialKeeper.Error{code: :index_not_found}} ->
-        with :ok <- SearchIndexes.rebuild(context, metadata, metadata) do
+        with :ok <- SearchIndexes.rebuild(context, metadata, metadata, :cache_miss) do
           Search.search(context, index_id, text, mode)
         end
 

@@ -541,7 +541,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
 
   defp create_catalog_and_search(adapter, conn, definition) do
     with {:ok, index} <- transaction(adapter, fn -> IndexCatalog.create_tx(conn, definition) end),
-         :ok <- SearchIndexes.rebuild(to_context(adapter), index, definition) do
+         :ok <- SearchIndexes.rebuild(to_context(adapter), index, definition, :create) do
       {:ok, index}
     end
   end

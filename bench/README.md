@@ -57,6 +57,15 @@ dataset. They are trend evidence, not portable hardware-independent promises.
   `mix bench` run includes FTS alongside the other sequential metrics.
   Default `--dataset 500` is a smoke size. The design horizon is about 50k
   winning documents; measure that with `--dataset 50000 --scenario fts_query`.
+- `fts_rebuild`: measure reconstructing the Elixir posting-list cache from
+  winning documents. Setup seeds the same ~2 KiB ASCII bodies and creates the
+  `unicode_words_v1` index outside the timed region; each sample calls
+  `rebuild_index` on that index (scan winners, retokenize, persist
+  `tmp/search-index.etf`). This is part of `--scenario all`. Measure the 50k
+  horizon with `--dataset 50000 --scenario fts_rebuild`. A local three-run
+  smoke of `--dataset 500 --iterations 5 --warmup 2` measured disk median
+  781 ms and memory median 1.25 s; those figures are trend evidence for that
+  machine, not a portable SLO.
 - `concurrent_point_read`: **opt-in** catalog-path point reads (not part of
   `--scenario all`). Disk only. Measures 1/2/4/8 concurrent readers, each with
   and without a steady writer, through `DatabaseCatalog` so the snapshot read
@@ -163,8 +172,8 @@ changes. The adapter-level boundary is intentional: an ephemeral in-memory
 SQLite database cannot be reopened by the normal file-backed
 `DatabaseCatalog`/`DatabaseOwner` lifecycle. The database-command wrapper is
 therefore the same service instrumentation used by that lifecycle, while
-query, index-build, and changes spans remain exercised through their real
-instrumentation modules. Span counts are reset for each case; metric datapoint
+query, index-build, search-rebuild, and changes spans remain exercised through
+their real instrumentation modules. Span counts are reset for each case; metric datapoint
 counts are exporter observations and can include multiple aggregation exports.
 
 The ExQLite overhead runner also emits low-cardinality SQLite child spans when

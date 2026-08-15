@@ -115,7 +115,7 @@ defmodule VialKeeper.StorageAdapter.FullTextIndexesTest do
              })
   end
 
-  test "prefix search quotes tokenized client text before FTS compilation", %{adapter: adapter} do
+  test "prefix search does not treat client punctuation as engine syntax", %{adapter: adapter} do
     assert {:ok, _} =
              @adapter.apply_local_mutation(adapter, %{
                operation: :put,
@@ -125,8 +125,7 @@ defmodule VialKeeper.StorageAdapter.FullTextIndexesTest do
 
     assert {:ok, %{"index_id" => _index_id}} = @adapter.create_index(adapter, @fts_definition)
 
-    # Without project tokenization and trusted quoting, `* OR` could turn this
-    # into an FTS expression matching the otherwise unrelated document.
+    # Punctuation is a tokenizer separator, not a search-engine operator.
     assert {:ok, %{results: []}} =
              @adapter.execute_query(adapter, %{
                search: %{index: "titles", text: "replic* OR", mode: "prefix"},

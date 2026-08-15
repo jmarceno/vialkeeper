@@ -27,6 +27,8 @@ defmodule VialKeeper.Observability.Meters do
   | `vial_keeper.federation.query.duration` | histogram |
   | `vial_keeper.derived_view.batch.duration` | histogram |
   | `vial_keeper.index.build.duration` | histogram |
+  | `vial_keeper.search.rebuild.count` | counter |
+  | `vial_keeper.search.rebuild.duration` | histogram |
   | `vial_keeper.replication.batch.duration` | histogram |
   | `vial_keeper.replication.transfer.count` | counter |
   | `vial_keeper.replication.transfer.duration` | histogram |
@@ -68,6 +70,8 @@ defmodule VialKeeper.Observability.Meters do
     {:"vial_keeper.federation.query.duration", :histogram},
     {:"vial_keeper.derived_view.batch.duration", :histogram},
     {:"vial_keeper.index.build.duration", :histogram},
+    {:"vial_keeper.search.rebuild.count", :counter},
+    {:"vial_keeper.search.rebuild.duration", :histogram},
     {:"vial_keeper.replication.batch.duration", :histogram},
     {:"vial_keeper.replication.transfer.count", :counter},
     {:"vial_keeper.replication.transfer.duration", :histogram},

@@ -14,7 +14,15 @@ defmodule VialKeeper.Benchmarks.Runner do
   alias VialKeeper.Storage.SQLite.Adapter
   alias VialKeeper.View.Manager
 
-  @scenarios [:bulk_write, :point_read, :changes_read, :index_build, :indexed_query, :fts_query]
+  @scenarios [
+    :bulk_write,
+    :point_read,
+    :changes_read,
+    :index_build,
+    :indexed_query,
+    :fts_query,
+    :fts_rebuild
+  ]
   @catalog_scenarios [:concurrent_point_read, :multi_writer]
   @allowed_scenarios @scenarios ++ @catalog_scenarios
   @concurrent_reader_counts [1, 2, 4, 8]
@@ -28,13 +36,15 @@ defmodule VialKeeper.Benchmarks.Runner do
     "vial_keeper.database.command",
     "vial_keeper.changes.read",
     "vial_keeper.query.execute",
-    "vial_keeper.index.build"
+    "vial_keeper.index.build",
+    "vial_keeper.search.rebuild"
   ]
   @metric_names [
     "vial_keeper.database.command.duration",
     "vial_keeper.changes.read.duration",
     "vial_keeper.query.execute.duration",
-    "vial_keeper.index.build.duration"
+    "vial_keeper.index.build.duration",
+    "vial_keeper.search.rebuild.duration"
   ]
 
   @default_iterations 15
@@ -578,7 +588,8 @@ defmodule VialKeeper.Benchmarks.Runner do
     end
   end
 
-  defp setup_scenario(adapter, uuid, :fts_query, config) do
+  defp setup_scenario(adapter, uuid, scenario, config)
+       when scenario in [:fts_query, :fts_rebuild] do
     seed_documents(
       adapter,
       uuid,
@@ -722,6 +733,39 @@ defmodule VialKeeper.Benchmarks.Runner do
 
     {1, operation, &noop_cleanup/1,
      %{"index" => @fts_index_name, "search" => @fts_query_term, "mode" => "all"}}
+  end
+
+  defp scenario_operation(adapter, uuid, :fts_rebuild, _config) do
+    index_id = named_index_id!(adapter, @fts_index_name)
+
+    operation = fn _token ->
+      observable_command(uuid, {:command, :rebuild_index, index_id}, fn ->
+        Adapter.rebuild_index(adapter, index_id)
+      end)
+    end
+
+    {1, operation, &noop_cleanup/1, %{"index" => @fts_index_name, "operation" => "rebuild"}}
+  end
+
+  defp named_index_id!(adapter, name) do
+    case Adapter.list_indexes(adapter) do
+      {:ok, indexes} ->
+        index =
+          Enum.find(indexes, fn candidate ->
+            Map.get(candidate, "name", Map.get(candidate, :name)) == name
+          end)
+
+        id = index && Map.get(index, "index_id", Map.get(index, :index_id))
+
+        if is_binary(id) do
+          id
+        else
+          Mix.raise("fts rebuild benchmark missing index #{name}")
+        end
+
+      other ->
+        Mix.raise("fts rebuild benchmark could not list indexes: #{inspect(other)}")
+    end
   end
 
   defp create_named_index(adapter, uuid, definition) do
@@ -1142,7 +1186,8 @@ defmodule VialKeeper.Benchmarks.Runner do
                                       concurrent_point_read and multi_writer are opt-in
                                       catalog-path scenarios. Sequential names:
                                       bulk_write, point_read, changes_read,
-                                      index_build, indexed_query, fts_query
+                                      index_build, indexed_query, fts_query,
+                                      fts_rebuild
       --iterations N                  Measured samples (default: 15)
       --warmup N                      Warmup samples excluded from results (default: 3)
       --dataset N                     Seeded documents (default: 500)

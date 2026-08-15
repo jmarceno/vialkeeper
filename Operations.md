@@ -173,7 +173,7 @@ paths that must not escape the root (`..`, symlinks).
 notes.vialkeeper/
 ├── <backend data>     # metadata, revisions, indexes, views, jobs, …
 ├── blobs/             # attachment representations (<prefix>/<digest>.blob)
-└── tmp/               # incomplete uploads (not authoritative)
+└── tmp/               # incomplete uploads and rebuildable search-index.etf (not authoritative)
 ```
 
 `registrations.json` is routing only:
@@ -662,6 +662,7 @@ not block the hot path.
 | Changes read | `vial_keeper.changes.read` | `….duration` |
 | Query execute | `vial_keeper.query.execute` | `….duration` |
 | Index build | `vial_keeper.index.build` | `….duration` |
+| Search cache rebuild | `vial_keeper.search.rebuild` | `….count` + `….duration` |
 | Replication batch / transfer / checkpoint | matching `vial_keeper.replication.*` | matching |
 | Replication remote wire | — | `vial_keeper.replication.wire.bytes` + `….wire.codec.duration` |
 | Subscription update / open / overload | `….subscription.update` | matching counters |
@@ -681,7 +682,7 @@ not block the hot path.
 Owned by `VialKeeper.Observability.Attributes`. Includes `db.uuid` (never the
 filesystem path), `command.type`, `error.code`, `outcome`, HTTP method/route
 template/status, index/replication/admission/subscription/view/federation
-ids and bounded counts, plus the bounded remote-wire dimensions (`direction`,
+ids and bounded counts, plus `trigger` (compact and search-rebuild), plus the bounded remote-wire dimensions (`direction`,
 `payload_kind`, `endpoint_kind`, `encoding`, `operation`). **Never** recorded:
 document bodies, document IDs, attachment names/digests/bytes, search text,
 revision bodies, full remote URLs, tokens, or raw codec error text.

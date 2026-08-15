@@ -15,8 +15,7 @@ defmodule VialKeeper.Storage.SQLite.Capabilities do
   def validate! do
     with {:ok, conn} <- Connection.open(":memory:"),
          {:ok, [[version]]} <- Connection.query(conn, "SELECT sqlite_version()"),
-         true <- version_at_least?(version, "3.45.0"),
-         {:ok, _} <- Connection.query(conn, "CREATE VIRTUAL TABLE fts_probe USING fts5(body)") do
+         true <- version_at_least?(version, "3.45.0") do
       Application.put_env(
         :vial_keeper,
         :fts5_contentless_delete,

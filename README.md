@@ -15,7 +15,7 @@ Your app  ──HTTP /v1──►  VialKeeper host
            notes.vialkeeper/      # portable database bundle
              <backend data>     # backend-owned durable artifact
              blobs/             # attachment representations (digest.blob)
-             tmp/               # incomplete uploads (not authoritative)
+             tmp/               # incomplete uploads and rebuildable search cache (not authoritative)
 ```
 
 **Runtime baseline:** Elixir 1.20.2 on Erlang/OTP 29.0.4 (`mise.toml`,
@@ -273,7 +273,8 @@ language; punctuation is not syntax.
 
 Matching uses rebuildable Elixir posting lists (`unicode_words_v1`), not a
 SQLite FTS table. The index is reconstructed from winning documents when the
-cache under the bundle `tmp/` directory is missing.
+cache under the bundle `tmp/` directory is missing, and when a client calls
+index rebuild.
 
 ```typescript
 await postJson(`/v1/databases/${uuid}/indexes`, {

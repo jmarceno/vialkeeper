@@ -12,7 +12,7 @@ defmodule VialKeeper.Observability.Attributes do
   `db.uuid`, `command.type` (atom), `error.code` (atom), `outcome` (atom),
   `federation.source_count`,
   `http.method`, `http.route` (route template, never the raw path),
-  `http.status_code`, `index_id`, `index_type`, `plan_kind`,
+  `http.status_code`, `index_id`, `index_type`, `trigger`, `plan_kind`,
   `selected_index_count`, `union_branch_count`, `replication.id`, `endpoint`
   (`:source` | `:target`), the bounded counts `entries`, `examined`,
   `revisions_written`, attachment stream measurements `logical_bytes`,
