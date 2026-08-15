@@ -1,7 +1,7 @@
-defmodule ElixirDB.Shadow.EndpointTest do
+defmodule VialKeeper.Shadow.EndpointTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Shadow.{LocalEndpoint, Protocol, RemoteEndpoint}
+  alias VialKeeper.Shadow.{LocalEndpoint, Protocol, RemoteEndpoint}
 
   defmodule Probe do
     def capabilities(_opts), do: {:ok, Protocol.response("00000000-0000-4000-8000-000000000001")}
@@ -12,7 +12,7 @@ defmodule ElixirDB.Shadow.EndpointTest do
     def bulk_read_documents(request, _read_opts, _opts), do: {:ok, request}
 
     def open_attachment_representation(_request, _read_opts, _opts),
-      do: {:error, ElixirDB.Error.shadow_attachment_unavailable()}
+      do: {:error, VialKeeper.Error.shadow_attachment_unavailable()}
   end
 
   test "local endpoint invokes worker services directly" do

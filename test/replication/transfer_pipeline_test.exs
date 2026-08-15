@@ -1,12 +1,12 @@
-defmodule ElixirDB.Replication.TransferPipelineTest do
+defmodule VialKeeper.Replication.TransferPipelineTest do
   @moduledoc "Covers bounded replication transfer tasks and cancellation."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Error
-  alias ElixirDB.Replication.TransferPipeline
+  alias VialKeeper.Error
+  alias VialKeeper.Replication.TransferPipeline
 
-  defmodule ElixirDB.Replication.TransferPipelineTestEndpoint do
+  defmodule VialKeeper.Replication.TransferPipelineTestEndpoint do
     defstruct [:owner, :crash_ordinal, :counter, :max_concurrent, :trace_expected]
 
     def get_revision_chains(
@@ -56,7 +56,7 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
     defp decrement_active(counter), do: :ets.update_counter(counter, :active, -1)
   end
 
-  defmodule ElixirDB.Replication.TransferPipelineTestErrorEndpoint do
+  defmodule VialKeeper.Replication.TransferPipelineTestErrorEndpoint do
     defstruct [:response]
 
     def get_revision_chains(%__MODULE__{response: response}, _request), do: response
@@ -127,7 +127,7 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
     counter = :ets.new(:transfer_pipeline_counter, [:set, :public])
     :ets.insert(counter, {:active, 0})
 
-    endpoint = %ElixirDB.Replication.TransferPipelineTestEndpoint{
+    endpoint = %VialKeeper.Replication.TransferPipelineTestEndpoint{
       owner: self(),
       counter: counter,
       max_concurrent: 2
@@ -155,7 +155,7 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
   end
 
   test "normalizes a task crash and terminates every sibling task" do
-    endpoint = %ElixirDB.Replication.TransferPipelineTestEndpoint{
+    endpoint = %VialKeeper.Replication.TransferPipelineTestEndpoint{
       owner: self(),
       crash_ordinal: 1
     }
@@ -193,11 +193,11 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
   end
 
   test "normalizes malformed and non-Error endpoint responses" do
-    malformed = %ElixirDB.Replication.TransferPipelineTestErrorEndpoint{
+    malformed = %VialKeeper.Replication.TransferPipelineTestErrorEndpoint{
       response: {:ok, %{}}
     }
 
-    failing = %ElixirDB.Replication.TransferPipelineTestErrorEndpoint{
+    failing = %VialKeeper.Replication.TransferPipelineTestErrorEndpoint{
       response: {:error, :timeout}
     }
 
@@ -211,7 +211,7 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
   test "propagates the transfer trace context into chain tasks" do
     expected = OpenTelemetry.Ctx.get_current()
 
-    endpoint = %ElixirDB.Replication.TransferPipelineTestEndpoint{
+    endpoint = %VialKeeper.Replication.TransferPipelineTestEndpoint{
       owner: self(),
       trace_expected: :present
     }
@@ -240,7 +240,7 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
   end
 
   test "caller death takes down the private supervisor and chain children" do
-    endpoint = %ElixirDB.Replication.TransferPipelineTestEndpoint{owner: self()}
+    endpoint = %VialKeeper.Replication.TransferPipelineTestEndpoint{owner: self()}
     parent = self()
 
     runner =
@@ -259,7 +259,7 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
   end
 
   test "explicit cancellation stops admission and cleans active chain tasks" do
-    endpoint = %ElixirDB.Replication.TransferPipelineTestEndpoint{
+    endpoint = %VialKeeper.Replication.TransferPipelineTestEndpoint{
       owner: self(),
       counter: :ets.new(:transfer_pipeline_cancel_counter, [:set, :public]),
       max_concurrent: 2
@@ -285,7 +285,7 @@ defmodule ElixirDB.Replication.TransferPipelineTest do
   end
 
   test "cancellation never admits queued chain chunks" do
-    endpoint = %ElixirDB.Replication.TransferPipelineTestEndpoint{owner: self()}
+    endpoint = %VialKeeper.Replication.TransferPipelineTestEndpoint{owner: self()}
     parent = self()
 
     runner =

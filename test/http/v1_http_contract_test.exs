@@ -1,19 +1,22 @@
-defmodule ElixirDB.HTTP.V1HTTPContractTest do
+defmodule VialKeeper.HTTP.V1HTTPContractTest do
   @moduledoc "Covers stable HTTP request and error contracts."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Query.BookmarkCodec
-  alias ElixirDB.Runtime.DatabaseCatalog
   alias Plug.Conn
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Query.BookmarkCodec
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   test "HTTP rejects unknown fields and returns the stable error envelope" do
     response =
-      request(:post, "/v1/databases", %{"path" => "contract-invalid.elixirdb", "unexpected" => true})
+      request(:post, "/v1/databases", %{
+        "path" => "contract-invalid.vialkeeper",
+        "unexpected" => true
+      })
 
     assert response.status == 400
 
@@ -25,7 +28,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
   end
 
   test "database, query, integrity, and NDJSON changes routes follow V1 envelopes" do
-    path = "contract-#{System.unique_integer([:positive])}.elixirdb"
+    path = "contract-#{System.unique_integer([:positive])}.vialkeeper"
     created = request(:post, "/v1/databases", %{"path" => path})
     assert created.status == 201
 
@@ -35,7 +38,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     put =
@@ -87,7 +90,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
   end
 
   test "unicode and slash-bearing document ids round-trip through put, get, and changes" do
-    path = "contract-ids-#{System.unique_integer([:positive])}.elixirdb"
+    path = "contract-ids-#{System.unique_integer([:positive])}.vialkeeper"
     created = request(:post, "/v1/databases", %{"path" => path})
     assert created.status == 201
 
@@ -97,7 +100,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     ids = ["café", "日本語", "a/b", "foo%2Fbar", "_foo", "plain-id-1"]
@@ -133,7 +136,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
   end
 
   test "query contracts expose extended predicates, plan metadata, and explain fields" do
-    path = "contract-query-#{System.unique_integer([:positive])}.elixirdb"
+    path = "contract-query-#{System.unique_integer([:positive])}.vialkeeper"
     created = request(:post, "/v1/databases", %{"path" => path})
     assert created.status == 201
 
@@ -143,7 +146,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     for {id, body} <- [
@@ -463,7 +466,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
   end
 
   test "document id grammar table rejects forbidden ids and accepts valid ones" do
-    path = "contract-id-grammar-#{System.unique_integer([:positive])}.elixirdb"
+    path = "contract-id-grammar-#{System.unique_integer([:positive])}.vialkeeper"
     created = request(:post, "/v1/databases", %{"path" => path})
     assert created.status == 201
 
@@ -473,7 +476,7 @@ defmodule ElixirDB.HTTP.V1HTTPContractTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     # Contract from Documents.validate_id/1: empty, NUL, control chars, `_system/`

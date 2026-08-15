@@ -1,10 +1,10 @@
-defmodule ElixirDB.StorageAdapter.V1ConformanceTest do
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.V1ConformanceTest do
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.SQLite.Connection
-  alias ElixirDB.TestRevisionId, as: Id
+  alias VialKeeper.Storage.SQLite.Connection
+  alias VialKeeper.TestRevisionId, as: Id
 
   test "bulk writes are atomic and allocate one change per affected document", %{adapter: adapter} do
     assert {:ok, %{revision: first}} =
@@ -14,7 +14,7 @@ defmodule ElixirDB.StorageAdapter.V1ConformanceTest do
                body: %{"value" => 1}
              })
 
-    assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+    assert {:error, %VialKeeper.Error{code: :revision_conflict}} =
              @adapter.apply_bulk_mutation(adapter, %{
                operations: [
                  %{operation: :put, document_id: "doc", if_revision: first, body: %{"value" => 2}},
@@ -25,7 +25,7 @@ defmodule ElixirDB.StorageAdapter.V1ConformanceTest do
     assert {:ok, %{body: %{"value" => 1}}} =
              @adapter.get_document(adapter, %{document_id: "doc"})
 
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
              @adapter.get_document(adapter, %{document_id: "other"})
 
     assert {:ok, %{current_sequence: 1}} = @adapter.identity(adapter)
@@ -70,7 +70,7 @@ defmodule ElixirDB.StorageAdapter.V1ConformanceTest do
     assert [_] = conflicts
     assert hd(conflicts) in [left, right]
 
-    assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+    assert {:error, %VialKeeper.Error{code: :revision_conflict}} =
              @adapter.resolve_conflict(adapter, %{
                document_id: "doc",
                expected_live_revisions: [left],
@@ -139,7 +139,7 @@ defmodule ElixirDB.StorageAdapter.V1ConformanceTest do
     assert full_text["_metadata"]["fts_table_kind"] == "contentless_delete"
     assert :ok = Connection.execute(adapter.conn, ~s(DELETE FROM "#{physical}"))
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              @adapter.integrity_check(adapter, %{})
 
     assert {:ok, %{rebuilt: true}} = @adapter.rebuild_index(adapter, full_text_id)

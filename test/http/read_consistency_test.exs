@@ -1,10 +1,10 @@
-defmodule ElixirDB.HTTP.ReadConsistencyTest do
+defmodule VialKeeper.HTTP.ReadConsistencyTest do
   use ExUnit.Case, async: true
 
   import Plug.Conn, only: [put_req_header: 3]
   import Plug.Test, only: [conn: 2]
 
-  alias ElixirDB.HTTP.Request
+  alias VialKeeper.HTTP.Request
 
   test "omitted consistency is eventual" do
     assert {:ok, :eventual} = Request.read_consistency(conn(:get, "/"))
@@ -12,7 +12,7 @@ defmodule ElixirDB.HTTP.ReadConsistencyTest do
 
   test "primary and eventual are accepted exactly once" do
     for value <- ["primary", "eventual"] do
-      request = conn(:get, "/") |> put_req_header("x-elixirdb-read-consistency", value)
+      request = conn(:get, "/") |> put_req_header("x-vialkeeper-read-consistency", value)
       expected = String.to_existing_atom(value)
       assert {:ok, ^expected} = Request.read_consistency(request)
     end
@@ -22,7 +22,7 @@ defmodule ElixirDB.HTTP.ReadConsistencyTest do
     assert {:error, %{code: :invalid_request}} =
              Request.read_consistency(
                conn(:get, "/")
-               |> put_req_header("x-elixirdb-read-consistency", "linearizable")
+               |> put_req_header("x-vialkeeper-read-consistency", "linearizable")
              )
 
     base = conn(:get, "/")
@@ -31,8 +31,8 @@ defmodule ElixirDB.HTTP.ReadConsistencyTest do
     duplicate = %{
       base
       | req_headers: [
-          {"x-elixirdb-read-consistency", "primary"},
-          {"x-elixirdb-read-consistency", "eventual"}
+          {"x-vialkeeper-read-consistency", "primary"},
+          {"x-vialkeeper-read-consistency", "eventual"}
         ]
     }
 

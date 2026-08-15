@@ -1,25 +1,25 @@
-defmodule ElixirDB.Observability.CompactMetricTest do
+defmodule VialKeeper.Observability.CompactMetricTest do
   @moduledoc "Covers compaction metric emission and attributes."
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Observability.{TestExporter, TestMetricExporter}
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Eventual
+  alias VialKeeper.Observability.{TestExporter, TestMetricExporter}
+  alias VialKeeper.Runtime.DatabaseCatalog
 
-  @compact_metric "elixir_db.database.compact.count"
+  @compact_metric "vial_keeper.database.compact.count"
 
   setup do
-    rel = "obs-compact-#{System.unique_integer([:positive])}.elixirdb"
+    rel = "obs-compact-#{System.unique_integer([:positive])}.vialkeeper"
     {:ok, %{database_uuid: uuid}} = DatabaseCatalog.create(rel)
 
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      root = ElixirDB.Config.database_root()
-      ElixirDB.TempDatabase.cleanup(Path.join(root, rel))
+      root = VialKeeper.Config.database_root()
+      VialKeeper.TempDatabase.cleanup(Path.join(root, rel))
     end)
 
     [uuid: uuid]
@@ -64,7 +64,7 @@ defmodule ElixirDB.Observability.CompactMetricTest do
 
     Eventual.eventually(
       fn ->
-        TestExporter.spans_named("elixir_db.database.compact")
+        TestExporter.spans_named("vial_keeper.database.compact")
         |> Enum.find(fn s -> TestExporter.span_attr(s, :"db.uuid") == uuid end)
       end,
       timeout: 2_000,

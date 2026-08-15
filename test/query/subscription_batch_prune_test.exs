@@ -1,4 +1,4 @@
-defmodule ElixirDB.Query.SubscriptionBatchPruneTest do
+defmodule VialKeeper.Query.SubscriptionBatchPruneTest do
   @moduledoc """
   Covers the hub resettable classification for batch-pruned revision references.
 
@@ -12,22 +12,22 @@ defmodule ElixirDB.Query.SubscriptionBatchPruneTest do
   classifier, not a race reproduction.
   """
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Query.{SubscriptionHub, Subscriptions}
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Query.{SubscriptionHub, Subscriptions}
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @fail_env :subscription_hub_fail_reads
 
   setup do
-    rel = "subscription-batch-prune-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    rel = "subscription-batch-prune-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     abs = Path.join(root, rel)
-    ElixirDB.TempDatabase.cleanup(abs)
+    VialKeeper.TempDatabase.cleanup(abs)
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
     uuid = identity.database_uuid
@@ -35,7 +35,7 @@ defmodule ElixirDB.Query.SubscriptionBatchPruneTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(abs)
     end)
 
     {:ok, uuid: uuid}
@@ -49,7 +49,7 @@ defmodule ElixirDB.Query.SubscriptionBatchPruneTest do
 
     set_fail_reads(
       uuid,
-      ElixirDB.Error.integrity_violation(
+      VialKeeper.Error.integrity_violation(
         "changes entry references a missing revision",
         %{document_id: "d", revision_id: "r"}
       )
@@ -89,7 +89,7 @@ defmodule ElixirDB.Query.SubscriptionBatchPruneTest do
 
     set_fail_reads(
       uuid,
-      ElixirDB.Error.integrity_violation(
+      VialKeeper.Error.integrity_violation(
         "changes entry references a missing document",
         %{document_id: "d"}
       )
@@ -125,7 +125,7 @@ defmodule ElixirDB.Query.SubscriptionBatchPruneTest do
     assert {:ok, subscription} = open_subscription(uuid)
     assert {:ok, %{type: :caught_up}} = drain_snapshot(subscription)
 
-    set_fail_reads(uuid, ElixirDB.Error.integrity_violation("some other corruption message", %{}))
+    set_fail_reads(uuid, VialKeeper.Error.integrity_violation("some other corruption message", %{}))
 
     parent = self()
     _waiter = spawn(fn -> send(parent, {:next, Subscriptions.next(subscription, 10_000)}) end)
@@ -184,7 +184,7 @@ defmodule ElixirDB.Query.SubscriptionBatchPruneTest do
 
   defp wait_until_resetting(uuid) do
     [{hub, _}] =
-      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
     Eventual.eventually(
       fn ->
@@ -199,14 +199,14 @@ defmodule ElixirDB.Query.SubscriptionBatchPruneTest do
   end
 
   defp set_fail_reads(uuid, error) do
-    Application.put_env(:elixir_db, @fail_env, {uuid, error})
+    Application.put_env(:vial_keeper, @fail_env, {uuid, error})
 
     on_exit(fn ->
-      Application.delete_env(:elixir_db, @fail_env)
+      Application.delete_env(:vial_keeper, @fail_env)
     end)
   end
 
-  defp clear_fail_reads, do: Application.delete_env(:elixir_db, @fail_env)
+  defp clear_fail_reads, do: Application.delete_env(:vial_keeper, @fail_env)
 
   defp put(uuid, id, body) do
     request = %{id: id, body: Map.put(body, "kind", "task")}

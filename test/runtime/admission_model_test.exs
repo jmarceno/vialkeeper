@@ -1,8 +1,8 @@
-defmodule ElixirDB.Runtime.AdmissionModelTest do
+defmodule VialKeeper.Runtime.AdmissionModelTest do
   use ExUnitProperties
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Runtime.{
+  alias VialKeeper.Runtime.{
     AdmissionCapacity,
     AdmissionModel,
     AdmissionPolicy,
@@ -10,7 +10,7 @@ defmodule ElixirDB.Runtime.AdmissionModelTest do
     ServiceClass
   }
 
-  alias ElixirDB.TestSupport.AdmissionGenerators
+  alias VialKeeper.TestSupport.AdmissionGenerators
 
   @default_keyword AdmissionPolicy.default_keyword()
   @default_limit 128

@@ -1,4 +1,4 @@
-defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
+defmodule VialKeeper.Runtime.CatalogAdmissionRoutingTest do
   @moduledoc """
   Proves per-database admission waiting happens outside the host-global catalog
   GenServer so independent databases remain concurrently schedulable.
@@ -7,12 +7,12 @@ defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Runtime.{DatabaseAdmission, DatabaseCatalog}
+  alias VialKeeper.Eventual
+  alias VialKeeper.Runtime.{DatabaseAdmission, DatabaseCatalog}
 
   setup do
-    previous_limits = Application.get_env(:elixir_db, :host_limits)
-    previous_policy = Application.get_env(:elixir_db, :admission_policy)
+    previous_limits = Application.get_env(:vial_keeper, :host_limits)
+    previous_policy = Application.get_env(:vial_keeper, :admission_policy)
 
     limits = Keyword.put(previous_limits || [], :admission_limit, 8)
 
@@ -27,17 +27,17 @@ defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
       maintenance_reserved_slots: 0
     ]
 
-    Application.put_env(:elixir_db, :host_limits, limits)
-    Application.put_env(:elixir_db, :admission_policy, policy)
+    Application.put_env(:vial_keeper, :host_limits, limits)
+    Application.put_env(:vial_keeper, :admission_policy, policy)
 
-    a_rel = "catalog-route-a-#{System.unique_integer([:positive])}.elixirdb"
-    b_rel = "catalog-route-b-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_rel = "catalog-route-a-#{System.unique_integer([:positive])}.vialkeeper"
+    b_rel = "catalog-route-b-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     a_abs = Path.join(root, a_rel)
     b_abs = Path.join(root, b_rel)
 
     for path <- [a_abs, b_abs] do
-      ElixirDB.TempDatabase.cleanup(path)
+      VialKeeper.TempDatabase.cleanup(path)
     end
 
     assert {:ok, a} = DatabaseCatalog.create(a_rel)
@@ -46,9 +46,9 @@ defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
     assert {:ok, _} = DatabaseCatalog.open(b.database_uuid)
 
     on_exit(fn ->
-      Application.delete_env(:elixir_db, :admitted_command_sync)
-      Application.put_env(:elixir_db, :host_limits, previous_limits)
-      Application.put_env(:elixir_db, :admission_policy, previous_policy)
+      Application.delete_env(:vial_keeper, :admitted_command_sync)
+      Application.put_env(:vial_keeper, :host_limits, previous_limits)
+      Application.put_env(:vial_keeper, :admission_policy, previous_policy)
 
       for identity <- [a, b] do
         _ = DatabaseCatalog.close(identity.database_uuid)
@@ -56,7 +56,7 @@ defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
       end
 
       for path <- [a_abs, b_abs] do
-        ElixirDB.TempDatabase.cleanup(path)
+        VialKeeper.TempDatabase.cleanup(path)
       end
     end)
 
@@ -65,12 +65,12 @@ defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
 
   test "ensure_command_target opens lazy runtime without executing commands", %{uuid_a: uuid} do
     assert :ok = DatabaseCatalog.close(uuid)
-    assert [] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+    assert [] = Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid})
 
     assert :ok = DatabaseCatalog.ensure_command_target(uuid)
 
     assert [{_pid, :ordinary}] =
-             Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+             Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid})
   end
 
   test "ordinary_open? reads owner registry metadata without listing the catalog", %{
@@ -94,7 +94,7 @@ defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
   } do
     parent = self()
     gate_ref = make_ref()
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, gate_ref, uuid_a})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, gate_ref, uuid_a})
 
     blocker =
       Task.async(fn ->
@@ -145,7 +145,7 @@ defmodule ElixirDB.Runtime.CatalogAdmissionRoutingTest do
     refute_receive {:a_ran, _}, 0
 
     send(blocker_executor, {:go, gate_ref})
-    Application.delete_env(:elixir_db, :admitted_command_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_sync)
 
     assert {:ok, _} = Task.await(blocker, 2_000)
     assert {:ok, _} = Task.await(b_task, 2_000)

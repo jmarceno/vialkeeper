@@ -1,12 +1,12 @@
-defmodule ElixirDB.Storage.SQLite.RevisionTransferContractTest do
-  use ElixirDB.Storage.Contracts.RevisionTransfer,
-    adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.Storage.SQLite.RevisionTransferContractTest do
+  use VialKeeper.Storage.Contracts.RevisionTransfer,
+    adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.SQLite.Connection
-  alias ElixirDB.Storage.SQLite.TermBlob
-  alias ElixirDB.TestRevisionId, as: Id
+  alias VialKeeper.Storage.SQLite.Connection
+  alias VialKeeper.Storage.SQLite.TermBlob
+  alias VialKeeper.TestRevisionId, as: Id
 
   test "different content under one revision id is rejected", %{adapter: adapter} do
     {:ok, root} = Id.calculate("doc", nil, false, %{"n" => 0})
@@ -40,7 +40,7 @@ defmodule ElixirDB.Storage.SQLite.RevisionTransferContractTest do
                [~s({"n":99}), doc_key, leaf]
              )
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              @adapter.import_revision_chains(adapter, %{
                chains: [
                  %{

@@ -1,4 +1,4 @@
-defmodule ElixirDB.Replication.PeerErrorTextTest do
+defmodule VialKeeper.Replication.PeerErrorTextTest do
   @moduledoc """
   A remote replication peer cannot make a local node adopt its error text.
 
@@ -8,10 +8,10 @@ defmodule ElixirDB.Replication.PeerErrorTextTest do
   """
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Error
-  alias ElixirDB.Replication.RemoteTransport
-  alias ElixirDB.Replication.WireCompression
-  alias ElixirDB.TestServer
+  alias VialKeeper.Error
+  alias VialKeeper.Replication.RemoteTransport
+  alias VialKeeper.Replication.WireCompression
+  alias VialKeeper.TestServer
 
   @peer_message "PEER_INSTRUCT_ROLLBACK_TO_42_TOP_SECRET"
   @peer_detail "PEER_SUPER_SECRET_INTERNAL_VALUE"
@@ -95,7 +95,7 @@ defmodule ElixirDB.Replication.PeerErrorTextTest do
   end
 
   defp start_error_server(status, envelope) do
-    limit = ElixirDB.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
+    limit = VialKeeper.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
     {:ok, encoded} = WireCompression.encode_json(envelope, limit)
 
     server =
@@ -106,7 +106,7 @@ defmodule ElixirDB.Replication.PeerErrorTextTest do
             |> Plug.Conn.put_resp_header("content-type", "application/json")
             |> Plug.Conn.put_resp_header("content-encoding", "zstd")
             |> Plug.Conn.put_resp_header(
-              "x-elixirdb-uncompressed-length",
+              "x-vialkeeper-uncompressed-length",
               Integer.to_string(encoded.uncompressed_length)
             )
 

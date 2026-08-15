@@ -1,3 +1,3 @@
-defmodule ElixirDB.Storage.Contract.MemoryDerivedTest do
-  use ElixirDB.Storage.Contracts.Derived, adapter: ElixirDB.Storage.Memory.Adapter
+defmodule VialKeeper.Storage.Contract.MemoryDerivedTest do
+  use VialKeeper.Storage.Contracts.Derived, adapter: VialKeeper.Storage.Memory.Adapter
 end

@@ -1,3 +1,3 @@
-defmodule ElixirDB.Storage.Contract.MemoryChangesTest do
-  use ElixirDB.Storage.Contracts.Changes, adapter: ElixirDB.Storage.Memory.Adapter
+defmodule VialKeeper.Storage.Contract.MemoryChangesTest do
+  use VialKeeper.Storage.Contracts.Changes, adapter: VialKeeper.Storage.Memory.Adapter
 end

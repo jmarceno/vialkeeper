@@ -1,12 +1,12 @@
-defmodule ElixirDB.Query.SubscriptionRequestTest do
+defmodule VialKeeper.Query.SubscriptionRequestTest do
   @moduledoc "Covers subscription request validation and limits."
 
   use ExUnit.Case, async: true
 
   @moduletag :integration
 
-  alias ElixirDB.Config
-  alias ElixirDB.Query.SubscriptionRequest
+  alias VialKeeper.Config
+  alias VialKeeper.Query.SubscriptionRequest
 
   @config Config.defaults()
 
@@ -35,13 +35,13 @@ defmodule ElixirDB.Query.SubscriptionRequestTest do
         }
       }
 
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+      assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                SubscriptionRequest.normalize(request, @config)
     end
   end
 
   test "rejects unknown outer fields" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              SubscriptionRequest.normalize(
                %{"query" => %{"selector" => %{}}, "extra" => true},
                @config
@@ -58,7 +58,7 @@ defmodule ElixirDB.Query.SubscriptionRequestTest do
                @config
              )
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              SubscriptionRequest.normalize(
                %{"query" => %{"selector" => %{}}, "heartbeat_ms" => 120_000},
                @config
@@ -66,7 +66,7 @@ defmodule ElixirDB.Query.SubscriptionRequestTest do
   end
 
   test "prepare_snapshot rejects forbidden query fields" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request, message: message}} =
              SubscriptionRequest.prepare_snapshot(
                %{selector: %{"/type" => "task"}, limit: 10},
                @config
@@ -76,13 +76,13 @@ defmodule ElixirDB.Query.SubscriptionRequestTest do
   end
 
   test "prepare_snapshot validates max_members" do
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              SubscriptionRequest.prepare_snapshot(
                %{selector: %{"/type" => "task"}, max_members: 10_000},
                @config
              )
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              SubscriptionRequest.prepare_snapshot(
                %{selector: %{"/type" => "task"}, max_members: "bad"},
                @config
@@ -103,7 +103,7 @@ defmodule ElixirDB.Query.SubscriptionRequestTest do
   test "prepare_snapshot rejects invalid field names" do
     request = Map.put(%{selector: %{"/type" => "task"}}, {1, 2, 3}, true)
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              SubscriptionRequest.prepare_snapshot(request, @config)
   end
 end

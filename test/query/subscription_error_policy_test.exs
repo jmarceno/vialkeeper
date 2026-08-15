@@ -1,22 +1,22 @@
-defmodule ElixirDB.Query.SubscriptionErrorPolicyTest do
+defmodule VialKeeper.Query.SubscriptionErrorPolicyTest do
   @moduledoc "Covers the subscription hub retryable/fatal read error policy."
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Query.{SubscriptionHub, Subscriptions}
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Query.{SubscriptionHub, Subscriptions}
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @fail_env :subscription_hub_fail_reads
 
   setup do
-    rel = "subscription-error-policy-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    rel = "subscription-error-policy-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     abs = Path.join(root, rel)
-    ElixirDB.TempDatabase.cleanup(abs)
+    VialKeeper.TempDatabase.cleanup(abs)
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
     uuid = identity.database_uuid
@@ -24,7 +24,7 @@ defmodule ElixirDB.Query.SubscriptionErrorPolicyTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(abs)
     end)
 
     {:ok, uuid: uuid}
@@ -35,7 +35,7 @@ defmodule ElixirDB.Query.SubscriptionErrorPolicyTest do
     assert {:ok, %{type: :caught_up}} = drain_snapshot(subscription)
     assert 1 = SubscriptionHub.count(uuid)
 
-    set_fail_reads(uuid, ElixirDB.Error.database_overloaded("read pool busy"))
+    set_fail_reads(uuid, VialKeeper.Error.database_overloaded("read pool busy"))
 
     assert {:ok, %{revision: revision}} = put(uuid, "recovered", %{"value" => 1})
 
@@ -51,10 +51,11 @@ defmodule ElixirDB.Query.SubscriptionErrorPolicyTest do
     assert {:ok, subscription} = open_subscription(uuid)
     assert {:ok, %{type: :caught_up}} = drain_snapshot(subscription)
 
-    set_fail_reads(uuid, ElixirDB.Error.database_overloaded("read pool busy"))
+    set_fail_reads(uuid, VialKeeper.Error.database_overloaded("read pool busy"))
     assert {:ok, %{revision: _}} = put(uuid, "failed-once", %{"value" => 1})
 
-    [{hub, _}] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+    [{hub, _}] =
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
     Eventual.eventually(
       fn ->
@@ -82,7 +83,7 @@ defmodule ElixirDB.Query.SubscriptionErrorPolicyTest do
     assert {:ok, subscription} = open_subscription(uuid)
     assert {:ok, %{type: :caught_up}} = drain_snapshot(subscription)
 
-    set_fail_reads(uuid, ElixirDB.Error.integrity_violation("revision batch mismatch"))
+    set_fail_reads(uuid, VialKeeper.Error.integrity_violation("revision batch mismatch"))
 
     parent = self()
     _waiter = spawn(fn -> send(parent, {:next, Subscriptions.next(subscription, 10_000)}) end)
@@ -107,7 +108,7 @@ defmodule ElixirDB.Query.SubscriptionErrorPolicyTest do
     assert {:ok, subscription} = open_subscription(uuid)
     assert {:ok, %{type: :caught_up}} = drain_snapshot(subscription)
 
-    set_fail_reads(uuid, ElixirDB.Error.database_overloaded("read pool busy"))
+    set_fail_reads(uuid, VialKeeper.Error.database_overloaded("read pool busy"))
 
     parent = self()
     _waiter = spawn(fn -> send(parent, {:next, Subscriptions.next(subscription, 35_000)}) end)
@@ -138,14 +139,14 @@ defmodule ElixirDB.Query.SubscriptionErrorPolicyTest do
   end
 
   defp set_fail_reads(uuid, error) do
-    Application.put_env(:elixir_db, @fail_env, {uuid, error})
+    Application.put_env(:vial_keeper, @fail_env, {uuid, error})
 
     on_exit(fn ->
-      Application.delete_env(:elixir_db, @fail_env)
+      Application.delete_env(:vial_keeper, @fail_env)
     end)
   end
 
-  defp clear_fail_reads, do: Application.delete_env(:elixir_db, @fail_env)
+  defp clear_fail_reads, do: Application.delete_env(:vial_keeper, @fail_env)
 
   defp put(uuid, id, body) do
     request = %{id: id, body: Map.put(body, "kind", "task")}

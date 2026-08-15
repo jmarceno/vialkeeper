@@ -1,10 +1,10 @@
-defmodule ElixirDB.Documents.BulkWriteUnknownFieldsTest do
+defmodule VialKeeper.Documents.BulkWriteUnknownFieldsTest do
   @moduledoc "Covers unknown-field rejection for bulk-write operations."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Error
+  alias VialKeeper.Documents
+  alias VialKeeper.Error
 
   @uuid "00000000-0000-0000-0000-000000000000"
   @unknown_message "request contains an unknown field"

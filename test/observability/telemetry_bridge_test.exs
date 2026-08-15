@@ -1,4 +1,4 @@
-defmodule ElixirDB.Observability.TelemetryBridgeTest do
+defmodule VialKeeper.Observability.TelemetryBridgeTest do
   @moduledoc """
   Trigger a Req call; assert the Finch child span appears under the
   current span. Also asserts the bridge handlers are defensive: malformed
@@ -6,15 +6,15 @@ defmodule ElixirDB.Observability.TelemetryBridgeTest do
   propagates handler exceptions into the emitter).
   """
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
   require OpenTelemetry.Tracer
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Observability.TestExporter
-  alias ElixirDB.TestServer
+  alias VialKeeper.Eventual
+  alias VialKeeper.Observability.TestExporter
+  alias VialKeeper.TestServer
 
   test "a Req call emits a finch.request child span under the current span" do
     server = TestServer.start_supervised!()

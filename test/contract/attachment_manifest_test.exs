@@ -1,11 +1,11 @@
-defmodule ElixirDB.Contract.AttachmentManifestTest do
+defmodule VialKeeper.Contract.AttachmentManifestTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Attachments.Manifest
-  alias ElixirDB.Domain.Revision
-  alias ElixirDB.JSON.Canonical
-  alias ElixirDB.Revisions.Id
-  alias ElixirDB.Storage.SQLite.Revisions
+  alias VialKeeper.Attachments.Manifest
+  alias VialKeeper.Domain.Revision
+  alias VialKeeper.JSON.Canonical
+  alias VialKeeper.Revisions.Id
+  alias VialKeeper.Storage.SQLite.Revisions
 
   @digest String.duplicate("a", 64)
   @other_digest String.duplicate("b", 64)
@@ -25,7 +25,7 @@ defmodule ElixirDB.Contract.AttachmentManifestTest do
 
   test "rejects NUL and control characters in attachment names" do
     for name <- ["bad\0name", "bad\nname", "bad" <> <<127>> <> "name"] do
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+      assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                Manifest.normalize(%{
                  name => %{
                    "digest" => @digest,
@@ -46,7 +46,7 @@ defmodule ElixirDB.Contract.AttachmentManifestTest do
                }
              })
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Manifest.normalize(%{
                "file.txt" => %{
                  "digest" => @digest,
@@ -55,7 +55,7 @@ defmodule ElixirDB.Contract.AttachmentManifestTest do
                }
              })
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Manifest.normalize(%{
                "file.txt" => %{
                  "digest" => @digest,
@@ -66,12 +66,12 @@ defmodule ElixirDB.Contract.AttachmentManifestTest do
   end
 
   test "rejects invalid digests and client-authoritative lengths" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Manifest.normalize_references(%{
                "file.txt" => %{"blob" => "NOT-A-DIGEST", "content_type" => "text/plain"}
              })
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Manifest.normalize_references(%{
                "file.txt" => %{"blob" => @digest, "content_type" => "text/plain", "length" => 1}
              })
@@ -196,7 +196,7 @@ defmodule ElixirDB.Contract.AttachmentManifestTest do
     assert {:ok, inherited} = Manifest.resolve_inheritance(:update, :omitted, parent)
     assert inherited == parent
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Manifest.resolve_inheritance(:update, :omitted, nil)
   end
 
@@ -235,7 +235,7 @@ defmodule ElixirDB.Contract.AttachmentManifestTest do
 
     assert inherited == chosen_parent
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Manifest.resolve_inheritance(:resolve_conflict, :omitted, nil)
   end
 
@@ -339,7 +339,7 @@ defmodule ElixirDB.Contract.AttachmentManifestTest do
       }
     }
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} = Revision.new(attrs)
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} = Revision.new(attrs)
   end
 
   test "physical codec fields are not part of revision hash payload" do

@@ -1,4 +1,4 @@
-defmodule ElixirDB.TestServer do
+defmodule VialKeeper.TestServer do
   @moduledoc """
   Starts an ephemeral Bandit/HTTP server for end-to-end tests.
 
@@ -11,7 +11,7 @@ defmodule ElixirDB.TestServer do
   """
   @spec start(keyword()) :: {:ok, map()} | {:error, term()}
   def start(opts \\ []) do
-    plug = Keyword.get(opts, :plug, ElixirDB.HTTP.Router)
+    plug = Keyword.get(opts, :plug, VialKeeper.HTTP.Router)
     request_hook = Keyword.get(opts, :request_hook)
     request_body_hook = Keyword.get(opts, :request_body_hook)
     ip = Keyword.get(opts, :ip, {127, 0, 0, 1})
@@ -81,7 +81,7 @@ defmodule ElixirDB.TestServer do
   defmodule HookPlug do
     @moduledoc false
 
-    alias ElixirDB.TestServer.BodyCapture
+    alias VialKeeper.TestServer.BodyCapture
 
     @spec init(
             {module(), (Plug.Conn.t() -> Plug.Conn.t()) | nil,

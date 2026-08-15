@@ -1,8 +1,8 @@
-defmodule ElixirDB.Retention.FrontierTest do
+defmodule VialKeeper.Retention.FrontierTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Domain.{PeerPosition, RetentionState}
-  alias ElixirDB.Retention.Frontier
+  alias VialKeeper.Domain.{PeerPosition, RetentionState}
+  alias VialKeeper.Retention.Frontier
 
   setup do
     now = DateTime.utc_now()

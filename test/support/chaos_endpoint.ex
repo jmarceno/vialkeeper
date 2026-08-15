@@ -1,6 +1,6 @@
-defmodule ElixirDB.ChaosEndpoint do
+defmodule VialKeeper.ChaosEndpoint do
   @moduledoc """
-  Deterministic chaos wrapper around `ElixirDB.Replication.LocalEndpoint`.
+  Deterministic chaos wrapper around `VialKeeper.Replication.LocalEndpoint`.
 
   Each callback draws one action from endpoint-local `:rand` state held by an
   `Agent`. The default weights are 70% pass, 10% error, 10% delay, 5% duplicate,
@@ -17,10 +17,10 @@ defmodule ElixirDB.ChaosEndpoint do
   is not legal for a callback is normalized to `:pass` before it is counted.
   """
 
-  @behaviour ElixirDB.Replication.Endpoint
+  @behaviour VialKeeper.Replication.Endpoint
 
-  alias ElixirDB.Error
-  alias ElixirDB.Replication.LocalEndpoint
+  alias VialKeeper.Error
+  alias VialKeeper.Replication.LocalEndpoint
 
   @actions [:pass, :error, :delay, :duplicate, :reorder]
   @ordinary_actions [:pass, :error, :delay]

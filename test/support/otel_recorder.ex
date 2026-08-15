@@ -1,4 +1,4 @@
-defmodule ElixirDB.Observability.TestExporter.Owner do
+defmodule VialKeeper.Observability.TestExporter.Owner do
   @moduledoc """
   Keeps the observability test span table alive independently of test processes.
 
@@ -19,7 +19,7 @@ defmodule ElixirDB.Observability.TestExporter.Owner do
   end
 end
 
-defmodule ElixirDB.Observability.TestExporter do
+defmodule VialKeeper.Observability.TestExporter do
   @moduledoc """
   In-memory span exporter for tests. Implements the `otel_exporter_traces`
   behaviour (`init/1`, `export/3`, `shutdown/1`) and stores every ended span
@@ -30,7 +30,7 @@ defmodule ElixirDB.Observability.TestExporter do
   """
 
   @behaviour :otel_exporter_traces
-  @owner ElixirDB.Observability.TestExporter.Owner
+  @owner VialKeeper.Observability.TestExporter.Owner
   @table __MODULE__
 
   # #span record tuple indices (0-based; tag at 0). From

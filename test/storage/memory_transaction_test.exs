@@ -1,16 +1,16 @@
-defmodule ElixirDB.Storage.MemoryTransactionTest do
+defmodule VialKeeper.Storage.MemoryTransactionTest do
   @moduledoc """
   Verifies rollback and serialization guarantees of the Memory transaction port.
   """
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Storage.Memory.{Adapter, DocumentFacts}
-  alias ElixirDB.Storage.Ports.Errors
-  alias ElixirDB.Storage.Transaction
+  alias VialKeeper.Storage.Memory.{Adapter, DocumentFacts}
+  alias VialKeeper.Storage.Ports.Errors
+  alias VialKeeper.Storage.Transaction
 
   setup do
-    root = ElixirDB.TempDatabase.path(prefix: "elixirdb-memory-transaction")
+    root = VialKeeper.TempDatabase.path(prefix: "vialkeeper-memory-transaction")
     assert {:ok, adapter} = Adapter.create(root)
 
     on_exit(fn ->
@@ -22,7 +22,7 @@ defmodule ElixirDB.Storage.MemoryTransactionTest do
   end
 
   test "restores state when the callback returns an error", %{context: context} do
-    error = ElixirDB.Error.invalid_request("rollback")
+    error = VialKeeper.Error.invalid_request("rollback")
 
     assert {:error, ^error} =
              Transaction.run(context, fn tx_context ->

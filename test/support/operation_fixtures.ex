@@ -1,4 +1,4 @@
-defmodule ElixirDB.OperationFixtures do
+defmodule VialKeeper.OperationFixtures do
   @moduledoc "Shared operation-map constructors for model and adapter fixtures."
 
   @spec put(binary(), map(), binary() | atom() | nil) :: map()

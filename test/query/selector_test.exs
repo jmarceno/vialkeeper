@@ -1,9 +1,9 @@
-defmodule ElixirDB.Query.SelectorTest do
+defmodule VialKeeper.Query.SelectorTest do
   use ExUnitProperties
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Query.Regex, as: QueryRegex
-  alias ElixirDB.Query.Selector
+  alias VialKeeper.Query.Regex, as: QueryRegex
+  alias VialKeeper.Query.Selector
 
   test "keeps missing distinct from null and preserves negative truth tables" do
     body = %{"null" => nil, "number" => 10, "text" => "10"}
@@ -79,14 +79,14 @@ defmodule ElixirDB.Query.SelectorTest do
   end
 
   test "fails safely for a handcrafted zero modulo divisor" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Selector.matches?(%{"priority" => 4}, {:field, "/priority", [{:mod, 0, 0}]})
   end
 
   test "propagates regex resource exhaustion instead of converting it to a miss" do
     assert {:ok, regex} = QueryRegex.compile("(a+)+$")
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              Selector.matches?(
                %{"value" => String.duplicate("a", 1_000) <> "!"},
                {:field, "/value", [{:regex, regex}]}

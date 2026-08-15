@@ -1,4 +1,4 @@
-defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
+defmodule VialKeeper.Runtime.CatalogCloseAdmissionTest do
   @moduledoc """
   Admission close commits before external services and aborted eligibility must
   not wedge admission in closing state.
@@ -7,10 +7,10 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Replication.JobManager
+  alias VialKeeper.Eventual
+  alias VialKeeper.Replication.JobManager
 
-  alias ElixirDB.Runtime.{
+  alias VialKeeper.Runtime.{
     AttachmentCoordinator,
     DatabaseAdmission,
     DatabaseCatalog,
@@ -20,12 +20,12 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
 
   setup do
     prefix = "catalog-close-admission-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -37,7 +37,7 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -78,7 +78,7 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
       message: "expected admission closing before attachment coordinator closing began"
     )
 
-    assert {:error, %ElixirDB.Error{code: :database_closed}} =
+    assert {:error, %VialKeeper.Error{code: :database_closed}} =
              GenServer.call(
                DatabaseAdmission.via(uuid),
                {:acquire, make_ref(), :foreground, System.monotonic_time(:millisecond) + 5_000,
@@ -113,7 +113,7 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
       message: "continuous replication job did not become active"
     )
 
-    assert {:error, %ElixirDB.Error{code: :database_not_closable}} = DatabaseCatalog.close(a_uuid)
+    assert {:error, %VialKeeper.Error{code: :database_not_closable}} = DatabaseCatalog.close(a_uuid)
     assert {:ok, false} = DatabaseAdmission.closing?(a_uuid)
 
     assert :still_open =
@@ -126,7 +126,7 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
     assert :ok = DatabaseAdmission.begin_close(uuid)
     assert {:ok, true} = DatabaseAdmission.closing?(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :database_closed}} =
+    assert {:error, %VialKeeper.Error{code: :database_closed}} =
              DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :never end)
 
     assert :ok = DatabaseAdmission.cancel_close(uuid)
@@ -137,13 +137,13 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
   end
 
   test "aborted admission drain leaves read pool open for classified reads", %{a_uuid: uuid} do
-    assert {:ok, _} = ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+    assert {:ok, _} = VialKeeper.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
 
-    previous_shutdown_timeout = Application.get_env(:elixir_db, :shutdown_timeout, 30_000)
-    Application.put_env(:elixir_db, :shutdown_timeout, 200)
+    previous_shutdown_timeout = Application.get_env(:vial_keeper, :shutdown_timeout, 30_000)
+    Application.put_env(:vial_keeper, :shutdown_timeout, 200)
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :shutdown_timeout, previous_shutdown_timeout)
+      Application.put_env(:vial_keeper, :shutdown_timeout, previous_shutdown_timeout)
     end)
 
     parent = self()
@@ -158,7 +158,7 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
 
     assert_receive {:blocked, executor_pid}, 2_000
 
-    assert {:error, %ElixirDB.Error{}} = DatabaseCatalog.close(uuid)
+    assert {:error, %VialKeeper.Error{}} = DatabaseCatalog.close(uuid)
 
     send(executor_pid, :finish)
     assert :done = Task.await(blocker, 5_000)
@@ -175,6 +175,6 @@ defmodule ElixirDB.Runtime.CatalogCloseAdmissionTest do
                Deadline.from_timeout(5_000)
              )
 
-    assert {:ok, %{body: %{"n" => 1}}} = ElixirDB.Documents.get(uuid, %{id: "doc"})
+    assert {:ok, %{body: %{"n" => 1}}} = VialKeeper.Documents.get(uuid, %{id: "doc"})
   end
 end

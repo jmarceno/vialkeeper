@@ -1,27 +1,27 @@
-defmodule ElixirDB.DerivedView.MaterializationContractTest do
+defmodule VialKeeper.DerivedView.MaterializationContractTest do
   @moduledoc "Covers derived replication, lifecycle ownership, and bundle portability."
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Error
-  alias ElixirDB.Eventual
-  alias ElixirDB.JSON.Canonical
-  alias ElixirDB.MaterializedViews
-  alias ElixirDB.Replication
-  alias ElixirDB.Replication.{LocalEndpoint, RemoteEndpoint}
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Storage.SQLite.{Adapter, Connection}
-  alias ElixirDB.TempDatabase
-  alias ElixirDB.TestServer
+  alias VialKeeper.Documents
+  alias VialKeeper.Error
+  alias VialKeeper.Eventual
+  alias VialKeeper.JSON.Canonical
+  alias VialKeeper.MaterializedViews
+  alias VialKeeper.Replication
+  alias VialKeeper.Replication.{LocalEndpoint, RemoteEndpoint}
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.SQLite.{Adapter, Connection}
+  alias VialKeeper.TempDatabase
+  alias VialKeeper.TestServer
 
   test "derived databases replicate as sources through local and remote endpoints" do
     prefix = "derived-replication-#{System.unique_integer([:positive])}"
-    source_path = prefix <> "-source.elixirdb"
-    local_target_path = prefix <> "-local-target.elixirdb"
-    remote_target_path = prefix <> "-remote-target.elixirdb"
-    root = ElixirDB.Config.database_root()
+    source_path = prefix <> "-source.vialkeeper"
+    local_target_path = prefix <> "-local-target.vialkeeper"
+    remote_target_path = prefix <> "-remote-target.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [source_path, local_target_path, remote_target_path],
         do: TempDatabase.cleanup(Path.join(root, path))
@@ -93,8 +93,8 @@ defmodule ElixirDB.DerivedView.MaterializationContractTest do
 
   test "enabled materializers keep their database and source from closing" do
     prefix = "derived-lifecycle-#{System.unique_integer([:positive])}"
-    source_path = prefix <> "-source.elixirdb"
-    root = ElixirDB.Config.database_root()
+    source_path = prefix <> "-source.vialkeeper"
+    root = VialKeeper.Config.database_root()
     source_abs = Path.join(root, source_path)
     TempDatabase.cleanup(source_abs)
 
@@ -128,9 +128,9 @@ defmodule ElixirDB.DerivedView.MaterializationContractTest do
 
   test "a moved derived bundle stays readable without sources and resumes after registration" do
     prefix = "derived-portability-#{System.unique_integer([:positive])}"
-    source_path = prefix <> "-source.elixirdb"
-    moved_path = prefix <> "-moved.elixirdb"
-    root = ElixirDB.Config.database_root()
+    source_path = prefix <> "-source.vialkeeper"
+    moved_path = prefix <> "-moved.vialkeeper"
+    root = VialKeeper.Config.database_root()
     source_abs = Path.join(root, source_path)
     moved_abs = Path.join(root, moved_path)
     TempDatabase.cleanup(source_abs)

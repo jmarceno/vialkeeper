@@ -1,12 +1,12 @@
-defmodule ElixirDB.TempDatabase do
+defmodule VialKeeper.TempDatabase do
   @moduledoc """
   Creates and cleans up temporary database bundle paths for tests.
 
-  Owns unique `.elixirdb` bundle directories under the system temp directory so
+  Owns unique `.vialkeeper` bundle directories under the system temp directory so
   adapter and runtime tests do not collide when run in parallel or sequentially.
   """
 
-  alias ElixirDB.DatabaseBundle
+  alias VialKeeper.DatabaseBundle
 
   @sqlite_filename "database.sqlite3"
 
@@ -15,9 +15,9 @@ defmodule ElixirDB.TempDatabase do
   """
   @spec path(keyword()) :: binary()
   def path(opts \\ []) do
-    prefix = Keyword.get(opts, :prefix, "elixirdb")
+    prefix = Keyword.get(opts, :prefix, "vialkeeper")
     dir = Keyword.get(opts, :dir, System.tmp_dir!())
-    name = "#{prefix}-#{System.unique_integer([:positive])}.elixirdb"
+    name = "#{prefix}-#{System.unique_integer([:positive])}.vialkeeper"
     Path.join(dir, name)
   end
 

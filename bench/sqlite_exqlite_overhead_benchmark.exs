@@ -1,14 +1,14 @@
-defmodule ElixirDB.Benchmarks.ExqliteOverhead do
+defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   @moduledoc """
-  Paired low-noise benchmark of ElixirDB SQLite work against direct ExQLite.
+  Paired low-noise benchmark of VialKeeper SQLite work against direct ExQLite.
 
   Every case opens three independent databases with the same schema and the
   same deterministic fixture. The measured variants are:
 
     * `pure_exqlite` — prepared statements through `Exqlite.Sqlite3`.
-    * `elixir_db_connection` — the same SQL through the ElixirDB connection
+    * `vial_keeper_connection` — the same SQL through the VialKeeper connection
       wrapper and its statement cache.
-    * `elixir_db_adapter` — the public SQLite adapter operation.
+    * `vial_keeper_adapter` — the public SQLite adapter operation.
 
   Samples are paired by operation number and the variant order alternates. A
   sample's garbage collection is performed before, rather than inside, the
@@ -17,22 +17,22 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
 
   The direct write control is a physical SQLite baseline: it writes the same
   final document, revision, change-feed, metadata, and replication-state rows
-  in one prepared transaction. It intentionally does not reproduce ElixirDB's
+  in one prepared transaction. It intentionally does not reproduce VialKeeper's
   validation, revision lookup, conflict handling, JSON hashing, or retention
   orchestration. This makes the write result a useful end-to-end overhead
   number over SQLite, not a claim that those semantics are free in SQLite.
   """
 
   alias Exqlite.Sqlite3
-  alias ElixirDB.JSON.Canonical
-  alias ElixirDB.Revisions.Id
-  alias ElixirDB.Storage.SQLite.{Adapter, Connection}
-  alias ElixirDB.Storage.SQLite.TermBlob
-  alias ElixirDB.Benchmarks.ExqliteOverhead.Raw
+  alias VialKeeper.JSON.Canonical
+  alias VialKeeper.Revisions.Id
+  alias VialKeeper.Storage.SQLite.{Adapter, Connection}
+  alias VialKeeper.Storage.SQLite.TermBlob
+  alias VialKeeper.Benchmarks.ExqliteOverhead.Raw
 
   @scenarios [:point_read, :bulk_write, :changes_read, :indexed_query]
   @modes [:memory, :disk]
-  @variants [:pure_exqlite, :elixir_db_connection, :elixir_db_adapter]
+  @variants [:pure_exqlite, :vial_keeper_connection, :vial_keeper_adapter]
 
   @default_iterations 30
   @default_warmup 10
@@ -136,7 +136,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
 
       report = %{
         "schema_version" => 1,
-        "benchmark" => "elixir_db_overhead_vs_exqlite",
+        "benchmark" => "vial_keeper_overhead_vs_exqlite",
         "started_at" => started_at,
         "git_revision" => git_revision(),
         "runtime" => runtime_metadata(),
@@ -151,30 +151,30 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 
   defp with_isolated_runtime(fun) do
-    root = Path.join(System.tmp_dir!(), "elixir-db-overhead-benchmark-#{unique_suffix()}")
-    previous_root = Application.get_env(:elixir_db, :database_root)
-    previous_listener = Application.get_env(:elixir_db, :listener)
+    root = Path.join(System.tmp_dir!(), "vialkeeper-overhead-benchmark-#{unique_suffix()}")
+    previous_root = Application.get_env(:vial_keeper, :database_root)
+    previous_listener = Application.get_env(:vial_keeper, :listener)
     ensure_application_stopped!()
     File.mkdir_p!(root)
-    Application.put_env(:elixir_db, :database_root, root)
-    Application.put_env(:elixir_db, :listener, ip: {127, 0, 0, 1}, port: 0)
+    Application.put_env(:vial_keeper, :database_root, root)
+    Application.put_env(:vial_keeper, :listener, ip: {127, 0, 0, 1}, port: 0)
 
     try do
-      {:ok, _started} = Application.ensure_all_started(:elixir_db)
+      {:ok, _started} = Application.ensure_all_started(:vial_keeper)
       fun.()
     after
-      _ = Application.stop(:elixir_db)
+      _ = Application.stop(:vial_keeper)
       restore_application_env(:database_root, previous_root)
       restore_application_env(:listener, previous_listener)
       _ = File.rm_rf(root)
     end
   end
 
-  defp restore_application_env(key, nil), do: Application.delete_env(:elixir_db, key)
-  defp restore_application_env(key, value), do: Application.put_env(:elixir_db, key, value)
+  defp restore_application_env(key, nil), do: Application.delete_env(:vial_keeper, key)
+  defp restore_application_env(key, value), do: Application.put_env(:vial_keeper, key, value)
 
   defp ensure_application_stopped! do
-    if Enum.any?(Application.started_applications(), &match?({:elixir_db, _, _}, &1)) do
+    if Enum.any?(Application.started_applications(), &match?({:vial_keeper, _, _}, &1)) do
       Mix.raise("benchmark must be launched with mix run --no-start")
     end
   end
@@ -212,15 +212,15 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
 
   defp benchmark_config(options) do
     iterations =
-      positive_option(options, :iterations, "ELIXIRDB_OVERHEAD_ITERATIONS", @default_iterations)
+      positive_option(options, :iterations, "VIALKEEPER_OVERHEAD_ITERATIONS", @default_iterations)
 
-    warmup = non_negative_option(options, :warmup, "ELIXIRDB_OVERHEAD_WARMUP", @default_warmup)
+    warmup = non_negative_option(options, :warmup, "VIALKEEPER_OVERHEAD_WARMUP", @default_warmup)
 
     dataset_size =
-      positive_option(options, :dataset, "ELIXIRDB_OVERHEAD_DATASET", @default_dataset_size)
+      positive_option(options, :dataset, "VIALKEEPER_OVERHEAD_DATASET", @default_dataset_size)
 
-    batch_size = positive_option(options, :batch, "ELIXIRDB_OVERHEAD_BATCH", @default_batch_size)
-    read_count = positive_option(options, :reads, "ELIXIRDB_OVERHEAD_READS", @default_read_count)
+    batch_size = positive_option(options, :batch, "VIALKEEPER_OVERHEAD_BATCH", @default_batch_size)
+    read_count = positive_option(options, :reads, "VIALKEEPER_OVERHEAD_READS", @default_read_count)
 
     if batch_size > 500 do
       Mix.raise("--batch must be at most the configured host bulk limit (500)")
@@ -338,7 +338,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
     path =
       case mode do
         :memory -> ":memory:"
-        :disk -> Path.join(System.tmp_dir!(), "elixirdb-exqlite-overhead-#{unique_suffix()}.db")
+        :disk -> Path.join(System.tmp_dir!(), "vialkeeper-exqlite-overhead-#{unique_suffix()}.db")
       end
 
     options = %{
@@ -695,7 +695,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
     :ok
   end
 
-  defp invoke_point_read!(%__MODULE__{kind: :elixir_db_connection, conn: conn}, id) do
+  defp invoke_point_read!(%__MODULE__{kind: :vial_keeper_connection, conn: conn}, id) do
     [
       [
         ^id,
@@ -714,7 +714,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
     :ok
   end
 
-  defp invoke_point_read!(%__MODULE__{kind: :elixir_db_adapter, adapter: adapter}, id) do
+  defp invoke_point_read!(%__MODULE__{kind: :vial_keeper_adapter, adapter: adapter}, id) do
     case Adapter.get_document(adapter, %{document_id: id}) do
       {:ok, %{id: ^id, deleted: false, body: body}} when is_map(body) -> :ok
       other -> Mix.raise("point-read adapter result was invalid: #{inspect(other)}")
@@ -728,11 +728,11 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
     raw_bulk_write!(conn, statements, batch)
   end
 
-  defp invoke_bulk_write!(%__MODULE__{kind: :elixir_db_connection, conn: conn}, batch) do
+  defp invoke_bulk_write!(%__MODULE__{kind: :vial_keeper_connection, conn: conn}, batch) do
     connection_bulk_write!(conn, batch)
   end
 
-  defp invoke_bulk_write!(%__MODULE__{kind: :elixir_db_adapter, adapter: adapter}, batch) do
+  defp invoke_bulk_write!(%__MODULE__{kind: :vial_keeper_adapter, adapter: adapter}, batch) do
     operations =
       Enum.map(batch, fn document ->
         %{
@@ -885,7 +885,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 
   defp invoke_changes_read!(
-         %__MODULE__{kind: :elixir_db_connection, conn: conn},
+         %__MODULE__{kind: :vial_keeper_connection, conn: conn},
          limit,
          dataset_size
        ) do
@@ -902,7 +902,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 
   defp invoke_changes_read!(
-         %__MODULE__{kind: :elixir_db_adapter, adapter: adapter},
+         %__MODULE__{kind: :vial_keeper_adapter, adapter: adapter},
          limit,
          dataset_size
        ) do
@@ -930,7 +930,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 
   defp invoke_indexed_query!(
-         %__MODULE__{kind: :elixir_db_connection, conn: conn},
+         %__MODULE__{kind: :vial_keeper_connection, conn: conn},
          limit,
          expected_count
        ) do
@@ -942,7 +942,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 
   defp invoke_indexed_query!(
-         %__MODULE__{kind: :elixir_db_adapter, adapter: adapter},
+         %__MODULE__{kind: :vial_keeper_adapter, adapter: adapter},
          limit,
          expected_count
        ) do
@@ -967,14 +967,14 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   defp connection_query!(conn, sql, params) do
     case Connection.query(conn, sql, params) do
       {:ok, rows} -> rows
-      {:error, reason} -> Mix.raise("ElixirDB connection query failed: #{inspect(reason)}")
+      {:error, reason} -> Mix.raise("VialKeeper connection query failed: #{inspect(reason)}")
     end
   end
 
   defp connection_execute!(conn, sql, params \\ []) do
     case Connection.execute(conn, sql, params) do
       :ok -> :ok
-      {:error, reason} -> Mix.raise("ElixirDB connection execute failed: #{inspect(reason)}")
+      {:error, reason} -> Mix.raise("VialKeeper connection execute failed: #{inspect(reason)}")
     end
   end
 
@@ -1177,13 +1177,13 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 
   defp print_summary(report, output) do
-    IO.puts("ElixirDB overhead benchmark report: #{output}")
+    IO.puts("VialKeeper overhead benchmark report: #{output}")
 
     Enum.each(report["results"], fn result ->
-      adapter_variant = result["variants"]["elixir_db_adapter"]
-      connection_variant = result["variants"]["elixir_db_connection"]
-      adapter = result["overhead_vs_pure_exqlite"]["elixir_db_adapter"]
-      connection = result["overhead_vs_pure_exqlite"]["elixir_db_connection"]
+      adapter_variant = result["variants"]["vial_keeper_adapter"]
+      connection_variant = result["variants"]["vial_keeper_connection"]
+      adapter = result["overhead_vs_pure_exqlite"]["vial_keeper_adapter"]
+      connection = result["overhead_vs_pure_exqlite"]["vial_keeper_connection"]
 
       IO.puts(
         "  #{result["storage_mode"]}/#{result["scenario"]}: " <>
@@ -1196,7 +1196,7 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 
   defp runtime_metadata do
-    runtime = ElixirDB.Diagnostics.runtime()
+    runtime = VialKeeper.Diagnostics.runtime()
 
     %{
       "elixir" => System.version(),
@@ -1248,9 +1248,9 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
       --output PATH                 JSON report path (default: output/benchmarks/...json)
 
     Environment equivalents:
-      ELIXIRDB_OVERHEAD_ITERATIONS, ELIXIRDB_OVERHEAD_WARMUP,
-      ELIXIRDB_OVERHEAD_DATASET, ELIXIRDB_OVERHEAD_BATCH,
-      ELIXIRDB_OVERHEAD_READS
+      VIALKEEPER_OVERHEAD_ITERATIONS, VIALKEEPER_OVERHEAD_WARMUP,
+      VIALKEEPER_OVERHEAD_DATASET, VIALKEEPER_OVERHEAD_BATCH,
+      VIALKEEPER_OVERHEAD_READS
     """
   end
 
@@ -1315,4 +1315,4 @@ defmodule ElixirDB.Benchmarks.ExqliteOverhead do
   end
 end
 
-ElixirDB.Benchmarks.ExqliteOverhead.main(System.argv())
+VialKeeper.Benchmarks.ExqliteOverhead.main(System.argv())

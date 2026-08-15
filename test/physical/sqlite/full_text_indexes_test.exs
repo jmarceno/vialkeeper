@@ -1,11 +1,11 @@
-defmodule ElixirDB.StorageAdapter.FullTextIndexesTest do
-  alias ElixirDB.Query.Normalizer
-  alias ElixirDB.Storage.SQLite.QueryRunner
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.FullTextIndexesTest do
+  alias VialKeeper.Query.Normalizer
+  alias VialKeeper.Storage.SQLite.QueryRunner
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.SQLite.Connection
+  alias VialKeeper.Storage.SQLite.Connection
 
   @fts_definition %{
     "name" => "titles",
@@ -43,7 +43,7 @@ defmodule ElixirDB.StorageAdapter.FullTextIndexesTest do
     assert {:ok, indexes} = @adapter.list_indexes(adapter)
     refute Enum.any?(indexes, &(&1["index_id"] == index_id))
 
-    assert {:error, %ElixirDB.Error{code: code}} =
+    assert {:error, %VialKeeper.Error{code: code}} =
              @adapter.execute_query(adapter, %{
                search: %{index: "titles", text: "hello", mode: "all"},
                limit: 10
@@ -181,7 +181,7 @@ defmodule ElixirDB.StorageAdapter.FullTextIndexesTest do
                limit: 128
              })
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              QueryRunner.execute(adapter, request)
   end
 

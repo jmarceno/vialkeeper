@@ -1,16 +1,16 @@
-defmodule ElixirDB.HTTP.RetentionTest do
+defmodule VialKeeper.HTTP.RetentionTest do
   @moduledoc "Covers HTTP retention identity and handshake behavior."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
 
   test "identity includes retention handshake fields" do
     server = TestServer.start_supervised!()
-    path = "retention-identity-#{System.unique_integer([:positive])}.elixirdb"
+    path = "retention-identity-#{System.unique_integer([:positive])}.vialkeeper"
 
     {:ok, %{status: 201, body: created}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -20,7 +20,7 @@ defmodule ElixirDB.HTTP.RetentionTest do
     on_exit(fn -> cleanup(uuid, path) end)
 
     {:ok, %{status: 200, body: body}} =
-      ElixirDB.TestReplicationWire.request(
+      VialKeeper.TestReplicationWire.request(
         :get,
         server.base_url <> "/v1/databases/#{uuid}/replication/identity"
       )
@@ -48,7 +48,7 @@ defmodule ElixirDB.HTTP.RetentionTest do
 
   test "compact returns bounded retention stats" do
     server = TestServer.start_supervised!()
-    path = "retention-compact-#{System.unique_integer([:positive])}.elixirdb"
+    path = "retention-compact-#{System.unique_integer([:positive])}.vialkeeper"
 
     {:ok, %{status: 201, body: created}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -98,7 +98,7 @@ defmodule ElixirDB.HTTP.RetentionTest do
 
   test "changes below retention floor return HTTP 410 history_truncated" do
     server = TestServer.start_supervised!()
-    path = "retention-truncated-#{System.unique_integer([:positive])}.elixirdb"
+    path = "retention-truncated-#{System.unique_integer([:positive])}.vialkeeper"
 
     {:ok, %{status: 201, body: created}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -138,7 +138,7 @@ defmodule ElixirDB.HTTP.RetentionTest do
 
   test "boundary page endpoint returns API-015 shape" do
     server = TestServer.start_supervised!()
-    path = "retention-boundaries-#{System.unique_integer([:positive])}.elixirdb"
+    path = "retention-boundaries-#{System.unique_integer([:positive])}.vialkeeper"
 
     {:ok, %{status: 201, body: created}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -147,7 +147,7 @@ defmodule ElixirDB.HTTP.RetentionTest do
     on_exit(fn -> cleanup(uuid, path) end)
 
     {:ok, %{status: 200, body: body}} =
-      ElixirDB.TestReplicationWire.request(
+      VialKeeper.TestReplicationWire.request(
         :post,
         server.base_url <> "/v1/databases/#{uuid}/replication/boundaries",
         %{}
@@ -171,7 +171,7 @@ defmodule ElixirDB.HTTP.RetentionTest do
   defp cleanup(uuid, path) do
     _ = DatabaseCatalog.close(uuid)
     _ = DatabaseCatalog.unregister(uuid)
-    root = ElixirDB.Config.database_root()
-    ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+    root = VialKeeper.Config.database_root()
+    VialKeeper.TempDatabase.cleanup(Path.join(root, path))
   end
 end

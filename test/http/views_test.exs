@@ -1,14 +1,14 @@
-defmodule ElixirDB.HTTP.ViewsTest do
+defmodule VialKeeper.HTTP.ViewsTest do
   @moduledoc "HTTP lifecycle and query tests for declarative views."
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
-  alias ElixirDB.TestSupport.ViewBuilderProbe
-  alias ElixirDB.View.Manager
+  alias VialKeeper.Eventual
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
+  alias VialKeeper.TestSupport.ViewBuilderProbe
+  alias VialKeeper.View.Manager
 
   @view %{
     "name" => "scores",
@@ -19,7 +19,7 @@ defmodule ElixirDB.HTTP.ViewsTest do
 
   test "covers view lifecycle, strict schemas, logical metadata, and query paging" do
     server = TestServer.start_supervised!()
-    path = "http-views-#{System.unique_integer([:positive])}.elixirdb"
+    path = "http-views-#{System.unique_integer([:positive])}.vialkeeper"
 
     assert {:ok, %{status: 201, body: %{"data" => %{"database_uuid" => uuid}}}} =
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -27,7 +27,7 @@ defmodule ElixirDB.HTTP.ViewsTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     assert {:ok, %{status: 201}} =
@@ -137,7 +137,7 @@ defmodule ElixirDB.HTTP.ViewsTest do
 
   test "consistency modes distinguish stale, update-after, and caught-up results" do
     server = TestServer.start_supervised!()
-    path = "http-views-consistency-#{System.unique_integer([:positive])}.elixirdb"
+    path = "http-views-consistency-#{System.unique_integer([:positive])}.vialkeeper"
 
     assert {:ok, %{status: 201, body: %{"data" => %{"database_uuid" => uuid}}}} =
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -145,7 +145,7 @@ defmodule ElixirDB.HTTP.ViewsTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     assert {:ok, %{status: 201}} =
@@ -172,7 +172,7 @@ defmodule ElixirDB.HTTP.ViewsTest do
              )
 
     assert {:ok, %{status: 200, body: %{"data" => %{"current_sequence" => target}}}} =
-             ElixirDB.TestReplicationWire.request(
+             VialKeeper.TestReplicationWire.request(
                :get,
                server.base_url <> "/v1/databases/#{uuid}/replication/identity"
              )
@@ -213,7 +213,7 @@ defmodule ElixirDB.HTTP.ViewsTest do
 
   test "consistent query returns view_not_caught_up at the deadline" do
     server = TestServer.start_supervised!()
-    path = "http-views-timeout-#{System.unique_integer([:positive])}.elixirdb"
+    path = "http-views-timeout-#{System.unique_integer([:positive])}.vialkeeper"
 
     assert {:ok, %{status: 201, body: %{"data" => %{"database_uuid" => uuid}}}} =
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -221,7 +221,7 @@ defmodule ElixirDB.HTTP.ViewsTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     assert {:ok, %{status: 201}} =

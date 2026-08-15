@@ -1,4 +1,4 @@
-defmodule ElixirDB.WebUI.OfflineAssetsTest do
+defmodule VialKeeper.WebUI.OfflineAssetsTest do
   @moduledoc """
   Offline embedding and dependency proofs for the administration console.
 
@@ -11,20 +11,20 @@ defmodule ElixirDB.WebUI.OfflineAssetsTest do
   @moduletag :integration
   import Plug.Test
 
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.WebUI.{Assets, Layout}
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.WebUI.{Assets, Layout}
 
   setup do
-    previous_web_ui = Application.get_env(:elixir_db, :web_ui)
-    previous_auth = Application.get_env(:elixir_db, :auth)
+    previous_web_ui = Application.get_env(:vial_keeper, :web_ui)
+    previous_auth = Application.get_env(:vial_keeper, :auth)
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :web_ui, previous_web_ui)
-      Application.put_env(:elixir_db, :auth, previous_auth)
+      Application.put_env(:vial_keeper, :web_ui, previous_web_ui)
+      Application.put_env(:vial_keeper, :auth, previous_auth)
     end)
 
-    Application.put_env(:elixir_db, :web_ui, enabled: true)
-    Application.put_env(:elixir_db, :auth, enabled: false, token_digests: [])
+    Application.put_env(:vial_keeper, :web_ui, enabled: true)
+    Application.put_env(:vial_keeper, :auth, enabled: false, token_digests: [])
     :ok
   end
 
@@ -62,7 +62,10 @@ defmodule ElixirDB.WebUI.OfflineAssetsTest do
 
   test "embedded assets remain available without reading the source tree at runtime" do
     root =
-      Path.join(System.tmp_dir!(), "elixirdb-offline-assets-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "vialkeeper-offline-assets-#{System.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf(root) end)

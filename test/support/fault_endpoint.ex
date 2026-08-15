@@ -1,18 +1,18 @@
-defmodule ElixirDB.FaultEndpoint do
+defmodule VialKeeper.FaultEndpoint do
   @moduledoc """
   Thin fault-injecting endpoint wrapper around `LocalEndpoint`.
 
-  Schedules retryable failures at named points via `ElixirDB.FaultAdapter` without
+  Schedules retryable failures at named points via `VialKeeper.FaultAdapter` without
   changing production endpoint modules. Injection points:
 
   * before each Endpoint callback (`:identity`, `:read_changes`, …)
   * after a successful callback (`:after_identity`, `:after_read_changes`, …)
   """
-  @behaviour ElixirDB.Replication.Endpoint
+  @behaviour VialKeeper.Replication.Endpoint
 
-  alias ElixirDB.FaultAdapter
-  alias ElixirDB.Replication.BlobRepresentationStream
-  alias ElixirDB.Replication.LocalEndpoint
+  alias VialKeeper.FaultAdapter
+  alias VialKeeper.Replication.BlobRepresentationStream
+  alias VialKeeper.Replication.LocalEndpoint
 
   defstruct [:inner, :agent]
 
@@ -192,7 +192,7 @@ defmodule ElixirDB.FaultEndpoint do
   defp maybe_inject_stream_fault({:ok, %BlobRepresentationStream{} = stream}, endpoint, point) do
     case Agent.get_and_update(endpoint.agent, &stream_fault(&1, point)) do
       {:none, _adapter} -> {:ok, stream}
-      {{:fault, %ElixirDB.Error{} = error}, _adapter} -> {:ok, faulty_stream(stream, error)}
+      {{:fault, %VialKeeper.Error{} = error}, _adapter} -> {:ok, faulty_stream(stream, error)}
     end
   end
 
@@ -201,7 +201,7 @@ defmodule ElixirDB.FaultEndpoint do
   defp maybe_inject_target_stream(endpoint, stream) do
     case Agent.get_and_update(endpoint.agent, &stream_fault(&1, :mid_target_stream)) do
       {:none, _adapter} -> stream
-      {{:fault, %ElixirDB.Error{} = error}, _adapter} -> faulty_stream(stream, error)
+      {{:fault, %VialKeeper.Error{} = error}, _adapter} -> faulty_stream(stream, error)
     end
   end
 
@@ -215,11 +215,11 @@ defmodule ElixirDB.FaultEndpoint do
   defp faulty_stream(stream, error) do
     body =
       stream.body
-      |> Stream.concat([:elixir_db_stream_fault])
+      |> Stream.concat([:vial_keeper_stream_fault])
       |> Stream.transform(:pending, fn
         chunk, :pending -> {[chunk], :fault}
-        :elixir_db_stream_fault, :fault -> exit({:elixir_db_transfer_stream_error, error})
-        _chunk, :fault -> exit({:elixir_db_transfer_stream_error, error})
+        :vial_keeper_stream_fault, :fault -> exit({:vial_keeper_transfer_stream_error, error})
+        _chunk, :fault -> exit({:vial_keeper_transfer_stream_error, error})
       end)
 
     %{stream | body: body}

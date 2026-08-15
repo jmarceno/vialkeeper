@@ -1,12 +1,12 @@
-defmodule ElixirDB.StorageAdapter.IntegrityTest do
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.IntegrityTest do
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Attachments.FilesystemStore
-  alias ElixirDB.Attachments.Manifest
-  alias ElixirDB.JSON.Canonical
-  alias ElixirDB.Storage.SQLite.Connection
+  alias VialKeeper.Attachments.FilesystemStore
+  alias VialKeeper.Attachments.Manifest
+  alias VialKeeper.JSON.Canonical
+  alias VialKeeper.Storage.SQLite.Connection
 
   test "integrity passes on a fresh database", %{adapter: adapter} do
     assert {:ok, %{ok: true}} = @adapter.integrity_check(adapter, %{})
@@ -27,7 +27,7 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
                [revision]
              )
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              @adapter.integrity_check(adapter, %{})
   end
 
@@ -46,7 +46,7 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
                [sequence]
              )
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              @adapter.integrity_check(adapter, %{})
 
     assert message =~ "retention floor"
@@ -76,7 +76,7 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
                [json]
              )
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              @adapter.integrity_check(adapter, %{})
 
     assert message =~ "installed compaction"
@@ -108,7 +108,7 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
                [json]
              )
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              @adapter.integrity_check(adapter, %{})
 
     assert message =~ "checkpoint history"
@@ -159,7 +159,7 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
     prefix = String.slice(digest, 0, 2)
     File.write!(Path.join([bundle, "blobs", prefix, digest <> ".zst"]), "bogus")
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              @adapter.integrity_check(adapter, %{})
 
     assert String.contains?(message, "malformed")
@@ -171,7 +171,7 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
     File.mkdir_p!(bad_dir)
     File.write!(Path.join(bad_dir, "not-a-digest.raw"), "x")
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              @adapter.integrity_check(adapter, %{})
 
     assert message =~ "malformed"
@@ -201,7 +201,7 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
 
     assert :ok = FilesystemStore.delete(bundle, digest)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              @adapter.integrity_check(adapter, %{})
 
     assert message =~ "physical verification"
@@ -211,7 +211,7 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
     adapter: adapter,
     path: path
   } do
-    alias ElixirDB.Revisions.Id
+    alias VialKeeper.Revisions.Id
 
     bundle = Path.dirname(path)
     payload = "size-conflict-#{System.unique_integer([:positive])}"
@@ -295,7 +295,7 @@ defmodule ElixirDB.StorageAdapter.IntegrityTest do
 
     assert :ok = Connection.execute(adapter.conn, "PRAGMA foreign_keys = ON")
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              @adapter.integrity_check(adapter, %{})
 
     assert message =~ "inconsistent logical sizes" or

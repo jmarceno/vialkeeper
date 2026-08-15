@@ -1,8 +1,8 @@
-defmodule ElixirDB.ConfigTest do
+defmodule VialKeeper.ConfigTest do
   @moduledoc "Configuration validation tests."
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Config
+  alias VialKeeper.Config
 
   test "replication defaults are present" do
     replication = Config.defaults()["replication"]
@@ -31,7 +31,7 @@ defmodule ElixirDB.ConfigTest do
   end
 
   test "subscription heartbeat order is validated" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Config.merge_and_bound(%{
                "subscriptions" => %{
                  "default_heartbeat_ms" => 90_000,
@@ -59,7 +59,7 @@ defmodule ElixirDB.ConfigTest do
   end
 
   test "transfer bytes must be at least attachment max bytes" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Config.merge_and_bound(%{
                "attachments" => %{"max_attachment_bytes" => 2_000_000_000},
                "replication" => %{"max_transfer_bytes_in_flight" => 1_073_741_824}
@@ -98,6 +98,6 @@ defmodule ElixirDB.ConfigTest do
   end
 
   defp assert_resource_limit(config) do
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} = Config.merge_and_bound(config)
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} = Config.merge_and_bound(config)
   end
 end

@@ -1,26 +1,26 @@
-defmodule ElixirDB.Observability.AdmissionPrivacyTest do
+defmodule VialKeeper.Observability.AdmissionPrivacyTest do
   @moduledoc """
   Admission telemetry privacy gate: no payloads, PIDs, document ids, or query
-  text in `elixir_db.database.admission.wait` attributes.
+  text in `vial_keeper.database.admission.wait` attributes.
   """
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Observability.TestMetricExporter
-  alias ElixirDB.Runtime.{AdmissionPolicy, DatabaseAdmission, DatabaseCatalog}
-  alias ElixirDB.View.Manager
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Observability.TestMetricExporter
+  alias VialKeeper.Runtime.{AdmissionPolicy, DatabaseAdmission, DatabaseCatalog}
+  alias VialKeeper.View.Manager
 
-  @metric "elixir_db.database.admission.wait"
+  @metric "vial_keeper.database.admission.wait"
   @doc_secret "PRIVACY_ADMISSION_DOC_SENTINEL_42"
   @query_secret "PRIVACY_ADMISSION_QUERY_SENTINEL_99"
 
   setup do
-    previous_limits = Application.get_env(:elixir_db, :host_limits)
-    previous_policy = Application.get_env(:elixir_db, :admission_policy)
+    previous_limits = Application.get_env(:vial_keeper, :host_limits)
+    previous_policy = Application.get_env(:vial_keeper, :admission_policy)
 
     limits = Keyword.put(previous_limits || [], :admission_limit, 1)
 
@@ -33,22 +33,22 @@ defmodule ElixirDB.Observability.AdmissionPrivacyTest do
         maintenance_reserved_slots: 0
       )
 
-    Application.put_env(:elixir_db, :host_limits, limits)
-    Application.put_env(:elixir_db, :admission_policy, policy)
+    Application.put_env(:vial_keeper, :host_limits, limits)
+    Application.put_env(:vial_keeper, :admission_policy, policy)
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :host_limits, previous_limits)
-      Application.put_env(:elixir_db, :admission_policy, previous_policy)
+      Application.put_env(:vial_keeper, :host_limits, previous_limits)
+      Application.put_env(:vial_keeper, :admission_policy, previous_policy)
     end)
 
-    rel = "obs-admission-privacy-#{System.unique_integer([:positive])}.elixirdb"
+    rel = "obs-admission-privacy-#{System.unique_integer([:positive])}.vialkeeper"
     {:ok, %{database_uuid: uuid}} = DatabaseCatalog.create(rel)
 
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      root = ElixirDB.Config.database_root()
-      ElixirDB.TempDatabase.cleanup(Path.join(root, rel))
+      root = VialKeeper.Config.database_root()
+      VialKeeper.TempDatabase.cleanup(Path.join(root, rel))
     end)
 
     assert {:ok, _} = DatabaseCatalog.open(uuid)
@@ -64,7 +64,7 @@ defmodule ElixirDB.Observability.AdmissionPrivacyTest do
     uuid: uuid
   } do
     assert {:ok, _} =
-             ElixirDB.Query.execute(uuid, %{
+             VialKeeper.Query.execute(uuid, %{
                "selector" => %{"/marker" => @query_secret},
                "limit" => 1
              })
@@ -84,7 +84,7 @@ defmodule ElixirDB.Observability.AdmissionPrivacyTest do
 
     assert_receive {:held, ^gate}, 1_000
 
-    assert {:error, %ElixirDB.Error{code: :database_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :database_overloaded}} =
              DatabaseAdmission.with_token(uuid, fn -> :never end)
 
     send(holder, {:release, gate})

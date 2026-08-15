@@ -1,4 +1,4 @@
-defmodule ElixirDB.Storage.Contracts.Conflicts do
+defmodule VialKeeper.Storage.Contracts.Conflicts do
   @moduledoc """
   Shared conflict-resolution contract tests for storage adapters.
   """
@@ -7,10 +7,10 @@ defmodule ElixirDB.Storage.Contracts.Conflicts do
     # The contract tests must be injected into each adapter module.
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
     quote do
-      use ElixirDB.Storage.AdapterCase, unquote(opts)
+      use VialKeeper.Storage.AdapterCase, unquote(opts)
 
-      alias ElixirDB.Storage.AdapterCase
-      alias ElixirDB.TestRevisionId, as: Id
+      alias VialKeeper.Storage.AdapterCase
+      alias VialKeeper.TestRevisionId, as: Id
 
       test "sibling imports surface conflicts and resolve with live leaf CAS", %{adapter: adapter} do
         {:ok, root} = Id.calculate("doc", nil, false, %{"n" => 0})
@@ -51,7 +51,7 @@ defmodule ElixirDB.Storage.Contracts.Conflicts do
         assert [_] = conflicts
         assert hd(conflicts) in [left, right]
 
-        assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+        assert {:error, %VialKeeper.Error{code: :revision_conflict}} =
                  @adapter.resolve_conflict(adapter, %{
                    document_id: "doc",
                    expected_live_revisions: [left],
@@ -122,7 +122,7 @@ defmodule ElixirDB.Storage.Contracts.Conflicts do
         assert {:ok, %{revision: ^resolved, body: %{"n" => 3}, conflicts: []}} =
                  @adapter.get_document(reopened2, %{document_id: "doc", include_conflicts: true})
 
-        assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+        assert {:error, %VialKeeper.Error{code: :revision_conflict}} =
                  @adapter.resolve_conflict(reopened2, %{
                    document_id: "doc",
                    expected_live_revisions: [left, right],
@@ -164,7 +164,7 @@ defmodule ElixirDB.Storage.Contracts.Conflicts do
         assert {:ok, %{revision: first, replayed: false}} =
                  @adapter.resolve_conflict(adapter, request)
 
-        assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+        assert {:error, %VialKeeper.Error{code: :revision_conflict}} =
                  @adapter.resolve_conflict(adapter, request)
 
         assert {:ok, %{revision: ^first, body: %{"merged" => true}, conflicts: []}} =

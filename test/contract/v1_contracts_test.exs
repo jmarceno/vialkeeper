@@ -1,23 +1,23 @@
-defmodule ElixirDB.Contract.V1ContractsTest do
+defmodule VialKeeper.Contract.V1ContractsTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Domain.ReplicationEndpoint
-  alias ElixirDB.JSON.{Canonical, Pointer, StrictDecoder}
-  alias ElixirDB.Query.{BookmarkCodec, Normalizer}
-  alias ElixirDB.Query.FullText
-  alias ElixirDB.Replication.Id
+  alias VialKeeper.Domain.ReplicationEndpoint
+  alias VialKeeper.JSON.{Canonical, Pointer, StrictDecoder}
+  alias VialKeeper.Query.{BookmarkCodec, Normalizer}
+  alias VialKeeper.Query.FullText
+  alias VialKeeper.Replication.Id
 
   test "strict JSON enforces duplicate keys, UTF-8, depth, and binary64 integers" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              StrictDecoder.decode(~s({"a":1,"a":2}))
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              StrictDecoder.decode(<<255>>)
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              StrictDecoder.decode("[[[0]]]", max_depth: 1)
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              StrictDecoder.decode("9007199254740992")
 
     assert {:ok, 0.000001} = StrictDecoder.decode("0.000001")
@@ -27,14 +27,14 @@ defmodule ElixirDB.Contract.V1ContractsTest do
     assert {:ok, "{\"a\":1,\"b\":2}"} = Canonical.encode(%{"b" => 2, "a" => 1})
     assert {:ok, value} = Pointer.get(%{"a/b" => %{"~key" => 7}}, "/a~1b/~0key")
     assert value == 7
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} = Pointer.parse("/bad~2escape")
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} = Pointer.parse("/bad~2escape")
   end
 
   test "query normalization rejects unknown fields and unsupported operators" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Normalizer.normalize(%{selector: %{}, unexpected: true})
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Normalizer.normalize(%{selector: %{"/state" => %{"$where" => "x"}}})
 
     assert {:ok, normalized} =
@@ -65,7 +65,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
 
     assert decoded.last_id == "doc"
 
-    assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} =
              BookmarkCodec.decode(bookmark, %{"query_fingerprint" => "different"})
   end
 
@@ -77,7 +77,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
   end
 
   test "endpoint URLs reject credentials, paths, and unknown fields" do
-    uuid = ElixirDB.UUID.v4()
+    uuid = VialKeeper.UUID.v4()
 
     assert {:ok, %{kind: :remote}} =
              ReplicationEndpoint.new(%{
@@ -87,7 +87,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
              })
 
     for url <- ["https://user:pass@example.test", "https://example.test/db", "file:///tmp/db"] do
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+      assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                ReplicationEndpoint.new(%{
                  "kind" => "remote",
                  "database_uuid" => uuid,
@@ -95,7 +95,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
                })
     end
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              ReplicationEndpoint.new(%{
                "kind" => "remote",
                "database_uuid" => uuid,
@@ -105,7 +105,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
   end
 
   test "remote endpoints accept an auth_token; local endpoints reject it (AUTH-003)" do
-    uuid = ElixirDB.UUID.v4()
+    uuid = VialKeeper.UUID.v4()
 
     # Remote endpoint may carry an auth_token sibling of base_url.
     assert {:ok, %{kind: :remote, auth_token: "abc"}} =
@@ -125,7 +125,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
              })
 
     # URL-embedded credentials remain rejected even with auth_token present.
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              ReplicationEndpoint.new(%{
                "kind" => "remote",
                "database_uuid" => uuid,
@@ -134,7 +134,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
              })
 
     # Local endpoints never accept credentials.
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              ReplicationEndpoint.new(%{
                "kind" => "local",
                "database_uuid" => uuid,
@@ -142,7 +142,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
              })
 
     # Empty-string auth_token is rejected.
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              ReplicationEndpoint.new(%{
                "kind" => "remote",
                "database_uuid" => uuid,
@@ -152,14 +152,14 @@ defmodule ElixirDB.Contract.V1ContractsTest do
   end
 
   test "configuration and public errors retain their bounded stable contracts" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
-             ElixirDB.Config.merge_and_bound(%{"unknown" => true})
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
+             VialKeeper.Config.merge_and_bound(%{"unknown" => true})
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
-             ElixirDB.Config.merge_and_bound(%{"queries" => %{"max_limit" => 501}})
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
+             VialKeeper.Config.merge_and_bound(%{"queries" => %{"max_limit" => 501}})
 
-    Enum.each(ElixirDB.Error.registry(), fn {code, {status, registry_retryable}} ->
-      error = ElixirDB.Error.new(code, "message")
+    Enum.each(VialKeeper.Error.registry(), fn {code, {status, registry_retryable}} ->
+      error = VialKeeper.Error.new(code, "message")
 
       expected_retryable =
         case registry_retryable do
@@ -172,12 +172,12 @@ defmodule ElixirDB.Contract.V1ContractsTest do
       assert error.http_status == status
       assert error.retryable == expected_retryable
       assert is_boolean(error.retryable)
-      assert is_map(ElixirDB.Error.public(error))
+      assert is_map(VialKeeper.Error.public(error))
     end)
 
     # AUTH-004: unauthorized is 401, non-retryable, and uses a stable constant
     # message indistinguishable across missing/malformed/wrong-token failures.
-    unauthorized = ElixirDB.Error.unauthorized()
+    unauthorized = VialKeeper.Error.unauthorized()
 
     assert unauthorized.code == :unauthorized
     assert unauthorized.http_status == 401
@@ -188,14 +188,14 @@ defmodule ElixirDB.Contract.V1ContractsTest do
     # API-016: internal_error is "Depends on details". The registry records a `:depends`
     # sentinel; the auto-generated constructor defaults to the safer non-retryable outcome,
     # and only an explicit opt-in marks a genuinely transient internal failure retryable.
-    assert :depends == elem(ElixirDB.Error.registry()[:internal_error], 1)
+    assert :depends == elem(VialKeeper.Error.registry()[:internal_error], 1)
 
-    default = ElixirDB.Error.internal_error("unexpected SQLite failure")
+    default = VialKeeper.Error.internal_error("unexpected SQLite failure")
     assert default.http_status == 500
     assert default.retryable == false
 
     transient =
-      ElixirDB.Error.new(:internal_error, "transient remote failure", %{}, retryable: true)
+      VialKeeper.Error.new(:internal_error, "transient remote failure", %{}, retryable: true)
 
     assert transient.retryable == true
 
@@ -204,23 +204,23 @@ defmodule ElixirDB.Contract.V1ContractsTest do
              message: "internal error",
              retryable: false,
              details: %{}
-           } = ElixirDB.Error.public(default)
+           } = VialKeeper.Error.public(default)
 
     diagnostic =
-      ElixirDB.Error.internal_error("SQLite statement failed: users@example.test", %{
+      VialKeeper.Error.internal_error("SQLite statement failed: users@example.test", %{
         cause: "{:sqlite_error, 'disk I/O error'}",
-        database_path: "/private/customer.elixirdb"
+        database_path: "/private/customer.vialkeeper"
       })
 
-    refute inspect(ElixirDB.Error.public(diagnostic)) =~ "SQLite"
-    refute inspect(ElixirDB.Error.public(diagnostic)) =~ "users@example.test"
-    refute inspect(ElixirDB.Error.public(diagnostic)) =~ "/private/customer.elixirdb"
+    refute inspect(VialKeeper.Error.public(diagnostic)) =~ "SQLite"
+    refute inspect(VialKeeper.Error.public(diagnostic)) =~ "users@example.test"
+    refute inspect(VialKeeper.Error.public(diagnostic)) =~ "/private/customer.vialkeeper"
   end
 
   test "public domain errors omit private causes while retaining stable details" do
     error =
-      ElixirDB.Error.database_unavailable("database unavailable", %{
-        cause: "{:file_error, '/private/customer.elixirdb'}",
+      VialKeeper.Error.database_unavailable("database unavailable", %{
+        cause: "{:file_error, '/private/customer.vialkeeper'}",
         database_uuid: "db-uuid",
         history_epoch: "epoch"
       })
@@ -230,7 +230,7 @@ defmodule ElixirDB.Contract.V1ContractsTest do
              message: "database unavailable",
              retryable: true,
              details: %{database_uuid: "db-uuid", history_epoch: "epoch"}
-           } = ElixirDB.Error.public(error)
+           } = VialKeeper.Error.public(error)
   end
 
   test "unicode_words_v1 tokenization is deterministic" do

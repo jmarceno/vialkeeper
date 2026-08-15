@@ -1,4 +1,4 @@
-defmodule ElixirDB.Benchmarks.ReplicationWire do
+defmodule VialKeeper.Benchmarks.ReplicationWire do
   @moduledoc """
   Repeatable remote-replication wire benchmark.
 
@@ -7,13 +7,13 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
   `mix bench.replication -- --format json --seed 20260812`.
   """
 
-  alias ElixirDB.Attachments
-  alias ElixirDB.Attachments.FilesystemStore
-  alias ElixirDB.Documents
-  alias ElixirDB.Replication.Id
-  alias ElixirDB.Replication.JobManager
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
+  alias VialKeeper.Attachments
+  alias VialKeeper.Attachments.FilesystemStore
+  alias VialKeeper.Documents
+  alias VialKeeper.Replication.Id
+  alias VialKeeper.Replication.JobManager
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
 
   @default_seed 20_260_812
   @scenarios [
@@ -58,30 +58,30 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
   end
 
   defp with_isolated_runtime(fun) do
-    root = Path.join(System.tmp_dir!(), "elixir-db-replication-wire-bench-#{unique_suffix()}")
-    previous_root = Application.get_env(:elixir_db, :database_root)
-    previous_listener = Application.get_env(:elixir_db, :listener)
+    root = Path.join(System.tmp_dir!(), "vialkeeper-replication-wire-bench-#{unique_suffix()}")
+    previous_root = Application.get_env(:vial_keeper, :database_root)
+    previous_listener = Application.get_env(:vial_keeper, :listener)
     ensure_application_stopped!()
     File.mkdir_p!(root)
-    Application.put_env(:elixir_db, :database_root, root)
-    Application.put_env(:elixir_db, :listener, ip: {127, 0, 0, 1}, port: 0)
+    Application.put_env(:vial_keeper, :database_root, root)
+    Application.put_env(:vial_keeper, :listener, ip: {127, 0, 0, 1}, port: 0)
 
     try do
-      {:ok, _started} = Application.ensure_all_started(:elixir_db)
+      {:ok, _started} = Application.ensure_all_started(:vial_keeper)
       fun.()
     after
-      _ = Application.stop(:elixir_db)
+      _ = Application.stop(:vial_keeper)
       restore_application_env(:database_root, previous_root)
       restore_application_env(:listener, previous_listener)
       _ = File.rm_rf(root)
     end
   end
 
-  defp restore_application_env(key, nil), do: Application.delete_env(:elixir_db, key)
-  defp restore_application_env(key, value), do: Application.put_env(:elixir_db, key, value)
+  defp restore_application_env(key, nil), do: Application.delete_env(:vial_keeper, key)
+  defp restore_application_env(key, value), do: Application.put_env(:vial_keeper, key, value)
 
   defp ensure_application_stopped! do
-    if Enum.any?(Application.started_applications(), &match?({:elixir_db, _, _}, &1)) do
+    if Enum.any?(Application.started_applications(), &match?({:vial_keeper, _, _}, &1)) do
       Mix.raise("benchmark must be launched with mix run --no-start")
     end
   end
@@ -136,9 +136,9 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
 
   defp run_scenario(scenario, seed) do
     prefix = "rwb-#{scenario}-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     {:ok, a} = DatabaseCatalog.create(a_path)
     {:ok, b} = DatabaseCatalog.create(b_path)
@@ -152,7 +152,7 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
       {:ok, replication_id} = Id.calculate(a_uuid, b_uuid, "push", "one_shot")
 
       :ok =
-        ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
           a_uuid,
           b_uuid,
           replication_id
@@ -190,8 +190,8 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, a_path))
-      ElixirDB.TempDatabase.cleanup(Path.join(root, b_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
     end
   end
 
@@ -515,7 +515,7 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
 
   defp default_output_path do
     timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%dT%H%M%SZ")
-    Path.join("tmp/replication-wire-bench", "elixirdb-#{timestamp}.json")
+    Path.join("tmp/replication-wire-bench", "vialkeeper-#{timestamp}.json")
   end
 
   defp unique_suffix,
@@ -534,4 +534,4 @@ defmodule ElixirDB.Benchmarks.ReplicationWire do
   end
 end
 
-ElixirDB.Benchmarks.ReplicationWire.main(System.argv())
+VialKeeper.Benchmarks.ReplicationWire.main(System.argv())

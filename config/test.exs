@@ -3,13 +3,13 @@ import Config
 test_registration_manifest =
   Path.join(
     System.tmp_dir!(),
-    "elixirdb-test-registrations-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}.json"
+    "vialkeeper-test-registrations-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}.json"
   )
 
 # In the test environment runtime.exs is a no-op (HostConfig.load/0 returns
 # {:ok, []}), so test.exs owns the host configuration keys directly. These
 # mirror the floor defaults shipped in priv/host.toml.
-config :elixir_db,
+config :vial_keeper,
   database_root: Path.expand("tmp/test-databases", File.cwd!()),
   registration_manifest: test_registration_manifest,
   shutdown_timeout: 30_000,
@@ -75,7 +75,7 @@ config :elixir_db,
 # spans are recorded immediately and assertable. traces_exporter is read by
 # the simple processor config merge and mapped to its `exporter` key.
 config :opentelemetry,
-  traces_exporter: {:"Elixir.ElixirDB.Observability.TestExporter", []},
+  traces_exporter: {:"Elixir.VialKeeper.Observability.TestExporter", []},
   processors: [
     {:otel_simple_processor, %{}}
   ]
@@ -86,10 +86,10 @@ config :opentelemetry,
 config :opentelemetry_experimental,
   readers: [
     %{
-      id: :elixir_db_test_metric_reader,
+      id: :vial_keeper_test_metric_reader,
       module: :otel_metric_reader,
       config: %{
-        exporter: {:"Elixir.ElixirDB.Observability.TestMetricExporter", []},
+        exporter: {:"Elixir.VialKeeper.Observability.TestMetricExporter", []},
         export_interval_ms: 50
       }
     }

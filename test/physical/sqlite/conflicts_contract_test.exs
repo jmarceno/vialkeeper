@@ -1,5 +1,5 @@
-defmodule ElixirDB.Storage.SQLite.ConflictsContractTest do
-  use ElixirDB.Storage.Contracts.Conflicts, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.Storage.SQLite.ConflictsContractTest do
+  use VialKeeper.Storage.Contracts.Conflicts, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 end

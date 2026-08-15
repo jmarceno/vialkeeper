@@ -1,9 +1,9 @@
-defmodule ElixirDB.Contract.TermBlobTest do
+defmodule VialKeeper.Contract.TermBlobTest do
   use ExUnit.Case, async: true
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.SQLite.TermBlob
+  alias VialKeeper.Storage.SQLite.TermBlob
 
   test "round trips a JSON term and binds it as SQLite BLOB" do
     value = %{"active" => true, "items" => [1, 2.5, nil]}
@@ -34,7 +34,7 @@ defmodule ElixirDB.Contract.TermBlobTest do
     assert {:fallback, :invalid_term} = TermBlob.decode(unsafe, json)
     assert {:fallback, :invalid_header} = TermBlob.decode(<<0, 1, 2>>, json)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              TermBlob.decode_trusted(malformed)
   end
 
@@ -47,7 +47,7 @@ defmodule ElixirDB.Contract.TermBlobTest do
     forged_digest = :crypto.hash(:sha256, "{}")
     forged = <<magic::binary, version, forged_digest::binary, payload::binary>>
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              TermBlob.decode_trusted(forged)
   end
 
@@ -56,7 +56,10 @@ defmodule ElixirDB.Contract.TermBlobTest do
     json = JSON.encode_to_iodata!(value) |> IO.iodata_to_binary()
 
     assert {:ok, blob} = TermBlob.encode(value, json)
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} = TermBlob.decode_trusted(blob, 1)
+
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
+             TermBlob.decode_trusted(blob, 1)
+
     assert {:ok, ^value} = TermBlob.decode_trusted(blob, 2)
   end
 end

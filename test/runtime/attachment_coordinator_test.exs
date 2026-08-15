@@ -1,12 +1,12 @@
-defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
+defmodule VialKeeper.Runtime.AttachmentCoordinatorTest do
   @moduledoc "Covers attachment coordinator lifecycle and cleanup."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
+  alias VialKeeper.Eventual
+  alias VialKeeper.Runtime.{AttachmentCoordinator, DatabaseCatalog}
 
   defmodule BlockingGC do
     @moduledoc "Test GC that remains alive until its owner releases it."
@@ -22,9 +22,9 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
   end
 
   setup do
-    relative = "attachment-coordinator-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    relative = "attachment-coordinator-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), relative)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     assert {:ok, _} = DatabaseCatalog.open(identity.database_uuid)
@@ -32,7 +32,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(identity.database_uuid)
       _ = DatabaseCatalog.unregister(identity.database_uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: identity.database_uuid}
@@ -72,7 +72,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     assert {:ok, t1} = AttachmentCoordinator.acquire_read(uuid)
     assert {:ok, t2} = AttachmentCoordinator.acquire_read(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_read(uuid)
 
     assert :ok = AttachmentCoordinator.release(uuid, t1)
@@ -86,7 +86,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     assert {:ok, t1, _} = AttachmentCoordinator.acquire_write(uuid)
     assert {:ok, t2, _} = AttachmentCoordinator.acquire_write(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_write(uuid)
 
     assert :ok = AttachmentCoordinator.release(uuid, t1)
@@ -97,7 +97,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
   test "guard tokens can only be released by their owning process", %{uuid: uuid} do
     assert {:ok, token} = AttachmentCoordinator.acquire_read(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Task.async(fn -> AttachmentCoordinator.release(uuid, token) end)
              |> Task.await()
 
@@ -110,10 +110,10 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     assert {:ok, read_token} = AttachmentCoordinator.acquire_read(uuid)
     assert {:ok, write_token, _} = AttachmentCoordinator.acquire_write(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_read(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_write(uuid)
 
     assert :ok = AttachmentCoordinator.release(uuid, read_token)
@@ -126,10 +126,10 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     assert {:ok, read_token} = AttachmentCoordinator.acquire_read(uuid)
     assert {:ok, write_token, _} = AttachmentCoordinator.acquire_write(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_read(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_write(uuid)
 
     assert {:ok, ref_token} = AttachmentCoordinator.acquire_reference(uuid)
@@ -155,7 +155,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
 
     assert_receive {:held, ^gate}, 1_000
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_read(uuid)
 
     send(holder, :die)
@@ -175,7 +175,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
 
     set_limits(uuid, 1, 8)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_read(uuid)
 
     send(holder.pid, {:release, gate})
@@ -240,7 +240,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     assert Eventual.eventually(
              fn ->
                case Registry.lookup(
-                      ElixirDB.Runtime.DatabaseRegistry,
+                      VialKeeper.Runtime.DatabaseRegistry,
                       {:attachment_coordinator, uuid}
                     ) do
                  [{pid, _}] ->
@@ -276,7 +276,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
              fn ->
                [{pid, _}] =
                  Registry.lookup(
-                   ElixirDB.Runtime.DatabaseRegistry,
+                   VialKeeper.Runtime.DatabaseRegistry,
                    {:attachment_coordinator, uuid}
                  )
 
@@ -327,13 +327,13 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
 
     assert {:ok, gc_token} = AttachmentCoordinator.begin_gc(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_read(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_write(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              AttachmentCoordinator.acquire_reference(uuid)
 
     assert :ok = AttachmentCoordinator.end_gc(uuid, gc_token)
@@ -370,7 +370,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     set_limits(uuid, 3, 3)
 
     [{pid, _}] =
-      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid})
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid})
 
     Process.exit(pid, :kill)
     ref = Process.monitor(pid)
@@ -399,7 +399,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     gc_ref = Process.monitor(gc_pid)
 
     [{coordinator_pid, _}] =
-      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid})
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid})
 
     Process.exit(coordinator_pid, :kill)
 
@@ -427,7 +427,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
     gc_ref = Process.monitor(gc_pid)
 
     [{coordinator_pid, _}] =
-      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid})
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid})
 
     assert :ok = AttachmentCoordinator.begin_close(uuid)
     assert_receive {:DOWN, ^gc_ref, :process, ^gc_pid, :killed}, 1_000
@@ -442,7 +442,7 @@ defmodule ElixirDB.Runtime.AttachmentCoordinatorTest do
 
     assert [{^coordinator_pid, _}] =
              Registry.lookup(
-               ElixirDB.Runtime.DatabaseRegistry,
+               VialKeeper.Runtime.DatabaseRegistry,
                {:attachment_coordinator, uuid}
              )
   end

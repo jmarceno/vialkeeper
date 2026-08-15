@@ -1,7 +1,7 @@
-defmodule ElixirDB.Domain.RetentionTypesTest do
+defmodule VialKeeper.Domain.RetentionTypesTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Domain.{
+  alias VialKeeper.Domain.{
     BoundaryPage,
     PeerPosition,
     RetentionBoundary,

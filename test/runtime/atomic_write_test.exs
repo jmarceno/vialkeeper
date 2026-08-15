@@ -1,14 +1,14 @@
-defmodule ElixirDB.Runtime.AtomicWriteTest do
+defmodule VialKeeper.Runtime.AtomicWriteTest do
   @moduledoc """
   `AtomicWrite.write/2` durability contract: success path, parent-directory
   auto-creation, and failed-write isolation (no temp leftovers, prior file kept).
   """
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Runtime.AtomicWrite
+  alias VialKeeper.Runtime.AtomicWrite
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "elixirdb-atomic-#{System.unique_integer([:positive])}")
+    dir = Path.join(System.tmp_dir!(), "vialkeeper-atomic-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> _ = File.rm_rf(dir) end)
     {:ok, dir: dir}

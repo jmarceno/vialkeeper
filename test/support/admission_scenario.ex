@@ -1,11 +1,11 @@
-defmodule ElixirDB.TestSupport.AdmissionScenario do
+defmodule VialKeeper.TestSupport.AdmissionScenario do
   @moduledoc "Shared end-to-end scenario helpers for admission behavior tests."
   import ExUnit.Assertions
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Query.Subscriptions
+  alias VialKeeper.Eventual
+  alias VialKeeper.Query.Subscriptions
 
-  alias ElixirDB.Runtime.{
+  alias VialKeeper.Runtime.{
     AdmissionModel,
     AdmissionPolicy,
     AdmissionSchedule,
@@ -14,7 +14,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
     ServiceClass
   }
 
-  alias ElixirDB.TestSupport.AdmissionClassProbe
+  alias VialKeeper.TestSupport.AdmissionClassProbe
 
   @default_keyword AdmissionPolicy.default_keyword()
 
@@ -27,13 +27,13 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
   @spec install_test_hook() :: reference()
   def install_test_hook do
     ref = make_ref()
-    Application.put_env(:elixir_db, :admission_test_hook, {self(), ref})
+    Application.put_env(:vial_keeper, :admission_test_hook, {self(), ref})
     ref
   end
 
   @spec uninstall_test_hook() :: :ok
   def uninstall_test_hook do
-    Application.delete_env(:elixir_db, :admission_test_hook)
+    Application.delete_env(:vial_keeper, :admission_test_hook)
     :ok
   end
 
@@ -407,7 +407,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
        ) do
     parent = self()
     gate_ref = make_ref()
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, gate_ref, uuid})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, gate_ref, uuid})
 
     blocker =
       Task.async(fn ->
@@ -438,7 +438,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
     {grants, final_order} =
       collect_real_path_grants!(uuid, hook_ref, gate_ref, grant_target, enqueue_order)
 
-    Application.delete_env(:elixir_db, :admitted_command_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_sync)
 
     class_grants = Enum.map(grants, fn {class, op, _ref} -> {class, op} end)
 
@@ -679,7 +679,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
        ) do
     parent = self()
     gate_ref = make_ref()
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, gate_ref, uuid})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, gate_ref, uuid})
 
     blocker =
       Task.async(fn ->
@@ -704,7 +704,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
     grants =
       collect_immediate_grants!(probe_ref, hook_ref, gate_ref, spawn_request, grant_target)
 
-    Application.delete_env(:elixir_db, :admitted_command_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_sync)
 
     refute grants == []
     assert_two_cycle_frequencies!(grants, limit)
@@ -821,7 +821,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
   end
 
   defp replication_worker_pid(uuid, job_id) do
-    case :ets.lookup(:elixir_db_replication_jobs, job_id) do
+    case :ets.lookup(:vial_keeper_replication_jobs, job_id) do
       [{^job_id, _state, pid, ^uuid, _replication_id, _details}] when is_pid(pid) -> pid
       [{^job_id, _state, pid, ^uuid, _replication_id}] when is_pid(pid) -> pid
       _ -> nil
@@ -843,7 +843,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
 
     parent = self()
     gate_ref = make_ref()
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, gate_ref, uuid})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, gate_ref, uuid})
 
     # With one reserved slot per class, foreground may use all unreserved capacity.
     # Keep one free reserved slot each for subscription/replication/maintenance.
@@ -867,7 +867,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
       timeout: 10_000
     )
 
-    assert {:error, %ElixirDB.Error{code: :database_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :database_overloaded}} =
              DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :rejected end)
 
     sub_task =
@@ -895,7 +895,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
     )
 
     send(blocker_executor, {:go, gate_ref})
-    Application.delete_env(:elixir_db, :admitted_command_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_sync)
 
     for task <- [blocker | flood_tasks] ++ [sub_task, rep_task, mnt_task] do
       assert Task.await(task, 10_000)
@@ -918,7 +918,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
   end
 
   defp replication_worker_pids(uuid) do
-    :elixir_db_replication_jobs
+    :vial_keeper_replication_jobs
     |> :ets.tab2list()
     |> Enum.flat_map(fn
       {_job_id, _state, pid, ^uuid, _replication_id, _details} when is_pid(pid) -> [pid]
@@ -964,7 +964,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
     refute_hook_grants!(hook_ref, [fg_ref, repl_ref], 0)
 
     send(executor_pid, {:go, gate_ref})
-    Application.delete_env(:elixir_db, :admitted_command_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_sync)
     assert :hold = Task.await(blocker, 5_000)
 
     refute_hook_grants!(hook_ref, [fg_ref, repl_ref], 200)
@@ -976,7 +976,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
   defp hold_admission_slot!(uuid) do
     parent = self()
     gate_ref = make_ref()
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, gate_ref, uuid})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, gate_ref, uuid})
 
     blocker =
       Task.async(fn ->
@@ -1103,7 +1103,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
     body_ref = make_ref()
     holder_gate = make_ref()
     racer_gate = make_ref()
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, holder_gate, uuid})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, holder_gate, uuid})
 
     holder =
       Task.async(fn ->
@@ -1138,7 +1138,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
     assert_receive {^hook_ref, :enqueued, racer_ref, :foreground, :race_victim, ^racer}, 5_000
     await_stats(uuid, &(&1.queued_foreground >= 1), timeout: 5_000)
 
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, racer_gate, uuid})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, racer_gate, uuid})
     send(holder_executor, {:go, holder_gate})
     assert :held = Task.await(holder, 5_000)
 
@@ -1152,7 +1152,7 @@ defmodule ElixirDB.TestSupport.AdmissionScenario do
     await_stats(uuid, &(&1.total_occupancy == 0 and &1.queued_foreground == 0), timeout: 15_000)
 
     send(racer_executor, {:go, racer_gate})
-    Application.delete_env(:elixir_db, :admitted_command_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_sync)
 
     racer_mon = Process.monitor(racer)
     assert_receive {:DOWN, ^racer_mon, :process, ^racer, _}, 2_000

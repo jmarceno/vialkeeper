@@ -1,8 +1,8 @@
-defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
+defmodule VialKeeper.EndToEnd.LiveQuerySubscriptionTest do
   @moduledoc """
   Mandatory live-query subscription E2E.
 
-  Uses real Bandit HTTP, a real `.elixirdb` bundle, SQLite indexes, and NDJSON
+  Uses real Bandit HTTP, a real `.vialkeeper` bundle, SQLite indexes, and NDJSON
   chunked streaming.
   """
 
@@ -10,25 +10,25 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Query.SubscriptionHub
-  alias ElixirDB.Query.Subscriptions
-  alias ElixirDB.Replication
-  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
-  alias ElixirDB.TestServer
+  alias VialKeeper.Eventual
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Query.SubscriptionHub
+  alias VialKeeper.Query.Subscriptions
+  alias VialKeeper.Replication
+  alias VialKeeper.Runtime.{AttachmentCoordinator, DatabaseCatalog}
+  alias VialKeeper.TestServer
 
   @tag :slow
   test "mandatory live query subscription end-to-end scenario" do
     server = TestServer.start_supervised!()
-    root = ElixirDB.Config.database_root()
-    path = "live-query-#{System.unique_integer([:positive])}.elixirdb"
+    root = VialKeeper.Config.database_root()
+    path = "live-query-#{System.unique_integer([:positive])}.vialkeeper"
     uuid = create_database!(server, path)
 
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end)
 
     assert {:ok, _} =
@@ -193,7 +193,7 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
     assert_receive {:stream, :b, %{"type" => "upsert", "document" => %{"id" => "rapid"}}}, 5_000
 
     [{hub, _}] =
-      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
     :sys.suspend(hub)
     r0 = rapid_seed["data"]["revision"]
@@ -261,7 +261,7 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
       body["data"]["revision"]
     end)
 
-    assert {:error, %{type: :error, error: %ElixirDB.Error{code: :subscription_overloaded}}} =
+    assert {:error, %{type: :error, error: %VialKeeper.Error{code: :subscription_overloaded}}} =
              Subscriptions.next(slow, 5_000)
 
     assert_receive {:stream, :a, %{"type" => "upsert", "document" => %{"id" => "rapid"}}}, 5_000
@@ -351,22 +351,22 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
              DatabaseCatalog.command(uuid, {:command, :identity, %{}})
 
     assert {:ok, %{documents: documents}} =
-             ElixirDB.Query.execute(uuid, %{"selector" => %{"/type" => "task"}})
+             VialKeeper.Query.execute(uuid, %{"selector" => %{"/type" => "task"}})
 
     assert Enum.any?(documents, &(&1.id == "post"))
 
     assert {:ok, %{results: []}} =
-             ElixirDB.Changes.read(uuid, %{since: current_sequence, limit: 10})
+             VialKeeper.Changes.read(uuid, %{since: current_sequence, limit: 10})
 
     assert {:ok, %{ok: true}} =
              DatabaseCatalog.command(uuid, {:command, :integrity_check, %{}})
 
     # Replication remains usable while a live target subscription is active.
     replication_source_path =
-      "live-query-replication-source-#{System.unique_integer([:positive])}.elixirdb"
+      "live-query-replication-source-#{System.unique_integer([:positive])}.vialkeeper"
 
     replication_target_path =
-      "live-query-replication-target-#{System.unique_integer([:positive])}.elixirdb"
+      "live-query-replication-target-#{System.unique_integer([:positive])}.vialkeeper"
 
     assert {:ok, replication_source} = DatabaseCatalog.create(replication_source_path)
     assert {:ok, replication_target} = DatabaseCatalog.create(replication_target_path)
@@ -378,12 +378,12 @@ defmodule ElixirDB.EndToEnd.LiveQuerySubscriptionTest do
           ] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(replication_source.database_uuid, %{
+             VialKeeper.Documents.put(replication_source.database_uuid, %{
                id: "replicated",
                body: %{"type" => "task", "title" => "replicated"}
              })

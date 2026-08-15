@@ -1,19 +1,19 @@
-defmodule ElixirDB.Shadow.ReplicationE2ETest do
+defmodule VialKeeper.Shadow.ReplicationE2ETest do
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Replication.{Id, LocalEndpoint, Profile}
-  alias ElixirDB.Runtime.{CommandContext, DatabaseCatalog}
+  alias VialKeeper.Replication.{Id, LocalEndpoint, Profile}
+  alias VialKeeper.Runtime.{CommandContext, DatabaseCatalog}
 
   @moduletag :integration
 
   setup do
     prefix = "shadow-e2e-#{System.unique_integer([:positive])}"
-    source_path = prefix <> "-source.elixirdb"
-    shadow_path = prefix <> "-shadow.elixirdb"
-    root = ElixirDB.Config.database_root()
-    source_uuid = ElixirDB.UUID.v4()
-    shadow_uuid = ElixirDB.UUID.v4()
-    operation_id = ElixirDB.UUID.v4()
+    source_path = prefix <> "-source.vialkeeper"
+    shadow_path = prefix <> "-shadow.vialkeeper"
+    root = VialKeeper.Config.database_root()
+    source_uuid = VialKeeper.UUID.v4()
+    shadow_uuid = VialKeeper.UUID.v4()
+    operation_id = VialKeeper.UUID.v4()
 
     metadata = %{
       source_database_uuid: source_uuid,
@@ -40,7 +40,7 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
       for {identity, path} <- [{source, source_path}, {shadow, shadow_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -62,13 +62,13 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
     profile: profile
   } do
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(source.database_uuid, %{id: "doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(source.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     {:ok, source_endpoint} = LocalEndpoint.new(source.database_uuid)
     {:ok, shadow_endpoint} = LocalEndpoint.new(shadow.database_uuid, shadow_opts(profile))
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot_endpoints(
+             VialKeeper.Replication.one_shot_endpoints(
                source_endpoint,
                shadow_endpoint,
                profile: profile,
@@ -99,14 +99,14 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
     profile: profile
   } do
     assert {:ok, %{revision: first}} =
-             ElixirDB.Documents.put(source.database_uuid, %{id: "doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(source.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     pull!(source.database_uuid, profile)
     assert :ok = DatabaseCatalog.close(shadow.database_uuid)
     assert {:ok, _} = DatabaseCatalog.open_internal(shadow.database_uuid)
 
     assert {:ok, %{revision: second}} =
-             ElixirDB.Documents.put(source.database_uuid, %{
+             VialKeeper.Documents.put(source.database_uuid, %{
                id: "doc",
                if_revision: first,
                body: %{"n" => 2}
@@ -142,7 +142,7 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
     {:ok, shadow_endpoint} = LocalEndpoint.new(shadow.database_uuid, shadow_opts(profile))
 
     assert {:error, %{code: :shadow_replacement_required}} =
-             ElixirDB.Replication.handshake(
+             VialKeeper.Replication.handshake(
                source_endpoint,
                shadow_endpoint,
                profile: profile,
@@ -156,7 +156,7 @@ defmodule ElixirDB.Shadow.ReplicationE2ETest do
     {:ok, shadow_endpoint} = LocalEndpoint.new(profile.target_database_uuid, shadow_opts(profile))
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot_endpoints(
+             VialKeeper.Replication.one_shot_endpoints(
                source_endpoint,
                shadow_endpoint,
                profile: profile,

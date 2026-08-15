@@ -1,5 +1,5 @@
-defmodule ElixirDB.StorageAdapter.RevisionsBatchTest do
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.RevisionsBatchTest do
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
@@ -9,12 +9,12 @@ defmodule ElixirDB.StorageAdapter.RevisionsBatchTest do
         %{document_id: "doc-#{index}", revision_id: "rev-#{index}"}
       end
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              @adapter.get_revisions_batch(adapter, requests)
   end
 
   test "rejects invalid revision batch items before lookup", %{adapter: adapter} do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              @adapter.get_revisions_batch(adapter, [%{document_id: "doc"}])
   end
 
@@ -84,12 +84,12 @@ defmodule ElixirDB.StorageAdapter.RevisionsBatchTest do
                body: %{"value" => 1}
              })
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              @adapter.get_revisions_batch(adapter, [
                %{document_id: "doc", revision_id: "missing-revision"}
              ])
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              @adapter.get_revisions_batch(adapter, [
                %{document_id: "missing-doc", revision_id: revision}
              ])

@@ -1,15 +1,15 @@
-defmodule ElixirDB.Contract.JSONAndRevisionTest do
+defmodule VialKeeper.Contract.JSONAndRevisionTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.JSON.{Canonical, StrictDecoder}
-  alias ElixirDB.RevisionFixtures
-  alias ElixirDB.Revisions.Id
+  alias VialKeeper.JSON.{Canonical, StrictDecoder}
+  alias VialKeeper.RevisionFixtures
+  alias VialKeeper.Revisions.Id
 
   test "strict decoder rejects duplicate keys and unsafe numbers" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              StrictDecoder.decode(~s({"a":1,"a":2}))
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              StrictDecoder.decode("9007199254740992")
 
     assert {:ok, %{"a" => 1}} = StrictDecoder.decode(~s({"a":1}))

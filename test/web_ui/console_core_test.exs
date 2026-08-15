@@ -1,4 +1,4 @@
-defmodule ElixirDB.WebUI.ConsoleCoreTest do
+defmodule VialKeeper.WebUI.ConsoleCoreTest do
   @moduledoc """
   Database, document, query, index, and local-view console proofs for the
   embedded administration UI.
@@ -8,35 +8,35 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
   @moduletag :integration
   import Plug.Test
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.MaterializedViews
-  alias ElixirDB.Query
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Views
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.MaterializedViews
+  alias VialKeeper.Query
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Views
 
   @token :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
   @digest String.downcase(:crypto.hash(:sha256, @token) |> Base.encode16(case: :lower))
 
   setup do
-    previous_auth = Application.get_env(:elixir_db, :auth)
-    previous_web_ui = Application.get_env(:elixir_db, :web_ui)
-    previous_dashboard = Application.get_env(:elixir_db, :observability_dashboard)
+    previous_auth = Application.get_env(:vial_keeper, :auth)
+    previous_web_ui = Application.get_env(:vial_keeper, :web_ui)
+    previous_dashboard = Application.get_env(:vial_keeper, :observability_dashboard)
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :auth, previous_auth)
-      Application.put_env(:elixir_db, :web_ui, previous_web_ui)
-      Application.put_env(:elixir_db, :observability_dashboard, previous_dashboard)
+      Application.put_env(:vial_keeper, :auth, previous_auth)
+      Application.put_env(:vial_keeper, :web_ui, previous_web_ui)
+      Application.put_env(:vial_keeper, :observability_dashboard, previous_dashboard)
     end)
 
-    Application.put_env(:elixir_db, :web_ui, enabled: true)
-    Application.put_env(:elixir_db, :auth, enabled: false, token_digests: [])
-    Application.put_env(:elixir_db, :observability_dashboard, false)
+    Application.put_env(:vial_keeper, :web_ui, enabled: true)
+    Application.put_env(:vial_keeper, :auth, enabled: false, token_digests: [])
+    Application.put_env(:vial_keeper, :observability_dashboard, false)
 
-    path = "webui-core-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), path)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    path = "webui-core-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), path)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(path)
     uuid = identity.database_uuid
@@ -45,7 +45,7 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: uuid, path: path}
@@ -89,7 +89,7 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
     do: Plug.Conn.put_req_header(conn, "authorization", "Bearer " <> token)
 
   defp enable_auth,
-    do: Application.put_env(:elixir_db, :auth, enabled: true, token_digests: [@digest])
+    do: Application.put_env(:vial_keeper, :auth, enabled: true, token_digests: [@digest])
 
   defp get_header(conn, name) do
     conn
@@ -146,7 +146,7 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
 
     created =
       form_post("/ui/actions/databases", %{
-        "path" => "webui-created-#{System.unique_integer([:positive])}.elixirdb"
+        "path" => "webui-created-#{System.unique_integer([:positive])}.vialkeeper"
       })
 
     assert created.status == 200
@@ -208,7 +208,7 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
 
     assert deleted.status == 200
 
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
              Documents.get(uuid, %{"id" => "doc-1"})
   end
 
@@ -221,13 +221,13 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
              })
 
     derived = identity.database_uuid
-    bundle = Path.join(ElixirDB.Config.database_root(), identity.database_path)
+    bundle = Path.join(VialKeeper.Config.database_root(), identity.database_path)
 
     on_exit(fn ->
       _ = DatabaseCatalog.command(derived, {:command, :set_derived_enabled, %{enabled: false}})
       _ = DatabaseCatalog.close(derived)
       _ = DatabaseCatalog.unregister(derived)
-      ElixirDB.TempDatabase.cleanup(bundle)
+      VialKeeper.TempDatabase.cleanup(bundle)
     end)
 
     browse = request("GET", "/ui/fragments/databases/#{derived}/documents")
@@ -377,7 +377,7 @@ defmodule ElixirDB.WebUI.ConsoleCoreTest do
     Eventual.eventually(fn ->
       case Views.state(uuid, view_id) do
         {:ok, state} ->
-          status = ElixirDB.MapAccess.get(state, :status)
+          status = VialKeeper.MapAccess.get(state, :status)
           status in ["ready", :ready]
 
         _ ->

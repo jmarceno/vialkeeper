@@ -1,9 +1,9 @@
-defmodule ElixirDB.Federation.OrderingContractTest do
+defmodule VialKeeper.Federation.OrderingContractTest do
   @moduledoc "Covers stable federation ordering across source completion order."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Federation.Executor
+  alias VialKeeper.Federation.Executor
 
   @source "123e4567-e89b-12d3-a456-426614174000"
   @other_source "123e4567-e89b-12d3-a456-426614174001"

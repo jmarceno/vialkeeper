@@ -1,11 +1,11 @@
-defmodule ElixirDB.MixProject do
+defmodule VialKeeper.MixProject do
   use Mix.Project
 
   @version "0.1.0"
 
   def project do
     [
-      app: :elixir_db,
+      app: :vial_keeper,
       version: @version,
       elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -45,7 +45,7 @@ defmodule ElixirDB.MixProject do
   end
 
   def application do
-    [extra_applications: [:logger, :crypto], mod: {ElixirDB.Application, []}]
+    [extra_applications: [:logger, :crypto], mod: {VialKeeper.Application, []}]
   end
 
   defp deps do
@@ -62,7 +62,7 @@ defmodule ElixirDB.MixProject do
       # TOML parser for the host configuration file (<database_root>/host.toml).
       {:toml, "~> 0.7"},
       # OpenTelemetry. runtime: false keeps the SDK/exporter apps from auto-starting;
-      # ElixirDB.Observability.Supervisor starts them only when an OTLP endpoint is
+      # VialKeeper.Observability.Supervisor starts them only when an OTLP endpoint is
       # configured (see config/runtime.exs). The lockfile pins exact versions.
       {:opentelemetry_api, "~> 1.4", runtime: false},
       {:opentelemetry, "~> 1.5", runtime: false},
@@ -88,7 +88,7 @@ defmodule ElixirDB.MixProject do
 
   defp releases do
     [
-      elixir_db: [
+      vial_keeper: [
         include_executables_for: [:unix],
         # `runtime: false` OpenTelemetry deps are excluded from releases unless
         # listed here. `:load` keeps them from auto-starting; Observability.Supervisor
@@ -100,7 +100,7 @@ defmodule ElixirDB.MixProject do
           opentelemetry_exporter: :load,
           opentelemetry_experimental: :load
         ],
-        steps: [:assemble, &ElixirDB.ReleaseSteps.patch_launcher/1]
+        steps: [:assemble, &VialKeeper.ReleaseSteps.patch_launcher/1]
       ]
     ]
   end

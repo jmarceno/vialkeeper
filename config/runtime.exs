@@ -4,7 +4,7 @@ import Config
 #
 # Host configuration is loaded from `<database_root>/host.toml` — a single
 # TOML file co-located with the database files (CONFIG-001). The
-# `ELIXIR_DB_ROOT` environment variable locates the database root; on first run
+# `VIAL_KEEPER_ROOT` environment variable locates the database root; on first run
 # in an empty root the file is created from a shipped template and then never
 # overwritten. Production hosts run the release binary; Mix is for development
 # and CI only.
@@ -18,7 +18,7 @@ host_config =
   if config_env() == :test do
     []
   else
-    case ElixirDB.HostConfig.load() do
+    case VialKeeper.HostConfig.load() do
       {:ok, kw} ->
         kw
 
@@ -27,10 +27,10 @@ host_config =
     end
   end
 
-config :elixir_db, host_config
-config :elixir_db, :federation, Keyword.get(host_config, :federation, [])
+config :vial_keeper, host_config
+config :vial_keeper, :federation, Keyword.get(host_config, :federation, [])
 
-config :elixir_db,
+config :vial_keeper,
        :federation_saved_queries,
        Keyword.get(host_config, :federation, [])[:saved_queries] || []
 
@@ -56,7 +56,7 @@ if config_env() != :test do
     config :opentelemetry_experimental,
       readers: [
         %{
-          id: :elixir_db_otlp_metric_reader,
+          id: :vial_keeper_otlp_metric_reader,
           module: :otel_metric_reader,
           config: %{
             exporter: {:opentelemetry_exporter, %{}},

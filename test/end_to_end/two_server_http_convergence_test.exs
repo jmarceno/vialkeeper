@@ -1,10 +1,10 @@
-defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
+defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
   @moduledoc """
   Two real Bandit servers, remote
   replication wire only, restart during continuous replication, resume through
   checkpoint reconciliation.
 
-  Uses `ElixirDB.TestServer` + Req — not Plug.Test as fake servers.
+  Uses `VialKeeper.TestServer` + Req — not Plug.Test as fake servers.
   On outage: cancel/disable the continuous worker so resume must go through
   `JobManager.start` after Bandit restart (not an in-BEAM reconnect).
   """
@@ -12,33 +12,33 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Attachments.FilesystemStore
-  alias ElixirDB.EndToEnd.TwoServerHttpConvergenceTest.Barrier
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Replication.Id
-  alias ElixirDB.Replication.JobManager
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestReplicationWire
-  alias ElixirDB.TestServer
+  alias VialKeeper.Attachments.FilesystemStore
+  alias VialKeeper.EndToEnd.TwoServerHttpConvergenceTest.Barrier
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Replication.Id
+  alias VialKeeper.Replication.JobManager
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestReplicationWire
+  alias VialKeeper.TestServer
 
   @replay_header_names [
     "accept",
     "accept-encoding",
     "content-type",
     "content-encoding",
-    "x-elixirdb-uncompressed-length",
+    "x-vialkeeper-uncompressed-length",
     "content-length"
   ]
 
   @tag :slow
   test "two Bandit servers converge over remote wire across mid-replication restart" do
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     prefix = "e2e-two-http-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a = TestServer.start_supervised!()
@@ -56,8 +56,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, a_path))
-      ElixirDB.TempDatabase.cleanup(Path.join(root, b_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
     end)
 
     assert {:ok, %{"revision" => first_rev}} =
@@ -85,7 +85,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
     wait_for_document!(server_b, b_uuid, "seed", first_rev, %{"n" => 1})
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case JobManager.get(a_uuid, job_id) do
           {:ok, %{state: state}} when state in [:waiting, :backoff, :handshake, :read_changes] ->
@@ -114,7 +114,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
     assert {:ok, _} = JobManager.disable(a_uuid, job_id)
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case JobManager.get(a_uuid, job_id) do
           {:ok, %{state: :disabled}} -> true
@@ -126,15 +126,15 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     )
 
     assert {:ok, %{revision: offline_rev}} =
-             ElixirDB.Documents.put(a_uuid, %{
+             VialKeeper.Documents.put(a_uuid, %{
                id: "offline",
                body: %{"n" => 3, "phase" => "servers-down"}
              })
 
     # While the remote wire is down and the worker is disabled, B must not have
     # the offline write.
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
-             ElixirDB.Documents.get(b_uuid, %{id: "offline"})
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
+             VialKeeper.Documents.get(b_uuid, %{id: "offline"})
 
     server_a2 = TestServer.start_supervised!(port: port_a)
     server_b2 = TestServer.start_supervised!(port: port_b)
@@ -144,7 +144,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     # Explicit resume path: enable + start after Bandit restart.
     assert {:ok, _} = JobManager.enable(a_uuid, job_id)
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case JobManager.get(a_uuid, job_id) do
           {:ok, %{state: state}}
@@ -187,7 +187,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     final_sequence = source_sequence!(a_uuid)
     assert final_sequence >= 4
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case checkpoint_source_sequence(a_uuid, replication_id) do
           {:ok, seq} when seq == final_sequence ->
@@ -229,13 +229,13 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
   @tag :slow
   test "continuous push starts while target is offline and converges after recovery" do
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     prefix = "e2e-offline-start-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a = TestServer.start_supervised!()
@@ -258,8 +258,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, a_path))
-      ElixirDB.TempDatabase.cleanup(Path.join(root, b_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
     end)
 
     assert {:ok, %{"job_id" => job_id}} =
@@ -282,7 +282,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
                }
              })
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case JobManager.get(a_uuid, job_id) do
           {:ok, %{state: state}} when state in [:backoff, :handshake] -> true
@@ -304,7 +304,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     assert {:ok, replication_id} = Id.calculate(a_uuid, b_uuid, "push", "continuous")
     final_sequence = source_sequence!(a_uuid)
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case checkpoint_source_sequence(a_uuid, replication_id) do
           {:ok, seq} when seq == final_sequence ->
@@ -326,13 +326,13 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
   @tag :slow
   test "continuous push resumes from checkpoint after mid-batch target drop" do
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     prefix = "e2e-mid-batch-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a = TestServer.start_supervised!()
@@ -348,8 +348,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, a_path))
-      ElixirDB.TempDatabase.cleanup(Path.join(root, b_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
     end)
 
     assert {:ok, %{"job_id" => job_id}} =
@@ -379,7 +379,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
     assert {:ok, replication_id} = Id.calculate(a_uuid, b_uuid, "push", "continuous")
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case checkpoint_source_sequence(a_uuid, replication_id) do
           {:ok, seq} when is_integer(seq) and seq >= 1 ->
@@ -409,7 +409,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
     assert {:ok, _} = JobManager.disable(a_uuid, job_id)
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case JobManager.get(a_uuid, job_id) do
           {:ok, %{state: :disabled}} -> true
@@ -422,7 +422,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
     for i <- 51..55 do
       assert {:ok, %{revision: _}} =
-               ElixirDB.Documents.put(a_uuid, %{id: "batch-#{i}", body: %{"n" => i}})
+               VialKeeper.Documents.put(a_uuid, %{id: "batch-#{i}", body: %{"n" => i}})
     end
 
     server_b2 = TestServer.start_supervised!(port: port_b)
@@ -430,9 +430,9 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     assert {:ok, _} = JobManager.enable(a_uuid, job_id)
 
     for i <- 1..55 do
-      ElixirDB.Eventual.eventually(
+      VialKeeper.Eventual.eventually(
         fn ->
-          case ElixirDB.Documents.get(b_uuid, %{id: "batch-#{i}"}) do
+          case VialKeeper.Documents.get(b_uuid, %{id: "batch-#{i}"}) do
             {:ok, %{body: %{"n" => ^i}}} -> true
             _ -> false
           end
@@ -444,7 +444,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
     final_sequence = source_sequence!(a_uuid)
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case checkpoint_source_sequence(a_uuid, replication_id) do
           {:ok, seq} when seq == final_sequence ->
@@ -471,16 +471,16 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
   @tag :slow
   test "bounded remote pull overlaps chains and blobs with barriers" do
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     prefix = "e2e-overlap-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
     {:ok, barrier} = Barrier.start_link(self())
     # Equal logical lengths so the byte budget admits exactly two fixture blobs.
     blob_payload = String.duplicate("W", 64)
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a =
@@ -500,8 +500,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, a_path))
-      ElixirDB.TempDatabase.cleanup(Path.join(root, b_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
 
       if Process.alive?(barrier) do
         Agent.stop(barrier)
@@ -975,8 +975,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     # No partial install: document, blob, checkpoint, and tmp dir untouched.
     assert_document_missing!(server_b, b_uuid, "poisoned")
 
-    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
-             ElixirDB.Attachments.open_blob_representation(b_uuid, digest)
+    assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
+             VialKeeper.Attachments.open_blob_representation(b_uuid, digest)
 
     assert checkpoint_source_sequence(b_uuid, replication_id) == checkpoint_before
     {:ok, target_bundle} = DatabaseCatalog.bundle_root(b_uuid)
@@ -1007,13 +1007,13 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   end
 
   defp start_server_pair!(prefix_base, server_b_opts \\ []) do
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     prefix = "#{prefix_base}-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a = TestServer.start_supervised!()
@@ -1029,8 +1029,8 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, a_path))
-      ElixirDB.TempDatabase.cleanup(Path.join(root, b_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
     end)
 
     {server_a, server_b, a_uuid, b_uuid}
@@ -1039,7 +1039,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   defp start_job!(uuid, job_id) do
     case JobManager.start(uuid, job_id) do
       {:ok, _} -> :ok
-      {:error, %ElixirDB.Error{code: :replication_already_running}} -> :ok
+      {:error, %VialKeeper.Error{code: :replication_already_running}} -> :ok
       other -> flunk("job #{job_id} did not start: #{inspect(other)}")
     end
   end
@@ -1122,7 +1122,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   end
 
   defp changes_results!(uuid) do
-    assert {:ok, %{results: results}} = ElixirDB.Changes.read(uuid, %{since: 0, limit: 200})
+    assert {:ok, %{results: results}} = VialKeeper.Changes.read(uuid, %{since: 0, limit: 200})
     results
   end
 
@@ -1135,7 +1135,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   end
 
   defp wait_for_document!(server, uuid, id, revision, body_subset) do
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn -> document_matches?(server, uuid, id, revision, body_subset) end,
       timeout: 20_000,
       message: "document #{id} revision #{revision} did not appear on remote server"
@@ -1261,10 +1261,10 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
 
   defp assert_leaf_sets_equal!(source_uuid, target_uuid) do
     assert {:ok, %{results: source_changes}} =
-             ElixirDB.Changes.read(source_uuid, %{since: 0, limit: 200})
+             VialKeeper.Changes.read(source_uuid, %{since: 0, limit: 200})
 
     assert {:ok, %{results: target_changes}} =
-             ElixirDB.Changes.read(target_uuid, %{since: 0, limit: 200})
+             VialKeeper.Changes.read(target_uuid, %{since: 0, limit: 200})
 
     source_leaves = leaf_map(source_changes)
     target_leaves = leaf_map(target_changes)
@@ -1315,7 +1315,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   end
 
   defp await_job_state(uuid, job_id, expected) do
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case JobManager.get(uuid, job_id) do
           {:ok, %{state: state}} when expected == :idle and state in [:idle, :waiting] -> true
@@ -1329,7 +1329,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
   end
 
   defp await_checkpoint(uuid, replication_id, expected) do
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn -> checkpoint_source_sequence(uuid, replication_id) == {:ok, expected} end,
       timeout: 20_000,
       message: "checkpoint did not reach #{expected}"
@@ -1426,7 +1426,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     end
 
     def await(agent, kind, count) do
-      ElixirDB.Eventual.eventually(
+      VialKeeper.Eventual.eventually(
         fn -> Agent.get(agent, &Map.get(&1, kind, 0)) >= count end,
         timeout: 20_000,
         interval: 5,
@@ -1435,7 +1435,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     end
 
     def await_total(agent, kind, count) do
-      ElixirDB.Eventual.eventually(
+      VialKeeper.Eventual.eventually(
         fn -> Agent.get(agent, &Map.get(&1, :"#{kind}_total", 0)) >= count end,
         timeout: 20_000,
         interval: 5,
@@ -1444,7 +1444,7 @@ defmodule ElixirDB.EndToEnd.TwoServerHttpConvergenceTest do
     end
 
     def await_idle(agent) do
-      ElixirDB.Eventual.eventually(
+      VialKeeper.Eventual.eventually(
         fn ->
           Agent.get(agent, fn state ->
             Enum.empty?(Map.get(state, :chains_waiters, [])) and

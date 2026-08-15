@@ -1,8 +1,8 @@
-defmodule ElixirDB.Query.PlannerTest do
+defmodule VialKeeper.Query.PlannerTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias ElixirDB.Query.{Normalizer, Plan, Planner, Projection, Regex}
+  alias VialKeeper.Query.{Normalizer, Plan, Planner, Projection, Regex}
 
   defp structured(id, fields) do
     %{
@@ -88,7 +88,7 @@ defmodule ElixirDB.Query.PlannerTest do
   test "explicit hint missing fails with invalid_index_hint" do
     index = structured("tasks", [{"/status", "string"}])
 
-    assert {:error, %ElixirDB.Error{code: :invalid_index_hint}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_index_hint}} =
              Planner.select_index([index], %{
                selector: %{"/status" => "open"},
                index: "missing-index"
@@ -98,7 +98,7 @@ defmodule ElixirDB.Query.PlannerTest do
   test "explicit hint incompatible fails with invalid_index_hint" do
     index = structured("by-status", [{"/status", "string"}])
 
-    assert {:error, %ElixirDB.Error{code: :invalid_index_hint}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_index_hint}} =
              Planner.select_index([index], %{
                selector: %{"/priority" => 1},
                index: "by-status"
@@ -109,7 +109,7 @@ defmodule ElixirDB.Query.PlannerTest do
     compatible = structured("by-status", [{"/status", "string"}])
     other = structured("by-priority", [{"/priority", "number"}])
 
-    assert {:error, %ElixirDB.Error{code: :invalid_index_hint}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_index_hint}} =
              Planner.select_index([compatible, other], %{
                selector: %{"/status" => "open"},
                index: "by-priority"
@@ -180,7 +180,7 @@ defmodule ElixirDB.Query.PlannerTest do
   test "enforces plan kind invariants and pagination" do
     binding = %{index_id: "idx-a", definition_digest: String.duplicate("a", 64)}
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Plan.new(%{
                kind: :single,
                scans: [],
@@ -189,7 +189,7 @@ defmodule ElixirDB.Query.PlannerTest do
                pagination: :indexed
              })
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Plan.new(%{
                kind: :union,
                scans: [%{"index_id" => "idx-a"}],
@@ -207,7 +207,7 @@ defmodule ElixirDB.Query.PlannerTest do
                pagination: :bounded_scan
              })
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Plan.new(%{
                kind: :bounded_scan,
                scans: [%{"index_id" => "idx-a"}],
@@ -232,7 +232,7 @@ defmodule ElixirDB.Query.PlannerTest do
     refute Map.has_key?(hd(plan.scans), "pid")
     refute Map.has_key?(hd(plan.scans), "sql")
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Plan.new(%{
                kind: :single,
                scans: [%{:index_id => "idx-a", "index_id" => "idx-a"}],
@@ -241,7 +241,7 @@ defmodule ElixirDB.Query.PlannerTest do
                pagination: :indexed
              })
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Plan.new(%{
                kind: :single,
                scans: [%{"index_id" => "idx-a", "sql" => "one", :sql => "two"}],
@@ -375,7 +375,7 @@ defmodule ElixirDB.Query.PlannerTest do
         index: "idx-status"
       })
 
-    assert {:error, %ElixirDB.Error{code: :invalid_index_hint}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_index_hint}} =
              Planner.plan([status, priority], request)
   end
 
@@ -386,7 +386,7 @@ defmodule ElixirDB.Query.PlannerTest do
     assert {:ok, %{kind: :bounded_scan}} = Planner.plan([status], request)
 
     hinted = Map.put(request, :index, "idx-status")
-    assert {:error, %ElixirDB.Error{code: :invalid_index_hint}} = Planner.plan([status], hinted)
+    assert {:error, %VialKeeper.Error{code: :invalid_index_hint}} = Planner.plan([status], hinted)
   end
 
   test "full-text search produces one full-text binding" do

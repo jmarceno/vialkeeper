@@ -1,5 +1,5 @@
-defmodule ElixirDB.StorageAdapter.CheckpointsTest do
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.CheckpointsTest do
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
@@ -9,7 +9,7 @@ defmodule ElixirDB.StorageAdapter.CheckpointsTest do
     value = %{
       "version" => 1,
       "replication_id" => replication_id,
-      "session_id" => ElixirDB.UUID.v4(),
+      "session_id" => VialKeeper.UUID.v4(),
       "source_sequence" => 3,
       "checkpoint_version" => 1,
       "source_history_epoch" => "epoch-test",
@@ -53,7 +53,7 @@ defmodule ElixirDB.StorageAdapter.CheckpointsTest do
 
     stale = Map.put(value, "source_sequence", 99)
 
-    assert {:error, %ElixirDB.Error{code: :checkpoint_conflict}} =
+    assert {:error, %VialKeeper.Error{code: :checkpoint_conflict}} =
              @adapter.put_local_record_cas(adapter, %{
                namespace: "checkpoints",
                key: replication_id,

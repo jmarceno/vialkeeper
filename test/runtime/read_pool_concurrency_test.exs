@@ -1,38 +1,38 @@
-defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
+defmodule VialKeeper.Runtime.ReadPoolConcurrencyTest do
   @moduledoc """
   Concurrent snapshot reads overlap each other and a concurrent writer.
   """
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Runtime.{DatabaseCatalog, Deadline}
-  alias ElixirDB.View.Manager
+  alias VialKeeper.Eventual
+  alias VialKeeper.Runtime.{DatabaseCatalog, Deadline}
+  alias VialKeeper.View.Manager
 
   setup do
-    previous_limits = Application.get_env(:elixir_db, :host_limits)
+    previous_limits = Application.get_env(:vial_keeper, :host_limits)
 
     limits =
       (previous_limits || [])
       |> Keyword.put(:read_pool_size, 2)
       |> Keyword.put(:read_queue_limit, 8)
 
-    Application.put_env(:elixir_db, :host_limits, limits)
+    Application.put_env(:vial_keeper, :host_limits, limits)
 
-    relative = "read-pool-conc-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    relative = "read-pool-conc-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), relative)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     assert {:ok, _} = DatabaseCatalog.open(identity.database_uuid)
     assert :ok = Manager.await_resumed(identity.database_uuid)
 
     on_exit(fn ->
-      Application.delete_env(:elixir_db, :read_pool_sync)
-      Application.delete_env(:elixir_db, :read_pool_probe)
-      Application.put_env(:elixir_db, :host_limits, previous_limits)
+      Application.delete_env(:vial_keeper, :read_pool_sync)
+      Application.delete_env(:vial_keeper, :read_pool_probe)
+      Application.put_env(:vial_keeper, :host_limits, previous_limits)
       _ = DatabaseCatalog.close(identity.database_uuid)
       _ = DatabaseCatalog.unregister(identity.database_uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: identity.database_uuid}
@@ -40,15 +40,15 @@ defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
 
   test "two concurrent gets grant before either release while a put completes", %{uuid: uuid} do
     assert {:ok, %{revision: rev}} =
-             ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
 
     probe = make_ref()
     gate = make_ref()
-    Application.put_env(:elixir_db, :read_pool_probe, {self(), probe})
-    Application.put_env(:elixir_db, :read_pool_sync, {self(), gate, uuid})
+    Application.put_env(:vial_keeper, :read_pool_probe, {self(), probe})
+    Application.put_env(:vial_keeper, :read_pool_sync, {self(), gate, uuid})
 
-    first = Task.async(fn -> ElixirDB.Documents.get(uuid, %{id: "doc"}) end)
-    second = Task.async(fn -> ElixirDB.Documents.get(uuid, %{id: "doc"}) end)
+    first = Task.async(fn -> VialKeeper.Documents.get(uuid, %{id: "doc"}) end)
+    second = Task.async(fn -> VialKeeper.Documents.get(uuid, %{id: "doc"}) end)
 
     workers =
       for _ <- 1..2 do
@@ -66,7 +66,7 @@ defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
            "no snapshot should release before the sync gate opens, got #{inspect(releases)}"
 
     assert {:ok, %{revision: later}} =
-             ElixirDB.Documents.put(uuid, %{id: "doc", if_revision: rev, body: %{"n" => 2}})
+             VialKeeper.Documents.put(uuid, %{id: "doc", if_revision: rev, body: %{"n" => 2}})
 
     assert later != rev
 
@@ -87,20 +87,20 @@ defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
 
   test "get issued after put return sees the put", %{uuid: uuid} do
     assert {:ok, %{revision: rev}} =
-             ElixirDB.Documents.put(uuid, %{id: "seen", body: %{"v" => "after"}})
+             VialKeeper.Documents.put(uuid, %{id: "seen", body: %{"v" => "after"}})
 
     assert {:ok, %{revision: ^rev, body: %{"v" => "after"}}} =
-             ElixirDB.Documents.get(uuid, %{id: "seen"})
+             VialKeeper.Documents.get(uuid, %{id: "seen"})
   end
 
   test "expired direct pool request returns a deadline error and reuses its reader", %{uuid: uuid} do
-    assert {:ok, _} = ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+    assert {:ok, _} = VialKeeper.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
 
     gate = make_ref()
     request_ref = make_ref()
-    Application.put_env(:elixir_db, :read_pool_owner_body_sync, {self(), gate, uuid})
+    Application.put_env(:vial_keeper, :read_pool_owner_body_sync, {self(), gate, uuid})
 
-    [{pool, _}] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid})
+    [{pool, _}] = Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:read_pool, uuid})
 
     caller =
       Task.async(fn ->
@@ -119,25 +119,25 @@ defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
     send(worker, {:go, gate})
 
     assert {:error,
-            %ElixirDB.Error{
+            %VialKeeper.Error{
               code: :internal_error,
               details: %{reason: :deadline_exhausted},
               retryable: true
             }} =
              Task.await(caller, 5_000)
 
-    Application.delete_env(:elixir_db, :read_pool_owner_body_sync)
-    assert {:ok, %{id: "doc"}} = ElixirDB.Documents.get(uuid, %{id: "doc"})
+    Application.delete_env(:vial_keeper, :read_pool_owner_body_sync)
+    assert {:ok, %{id: "doc"}} = VialKeeper.Documents.get(uuid, %{id: "doc"})
   end
 
   test "cancelled direct pool request does not reply and interrupts its reader", %{uuid: uuid} do
-    assert {:ok, _} = ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+    assert {:ok, _} = VialKeeper.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
 
     gate = make_ref()
     request_ref = make_ref()
     parent = self()
-    Application.put_env(:elixir_db, :read_pool_owner_body_sync, {self(), gate, uuid})
-    [{pool, _}] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:read_pool, uuid})
+    Application.put_env(:vial_keeper, :read_pool_owner_body_sync, {self(), gate, uuid})
+    [{pool, _}] = Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:read_pool, uuid})
 
     pid =
       spawn(fn ->
@@ -158,8 +158,8 @@ defmodule ElixirDB.Runtime.ReadPoolConcurrencyTest do
     refute_receive {:cancelled_pool_result, _}, 500
 
     Process.exit(pid, :kill)
-    Application.delete_env(:elixir_db, :read_pool_owner_body_sync)
-    assert {:ok, %{id: "doc"}} = ElixirDB.Documents.get(uuid, %{id: "doc"})
+    Application.delete_env(:vial_keeper, :read_pool_owner_body_sync)
+    assert {:ok, %{id: "doc"}} = VialKeeper.Documents.get(uuid, %{id: "doc"})
   end
 
   defp drain_grants(ref, acc \\ []) do

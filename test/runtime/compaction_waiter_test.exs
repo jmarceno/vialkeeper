@@ -1,4 +1,4 @@
-defmodule ElixirDB.Runtime.CompactionWaiterTest do
+defmodule VialKeeper.Runtime.CompactionWaiterTest do
   @moduledoc """
   ARCH-007: compaction maintenance notifications wake subscribers whose
   `since` is below the new retention floor.
@@ -7,12 +7,12 @@ defmodule ElixirDB.Runtime.CompactionWaiterTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
+  alias VialKeeper.Runtime.{ChangeNotifier, DatabaseCatalog}
 
   setup do
-    relative = "compaction-waiter-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    relative = "compaction-waiter-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), relative)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     uuid = identity.database_uuid
@@ -43,7 +43,7 @@ defmodule ElixirDB.Runtime.CompactionWaiterTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: uuid}
@@ -61,8 +61,8 @@ defmodule ElixirDB.Runtime.CompactionWaiterTest do
     assert event.new_floor == new_floor
     assert event.event_kind == :compaction
 
-    assert {:error, %ElixirDB.Error{code: :history_truncated, details: details}} =
-             ElixirDB.Changes.read(uuid, %{since: 0, limit: 10})
+    assert {:error, %VialKeeper.Error{code: :history_truncated, details: details}} =
+             VialKeeper.Changes.read(uuid, %{since: 0, limit: 10})
 
     assert details.retention_floor == new_floor
   end
@@ -80,10 +80,10 @@ defmodule ElixirDB.Runtime.CompactionWaiterTest do
             {:database_maintenance, ^uuid, _event} ->
               ChangeNotifier.unsubscribe(uuid, ref)
               Process.demonitor(ref, [:flush])
-              ElixirDB.Changes.read(uuid, %{since: 0, limit: 10, wait_ms: 0})
+              VialKeeper.Changes.read(uuid, %{since: 0, limit: 10, wait_ms: 0})
           after
             5_000 ->
-              {:error, ElixirDB.Error.internal_error("maintenance notification timeout")}
+              {:error, VialKeeper.Error.internal_error("maintenance notification timeout")}
           end
         end
       end)
@@ -91,6 +91,6 @@ defmodule ElixirDB.Runtime.CompactionWaiterTest do
     assert_receive {:waiting, ^barrier}, 1_000
     assert {:ok, _} = DatabaseCatalog.command(uuid, {:command, :compact_retention, %{}})
 
-    assert {:error, %ElixirDB.Error{code: :history_truncated}} = Task.await(waiter, 5_000)
+    assert {:error, %VialKeeper.Error{code: :history_truncated}} = Task.await(waiter, 5_000)
   end
 end

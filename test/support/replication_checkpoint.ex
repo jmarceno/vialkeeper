@@ -1,8 +1,8 @@
-defmodule ElixirDB.TestReplicationCheckpoint do
+defmodule VialKeeper.TestReplicationCheckpoint do
   @moduledoc "Test support for seeding and inspecting replication checkpoints."
 
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @spec seed_matching_checkpoints!(binary(), binary(), binary()) :: :ok
   def seed_matching_checkpoints!(source_uuid, target_uuid, replication_id) do
@@ -39,7 +39,7 @@ defmodule ElixirDB.TestReplicationCheckpoint do
       "version" => 1,
       "replication_id" => replication_id,
       "checkpoint_version" => 1,
-      "session_id" => ElixirDB.UUID.v4(),
+      "session_id" => VialKeeper.UUID.v4(),
       "source_sequence" => 0,
       "source_history_epoch" => identity.history_epoch,
       "source_compaction_epoch" => Map.get(identity, :compaction_epoch, 0),

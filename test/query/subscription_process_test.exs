@@ -1,19 +1,19 @@
-defmodule ElixirDB.Query.SubscriptionProcessTest do
+defmodule VialKeeper.Query.SubscriptionProcessTest do
   @moduledoc "Covers subscription process lifecycle and database ownership."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Query.Subscriptions
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Eventual
+  alias VialKeeper.Query.Subscriptions
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   setup do
-    rel = "subscription-proc-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    rel = "subscription-proc-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     abs = Path.join(root, rel)
-    ElixirDB.TempDatabase.cleanup(abs)
+    VialKeeper.TempDatabase.cleanup(abs)
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
     uuid = identity.database_uuid
@@ -21,7 +21,7 @@ defmodule ElixirDB.Query.SubscriptionProcessTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(abs)
     end)
 
     assert {:ok, _} =
@@ -89,7 +89,7 @@ defmodule ElixirDB.Query.SubscriptionProcessTest do
       message: "expected subscription to hold the first next caller"
     )
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} = Subscriptions.next(pid, 1_000)
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} = Subscriptions.next(pid, 1_000)
     Process.exit(waiter, :kill)
   end
 
@@ -132,16 +132,16 @@ defmodule ElixirDB.Query.SubscriptionProcessTest do
   test "supervisor and hub are registered after open", %{uuid: uuid} do
     assert [{_, _}] =
              Registry.lookup(
-               ElixirDB.Runtime.DatabaseRegistry,
+               VialKeeper.Runtime.DatabaseRegistry,
                {:query_subscription_supervisor, uuid}
              )
 
     assert [{_, _}] =
-             Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+             Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
     assert [{_, _}] =
              Registry.lookup(
-               ElixirDB.Runtime.DatabaseRegistry,
+               VialKeeper.Runtime.DatabaseRegistry,
                {:query_subscription_dynamic_supervisor, uuid}
              )
   end

@@ -1,4 +1,4 @@
-defmodule ElixirDB.TestSupport.ViewBuilderProbe do
+defmodule VialKeeper.TestSupport.ViewBuilderProbe do
   @moduledoc "Test helper for observing view builder lifecycle probe messages."
   import ExUnit.Assertions
 
@@ -6,13 +6,13 @@ defmodule ElixirDB.TestSupport.ViewBuilderProbe do
   @spec install(pid()) :: reference()
   def install(pid \\ self()) do
     ref = make_ref()
-    Application.put_env(:elixir_db, :view_builder_probe, {pid, ref})
+    Application.put_env(:vial_keeper, :view_builder_probe, {pid, ref})
     ref
   end
 
   @spec uninstall() :: :ok
   def uninstall do
-    Application.delete_env(:elixir_db, :view_builder_probe)
+    Application.delete_env(:vial_keeper, :view_builder_probe)
     uninstall_apply_view_batch_barrier()
     :ok
   end
@@ -27,7 +27,7 @@ defmodule ElixirDB.TestSupport.ViewBuilderProbe do
 
     :ok =
       Application.put_env(
-        :elixir_db,
+        :vial_keeper,
         :admitted_command_owner_body_sync,
         {pid, gate, uuid, :apply_view_batch}
       )
@@ -37,7 +37,7 @@ defmodule ElixirDB.TestSupport.ViewBuilderProbe do
 
   @spec uninstall_apply_view_batch_barrier() :: :ok
   def uninstall_apply_view_batch_barrier do
-    Application.delete_env(:elixir_db, :admitted_command_owner_body_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_owner_body_sync)
     :ok
   end
 

@@ -1,25 +1,25 @@
-defmodule ElixirDB.Replication.ChaosEndpointTest do
+defmodule VialKeeper.Replication.ChaosEndpointTest do
   @moduledoc """
   Deterministic action and legality checks for the local chaos endpoint.
   """
 
   use ExUnit.Case, async: false
 
-  alias ElixirDB.ChaosEndpoint
-  alias ElixirDB.Documents
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.ChaosEndpoint
+  alias VialKeeper.Documents
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @actions [:pass, :error, :delay, :duplicate, :reorder]
 
   setup do
     prefix = "chaos-endpoint-#{System.unique_integer([:positive])}"
-    source_path = prefix <> "-source.elixirdb"
-    target_path = prefix <> "-target.elixirdb"
-    root = ElixirDB.Config.database_root()
+    source_path = prefix <> "-source.vialkeeper"
+    target_path = prefix <> "-target.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [source_path, target_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     assert {:ok, source_identity} = DatabaseCatalog.create(source_path)
@@ -34,7 +34,7 @@ defmodule ElixirDB.Replication.ChaosEndpointTest do
           ] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -57,7 +57,7 @@ defmodule ElixirDB.Replication.ChaosEndpointTest do
     endpoint = forced(target, :error)
 
     assert {:error,
-            %ElixirDB.Error{
+            %VialKeeper.Error{
               code: :database_unavailable,
               message: "chaos injected",
               retryable: true
@@ -263,7 +263,7 @@ defmodule ElixirDB.Replication.ChaosEndpointTest do
 
   defp result_kind({:ok, _result}), do: :ok
 
-  defp result_kind({:error, %ElixirDB.Error{} = error}),
+  defp result_kind({:error, %VialKeeper.Error{} = error}),
     do: {:error, error.code, error.message, error.retryable}
 
   defp trace_local_calls({module, function, arity} = mfa, operation) do

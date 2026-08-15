@@ -1,16 +1,16 @@
-defmodule ElixirDB.Shadow.ProtocolTest do
+defmodule VialKeeper.Shadow.ProtocolTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias ElixirDB.Error
-  alias ElixirDB.Shadow.Protocol
-  alias ElixirDB.TestSupport.GarbageGenerators
+  alias VialKeeper.Error
+  alias VialKeeper.Shadow.Protocol
+  alias VialKeeper.TestSupport.GarbageGenerators
 
   @allowed_fields ~w(source_uuid shadow_uuid generation operation_id)
   @uuid "550e8400-e29b-41d4-a716-446655440000"
 
   test "capability mismatch fails closed" do
-    response = Protocol.response(ElixirDB.UUID.v4())
+    response = Protocol.response(VialKeeper.UUID.v4())
     assert :ok = Protocol.ensure_compatible(response)
 
     assert {:error, %{code: :shadow_incompatible}} =
@@ -22,7 +22,7 @@ defmodule ElixirDB.Shadow.ProtocolTest do
       refute Protocol.compatible?(value)
     end
 
-    response = Protocol.response(ElixirDB.UUID.v4())
+    response = Protocol.response(VialKeeper.UUID.v4())
 
     refute response |> Map.delete("capabilities") |> Protocol.compatible?()
     refute response |> Map.put("capabilities", "all") |> Protocol.compatible?()
@@ -33,7 +33,7 @@ defmodule ElixirDB.Shadow.ProtocolTest do
   end
 
   test "compatible? accepts capability supersets and atom keys" do
-    response = Protocol.response(ElixirDB.UUID.v4())
+    response = Protocol.response(VialKeeper.UUID.v4())
 
     assert response
            |> Map.update!("capabilities", &["future_capability_v1" | &1])
@@ -50,7 +50,7 @@ defmodule ElixirDB.Shadow.ProtocolTest do
 
   test "compatible? rejects a string protocol major" do
     response =
-      Protocol.response(ElixirDB.UUID.v4())
+      Protocol.response(VialKeeper.UUID.v4())
       |> Map.put("protocol_major", "1")
 
     refute Protocol.compatible?(response)

@@ -1,21 +1,21 @@
-defmodule ElixirDB.Runtime.ReplicationTest do
+defmodule VialKeeper.Runtime.ReplicationTest do
   @moduledoc "Covers runtime replication job lifecycle and worker behavior."
 
-  alias ElixirDB.Replication.Id
-  alias ElixirDB.Replication.JobManager
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Replication.Worker
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Replication.Id
+  alias VialKeeper.Replication.JobManager
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Replication.Worker
+  alias VialKeeper.Runtime.DatabaseCatalog
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
   setup do
     prefix = "runtime-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
-    ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), a_path))
-    ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), b_path))
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
+    VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), a_path))
+    VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), b_path))
     {:ok, a} = DatabaseCatalog.create(a_path)
     {:ok, b} = DatabaseCatalog.create(b_path)
 
@@ -23,7 +23,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+        VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
       end
     end)
 
@@ -32,13 +32,13 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
   test "runtime owns writes and local replication converges", %{a: a, b: b} do
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(a.database_uuid, b.database_uuid)
+             VialKeeper.Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, %{revision: ^revision, body: %{"n" => 1}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "doc"})
 
     assert :ok = DatabaseCatalog.close(a.database_uuid)
   end
@@ -46,16 +46,16 @@ defmodule ElixirDB.Runtime.ReplicationTest do
   @tag :slow
   test "one-shot replication reuses durable checkpoints and transfers later changes", %{a: a, b: b} do
     assert {:ok, %{revision: first}} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(a.database_uuid, b.database_uuid)
+             VialKeeper.Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(a.database_uuid, b.database_uuid)
+             VialKeeper.Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, %{revision: second}} =
-             ElixirDB.Documents.put(a.database_uuid, %{
+             VialKeeper.Documents.put(a.database_uuid, %{
                id: "doc",
                if_revision: first,
                body: %{"n" => 2}
@@ -64,15 +64,15 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     assert second != first
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(a.database_uuid, b.database_uuid)
+             VialKeeper.Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, %{revision: ^second, body: %{"n" => 2}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "doc"})
   end
 
   test "persistent one-shot jobs report terminal state and converge", %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "job-doc", body: %{"ok" => true}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "job-doc", body: %{"ok" => true}})
 
     assert {:ok, %{job_id: job_id, state: state}} =
              JobManager.put(a.database_uuid, %{
@@ -95,7 +95,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
     assert :completed = wait_for_job(a.database_uuid, job_id)
 
     assert {:ok, %{body: %{"ok" => true}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "job-doc"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "job-doc"})
   end
 
   test "job transfer options cannot exceed host ceilings", %{a: a, b: b} do
@@ -112,7 +112,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
           {"max_transfer_bytes_in_flight", 4_294_967_297},
           {"batch_documents", 501}
         ] do
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+      assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                JobManager.put(a.database_uuid, Map.put(base, key, value))
     end
   end
@@ -132,7 +132,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
     assert {:ok, %{job_id: job_id}} = Task.await(task, 5_000)
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case JobManager.get(a.database_uuid, job_id) do
           {:ok, %{state: state}} when state in [:waiting, :backoff] -> true
@@ -161,7 +161,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
                "wait_ms" => 100
              })
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case JobManager.get(a.database_uuid, job_id) do
           {:ok, %{state: state}} when state in [:waiting, :backoff] -> true
@@ -192,7 +192,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
                "wait_ms" => 100
              })
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case JobManager.get(a.database_uuid, job_id) do
           {:ok, %{state: state}} when state in [:waiting, :backoff] -> true
@@ -212,7 +212,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
   test "worker reports mandated phase transitions through completed", %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "phases", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "phases", body: %{"n" => 1}})
 
     {:ok, agent} = Agent.start_link(fn -> [] end)
 
@@ -228,7 +228,7 @@ defmodule ElixirDB.Runtime.ReplicationTest do
              )
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -279,12 +279,12 @@ defmodule ElixirDB.Runtime.ReplicationTest do
            ]
 
     assert {:ok, %{body: %{"n" => 1}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "phases"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "phases"})
   end
 
   test "cancel between phases finishes current work without brutal_kill", %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "cancel-doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "cancel-doc", body: %{"n" => 1}})
 
     assert {:ok, source} = LocalEndpoint.new(a.database_uuid)
     assert {:ok, target} = LocalEndpoint.new(b.database_uuid)
@@ -341,17 +341,17 @@ defmodule ElixirDB.Runtime.ReplicationTest do
 
     # Cancel before read_changes means the target stays empty.
     assert {:error, %{code: :document_not_found}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "cancel-doc"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "cancel-doc"})
   end
 
   defp release_handshake_task(gate) do
-    ElixirDB.TaskSupervisor
+    VialKeeper.TaskSupervisor
     |> Task.Supervisor.children()
     |> Enum.each(fn pid -> send(pid, {:release, gate}) end)
   end
 
   defp wait_for_job(uuid, job_id) do
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case JobManager.get(uuid, job_id) do
           {:ok, %{state: state}} when state in [:completed, :failed] -> {:ok, state}

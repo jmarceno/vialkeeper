@@ -1,6 +1,6 @@
-defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
+defmodule VialKeeper.Observability.AdmissionWaitMetricTest do
   @moduledoc """
-  `elixir_db.database.admission.wait` histogram with bounded attributes.
+  `vial_keeper.database.admission.wait` histogram with bounded attributes.
 
   Queue depth semantics (queued waiters only, excluding the active permit):
 
@@ -11,18 +11,18 @@ defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
     outcomes that never leave the queue (rejected, closed acquire while closing).
   """
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Observability.TestMetricExporter
-  alias ElixirDB.Runtime.{AdmissionPolicy, AdmissionSupervisor, DatabaseAdmission}
+  alias VialKeeper.Eventual
+  alias VialKeeper.Observability.TestMetricExporter
+  alias VialKeeper.Runtime.{AdmissionPolicy, AdmissionSupervisor, DatabaseAdmission}
 
-  @metric "elixir_db.database.admission.wait"
+  @metric "vial_keeper.database.admission.wait"
 
   setup do
-    uuid = ElixirDB.UUID.v4()
+    uuid = VialKeeper.UUID.v4()
     limit = 1
 
     {:ok, policy} =
@@ -66,7 +66,7 @@ defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
 
     assert_receive {:held, ^gate}, 1_000
 
-    assert {:error, %ElixirDB.Error{code: :database_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :database_overloaded}} =
              DatabaseAdmission.with_token(uuid, fn -> :never end)
 
     send(holder, {:release, gate})
@@ -123,7 +123,7 @@ defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
   end
 
   test "queue_depth_at_enqueue includes self; queue_depth_at_grant is post-dequeue" do
-    uuid = ElixirDB.UUID.v4()
+    uuid = VialKeeper.UUID.v4()
     limit = 3
     {:ok, policy} = policy_for_limit(limit)
     {:ok, supervisor} = AdmissionSupervisor.start_link({uuid, limit, policy})
@@ -219,7 +219,7 @@ defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
   end
 
   test "cancelled outcome is recorded when a queued caller times out" do
-    uuid = ElixirDB.UUID.v4()
+    uuid = VialKeeper.UUID.v4()
     limit = 2
     {:ok, policy} = policy_for_limit(limit)
     {:ok, supervisor} = AdmissionSupervisor.start_link({uuid, limit, policy})
@@ -274,7 +274,7 @@ defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
   end
 
   test "closed outcome is recorded when begin_close drains queued work" do
-    uuid = ElixirDB.UUID.v4()
+    uuid = VialKeeper.UUID.v4()
     limit = 2
     {:ok, policy} = policy_for_limit(limit)
     {:ok, supervisor} = AdmissionSupervisor.start_link({uuid, limit, policy})
@@ -320,7 +320,7 @@ defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
 
     assert :ok = DatabaseAdmission.begin_close(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :database_closed}} = Task.await(queued, 2_000)
+    assert {:error, %VialKeeper.Error{code: :database_closed}} = Task.await(queued, 2_000)
 
     Eventual.eventually(
       fn ->
@@ -342,7 +342,7 @@ defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
   test "closed outcome is recorded when acquire is rejected while closing", %{uuid: uuid} do
     assert :ok = DatabaseAdmission.begin_close(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :database_closed}} =
+    assert {:error, %VialKeeper.Error{code: :database_closed}} =
              DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :never end)
 
     Eventual.eventually(
@@ -377,7 +377,7 @@ defmodule ElixirDB.Observability.AdmissionWaitMetricTest do
         DatabaseAdmission.with_token(uuid, fn -> :never end)
       end)
 
-    assert {:error, %ElixirDB.Error{code: :database_overloaded}} = Task.await(overloaded, 2_000)
+    assert {:error, %VialKeeper.Error{code: :database_overloaded}} = Task.await(overloaded, 2_000)
 
     Eventual.eventually(
       fn ->

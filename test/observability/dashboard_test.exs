@@ -1,15 +1,15 @@
-defmodule ElixirDB.Observability.DashboardTest do
+defmodule VialKeeper.Observability.DashboardTest do
   @moduledoc "Covers observability dashboard state and HTTP rendering."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Observability.Dashboard
-  alias ElixirDB.Runtime.{DatabaseAdmission, DatabaseCatalog}
+  alias VialKeeper.Eventual
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Observability.Dashboard
+  alias VialKeeper.Runtime.{DatabaseAdmission, DatabaseCatalog}
 
   setup do
     Dashboard.reset()
@@ -55,15 +55,15 @@ defmodule ElixirDB.Observability.DashboardTest do
   end
 
   test "snapshot HTTP route stays gated unless explicitly enabled" do
-    previous = Application.get_env(:elixir_db, :observability_dashboard)
+    previous = Application.get_env(:vial_keeper, :observability_dashboard)
 
     on_exit(fn ->
       if is_nil(previous),
-        do: Application.delete_env(:elixir_db, :observability_dashboard),
-        else: Application.put_env(:elixir_db, :observability_dashboard, previous)
+        do: Application.delete_env(:vial_keeper, :observability_dashboard),
+        else: Application.put_env(:vial_keeper, :observability_dashboard, previous)
     end)
 
-    Application.delete_env(:elixir_db, :observability_dashboard)
+    Application.delete_env(:vial_keeper, :observability_dashboard)
 
     disabled =
       Plug.Test.conn(:get, "/v1/observability/snapshot")
@@ -71,7 +71,7 @@ defmodule ElixirDB.Observability.DashboardTest do
 
     assert disabled.status == 400
 
-    Application.put_env(:elixir_db, :observability_dashboard, true)
+    Application.put_env(:vial_keeper, :observability_dashboard, true)
 
     enabled =
       Plug.Test.conn(:get, "/v1/observability/snapshot")
@@ -86,9 +86,9 @@ defmodule ElixirDB.Observability.DashboardTest do
   end
 
   test "runtime snapshot exposes admission active class and per-class queue depths" do
-    rel = "dashboard-admission-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
-    ElixirDB.TempDatabase.cleanup(Path.join(root, rel))
+    rel = "dashboard-admission-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
+    VialKeeper.TempDatabase.cleanup(Path.join(root, rel))
 
     assert {:ok, %{database_uuid: uuid}} = DatabaseCatalog.create(rel)
     assert {:ok, _} = DatabaseCatalog.open(uuid)
@@ -96,7 +96,7 @@ defmodule ElixirDB.Observability.DashboardTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, rel))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, rel))
     end)
 
     parent = self()
@@ -147,7 +147,7 @@ defmodule ElixirDB.Observability.DashboardTest do
 
   defp histogram_metric(count, sum, bucket_counts, min, max) do
     metric(
-      :"elixir_db.http.request.duration",
+      :"vial_keeper.http.request.duration",
       {:histogram,
        [
          {:histogram_datapoint, %{}, 0, 0, count, sum, bucket_counts, [1_000_000.0, 2_000_000.0],
@@ -157,19 +157,19 @@ defmodule ElixirDB.Observability.DashboardTest do
   end
 
   defp empty_histogram_metric do
-    metric(:"elixir_db.http.request.duration", {:histogram, [], :temporality_delta})
+    metric(:"vial_keeper.http.request.duration", {:histogram, [], :temporality_delta})
   end
 
   defp counter_metric(value) do
     metric(
-      :"elixir_db.replication.checkpoint.count",
+      :"vial_keeper.replication.checkpoint.count",
       {:sum, [{:datapoint, %{}, 0, 0, value, [], []}], :temporality_delta, true}
     )
   end
 
   defp admission_histogram_metric(count, sum, bucket_counts, min, max) do
     metric(
-      :"elixir_db.database.admission.wait",
+      :"vial_keeper.database.admission.wait",
       {:histogram,
        [
          {:histogram_datapoint, %{}, 0, 0, count, sum, bucket_counts, [500_000.0, 1_000_000.0], [],

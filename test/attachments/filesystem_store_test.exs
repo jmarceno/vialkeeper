@@ -1,17 +1,17 @@
-defmodule ElixirDB.Attachments.FilesystemStoreTest do
+defmodule VialKeeper.Attachments.FilesystemStoreTest do
   @moduledoc "Covers filesystem attachment storage and database bundle cleanup."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Attachments.Compression
-  alias ElixirDB.Attachments.FilesystemStore
-  alias ElixirDB.Attachments.Representation
-  alias ElixirDB.DatabaseBundle
+  alias VialKeeper.Attachments.Compression
+  alias VialKeeper.Attachments.FilesystemStore
+  alias VialKeeper.Attachments.Representation
+  alias VialKeeper.DatabaseBundle
 
   @moduletag :attachments
 
   setup do
-    root = unique_tmp_path("elixirdb-store")
+    root = unique_tmp_path("vialkeeper-store")
 
     on_exit(fn -> File.rm_rf(root) end)
 
@@ -46,7 +46,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
     assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, max, %{})
 
-    assert {:error, %ElixirDB.Error{code: :payload_too_large}} =
+    assert {:error, %VialKeeper.Error{code: :payload_too_large}} =
              FilesystemStore.write_chunk(writer, over)
   end
 
@@ -84,10 +84,10 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     path = Path.join([bundle.root, "blobs", prefix, digest <> ".blob"])
     File.write!(path, "corrupted")
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              put_whole(bundle.root, payload)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.verify(bundle.root, digest, size)
   end
 
@@ -103,7 +103,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     tmp_path = FilesystemStore.writer_tmp_path(writer)
     assert :ok = FilesystemStore.write_chunk(writer, payload)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.finish_put(writer)
 
     refute File.exists?(tmp_path)
@@ -113,7 +113,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     payload = "symlinked-prefix"
     digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
     prefix = String.slice(digest, 0, 2)
-    outside = unique_tmp_path("elixirdb-outside")
+    outside = unique_tmp_path("vialkeeper-outside")
     File.mkdir_p!(outside)
     File.ln_s!(outside, Path.join([bundle.root, "blobs", prefix]))
 
@@ -122,7 +122,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     assert {:ok, writer} = FilesystemStore.begin_put(bundle.root, byte_size(payload), %{})
     assert :ok = FilesystemStore.write_chunk(writer, payload)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.finish_put(writer)
 
     assert File.ls!(outside) == []
@@ -175,10 +175,10 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
   end
 
   test "malformed digest cannot escape blob root", %{bundle: bundle} do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              FilesystemStore.open_read(bundle.root, "../../../etc/passwd")
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              FilesystemStore.delete(bundle.root, String.duplicate("G", 64))
 
     refute File.exists?(Path.join([bundle.root, "blobs", "et"]))
@@ -224,7 +224,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     compressed = File.read!(path)
     File.write!(path, binary_part(compressed, 0, byte_size(compressed) - 1))
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.verify(bundle.root, digest, size)
   end
 
@@ -235,7 +235,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     path = blob_path_for(bundle.root, digest)
     File.write!(path, "corrupt")
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.verify(bundle.root, digest, size)
   end
 
@@ -250,10 +250,10 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
     refute FilesystemStore.exists?(bundle.root, digest)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
              FilesystemStore.stat(bundle.root, digest)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
              FilesystemStore.verify(bundle.root, digest, 3)
 
     assert {:ok, []} = FilesystemStore.list_digests(bundle.root)
@@ -325,10 +325,10 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
     assert FilesystemStore.exists?(bundle.root, digest)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.stat(bundle.root, digest)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.verify(bundle.root, digest, size)
   end
 
@@ -343,10 +343,10 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
     File.write!(path, flipped)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.verify(bundle.root, digest, size)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              put_whole(bundle.root, payload)
   end
 
@@ -359,10 +359,10 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     <<prefix::binary-size(^offset), byte, rest::binary>> = bytes
     File.write!(path, prefix <> <<:erlang.bxor(byte, 1)>> <> rest)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.stat(bundle.root, digest)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.verify(bundle.root, digest, size)
   end
 
@@ -372,7 +372,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     File.mkdir_p!(dir)
     File.write!(blob_path_for(bundle.root, digest), :binary.copy(<<1>>, 40))
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.stat(bundle.root, digest)
   end
 
@@ -434,7 +434,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     assert {:ok, writer} = FilesystemStore.begin_put_representation(bundle.root, descriptor, 1_000)
     assert :ok = FilesystemStore.write_representation_chunk(writer, "short")
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.finish_put_representation(writer)
 
     wrong = :crypto.hash(:sha256, "other") |> Base.encode16(case: :lower)
@@ -452,7 +452,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
 
     assert :ok = FilesystemStore.write_representation_chunk(writer, payload)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.finish_put_representation(writer)
   end
 
@@ -471,7 +471,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     assert {:ok, writer} = FilesystemStore.begin_put_representation(bundle.root, descriptor, 1_000)
     tmp_path = FilesystemStore.writer_tmp_path(writer)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.write_representation_chunk(writer, "abcd")
 
     refute File.exists?(tmp_path)
@@ -488,7 +488,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
       payload_sha256: digest
     }
 
-    assert {:error, %ElixirDB.Error{code: :payload_too_large}} =
+    assert {:error, %VialKeeper.Error{code: :payload_too_large}} =
              FilesystemStore.begin_put_representation(bundle.root, descriptor, 4)
   end
 
@@ -662,7 +662,7 @@ defmodule ElixirDB.Attachments.FilesystemStoreTest do
     assert stored.payload_sha256 == payload_digest
     assert collect_representation(reader) == compressed
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              FilesystemStore.verify(bundle.root, lying_digest, byte_size(logical))
   end
 

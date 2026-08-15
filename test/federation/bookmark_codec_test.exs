@@ -1,10 +1,10 @@
-defmodule ElixirDB.Federation.BookmarkCodecTest do
+defmodule VialKeeper.Federation.BookmarkCodecTest do
   @moduledoc "Covers signed federation bookmark encoding and validation."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Federation.BookmarkCodec
-  alias ElixirDB.JSON.{Canonical, StrictDecoder}
+  alias VialKeeper.Federation.BookmarkCodec
+  alias VialKeeper.JSON.{Canonical, StrictDecoder}
 
   @source "123e4567-e89b-12d3-a456-426614174000"
   @other_source "123e4567-e89b-12d3-a456-426614174001"
@@ -99,7 +99,7 @@ defmodule ElixirDB.Federation.BookmarkCodecTest do
     end
   end
 
-  defp invalid({:error, %ElixirDB.Error{code: :invalid_bookmark}}), do: true
+  defp invalid({:error, %VialKeeper.Error{code: :invalid_bookmark}}), do: true
 
   defp replace_json_field(bytes, key, value) do
     {:ok, map} = StrictDecoder.decode(bytes)

@@ -1,4 +1,4 @@
-defmodule ElixirDB.WebUI.ActionOriginTest do
+defmodule VialKeeper.WebUI.ActionOriginTest do
   @moduledoc """
   Proof that `/ui/actions/*` requests are rejected unless they carry the
   `hx-request: true` header that htmx supplies, so a plain cross-origin form
@@ -13,19 +13,19 @@ defmodule ElixirDB.WebUI.ActionOriginTest do
   @moduletag :integration
   import Plug.Test
 
-  alias ElixirDB.HTTP.Router
+  alias VialKeeper.HTTP.Router
 
   setup do
-    previous_auth = Application.get_env(:elixir_db, :auth)
-    previous_web_ui = Application.get_env(:elixir_db, :web_ui)
+    previous_auth = Application.get_env(:vial_keeper, :auth)
+    previous_web_ui = Application.get_env(:vial_keeper, :web_ui)
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :auth, previous_auth)
-      Application.put_env(:elixir_db, :web_ui, previous_web_ui)
+      Application.put_env(:vial_keeper, :auth, previous_auth)
+      Application.put_env(:vial_keeper, :web_ui, previous_web_ui)
     end)
 
-    Application.put_env(:elixir_db, :web_ui, enabled: true)
-    Application.put_env(:elixir_db, :auth, enabled: false, token_digests: [])
+    Application.put_env(:vial_keeper, :web_ui, enabled: true)
+    Application.put_env(:vial_keeper, :auth, enabled: false, token_digests: [])
 
     :ok
   end

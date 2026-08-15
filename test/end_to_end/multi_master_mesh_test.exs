@@ -1,4 +1,4 @@
-defmodule ElixirDB.EndToEnd.MultiMasterMeshTest do
+defmodule VialKeeper.EndToEnd.MultiMasterMeshTest do
   @moduledoc """
   Seeded three-node ring convergence through chaos and a paused partition.
   """
@@ -7,7 +7,7 @@ defmodule ElixirDB.EndToEnd.MultiMasterMeshTest do
 
   @moduletag :integration
 
-  alias ElixirDB.ReplicationChaosHelpers, as: Chaos
+  alias VialKeeper.ReplicationChaosHelpers, as: Chaos
 
   @seeds Chaos.seeds!()
 

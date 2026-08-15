@@ -1,20 +1,20 @@
-defmodule ElixirDB.DerivedView.ContributionsTest do
+defmodule VialKeeper.DerivedView.ContributionsTest do
   @moduledoc "Covers atomic derived contributions, generated documents, and exact grouped output."
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Error
-  alias ElixirDB.JSON.Canonical
-  alias ElixirDB.MaterializedViews
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Storage.PortFault
-  alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.TempDatabase
+  alias VialKeeper.Error
+  alias VialKeeper.JSON.Canonical
+  alias VialKeeper.MaterializedViews
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.PortFault
+  alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.TempDatabase
 
   setup do
-    path = "derived-contrib-source-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), path)
+    path = "derived-contrib-source-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), path)
     TempDatabase.cleanup(absolute)
 
     {:ok, source} = DatabaseCatalog.create(path)
@@ -51,7 +51,9 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
     assert first_sequence > 0
 
     generated_id = map_id(source.database_uuid, "one")
-    assert {:ok, %{body: body}} = ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id})
+
+    assert {:ok, %{body: body}} =
+             VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id})
 
     assert body == %{
              "key" => ["alpha"],
@@ -75,7 +77,7 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
     assert {:ok, %{applied: true}} = apply_batch(derived, update)
 
     assert {:ok, %{body: %{"value" => 4}}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id})
+             VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id})
 
     removal = %{
       batch
@@ -87,8 +89,8 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
 
     assert {:ok, %{applied: true}} = apply_batch(derived, removal)
 
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id})
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
+             VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id})
   end
 
   test "grouped reducers maintain exact output as contributions move and disappear", %{
@@ -120,7 +122,7 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
     alpha_id = group_id(["alpha"])
 
     assert {:ok, %{body: %{"key" => ["alpha"], "value" => 5.0}}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: alpha_id})
+             VialKeeper.Documents.get(derived.database_uuid, %{id: alpha_id})
 
     moved = %{
       first
@@ -134,10 +136,10 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
     assert {:ok, %{applied: true}} = apply_batch(derived, moved)
 
     assert {:ok, %{body: %{"value" => 2.0}}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: alpha_id})
+             VialKeeper.Documents.get(derived.database_uuid, %{id: alpha_id})
 
     assert {:ok, %{body: %{"value" => 3.0}}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["beta"])})
+             VialKeeper.Documents.get(derived.database_uuid, %{id: group_id(["beta"])})
 
     removed = %{
       first
@@ -149,11 +151,11 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
 
     assert {:ok, %{applied: true}} = apply_batch(derived, removed)
 
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: alpha_id})
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
+             VialKeeper.Documents.get(derived.database_uuid, %{id: alpha_id})
 
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["beta"])})
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
+             VialKeeper.Documents.get(derived.database_uuid, %{id: group_id(["beta"])})
   end
 
   test "grouped sum preserves exact cancellation order", %{source: source} do
@@ -198,7 +200,7 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
     assert {:ok, %{applied: true}} = apply_batch(derived, batch)
 
     assert {:ok, %{body: %{"key" => ["alpha"], "value" => 1.1102230246251565e-16}}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
+             VialKeeper.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
   end
 
   test "grouped stats update extrema and ignore nonnumeric values", %{source: source} do
@@ -233,7 +235,7 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
     assert {:ok, %{applied: true}} = apply_batch(derived, batch)
 
     assert {:ok, %{body: body}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
+             VialKeeper.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
 
     assert body == %{
              "key" => ["alpha"],
@@ -264,7 +266,7 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
                 }
               }
             }} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
+             VialKeeper.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
 
     remove_numbers = %{
       batch
@@ -277,7 +279,7 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
     assert {:ok, %{applied: true}} = apply_batch(derived, remove_numbers)
 
     assert {:ok, %{body: body}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
+             VialKeeper.Documents.get(derived.database_uuid, %{id: group_id(["alpha"])})
 
     assert body == %{
              "key" => ["alpha"],
@@ -362,11 +364,11 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
     assert {:ok, %{status: :current}} =
              DatabaseCatalog.command(derived.database_uuid, {:command, :get_derived_view, %{}})
 
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: old_id})
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
+             VialKeeper.Documents.get(derived.database_uuid, %{id: old_id})
 
     assert {:ok, %{body: %{"key" => ["new"]}}} =
-             ElixirDB.Documents.get(derived.database_uuid, %{id: new_id})
+             VialKeeper.Documents.get(derived.database_uuid, %{id: new_id})
   end
 
   test "a generated-write failure rolls back contributions and checkpoint", %{source: source} do
@@ -438,7 +440,7 @@ defmodule ElixirDB.DerivedView.ContributionsTest do
         {:command, :set_derived_enabled, %{enabled: false}}
       )
 
-    bundle = Path.join(ElixirDB.Config.database_root(), identity.database_path)
+    bundle = Path.join(VialKeeper.Config.database_root(), identity.database_path)
     {:ok, identity, bundle}
   end
 

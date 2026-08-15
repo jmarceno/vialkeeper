@@ -1,26 +1,26 @@
-defmodule ElixirDB.Query.QueryTest do
+defmodule VialKeeper.Query.QueryTest do
   @moduledoc "Covers query planning, execution, and SQLite result semantics."
 
   use ExUnitProperties
 
-  alias ElixirDB.Query.Normalizer
-  alias ElixirDB.Query.Planner
-  alias ElixirDB.Query.Selector
-  alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.Connection
-  alias ElixirDB.Storage.SQLite.QueryCompiler
-  alias ElixirDB.Storage.SQLite.QueryRunner
-  alias ElixirDB.Storage.SQLite.TermBlob
+  alias VialKeeper.Query.Normalizer
+  alias VialKeeper.Query.Planner
+  alias VialKeeper.Query.Selector
+  alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.Storage.SQLite.Connection
+  alias VialKeeper.Storage.SQLite.QueryCompiler
+  alias VialKeeper.Storage.SQLite.QueryRunner
+  alias VialKeeper.Storage.SQLite.TermBlob
   use ExUnit.Case, async: true
 
   setup do
-    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-query")
-    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
+    {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-query")
+    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
 
     on_exit(fn ->
       Adapter.close(adapter)
-      ElixirDB.TempDatabase.cleanup(bundle_path)
+      VialKeeper.TempDatabase.cleanup(bundle_path)
     end)
 
     {:ok, adapter: adapter}
@@ -66,7 +66,7 @@ defmodule ElixirDB.Query.QueryTest do
                [TermBlob.bind(<<0, 1, 2>>), "doc"]
              )
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              Adapter.execute_query(adapter, %{selector: %{"/state" => "open"}, limit: 10})
   end
 
@@ -141,7 +141,7 @@ defmodule ElixirDB.Query.QueryTest do
                body: %{"type" => "note", "priority" => threshold}
              })
 
-    assert {:error, %ElixirDB.Error{code: :index_required}} =
+    assert {:error, %VialKeeper.Error{code: :index_required}} =
              Adapter.execute_query(adapter, %{
                selector: %{"/type" => "note"},
                limit: 5
@@ -368,7 +368,7 @@ defmodule ElixirDB.Query.QueryTest do
 
     expired_identity = put_in(identity, [:config, "queries", "max_execution_ms"], 0)
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              QueryRunner.execute(adapter, request, expired_identity)
   end
 
@@ -518,13 +518,13 @@ defmodule ElixirDB.Query.QueryTest do
     }
 
     setup do
-      {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-query-threshold")
-      path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
+      {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-query-threshold")
+      path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
       {:ok, adapter} = Adapter.create(path, %{config: %{"queries" => %{"scan_threshold" => 5}}})
 
       on_exit(fn ->
         Adapter.close(adapter)
-        ElixirDB.TempDatabase.cleanup(bundle_path)
+        VialKeeper.TempDatabase.cleanup(bundle_path)
       end)
 
       assert {:ok, _} =
@@ -568,7 +568,7 @@ defmodule ElixirDB.Query.QueryTest do
       end
 
       assert {:error,
-              %ElixirDB.Error{
+              %VialKeeper.Error{
                 code: :index_required,
                 details: %{candidate_count: 6, threshold: 5}
               }} =
@@ -624,7 +624,7 @@ defmodule ElixirDB.Query.QueryTest do
       }
 
       assert {:error,
-              %ElixirDB.Error{
+              %VialKeeper.Error{
                 code: :index_required,
                 details: %{candidate_count: 6, threshold: 5}
               }} =

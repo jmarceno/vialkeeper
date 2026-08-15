@@ -1,19 +1,19 @@
-defmodule ElixirDB.Shadow.RestartRecoveryTest do
+defmodule VialKeeper.Shadow.RestartRecoveryTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Shadow.{Definition, Observation, Reconciler, Registry, RouteTable}
+  alias VialKeeper.Shadow.{Definition, Observation, Reconciler, Registry, RouteTable}
 
   test "persisted ready observations are not trusted as live routes after restart" do
     root =
       Path.join(
         System.tmp_dir!(),
-        "elixirdb-shadow-restart-#{System.unique_integer([:positive])}"
+        "vialkeeper-shadow-restart-#{System.unique_integer([:positive])}"
       )
 
     File.mkdir_p!(root)
     name = unique_name(:shadow_registry)
     {:ok, pid} = Registry.start_link(root: root, name: name)
-    source_uuid = ElixirDB.UUID.v4()
+    source_uuid = VialKeeper.UUID.v4()
 
     assert {:ok, definition} =
              Definition.new(source_uuid, %{

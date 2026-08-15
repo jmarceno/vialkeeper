@@ -1,3 +1,3 @@
-defmodule ElixirDB.Storage.Contract.MemoryQueryTest do
-  use ElixirDB.Storage.Contracts.Query, adapter: ElixirDB.Storage.Memory.Adapter
+defmodule VialKeeper.Storage.Contract.MemoryQueryTest do
+  use VialKeeper.Storage.Contracts.Query, adapter: VialKeeper.Storage.Memory.Adapter
 end

@@ -1,6 +1,6 @@
-defmodule ElixirDB.Benchmarks.Runner do
+defmodule VialKeeper.Benchmarks.Runner do
   @moduledoc """
-  Repeatable storage benchmark runner for ElixirDB.
+  Repeatable storage benchmark runner for VialKeeper.
 
   The runner intentionally lives outside the application release. It exercises
   the real SQLite adapter while keeping setup, measurement, and cleanup
@@ -8,11 +8,11 @@ defmodule ElixirDB.Benchmarks.Runner do
   make the instrumentation visible in the result file.
   """
 
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Observability.Instrumentation.{Changes, Database}
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.View.Manager
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Observability.Instrumentation.{Changes, Database}
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.View.Manager
 
   @scenarios [:bulk_write, :point_read, :changes_read, :index_build, :indexed_query]
   @catalog_scenarios [:concurrent_point_read, :multi_writer]
@@ -21,16 +21,16 @@ defmodule ElixirDB.Benchmarks.Runner do
   @multi_writer_counts [1, 2, 4, 8]
   @modes [:disk, :memory]
   @span_names [
-    "elixir_db.database.command",
-    "elixir_db.changes.read",
-    "elixir_db.query.execute",
-    "elixir_db.index.build"
+    "vial_keeper.database.command",
+    "vial_keeper.changes.read",
+    "vial_keeper.query.execute",
+    "vial_keeper.index.build"
   ]
   @metric_names [
-    "elixir_db.database.command.duration",
-    "elixir_db.changes.read.duration",
-    "elixir_db.query.execute.duration",
-    "elixir_db.index.build.duration"
+    "vial_keeper.database.command.duration",
+    "vial_keeper.changes.read.duration",
+    "vial_keeper.query.execute.duration",
+    "vial_keeper.index.build.duration"
   ]
 
   @default_iterations 15
@@ -79,30 +79,30 @@ defmodule ElixirDB.Benchmarks.Runner do
   end
 
   defp with_isolated_runtime(fun) do
-    root = Path.join(System.tmp_dir!(), "elixir-db-product-benchmark-#{unique_suffix()}")
-    previous_root = Application.get_env(:elixir_db, :database_root)
-    previous_listener = Application.get_env(:elixir_db, :listener)
+    root = Path.join(System.tmp_dir!(), "vialkeeper-product-benchmark-#{unique_suffix()}")
+    previous_root = Application.get_env(:vial_keeper, :database_root)
+    previous_listener = Application.get_env(:vial_keeper, :listener)
     ensure_application_stopped!()
     File.mkdir_p!(root)
-    Application.put_env(:elixir_db, :database_root, root)
-    Application.put_env(:elixir_db, :listener, ip: {127, 0, 0, 1}, port: 0)
+    Application.put_env(:vial_keeper, :database_root, root)
+    Application.put_env(:vial_keeper, :listener, ip: {127, 0, 0, 1}, port: 0)
 
     try do
-      {:ok, _started} = Application.ensure_all_started(:elixir_db)
+      {:ok, _started} = Application.ensure_all_started(:vial_keeper)
       fun.()
     after
-      _ = Application.stop(:elixir_db)
+      _ = Application.stop(:vial_keeper)
       restore_application_env(:database_root, previous_root)
       restore_application_env(:listener, previous_listener)
       _ = File.rm_rf(root)
     end
   end
 
-  defp restore_application_env(key, nil), do: Application.delete_env(:elixir_db, key)
-  defp restore_application_env(key, value), do: Application.put_env(:elixir_db, key, value)
+  defp restore_application_env(key, nil), do: Application.delete_env(:vial_keeper, key)
+  defp restore_application_env(key, value), do: Application.put_env(:vial_keeper, key, value)
 
   defp ensure_application_stopped! do
-    if Enum.any?(Application.started_applications(), &match?({:elixir_db, _, _}, &1)) do
+    if Enum.any?(Application.started_applications(), &match?({:vial_keeper, _, _}, &1)) do
       Mix.raise("benchmark must be launched with mix run --no-start")
     end
   end
@@ -142,15 +142,15 @@ defmodule ElixirDB.Benchmarks.Runner do
 
   defp benchmark_config(options) do
     iterations =
-      positive_option(options, :iterations, "ELIXIRDB_BENCH_ITERATIONS", @default_iterations)
+      positive_option(options, :iterations, "VIALKEEPER_BENCH_ITERATIONS", @default_iterations)
 
-    warmup = non_negative_option(options, :warmup, "ELIXIRDB_BENCH_WARMUP", @default_warmup)
+    warmup = non_negative_option(options, :warmup, "VIALKEEPER_BENCH_WARMUP", @default_warmup)
 
     dataset_size =
-      positive_option(options, :dataset, "ELIXIRDB_BENCH_DATASET", @default_dataset_size)
+      positive_option(options, :dataset, "VIALKEEPER_BENCH_DATASET", @default_dataset_size)
 
-    batch_size = positive_option(options, :batch, "ELIXIRDB_BENCH_BATCH", @default_batch_size)
-    read_count = positive_option(options, :reads, "ELIXIRDB_BENCH_READS", @default_read_count)
+    batch_size = positive_option(options, :batch, "VIALKEEPER_BENCH_BATCH", @default_batch_size)
+    read_count = positive_option(options, :reads, "VIALKEEPER_BENCH_READS", @default_read_count)
 
     if batch_size > 500 do
       Mix.raise("--batch must be at most the configured host bulk limit (500)")
@@ -158,7 +158,7 @@ defmodule ElixirDB.Benchmarks.Runner do
 
     max_regression_pct =
       options[:max_regression] ||
-        env_float("ELIXIRDB_BENCH_MAX_REGRESSION_PCT", @default_max_regression_pct)
+        env_float("VIALKEEPER_BENCH_MAX_REGRESSION_PCT", @default_max_regression_pct)
 
     if max_regression_pct < 0 do
       Mix.raise("--max-regression must be non-negative")
@@ -385,7 +385,7 @@ defmodule ElixirDB.Benchmarks.Runner do
 
     Enum.each(0..(read_count - 1), fn offset ->
       id = elem(ids, rem(start + offset, dataset_size))
-      assert_ok!(ElixirDB.Documents.get(uuid, %{id: id}), :concurrent_point_read)
+      assert_ok!(VialKeeper.Documents.get(uuid, %{id: id}), :concurrent_point_read)
     end)
 
     {:ok, read_count}
@@ -399,7 +399,7 @@ defmodule ElixirDB.Benchmarks.Runner do
     if :atomics.get(flag, 1) == 1 do
       id = "writer-#{phase_name(token)}-#{token_number(token)}-#{n}"
       body = %{"category" => "note", "priority" => rem(n, 100), "title" => "Writer #{n}"}
-      assert_ok!(ElixirDB.Documents.put(uuid, %{id: id, body: body}), :concurrent_writer)
+      assert_ok!(VialKeeper.Documents.put(uuid, %{id: id, body: body}), :concurrent_writer)
       write_until_stopped(uuid, token, flag, n + 1)
     else
       :ok
@@ -481,7 +481,7 @@ defmodule ElixirDB.Benchmarks.Runner do
     Enum.each(0..(write_count - 1), fn n ->
       id = "mw-#{writer_index}-#{phase_name(token)}-#{token_number(token)}-#{n}"
       body = %{"category" => "note", "priority" => rem(n, 100), "title" => "Writer #{n}"}
-      assert_result!(ElixirDB.Documents.put(uuid, %{id: id, body: body}), :multi_writer)
+      assert_result!(VialKeeper.Documents.put(uuid, %{id: id, body: body}), :multi_writer)
     end)
 
     {:ok, write_count}
@@ -504,7 +504,7 @@ defmodule ElixirDB.Benchmarks.Runner do
   end
 
   defp open_catalog_benchmark_database do
-    relative = "bench-catalog-#{System.unique_integer([:positive])}.elixirdb"
+    relative = "bench-catalog-#{System.unique_integer([:positive])}.vialkeeper"
 
     case DatabaseCatalog.create(relative) do
       {:ok, identity} ->
@@ -533,7 +533,7 @@ defmodule ElixirDB.Benchmarks.Runner do
     |> Enum.map(&catalog_put_operation("seed-#{&1}", &1))
     |> Enum.chunk_every(batch_size)
     |> Enum.each(fn operations ->
-      assert_ok!(ElixirDB.Documents.bulk_write(uuid, operations), :catalog_seed)
+      assert_ok!(VialKeeper.Documents.bulk_write(uuid, operations), :catalog_seed)
     end)
   end
 
@@ -557,7 +557,7 @@ defmodule ElixirDB.Benchmarks.Runner do
 
   defp with_adapter(:disk, fun) do
     path =
-      Path.join(System.tmp_dir!(), "elixirdb-benchmark-#{System.unique_integer([:positive])}.db")
+      Path.join(System.tmp_dir!(), "vialkeeper-benchmark-#{System.unique_integer([:positive])}.db")
 
     case Adapter.create(path, %{storage_mode: :disk}) do
       {:ok, adapter} ->
@@ -793,15 +793,15 @@ defmodule ElixirDB.Benchmarks.Runner do
   end
 
   defp pragma_value(adapter, pragma) do
-    case ElixirDB.Storage.SQLite.Connection.pragma(adapter.conn, pragma) do
+    case VialKeeper.Storage.SQLite.Connection.pragma(adapter.conn, pragma) do
       {:ok, [[value]]} -> to_string(value)
       other -> inspect(other)
     end
   end
 
   defp reset_observability do
-    ElixirDB.Observability.TestExporter.reset()
-    ElixirDB.Observability.TestMetricExporter.reset()
+    VialKeeper.Observability.TestExporter.reset()
+    VialKeeper.Observability.TestMetricExporter.reset()
   end
 
   defp flush_metrics do
@@ -821,7 +821,7 @@ defmodule ElixirDB.Benchmarks.Runner do
 
   defp metrics_exported? do
     Enum.any?(@metric_names, fn name ->
-      ElixirDB.Observability.TestMetricExporter.datapoints(name) != []
+      VialKeeper.Observability.TestMetricExporter.datapoints(name) != []
     end)
   end
 
@@ -829,18 +829,18 @@ defmodule ElixirDB.Benchmarks.Runner do
     %{
       "span_counts" =>
         Map.new(@span_names, fn name ->
-          {name, length(ElixirDB.Observability.TestExporter.spans_named(name))}
+          {name, length(VialKeeper.Observability.TestExporter.spans_named(name))}
         end),
       "metric_datapoint_counts" =>
         Map.new(@metric_names, fn name ->
-          {name, length(ElixirDB.Observability.TestMetricExporter.datapoints(name))}
+          {name, length(VialKeeper.Observability.TestMetricExporter.datapoints(name))}
         end)
     }
   end
 
   defp ensure_test_observability! do
-    unless Code.ensure_loaded?(ElixirDB.Observability.TestExporter) and
-             Code.ensure_loaded?(ElixirDB.Observability.TestMetricExporter) do
+    unless Code.ensure_loaded?(VialKeeper.Observability.TestExporter) and
+             Code.ensure_loaded?(VialKeeper.Observability.TestMetricExporter) do
       Mix.raise("run benchmarks with MIX_ENV=test to enable the in-memory observability exporters")
     end
   end
@@ -856,7 +856,7 @@ defmodule ElixirDB.Benchmarks.Runner do
   end
 
   defp print_summary(report, output) do
-    IO.puts("ElixirDB benchmark report: #{output}")
+    IO.puts("VialKeeper benchmark report: #{output}")
 
     Enum.each(report["results"], fn result ->
       IO.puts(
@@ -943,7 +943,7 @@ defmodule ElixirDB.Benchmarks.Runner do
     %{
       "elixir" => System.version(),
       "otp" => :erlang.system_info(:otp_release) |> to_string(),
-      "sqlite" => ElixirDB.Diagnostics.runtime().backend,
+      "sqlite" => VialKeeper.Diagnostics.runtime().backend,
       "schedulers_online" => :erlang.system_info(:schedulers_online),
       "dirty_cpu_schedulers_online" => :erlang.system_info(:dirty_cpu_schedulers_online),
       "dirty_io_schedulers" => :erlang.system_info(:dirty_io_schedulers),
@@ -1056,7 +1056,7 @@ defmodule ElixirDB.Benchmarks.Runner do
 
   defp default_output_path do
     timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%dT%H%M%SZ")
-    Path.join("output/benchmarks", "elixirdb-#{timestamp}.json")
+    Path.join("output/benchmarks", "vialkeeper-#{timestamp}.json")
   end
 
   defp cleanup_database(path) do
@@ -1098,11 +1098,11 @@ defmodule ElixirDB.Benchmarks.Runner do
       --max-regression PCT            Allowed median regression (default: 20)
 
     Environment equivalents:
-      ELIXIRDB_BENCH_ITERATIONS, ELIXIRDB_BENCH_WARMUP,
-      ELIXIRDB_BENCH_DATASET, ELIXIRDB_BENCH_BATCH, ELIXIRDB_BENCH_READS,
-      ELIXIRDB_BENCH_MAX_REGRESSION_PCT
+      VIALKEEPER_BENCH_ITERATIONS, VIALKEEPER_BENCH_WARMUP,
+      VIALKEEPER_BENCH_DATASET, VIALKEEPER_BENCH_BATCH, VIALKEEPER_BENCH_READS,
+      VIALKEEPER_BENCH_MAX_REGRESSION_PCT
     """
   end
 end
 
-ElixirDB.Benchmarks.Runner.main(System.argv())
+VialKeeper.Benchmarks.Runner.main(System.argv())

@@ -1,4 +1,4 @@
-defmodule ElixirDB.Replication.PeerErrorBodyLimitTest do
+defmodule VialKeeper.Replication.PeerErrorBodyLimitTest do
   @moduledoc """
   Regression tests for bounding peer error-body buffering in RemoteTransport.
 
@@ -12,21 +12,21 @@ defmodule ElixirDB.Replication.PeerErrorBodyLimitTest do
 
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Config
-  alias ElixirDB.Error
-  alias ElixirDB.Replication.RemoteTransport
-  alias ElixirDB.TestServer
+  alias VialKeeper.Config
+  alias VialKeeper.Error
+  alias VialKeeper.Replication.RemoteTransport
+  alias VialKeeper.TestServer
 
   defp with_small_limits(fun) do
-    previous = Application.get_env(:elixir_db, :host_limits, [])
+    previous = Application.get_env(:vial_keeper, :host_limits, [])
 
     Application.put_env(
-      :elixir_db,
+      :vial_keeper,
       :host_limits,
       Map.merge(Map.new(previous), %{max_replication_batch_bytes: 1_024})
     )
 
-    on_exit(fn -> Application.put_env(:elixir_db, :host_limits, previous) end)
+    on_exit(fn -> Application.put_env(:vial_keeper, :host_limits, previous) end)
     fun.()
   end
 

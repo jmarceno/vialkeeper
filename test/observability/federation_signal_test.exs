@@ -1,17 +1,17 @@
-defmodule ElixirDB.Observability.FederationSignalTest do
+defmodule VialKeeper.Observability.FederationSignalTest do
   @moduledoc "Covers federation tracing and metric signals without secrets."
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Error
-  alias ElixirDB.Eventual
-  alias ElixirDB.Federation
-  alias ElixirDB.TestServer
+  alias VialKeeper.Error
+  alias VialKeeper.Eventual
+  alias VialKeeper.Federation
+  alias VialKeeper.TestServer
 
   @source "123e4567-e89b-12d3-a456-426614174000"
-  @duration_metric "elixir_db.federation.query.duration"
+  @duration_metric "vial_keeper.federation.query.duration"
 
   test "records bounded source count, outcome, and stable error code" do
     assert {:error, %Error{code: :database_not_registered}} =
@@ -20,7 +20,7 @@ defmodule ElixirDB.Observability.FederationSignalTest do
     span =
       Eventual.eventually(
         fn ->
-          TestExporter.spans_named("elixir_db.federation.query")
+          TestExporter.spans_named("vial_keeper.federation.query")
           |> Enum.find(fn candidate ->
             TestExporter.span_attr(candidate, :"federation.source_count") == 1 and
               TestExporter.span_attr(candidate, :outcome) == :rejected
@@ -35,7 +35,7 @@ defmodule ElixirDB.Observability.FederationSignalTest do
     assert TestExporter.status_code(span) == :unset
     refute String.contains?(inspect(span), @source)
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         TestMetricExporter.datapoints_matching(@duration_metric, %{
           :"federation.source_count" => 1
@@ -58,7 +58,7 @@ defmodule ElixirDB.Observability.FederationSignalTest do
     span =
       Eventual.eventually(
         fn ->
-          TestExporter.spans_named("elixir_db.http.request")
+          TestExporter.spans_named("vial_keeper.http.request")
           |> Enum.find(fn candidate ->
             TestExporter.span_attr(candidate, :"http.route") == "/v1/federation/query"
           end)

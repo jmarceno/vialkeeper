@@ -1,12 +1,12 @@
-defmodule ElixirDB.Query.Subscription.MembershipTest do
+defmodule VialKeeper.Query.Subscription.MembershipTest do
   @moduledoc "Covers subscription membership transitions for document changes."
 
   use ExUnit.Case, async: true
 
   @moduletag :integration
 
-  alias ElixirDB.Query.Normalizer
-  alias ElixirDB.Query.Subscription.Membership
+  alias VialKeeper.Query.Normalizer
+  alias VialKeeper.Query.Subscription.Membership
 
   setup do
     {:ok, request} = Normalizer.normalize(%{"selector" => %{"/type" => "task"}})
@@ -62,7 +62,7 @@ defmodule ElixirDB.Query.Subscription.MembershipTest do
   test "membership bound rejects oversized add", %{request: request} do
     envelope = %{id: "b", revision: "r1", deleted: false, body: %{"type" => "task"}}
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              Membership.transition(envelope, request, MapSet.new(["a"]), 1, 1)
   end
 end

@@ -1,4 +1,4 @@
-defmodule ElixirDB.Runtime.WaiterTerminationTest do
+defmodule VialKeeper.Runtime.WaiterTerminationTest do
   @moduledoc """
   Gap D3 / ARCH-007: closing a database terminates changes waiters with
   retryable `database_closed` (and stream subscribers with `{:database_closed, uuid}`).
@@ -7,12 +7,12 @@ defmodule ElixirDB.Runtime.WaiterTerminationTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
+  alias VialKeeper.Runtime.{ChangeNotifier, DatabaseCatalog}
 
   setup do
-    relative = "waiter-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    relative = "waiter-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), relative)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     uuid = identity.database_uuid
@@ -21,7 +21,7 @@ defmodule ElixirDB.Runtime.WaiterTerminationTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: uuid}
@@ -35,7 +35,7 @@ defmodule ElixirDB.Runtime.WaiterTerminationTest do
       Task.async(fn ->
         send(parent, {:waiting, barrier})
 
-        ElixirDB.Changes.wait(uuid, %{
+        VialKeeper.Changes.wait(uuid, %{
           since: 0,
           limit: 10,
           wait_ms: 30_000
@@ -44,7 +44,7 @@ defmodule ElixirDB.Runtime.WaiterTerminationTest do
 
     assert_receive {:waiting, ^barrier}, 1_000
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         case ChangeNotifier.subscriber_count(uuid) do
           n when is_integer(n) and n >= 1 -> {:ok, n}
@@ -57,7 +57,7 @@ defmodule ElixirDB.Runtime.WaiterTerminationTest do
 
     assert :ok = DatabaseCatalog.close(uuid)
 
-    assert {:error, %ElixirDB.Error{code: :database_closed, retryable: true}} =
+    assert {:error, %VialKeeper.Error{code: :database_closed, retryable: true}} =
              Task.await(waiter, 5_000)
   end
 

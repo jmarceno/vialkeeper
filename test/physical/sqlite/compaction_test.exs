@@ -1,11 +1,11 @@
-defmodule ElixirDB.StorageAdapter.CompactionTest do
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.CompactionTest do
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.PortFault
-  alias ElixirDB.Storage.SQLite.{Connection, DocumentFacts}
-  alias ElixirDB.TestRevisionId, as: Id
+  alias VialKeeper.Storage.PortFault
+  alias VialKeeper.Storage.SQLite.{Connection, DocumentFacts}
+  alias VialKeeper.TestRevisionId, as: Id
 
   test "disabled retention compaction is a no-op", %{adapter: adapter} do
     assert {:ok, %{revision: _}} =
@@ -88,7 +88,7 @@ defmodule ElixirDB.StorageAdapter.CompactionTest do
 
     assert {:ok, _} = @adapter.get_revision(adapter, %{document_id: "doc", revision_id: winner})
 
-    assert {:error, %ElixirDB.Error{code: :revision_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :revision_not_found}} =
              @adapter.get_revision(adapter, %{document_id: "doc", revision_id: root})
 
     assert revision_count(path) == 1
@@ -142,7 +142,7 @@ defmodule ElixirDB.StorageAdapter.CompactionTest do
 
     assert {:ok, _} = @adapter.compact_retention(adapter, %{})
 
-    assert {:error, %ElixirDB.Error{code: :history_truncated}} =
+    assert {:error, %VialKeeper.Error{code: :history_truncated}} =
              @adapter.read_changes(adapter, %{since: 0, limit: 10})
 
     assert {:ok, %{results: ^survivor, last_sequence: 3}} =
@@ -261,10 +261,10 @@ defmodule ElixirDB.StorageAdapter.CompactionTest do
       PortFault.inject(
         adapter,
         :compact_retention_mid_tx,
-        {:once, ElixirDB.Error.internal_error("injected compaction fault")}
+        {:once, VialKeeper.Error.internal_error("injected compaction fault")}
       )
 
-    assert {:error, %ElixirDB.Error{code: :internal_error}} =
+    assert {:error, %VialKeeper.Error{code: :internal_error}} =
              PortFault.compact_retention(fault_adapter, %{})
 
     assert revision_count(path) == 2
@@ -290,7 +290,7 @@ defmodule ElixirDB.StorageAdapter.CompactionTest do
 
     context = @adapter.to_context(adapter)
 
-    assert {:error, %ElixirDB.Error{code: :internal_error}} =
+    assert {:error, %VialKeeper.Error{code: :internal_error}} =
              DocumentFacts.list_compaction_documents(context, 1)
   end
 

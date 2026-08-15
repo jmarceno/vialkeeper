@@ -1,4 +1,4 @@
-defmodule ElixirDB.Replication.FaultInjectionTest do
+defmodule VialKeeper.Replication.FaultInjectionTest do
   @moduledoc """
   Inject retryable failures before and after every phase transition.
 
@@ -9,17 +9,17 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Changes
-  alias ElixirDB.Documents
-  alias ElixirDB.Error
-  alias ElixirDB.Eventual
-  alias ElixirDB.FaultAdapter
-  alias ElixirDB.FaultEndpoint
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Replication.{Id, LocalEndpoint, Worker}
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Storage.AdapterCase
-  alias ElixirDB.TestRevisionId, as: RevisionId
+  alias VialKeeper.Changes
+  alias VialKeeper.Documents
+  alias VialKeeper.Error
+  alias VialKeeper.Eventual
+  alias VialKeeper.FaultAdapter
+  alias VialKeeper.FaultEndpoint
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Replication.{Id, LocalEndpoint, Worker}
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.AdapterCase
+  alias VialKeeper.TestRevisionId, as: RevisionId
 
   @phases [
     :handshake,
@@ -71,12 +71,12 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
   setup do
     prefix = "fault-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -86,7 +86,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -169,7 +169,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
                )
 
       :ok =
-        ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
           a.database_uuid,
           b.database_uuid,
           replication_id
@@ -207,10 +207,10 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
       payload = "blob-fault-#{System.unique_integer([:positive])}"
 
       assert {:ok, %{blob: digest, length: length}} =
-               ElixirDB.Attachments.upload_stream(a.database_uuid, [payload])
+               VialKeeper.Attachments.upload_stream(a.database_uuid, [payload])
 
       assert {:ok, %{revision: revision}} =
-               ElixirDB.Documents.put(a.database_uuid, %{
+               VialKeeper.Documents.put(a.database_uuid, %{
                  id: "blob-doc",
                  body: %{"n" => 1},
                  attachments: %{
@@ -238,7 +238,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
                Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
       :ok =
-        ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
           a.database_uuid,
           b.database_uuid,
           replication_id
@@ -271,12 +271,12 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
 
       assert_no_reupload_after_lost_response(point, target)
 
-      assert {:ok, got} = ElixirDB.Documents.get(b.database_uuid, %{id: "blob-doc"})
+      assert {:ok, got} = VialKeeper.Documents.get(b.database_uuid, %{id: "blob-doc"})
       assert got.revision == revision
       entry = Map.fetch!(got.attachments, "note.bin")
       assert MapAccess.get(entry, :digest) == digest
 
-      assert {:ok, []} = ElixirDB.Attachments.diff_blobs(b.database_uuid, [digest])
+      assert {:ok, []} = VialKeeper.Attachments.diff_blobs(b.database_uuid, [digest])
     end
   end
 
@@ -307,7 +307,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
                )
 
       :ok =
-        ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+        VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
           a.database_uuid,
           b.database_uuid,
           replication_id
@@ -417,7 +417,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
              )
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -465,7 +465,7 @@ defmodule ElixirDB.Replication.FaultInjectionTest do
              )
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id

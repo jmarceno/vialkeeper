@@ -1,7 +1,7 @@
-defmodule ElixirDB.Retention.SafeReportTest do
+defmodule VialKeeper.Retention.SafeReportTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Retention.SafeReport
+  alias VialKeeper.Retention.SafeReport
 
   @base %{
     source_history_epoch: "epoch-a",

@@ -1,13 +1,13 @@
-defmodule ElixirDB.Observability.ShadowSignalTest do
+defmodule VialKeeper.Observability.ShadowSignalTest do
   @moduledoc "Shadow read and fallback signals without private request fields."
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Shadow.{ReadRouter, RouteTable}
-  alias ElixirDB.Storage.Results
+  alias VialKeeper.Eventual
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Shadow.{ReadRouter, RouteTable}
+  alias VialKeeper.Storage.Results
 
   defmodule Endpoint do
     defstruct [:mode]
@@ -28,12 +28,12 @@ defmodule ElixirDB.Observability.ShadowSignalTest do
          }}
 
     def read_document(%__MODULE__{mode: :error}, _request, _timeout, _opts),
-      do: {:error, ElixirDB.Error.database_unavailable("shadow unavailable")}
+      do: {:error, VialKeeper.Error.database_unavailable("shadow unavailable")}
   end
 
   test "records served outcome and exact-route fallback without private fields" do
-    source_uuid = ElixirDB.UUID.v4()
-    path = "shadow-signal-#{System.unique_integer([:positive])}.elixirdb"
+    source_uuid = VialKeeper.UUID.v4()
+    path = "shadow-signal-#{System.unique_integer([:positive])}.vialkeeper"
     assert {:ok, _} = DatabaseCatalog.create(path, %{database_uuid: source_uuid})
     assert {:ok, _} = DatabaseCatalog.open(source_uuid)
 
@@ -41,16 +41,16 @@ defmodule ElixirDB.Observability.ShadowSignalTest do
       RouteTable.delete(source_uuid)
       _ = DatabaseCatalog.close(source_uuid)
       _ = DatabaseCatalog.unregister(source_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     assert :ok =
              RouteTable.put(source_uuid, %{
                endpoint: %Endpoint{mode: :ok},
                source_uuid: source_uuid,
-               shadow_uuid: ElixirDB.UUID.v4(),
+               shadow_uuid: VialKeeper.UUID.v4(),
                generation: 1,
-               operation_id: ElixirDB.UUID.v4()
+               operation_id: VialKeeper.UUID.v4()
              })
 
     assert {:ok, %Results.GetDocument{}, %{served_by: "shadow"}} =
@@ -58,12 +58,12 @@ defmodule ElixirDB.Observability.ShadowSignalTest do
                primary: fn _ -> flunk("the ready shadow route should serve the read") end
              )
 
-    assert [span] = TestExporter.spans_named("elixir_db.shadow.read")
+    assert [span] = TestExporter.spans_named("vial_keeper.shadow.read")
     refute inspect(span) =~ "shadow unavailable"
 
     Eventual.eventually(
       fn ->
-        TestMetricExporter.counter_sum("elixir_db.shadow.read.count", %{
+        TestMetricExporter.counter_sum("vial_keeper.shadow.read.count", %{
           :"db.uuid" => source_uuid,
           :outcome => :shadow
         }) == 1
@@ -76,9 +76,9 @@ defmodule ElixirDB.Observability.ShadowSignalTest do
              RouteTable.put(source_uuid, %{
                endpoint: %Endpoint{mode: :error},
                source_uuid: source_uuid,
-               shadow_uuid: ElixirDB.UUID.v4(),
+               shadow_uuid: VialKeeper.UUID.v4(),
                generation: 2,
-               operation_id: ElixirDB.UUID.v4()
+               operation_id: VialKeeper.UUID.v4()
              })
 
     assert {:ok, %Results.GetDocument{}, %{served_by: "source"}} =
@@ -90,7 +90,7 @@ defmodule ElixirDB.Observability.ShadowSignalTest do
 
     Eventual.eventually(
       fn ->
-        TestMetricExporter.counter_sum("elixir_db.shadow.route.fallback.count", %{
+        TestMetricExporter.counter_sum("vial_keeper.shadow.route.fallback.count", %{
           :"db.uuid" => source_uuid,
           :outcome => :fallback
         }) == 1

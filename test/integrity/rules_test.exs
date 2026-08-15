@@ -1,11 +1,11 @@
-defmodule ElixirDB.Integrity.RulesTest do
+defmodule VialKeeper.Integrity.RulesTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Domain.{BoundaryPage, RetentionBoundary}
-  alias ElixirDB.Integrity.Rules
-  alias ElixirDB.RevisionFixtures
-  alias ElixirDB.Revisions.Id, as: RevisionId
-  alias ElixirDB.TestRevisionId, as: Id
+  alias VialKeeper.Domain.{BoundaryPage, RetentionBoundary}
+  alias VialKeeper.Integrity.Rules
+  alias VialKeeper.RevisionFixtures
+  alias VialKeeper.Revisions.Id, as: RevisionId
+  alias VialKeeper.TestRevisionId, as: Id
 
   @digest String.duplicate("ab", 32)
 
@@ -16,7 +16,7 @@ defmodule ElixirDB.Integrity.RulesTest do
   test "invalid database uuid fails with generic integrity_violation" do
     snapshot = put_in(base_snapshot(), [:meta, :database_uuid], "")
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} = Rules.validate(snapshot)
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} = Rules.validate(snapshot)
   end
 
   test "change rows at or below retention floor fail with integrity_violation" do
@@ -36,7 +36,7 @@ defmodule ElixirDB.Integrity.RulesTest do
         }
       ])
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              Rules.validate(snapshot)
 
     assert message =~ "retention floor"
@@ -89,7 +89,7 @@ defmodule ElixirDB.Integrity.RulesTest do
         }
       ])
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              Rules.validate(bare)
 
     assert message =~ "dangling parent"
@@ -169,7 +169,7 @@ defmodule ElixirDB.Integrity.RulesTest do
         }
       ])
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              Rules.validate(snapshot)
 
     assert message =~ "inconsistent logical sizes"
@@ -219,7 +219,7 @@ defmodule ElixirDB.Integrity.RulesTest do
         }
       ])
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation, message: message}} =
              Rules.validate(snapshot)
 
     assert message =~ "materialized winner"

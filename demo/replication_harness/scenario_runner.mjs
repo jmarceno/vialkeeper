@@ -3,8 +3,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 const publicHeaders = [
   "content-type",
   "etag",
-  "x-elixirdb-read-served-by",
-  "x-elixirdb-source-watermark",
+  "x-vialkeeper-read-served-by",
+  "x-vialkeeper-source-watermark",
   "x-request-id",
 ];
 
@@ -175,11 +175,11 @@ async function runShadowRouting(context, steps) {
       () => sourceRequest(context, `/v1/databases/${source.uuid}/documents/get`, {
         method: "POST",
         body: { id: documentId },
-        headers: { "x-elixirdb-read-consistency": "eventual" },
+        headers: { "x-vialkeeper-read-consistency": "eventual" },
       }),
       (candidate) =>
         candidate.status === 200 &&
-        candidate.headers["x-elixirdb-read-served-by"] === "shadow" &&
+        candidate.headers["x-vialkeeper-read-served-by"] === "shadow" &&
         candidate.body?.data?.id === documentId,
       30_000,
     );
@@ -198,13 +198,13 @@ async function runShadowRouting(context, steps) {
           body: JSON.stringify({ id: documentId, revision: null, name: "scenario.txt" }),
           headers: {
             "content-type": "application/json",
-            "x-elixirdb-read-consistency": "eventual",
+            "x-vialkeeper-read-consistency": "eventual",
           },
         },
       ),
       (candidate) =>
         candidate.status === 200 &&
-        candidate.headers["x-elixirdb-read-served-by"] === "shadow" &&
+        candidate.headers["x-vialkeeper-read-served-by"] === "shadow" &&
         candidate.text === attachmentText,
       30_000,
     );
@@ -215,10 +215,10 @@ async function runShadowRouting(context, steps) {
     const response = await sourceRequest(context, `/v1/databases/${source.uuid}/documents/get`, {
       method: "POST",
       body: { id: documentId },
-      headers: { "x-elixirdb-read-consistency": "primary" },
+      headers: { "x-vialkeeper-read-consistency": "primary" },
     });
     expectStatus(response, [200]);
-    if (response.headers["x-elixirdb-read-served-by"] !== "source") {
+    if (response.headers["x-vialkeeper-read-served-by"] !== "source") {
       throw new ScenarioError("primary read was not served by source", selectedHeaders(response.headers));
     }
     return { status: response.status, headers: selectedHeaders(response.headers) };
@@ -255,11 +255,11 @@ async function runShadowRouting(context, steps) {
       () => sourceRequest(context, `/v1/databases/${source.uuid}/documents/get`, {
         method: "POST",
         body: { id: documentId },
-        headers: { "x-elixirdb-read-consistency": "eventual" },
+        headers: { "x-vialkeeper-read-consistency": "eventual" },
       }),
       (candidate) =>
         candidate.status === 200 &&
-        candidate.headers["x-elixirdb-read-served-by"] === "shadow" &&
+        candidate.headers["x-vialkeeper-read-served-by"] === "shadow" &&
         candidate.body?.data?.id === documentId,
       30_000,
     );

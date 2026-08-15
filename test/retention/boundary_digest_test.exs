@@ -1,8 +1,8 @@
-defmodule ElixirDB.Retention.BoundaryDigestTest do
+defmodule VialKeeper.Retention.BoundaryDigestTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Domain.{BoundaryPage, RetentionBoundary}
-  alias ElixirDB.JSON.Canonical
+  alias VialKeeper.Domain.{BoundaryPage, RetentionBoundary}
+  alias VialKeeper.JSON.Canonical
 
   test "digest encodes sorted retired branch roots" do
     boundary =

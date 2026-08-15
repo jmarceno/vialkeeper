@@ -76,7 +76,7 @@ async function proxyEndpoint(request, response, endpoint, suffix, authToken) {
     "accept",
     "content-type",
     "x-request-id",
-    "x-elixirdb-read-consistency",
+    "x-vialkeeper-read-consistency",
     "if-none-match",
   ]) {
     if (request.headers[name]) headers[name] = request.headers[name];
@@ -105,9 +105,9 @@ async function proxyEndpoint(request, response, endpoint, suffix, authToken) {
     for (const name of [
       "etag",
       "x-request-id",
-      "x-elixirdb-read-served-by",
-      "x-elixirdb-source-watermark",
-      "x-elixirdb-attachment-content-type",
+      "x-vialkeeper-read-served-by",
+      "x-vialkeeper-source-watermark",
+      "x-vialkeeper-attachment-content-type",
       "content-disposition",
     ]) {
       const value = upstream.headers.get(name);
@@ -232,8 +232,8 @@ async function startWorker(key) {
   const env = {
     ...process.env,
     MIX_ENV: "dev",
-    ELIXIR_DB_ROOT: spec.database_root,
-    ELIXIR_DB_PORT: String(spec.port),
+    VIAL_KEEPER_ROOT: spec.database_root,
+    VIAL_KEEPER_PORT: String(spec.port),
     DEMO_PROJECT_ROOT: privateConfig.project_root || projectRoot,
     DEMO_WORKER_CONFIG: spec.config_path,
     DEMO_WORKER_KEY: spec.key,

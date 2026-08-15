@@ -1,4 +1,4 @@
-defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
+defmodule VialKeeper.Replication.AttachmentRepresentationContractTest do
   @moduledoc """
   Attachment replication transfers the stored physical payload without expansion
   or a second compression decision at the target.
@@ -7,20 +7,20 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Attachments
-  alias ElixirDB.Attachments.FilesystemStore
-  alias ElixirDB.Replication.{BlobRepresentationStream, LocalEndpoint, RemoteEndpoint}
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
+  alias VialKeeper.Attachments
+  alias VialKeeper.Attachments.FilesystemStore
+  alias VialKeeper.Replication.{BlobRepresentationStream, LocalEndpoint, RemoteEndpoint}
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
 
   setup do
-    source_path = "repr-src-#{System.unique_integer([:positive])}.elixirdb"
-    target_path = "repr-dst-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    source_path = "repr-src-#{System.unique_integer([:positive])}.vialkeeper"
+    target_path = "repr-dst-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     source_abs = Path.join(root, source_path)
     target_abs = Path.join(root, target_path)
-    ElixirDB.TempDatabase.cleanup(source_abs)
-    ElixirDB.TempDatabase.cleanup(target_abs)
+    VialKeeper.TempDatabase.cleanup(source_abs)
+    VialKeeper.TempDatabase.cleanup(target_abs)
 
     assert {:ok, source} = DatabaseCatalog.create(source_path)
     assert {:ok, target} = DatabaseCatalog.create(target_path)
@@ -33,8 +33,8 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
       _ = DatabaseCatalog.close(target_uuid)
       _ = DatabaseCatalog.unregister(source_uuid)
       _ = DatabaseCatalog.unregister(target_uuid)
-      ElixirDB.TempDatabase.cleanup(source_abs)
-      ElixirDB.TempDatabase.cleanup(target_abs)
+      VialKeeper.TempDatabase.cleanup(source_abs)
+      VialKeeper.TempDatabase.cleanup(target_abs)
     end)
 
     {:ok, source_uuid: source_uuid, target_uuid: target_uuid, base_url: server.base_url}
@@ -68,7 +68,7 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
     refute content_encoding?(response)
     assert content_length(response) == payload_length
     assert byte_size(response.body) == payload_length
-    assert header(response, "x-elixirdb-blob-encoding") == "zstd"
+    assert header(response, "x-vialkeeper-blob-encoding") == "zstd"
   end
 
   test "target install does not probe or recompress a replicated representation", %{
@@ -117,7 +117,7 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
 
   defp count_probes(fun) do
     parent = self()
-    :erlang.trace_pattern({ElixirDB.Attachments.Compression, :probe, 1}, true, [])
+    :erlang.trace_pattern({VialKeeper.Attachments.Compression, :probe, 1}, true, [])
     :erlang.trace(:existing, true, [:call, :set_on_spawn])
     :erlang.trace(parent, false, [:call])
 
@@ -126,7 +126,7 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
       receive_probes(0, 50)
     after
       :erlang.trace(:all, false, [:call])
-      :erlang.trace_pattern({ElixirDB.Attachments.Compression, :probe, 1}, false, [])
+      :erlang.trace_pattern({VialKeeper.Attachments.Compression, :probe, 1}, false, [])
       flush_traces()
     end
   end
@@ -135,7 +135,7 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
 
   defp receive_probes(count, remaining) do
     receive do
-      {:trace, _pid, :call, {ElixirDB.Attachments.Compression, :probe, _}} ->
+      {:trace, _pid, :call, {VialKeeper.Attachments.Compression, :probe, _}} ->
         receive_probes(count + 1, remaining)
 
       {:trace, _pid, :call, _} ->
@@ -171,7 +171,7 @@ defmodule ElixirDB.Replication.AttachmentRepresentationContractTest do
 
   defp representation_content_type?(response) do
     type = header(response, "content-type") || ""
-    String.starts_with?(type, "application/vnd.elixirdb.blob-representation")
+    String.starts_with?(type, "application/vnd.vialkeeper.blob-representation")
   end
 
   defp content_encoding?(response) do

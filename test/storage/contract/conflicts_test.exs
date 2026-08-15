@@ -1,3 +1,3 @@
-defmodule ElixirDB.Storage.Contract.MemoryConflictsTest do
-  use ElixirDB.Storage.Contracts.Conflicts, adapter: ElixirDB.Storage.Memory.Adapter
+defmodule VialKeeper.Storage.Contract.MemoryConflictsTest do
+  use VialKeeper.Storage.Contracts.Conflicts, adapter: VialKeeper.Storage.Memory.Adapter
 end

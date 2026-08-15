@@ -1,8 +1,8 @@
-defmodule ElixirDB.Runtime.AdmissionPolicyTest do
+defmodule VialKeeper.Runtime.AdmissionPolicyTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.HostConfig
-  alias ElixirDB.Runtime.AdmissionPolicy
+  alias VialKeeper.HostConfig
+  alias VialKeeper.Runtime.AdmissionPolicy
 
   @default_keyword AdmissionPolicy.default_keyword()
   @default_limit 128
@@ -14,7 +14,7 @@ defmodule ElixirDB.Runtime.AdmissionPolicyTest do
 
     test "default_keyword matches independent test application config literals" do
       assert Map.new(AdmissionPolicy.default_keyword()) ==
-               Map.new(Application.get_env(:elixir_db, :admission_policy))
+               Map.new(Application.get_env(:vial_keeper, :admission_policy))
     end
   end
 

@@ -678,7 +678,7 @@ function renderNativeInfo(nativeClient) {
   if (!nativeClient) return;
   elements.nativeTitle.textContent = "Native client attached · replication output is in the launcher terminal";
   elements.nativeCopy.textContent =
-    "Database C is owned by a separate Elixir process. It receives A's revisions over the remote wire and prints each change from ElixirDB.Changes.wait/2.";
+    "Database C is owned by a separate Elixir process. It receives A's revisions over the remote wire and prints each change from VialKeeper.Changes.wait/2.";
   elements.nativeDetails.innerHTML = `
     <span>Database <strong>${escapeHtml(nativeClient.database_uuid)}</strong></span>
     <span>Endpoint <strong>${escapeHtml(nativeClient.endpoint)}</strong></span>

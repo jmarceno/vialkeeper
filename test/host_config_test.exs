@@ -1,4 +1,4 @@
-defmodule ElixirDB.HostConfigTest do
+defmodule VialKeeper.HostConfigTest do
   @moduledoc """
   Host configuration loader (`CONFIG-001`): first-run template creation,
   never-overwrite semantics, field-level validation errors, auth/TLS guards,
@@ -7,28 +7,28 @@ defmodule ElixirDB.HostConfigTest do
   use ExUnit.Case, async: false
   use ExUnitProperties
 
-  alias ElixirDB.Federation.SavedQueries
-  alias ElixirDB.HostConfig
-  alias ElixirDB.TestSupport.GarbageGenerators
+  alias VialKeeper.Federation.SavedQueries
+  alias VialKeeper.HostConfig
+  alias VialKeeper.TestSupport.GarbageGenerators
 
   # SHA-256 digest of a known token, used by auth round-trip cases.
   @known_token "deadbeef" <> String.duplicate("00", 28)
   @known_digest String.downcase(:crypto.hash(:sha256, @known_token) |> Base.encode16(case: :lower))
 
   setup do
-    previous_root = System.get_env("ELIXIR_DB_ROOT")
-    dir = Path.join(System.tmp_dir!(), "elixirdb-hostcfg-#{System.unique_integer([:positive])}")
+    previous_root = System.get_env("VIAL_KEEPER_ROOT")
+    dir = Path.join(System.tmp_dir!(), "vialkeeper-hostcfg-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
 
     on_exit(fn ->
       if previous_root,
-        do: System.put_env("ELIXIR_DB_ROOT", previous_root),
-        else: System.delete_env("ELIXIR_DB_ROOT")
+        do: System.put_env("VIAL_KEEPER_ROOT", previous_root),
+        else: System.delete_env("VIAL_KEEPER_ROOT")
 
       _ = File.rm_rf(dir)
     end)
 
-    System.put_env("ELIXIR_DB_ROOT", dir)
+    System.put_env("VIAL_KEEPER_ROOT", dir)
     {:ok, dir: dir}
   end
 
@@ -45,7 +45,7 @@ defmodule ElixirDB.HostConfigTest do
     assert File.exists?(host_toml(dir))
 
     template =
-      :code.priv_dir(:elixir_db)
+      :code.priv_dir(:vial_keeper)
       |> Path.join("host.toml")
       |> File.read!()
 
@@ -106,7 +106,7 @@ defmodule ElixirDB.HostConfigTest do
   @tag :slow
   property "mutated shipped host.toml never raises and preserves the result contract", %{dir: dir} do
     template =
-      :code.priv_dir(:elixir_db)
+      :code.priv_dir(:vial_keeper)
       |> Path.join("host.toml")
       |> File.read!()
 
@@ -261,7 +261,7 @@ defmodule ElixirDB.HostConfigTest do
     outside =
       Path.join(
         System.tmp_dir!(),
-        "elixirdb-outside-cert-#{System.unique_integer([:positive])}"
+        "vialkeeper-outside-cert-#{System.unique_integer([:positive])}"
       )
 
     File.write!(outside, "certificate")
@@ -286,7 +286,7 @@ defmodule ElixirDB.HostConfigTest do
 
   test "shipped template decodes to the compiled defaults (no drift)" do
     template =
-      :code.priv_dir(:elixir_db)
+      :code.priv_dir(:vial_keeper)
       |> Path.join("host.toml")
       |> File.read!()
 

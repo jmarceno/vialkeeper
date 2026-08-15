@@ -1,4 +1,4 @@
-defmodule ElixirDB.HTTP.MethodPathMatrixTest do
+defmodule VialKeeper.HTTP.MethodPathMatrixTest do
   @moduledoc """
   Method/path matrix over real Bandit + Req.
 
@@ -9,18 +9,18 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Runtime.AttachmentCoordinator
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestReplicationWire
-  alias ElixirDB.TestServer
+  alias VialKeeper.Eventual
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Runtime.AttachmentCoordinator
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestReplicationWire
+  alias VialKeeper.TestServer
 
   test "API-010 through API-015 method/path matrix over Bandit+Req" do
     server = TestServer.start_supervised!()
 
-    path_a = "matrix-a-#{System.unique_integer([:positive])}.elixirdb"
-    path_b = "matrix-b-#{System.unique_integer([:positive])}.elixirdb"
+    path_a = "matrix-a-#{System.unique_integer([:positive])}.vialkeeper"
+    path_b = "matrix-b-#{System.unique_integer([:positive])}.vialkeeper"
 
     {:ok, %{status: 201, body: created_a}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path_a})
@@ -75,7 +75,7 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
     replication_id = "rep_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
 
-    closed_path = "matrix-closed-#{System.unique_integer([:positive])}.elixirdb"
+    closed_path = "matrix-closed-#{System.unique_integer([:positive])}.vialkeeper"
 
     {:ok, %{status: 201, body: closed_body}} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => closed_path})
@@ -87,10 +87,10 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
     on_exit(fn -> cleanup(closed_uuid, closed_path) end)
 
-    extra_path = "matrix-extra-#{System.unique_integer([:positive])}.elixirdb"
+    extra_path = "matrix-extra-#{System.unique_integer([:positive])}.vialkeeper"
     on_exit(fn -> cleanup_path(extra_path) end)
 
-    session_id = ElixirDB.UUID.v4()
+    session_id = VialKeeper.UUID.v4()
 
     blob_bytes = "matrix-replication-blob"
     blob_digest = :crypto.hash(:sha256, blob_bytes) |> Base.encode16(case: :lower)
@@ -287,7 +287,7 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
     # Close stops the runtime; registered databases reopen on the next command
     # (DatabaseCatalog.command → open_runtime). Prove reopen works, not permanent closed.
     assert [] =
-             Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+             Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid})
 
     reopened =
       http!(server, :post, "/v1/databases/#{uuid}/documents/get", %{"id" => "doc"})
@@ -320,12 +320,12 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
 
         TestReplicationWire.accept_headers() ++
           [
-            {"content-type", "application/vnd.elixirdb.blob-representation"},
+            {"content-type", "application/vnd.vialkeeper.blob-representation"},
             {"content-length", length},
-            {"x-elixirdb-blob-format-version", "1"},
-            {"x-elixirdb-blob-encoding", "raw"},
-            {"x-elixirdb-blob-logical-length", length},
-            {"x-elixirdb-blob-payload-sha256", digest}
+            {"x-vialkeeper-blob-format-version", "1"},
+            {"x-vialkeeper-blob-encoding", "raw"},
+            {"x-vialkeeper-blob-logical-length", length},
+            {"x-vialkeeper-blob-payload-sha256", digest}
           ]
       else
         [{"content-type", "application/octet-stream"}]
@@ -513,7 +513,7 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   defp assert_replication_blob_get(response, expected_bytes) do
     assert response.status == 200
     content_type = header(response.headers, "content-type") || ""
-    assert content_type =~ "application/vnd.elixirdb.blob-representation"
+    assert content_type =~ "application/vnd.vialkeeper.blob-representation"
     encoding = header(response.headers, "content-encoding")
     assert encoding in [nil, "", "identity"]
     assert is_binary(response.body)
@@ -605,14 +605,14 @@ defmodule ElixirDB.HTTP.MethodPathMatrixTest do
   end
 
   defp cleanup_path(path) do
-    root = ElixirDB.Config.database_root()
-    ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+    root = VialKeeper.Config.database_root()
+    VialKeeper.TempDatabase.cleanup(Path.join(root, path))
   end
 
   defp cleanup(uuid, path) do
     _ = DatabaseCatalog.close(uuid)
     _ = DatabaseCatalog.unregister(uuid)
-    root = ElixirDB.Config.database_root()
-    ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+    root = VialKeeper.Config.database_root()
+    VialKeeper.TempDatabase.cleanup(Path.join(root, path))
   end
 end

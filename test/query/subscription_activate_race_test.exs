@@ -1,20 +1,20 @@
-defmodule ElixirDB.Query.SubscriptionActivateRaceTest do
+defmodule VialKeeper.Query.SubscriptionActivateRaceTest do
   @moduledoc "Covers the activate/reset race on subscription re-snapshotting."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Query.{SubscriptionHub, Subscriptions}
-  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog, DatabaseRegistry}
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Query.{SubscriptionHub, Subscriptions}
+  alias VialKeeper.Runtime.{AttachmentCoordinator, DatabaseCatalog, DatabaseRegistry}
 
   setup do
-    rel = "subscription-activate-race-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    rel = "subscription-activate-race-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     abs = Path.join(root, rel)
-    ElixirDB.TempDatabase.cleanup(abs)
+    VialKeeper.TempDatabase.cleanup(abs)
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
     uuid = identity.database_uuid
@@ -23,8 +23,8 @@ defmodule ElixirDB.Query.SubscriptionActivateRaceTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      Application.delete_env(:elixir_db, :subscription_activate_sync)
-      ElixirDB.TempDatabase.cleanup(abs)
+      Application.delete_env(:vial_keeper, :subscription_activate_sync)
+      VialKeeper.TempDatabase.cleanup(abs)
     end)
 
     {:ok, uuid: uuid}
@@ -33,7 +33,7 @@ defmodule ElixirDB.Query.SubscriptionActivateRaceTest do
   test "activate answers a pending_snapshot subscriber with history_truncated", %{uuid: uuid} do
     assert {:ok, _seq} = SubscriptionHub.begin_subscription(uuid, self(), 16)
 
-    assert {:error, %ElixirDB.Error{code: :history_truncated}} =
+    assert {:error, %VialKeeper.Error{code: :history_truncated}} =
              SubscriptionHub.activate(uuid, self(), 0)
 
     # Normal snapshot path is unchanged after snapshot_ready.
@@ -41,13 +41,13 @@ defmodule ElixirDB.Query.SubscriptionActivateRaceTest do
     assert :ok = SubscriptionHub.activate(uuid, self(), 0)
 
     # A double activate from :active stays an invalid_request.
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              SubscriptionHub.activate(uuid, self(), 0)
 
     assert :ok = SubscriptionHub.unregister(uuid, self())
 
     # An unregistered pid is still an invalid_request.
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              SubscriptionHub.activate(uuid, self(), 0)
   end
 
@@ -56,7 +56,7 @@ defmodule ElixirDB.Query.SubscriptionActivateRaceTest do
     assert {:ok, %{revision: keep_revision}} = put(uuid, "keep", %{"title" => "keep"})
 
     barrier = make_ref()
-    Application.put_env(:elixir_db, :subscription_activate_sync, {self(), barrier, uuid})
+    Application.put_env(:vial_keeper, :subscription_activate_sync, {self(), barrier, uuid})
 
     assert {:ok, subscription} = open_subscription(uuid)
 
@@ -96,7 +96,7 @@ defmodule ElixirDB.Query.SubscriptionActivateRaceTest do
     )
 
     send(subscription, {:go, barrier})
-    Application.delete_env(:elixir_db, :subscription_activate_sync)
+    Application.delete_env(:vial_keeper, :subscription_activate_sync)
 
     # The blocked activate answers the race as a reset, not a terminal error.
     assert {:ok, %{type: :reset}} = Task.await(blocker, 5_000)

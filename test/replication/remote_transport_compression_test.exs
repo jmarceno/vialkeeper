@@ -1,4 +1,4 @@
-defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
+defmodule VialKeeper.Replication.RemoteTransportCompressionTest do
   @moduledoc """
   RemoteTransport sends and requires Zstandard JSON and representation blob headers.
   """
@@ -6,16 +6,16 @@ defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Attachments
-  alias ElixirDB.Attachments.FilesystemStore
-  alias ElixirDB.Replication.RemoteTransport
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
+  alias VialKeeper.Attachments
+  alias VialKeeper.Attachments.FilesystemStore
+  alias VialKeeper.Replication.RemoteTransport
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
 
   setup do
-    path = "wire-transport-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), path)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    path = "wire-transport-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), path)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(path)
     uuid = identity.database_uuid
@@ -37,7 +37,7 @@ defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
       if Process.alive?(captured), do: Agent.stop(captured)
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: uuid, base_url: server.base_url, captured: captured}
@@ -81,7 +81,7 @@ defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
     assert header(headers, "content-encoding") == "zstd"
     assert header(headers, "content-type") |> String.starts_with?("application/json")
 
-    length = header(headers, "x-elixirdb-uncompressed-length")
+    length = header(headers, "x-vialkeeper-uncompressed-length")
     assert match?({int, ""} when int > 0, Integer.parse(length || ""))
   end
 
@@ -105,10 +105,10 @@ defmodule ElixirDB.Replication.RemoteTransportCompressionTest do
 
     assert response.status == 200
     type = header_from_response(response, "content-type") || ""
-    assert String.starts_with?(type, "application/vnd.elixirdb.blob-representation")
+    assert String.starts_with?(type, "application/vnd.vialkeeper.blob-representation")
     encoding = header_from_response(response, "content-encoding")
     assert encoding in [nil, "", "identity"]
-    assert header_from_response(response, "x-elixirdb-blob-encoding") == "zstd"
+    assert header_from_response(response, "x-vialkeeper-blob-encoding") == "zstd"
   end
 
   defp last_headers(captured, method) do

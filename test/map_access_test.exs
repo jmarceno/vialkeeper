@@ -1,7 +1,7 @@
-defmodule ElixirDB.MapAccessTest do
+defmodule VialKeeper.MapAccessTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.MapAccess
+  alias VialKeeper.MapAccess
 
   test "prefers the atom key when both key forms exist" do
     assert MapAccess.get(%{:name => "atom", "name" => "string"}, :name) == "atom"

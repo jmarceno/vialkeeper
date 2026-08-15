@@ -1,26 +1,26 @@
-defmodule ElixirDB.Observability.AttachmentSignalTest do
+defmodule VialKeeper.Observability.AttachmentSignalTest do
   @moduledoc """
   Attachment OTel signals: upload/download/gc spans and privacy (no digests,
   names, paths, document ids, or bodies).
   """
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Attachments
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Observability.{TestExporter, TestMetricExporter}
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Attachments
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Observability.{TestExporter, TestMetricExporter}
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @body_secret "ATT_BODY_SENTINEL_x9y8z7"
   @doc_id "att-obs-doc-sentinel-4242"
   @att_name "secret-name-sentinel.bin"
 
   setup do
-    rel = "obs-attachment-#{System.unique_integer([:positive])}.elixirdb"
-    abs = Path.join(ElixirDB.Config.database_root(), rel)
-    ElixirDB.TempDatabase.cleanup(abs)
+    rel = "obs-attachment-#{System.unique_integer([:positive])}.vialkeeper"
+    abs = Path.join(VialKeeper.Config.database_root(), rel)
+    VialKeeper.TempDatabase.cleanup(abs)
 
     {:ok, %{database_uuid: uuid}} = DatabaseCatalog.create(rel)
     assert {:ok, _} = DatabaseCatalog.open(uuid)
@@ -28,7 +28,7 @@ defmodule ElixirDB.Observability.AttachmentSignalTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(abs)
     end)
 
     [uuid: uuid, abs: abs]
@@ -58,7 +58,7 @@ defmodule ElixirDB.Observability.AttachmentSignalTest do
 
     Eventual.eventually(
       fn ->
-        TestMetricExporter.counter_sum("elixir_db.attachment.write.count", %{
+        TestMetricExporter.counter_sum("vial_keeper.attachment.write.count", %{
           :"db.uuid" => uuid,
           :outcome => :ok
         }) >= 1
@@ -69,7 +69,7 @@ defmodule ElixirDB.Observability.AttachmentSignalTest do
 
     Eventual.eventually(
       fn ->
-        TestMetricExporter.counter_sum("elixir_db.attachment.read.count", %{
+        TestMetricExporter.counter_sum("vial_keeper.attachment.read.count", %{
           :"db.uuid" => uuid,
           :outcome => :ok
         }) >= 1
@@ -78,8 +78,8 @@ defmodule ElixirDB.Observability.AttachmentSignalTest do
       message: "attachment read counter missing"
     )
 
-    write_spans = TestExporter.spans_named("elixir_db.attachment.write")
-    read_spans = TestExporter.spans_named("elixir_db.attachment.read")
+    write_spans = TestExporter.spans_named("vial_keeper.attachment.write")
+    read_spans = TestExporter.spans_named("vial_keeper.attachment.read")
     assert write_spans != []
     assert read_spans != []
 
@@ -95,7 +95,7 @@ defmodule ElixirDB.Observability.AttachmentSignalTest do
 
     Eventual.eventually(
       fn ->
-        TestMetricExporter.counter_sum("elixir_db.attachment.gc.count", %{
+        TestMetricExporter.counter_sum("vial_keeper.attachment.gc.count", %{
           :"db.uuid" => uuid
         }) >= 1
       end,
@@ -103,14 +103,14 @@ defmodule ElixirDB.Observability.AttachmentSignalTest do
       message: "attachment gc counter missing"
     )
 
-    gc_spans = TestExporter.spans_named("elixir_db.attachment.gc")
+    gc_spans = TestExporter.spans_named("vial_keeper.attachment.gc")
     assert gc_spans != []
     assert_no_leaks(gc_spans, forbidden)
 
     metric_names = [
-      "elixir_db.attachment.write.count",
-      "elixir_db.attachment.read.count",
-      "elixir_db.attachment.gc.count"
+      "vial_keeper.attachment.write.count",
+      "vial_keeper.attachment.read.count",
+      "vial_keeper.attachment.gc.count"
     ]
 
     metric_attrs =

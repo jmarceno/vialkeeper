@@ -1,4 +1,4 @@
-defmodule ElixirDB.Observability.PrivacyTest do
+defmodule VialKeeper.Observability.PrivacyTest do
   @moduledoc """
   Privacy coverage (security): put a document with a distinctive body,
   document id, and search text, run a query and HTTP requests, then assert NO
@@ -7,15 +7,15 @@ defmodule ElixirDB.Observability.PrivacyTest do
   are forbidden).
   """
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Observability.TestExporter
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Observability.TestExporter
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
 
   @body_secret "PRIVACY_BODY_SENTINEL_a1b2c3"
   @doc_id "priv-doc-id-sentinel-9999"
@@ -25,14 +25,14 @@ defmodule ElixirDB.Observability.PrivacyTest do
     # The catalog creates the file under database_root; clean up THERE (a
     # leftover from a previous run would fail create with "database file
     # already exists").
-    rel = "obs-privacy-#{System.unique_integer([:positive])}.elixirdb"
+    rel = "obs-privacy-#{System.unique_integer([:positive])}.vialkeeper"
     {:ok, %{database_uuid: uuid}} = DatabaseCatalog.create(rel)
 
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      root = ElixirDB.Config.database_root()
-      ElixirDB.TempDatabase.cleanup(Path.join(root, rel))
+      root = VialKeeper.Config.database_root()
+      VialKeeper.TempDatabase.cleanup(Path.join(root, rel))
     end)
 
     [uuid: uuid]
@@ -50,7 +50,7 @@ defmodule ElixirDB.Observability.PrivacyTest do
     # scope (the riskiest §3.1 item). The query may match nothing — only the
     # span emission matters here.
     _ =
-      ElixirDB.Query.execute(uuid, %{
+      VialKeeper.Query.execute(uuid, %{
         "selector" => %{"/value" => @search_secret},
         "limit" => 10
       })
@@ -62,7 +62,7 @@ defmodule ElixirDB.Observability.PrivacyTest do
 
           query_span =
             Enum.find(all_spans, fn span ->
-              span[:name] == "elixir_db.query.execute" and
+              span[:name] == "vial_keeper.query.execute" and
                 TestExporter.span_attr(span, :"db.uuid") == uuid
             end)
 
@@ -98,7 +98,7 @@ defmodule ElixirDB.Observability.PrivacyTest do
       Eventual.eventually(
         fn ->
           all_spans = TestExporter.spans()
-          http_spans = Enum.filter(all_spans, &(&1[:name] == "elixir_db.http.request"))
+          http_spans = Enum.filter(all_spans, &(&1[:name] == "vial_keeper.http.request"))
 
           case http_spans do
             [_, _ | _] -> {:ok, {all_spans, http_spans}}

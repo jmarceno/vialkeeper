@@ -1,30 +1,30 @@
-defmodule ElixirDB.Observability.HTTPSpanTest do
+defmodule VialKeeper.Observability.HTTPSpanTest do
   @moduledoc """
-  Assert the `elixir_db.http.request` span is emitted with method,
+  Assert the `vial_keeper.http.request` span is emitted with method,
   route template, and status code; that an inbound `traceparent` makes the
   caller span the parent; and that the prior context never leaks into the next
   keep-alive request.
   """
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Observability.TestExporter
-  alias ElixirDB.TestServer
+  alias VialKeeper.Observability.TestExporter
+  alias VialKeeper.TestServer
 
   @trace_id_hex "0af7651916cd43dd8448eb211c80319c"
   @parent_span_hex "b7ad6b7169203331"
 
   setup do
     server = TestServer.start_supervised!()
-    root = ElixirDB.Config.database_root()
-    path = "http-span-#{System.unique_integer([:positive])}.elixirdb"
+    root = VialKeeper.Config.database_root()
+    path = "http-span-#{System.unique_integer([:positive])}.vialkeeper"
 
     # Leftover files from a previous VM run would fail creation with
     # "database file already exists"; remove ours on exit.
     on_exit(fn ->
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end)
 
     [server: server, path: path]
@@ -37,7 +37,7 @@ defmodule ElixirDB.Observability.HTTPSpanTest do
     assert {:ok, %{status: 201}} =
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
 
-    spans = TestExporter.spans_named("elixir_db.http.request")
+    spans = TestExporter.spans_named("vial_keeper.http.request")
     assert [_ | _] = spans, "expected at least one http.request span"
 
     span =
@@ -60,7 +60,7 @@ defmodule ElixirDB.Observability.HTTPSpanTest do
 
     assert {:ok, %{status: 400}} = Req.get(server.base_url <> "/totally/#{secret}/seg2")
 
-    spans = TestExporter.spans_named("elixir_db.http.request")
+    spans = TestExporter.spans_named("vial_keeper.http.request")
 
     span =
       Enum.find(spans, fn s -> TestExporter.span_attr(s, :"http.method") == "GET" end)
@@ -79,7 +79,7 @@ defmodule ElixirDB.Observability.HTTPSpanTest do
                headers: [{"traceparent", "00-#{@trace_id_hex}-#{@parent_span_hex}-01"}]
              )
 
-    spans = TestExporter.spans_named("elixir_db.http.request")
+    spans = TestExporter.spans_named("vial_keeper.http.request")
 
     span =
       Enum.find(spans, fn s -> s[:trace_id] == String.to_integer(@trace_id_hex, 16) end)
@@ -103,7 +103,7 @@ defmodule ElixirDB.Observability.HTTPSpanTest do
     assert {:ok, _} = Req.get(server.base_url <> "/v1/databases")
 
     spans =
-      TestExporter.spans_named("elixir_db.http.request")
+      TestExporter.spans_named("vial_keeper.http.request")
       |> Enum.filter(fn s -> TestExporter.span_attr(s, :"http.method") == "GET" end)
 
     caller_trace = String.to_integer(@trace_id_hex, 16)

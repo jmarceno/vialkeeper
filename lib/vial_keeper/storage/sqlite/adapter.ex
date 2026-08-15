@@ -1,0 +1,813 @@
+defmodule VialKeeper.Storage.SQLite.Adapter do
+  @moduledoc """
+  Version 1 SQLite storage adapter and port composition facade.
+
+  Satisfies `VialKeeper.Storage.Adapter` as a compatibility facade while composing
+  storage ports:
+
+  * `Lifecycle` / `Transaction` / `OwnershipPort`
+  * `DocumentFacts` / `ChangeLog` / `LocalRecordsPort` / `RetentionRecordsPort`
+  * `IndexCandidates` / `ViewStatePort` / `DerivedStatePort`
+  * `AttachmentMetadataPort` / `InspectionPort`
+
+  Per-concern SQL lives in sibling SQLite modules. Engine handles, SQL, and
+  transaction text stay inside `VialKeeper.Storage.SQLite.*`.
+  """
+  @behaviour VialKeeper.Storage.Adapter
+  use VialKeeper.Storage.AdapterFacade
+
+  alias VialKeeper.Changes.Page
+  alias VialKeeper.JSON.{Canonical, StrictCache, StrictDecoder}
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Observability.Instrumentation.{Query, SQLite}
+  alias VialKeeper.Query.{Normalizer, Prepared, SubscriptionRequest}
+  alias VialKeeper.Storage.BackendContext
+  alias VialKeeper.Storage.OpaqueHandle
+  alias VialKeeper.Storage.Ports.Errors
+  alias VialKeeper.Storage.RequestValidation
+  alias VialKeeper.Storage.Services
+
+  alias VialKeeper.Storage.SQLite.{
+    Capabilities,
+    Changes,
+    Connection,
+    Context,
+    Documents,
+    IndexCatalog,
+    LocalRecords,
+    Ownership,
+    QueryRunner,
+    ReplicationJobs,
+    Retention,
+    Revisions,
+    Schema,
+    Transaction,
+    Views
+  }
+
+  @identity_cache_key :vial_keeper_sqlite_identity_cache
+  @query_normalization_cache_limit 16
+
+  defstruct [
+    :path,
+    :conn,
+    :identity,
+    :context_ref,
+    storage_mode: :disk,
+    reader?: false,
+    retention_fault: nil,
+    view_fault: nil,
+    derived_fault: nil
+  ]
+
+  @type storage_mode :: :disk | :memory
+  @type retention_fault :: (atom() -> :ok | {:error, VialKeeper.Error.t()}) | nil
+  @type view_fault :: (atom() -> :ok | {:error, VialKeeper.Error.t()}) | nil
+  @type derived_fault :: (atom() -> :ok | {:error, VialKeeper.Error.t()}) | nil
+  @type t :: %__MODULE__{
+          path: binary(),
+          conn: Connection.handle(),
+          identity: map(),
+          context_ref: OpaqueHandle.t() | nil,
+          storage_mode: storage_mode(),
+          reader?: boolean(),
+          retention_fault: retention_fault(),
+          view_fault: view_fault(),
+          derived_fault: derived_fault()
+        }
+
+  @impl true
+  def create(path, options \\ %{}) do
+    options = if is_map(options), do: options, else: %{}
+    uuid = MapAccess.get(options, :database_uuid, VialKeeper.UUID.v4())
+    config = MapAccess.get(options, :config, VialKeeper.Config.defaults())
+
+    with {:ok, storage_mode} <- storage_mode(path, options),
+         true <- valid_uuid?(uuid),
+         {:ok, bounded_config} <- VialKeeper.Config.merge_and_bound(config),
+         {:ok, config_json} <- Canonical.encode(bounded_config),
+         :ok <- ensure_parent_directory(path, storage_mode),
+         {:ok, conn} <- Connection.open(connection_path(path, storage_mode)),
+         :ok <- Schema.configure(conn, storage_mode: storage_mode),
+         :ok <-
+           Schema.create(conn, uuid, config_json,
+             storage_mode: storage_mode,
+             database_kind: MapAccess.get(options, :database_kind, :ordinary),
+             initial_derived_view: MapAccess.get(options, :initial_derived_view),
+             shadow_metadata: MapAccess.get(options, :shadow_metadata)
+           ),
+         {:ok, identity} <- Schema.validate(conn, storage_mode: storage_mode) do
+      {:ok,
+       Context.bind(%__MODULE__{
+         path: path,
+         conn: conn,
+         identity: decode_identity(identity),
+         storage_mode: storage_mode
+       })}
+    else
+      false ->
+        {:error, VialKeeper.Error.invalid_request("database UUID must be a UUID")}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  @doc "Returns the SQLite data artifact path inside a bundle root."
+  @spec artifact_path(binary()) :: binary()
+  def artifact_path(bundle_root) when is_binary(bundle_root),
+    do: Path.join(bundle_root, "database.sqlite3")
+
+  @doc "Starts SQLite ownership for the data artifact under `bundle_root`."
+  @spec start_ownership(binary()) :: GenServer.on_start()
+  def start_ownership(bundle_root) when is_binary(bundle_root) do
+    Ownership.start_link(artifact_path(bundle_root))
+  end
+
+  @doc "Validates required SQLite runtime capabilities."
+  @spec validate_capabilities!() :: binary()
+  def validate_capabilities!, do: Capabilities.validate!()
+
+  @doc "Returns opaque SQLite capability metadata."
+  @spec capabilities_report() :: map()
+  def capabilities_report, do: Capabilities.report()
+
+  @doc "Wraps an open SQLite adapter in an opaque backend context."
+  @spec to_context(t()) :: BackendContext.t()
+  def to_context(%__MODULE__{} = adapter) do
+    adapter = if is_nil(adapter.context_ref), do: Context.bind(adapter), else: adapter
+
+    bundle_root =
+      case adapter.path do
+        ":memory:" -> ":memory:"
+        path when is_binary(path) -> Path.dirname(path)
+      end
+
+    identity =
+      (adapter.identity || %{})
+      |> maybe_put_fault(:retention_fault, adapter.retention_fault)
+      |> maybe_put_fault(:view_fault, adapter.view_fault)
+      |> maybe_put_fault(:derived_fault, adapter.derived_fault)
+
+    BackendContext.new(
+      backend: __MODULE__,
+      backend_ref: adapter.context_ref,
+      bundle_root: bundle_root,
+      capabilities: capabilities_report(),
+      identity: identity
+    )
+  end
+
+  @doc "Returns the SQLite module that implements `family`."
+  @spec port(atom()) :: module()
+  def port(family) when is_atom(family) do
+    Map.fetch!(port_modules(), family)
+  end
+
+  @doc "Returns the SQLite port composition map."
+  @spec port_modules() :: %{atom() => module()}
+  def port_modules do
+    %{
+      lifecycle: VialKeeper.Storage.SQLite.Lifecycle,
+      transaction: VialKeeper.Storage.SQLite.Transaction,
+      ownership: VialKeeper.Storage.SQLite.OwnershipPort,
+      document_facts: VialKeeper.Storage.SQLite.DocumentFacts,
+      change_log: VialKeeper.Storage.SQLite.ChangeLog,
+      local_records: VialKeeper.Storage.SQLite.LocalRecordsPort,
+      shadow_state: VialKeeper.Storage.SQLite.ShadowStatePort,
+      retention_records: VialKeeper.Storage.SQLite.RetentionRecordsPort,
+      index_candidates: VialKeeper.Storage.SQLite.IndexCandidates,
+      view_state: VialKeeper.Storage.SQLite.ViewStatePort,
+      derived_state: VialKeeper.Storage.SQLite.DerivedStatePort,
+      replication_jobs: VialKeeper.Storage.SQLite.ReplicationJobsPort,
+      attachment_metadata: VialKeeper.Storage.SQLite.AttachmentMetadataPort,
+      inspection: VialKeeper.Storage.SQLite.InspectionPort
+    }
+  end
+
+  @doc "Transaction port entry used by `VialKeeper.Storage.Transaction.run/2`."
+  @spec run_transaction(BackendContext.t(), (BackendContext.t() -> term())) ::
+          {:ok, term()} | {:error, VialKeeper.Error.t()}
+  def run_transaction(%BackendContext{} = context, fun) when is_function(fun, 1) do
+    Transaction.run(context, fun)
+  end
+
+  @doc "Returns the SQLite transaction port module."
+  @spec transaction_port() :: module()
+  def transaction_port, do: Transaction
+
+  @doc """
+  Opens a readonly snapshot connection against the same disk file as `adapter`.
+
+  Memory databases return `:unsupported_readers` because `:memory:` handles are
+  private to a connection.
+  """
+  @spec open_reader(t()) ::
+          {:ok, t()} | {:error, :unsupported_readers} | {:error, VialKeeper.Error.t()}
+  def open_reader(%__MODULE__{storage_mode: :memory}), do: {:error, :unsupported_readers}
+
+  def open_reader(%__MODULE__{storage_mode: :disk, path: path, identity: writer_identity})
+      when is_binary(path) and path != ":memory:" do
+    with {:ok, conn} <- Connection.open(path, mode: [:readonly]),
+         :ok <- Schema.configure_reader(conn),
+         {:ok, uuid} <- Schema.read_database_uuid(conn),
+         :ok <- match_reader_uuid(uuid, writer_identity) do
+      {:ok,
+       Context.bind(%__MODULE__{
+         path: path,
+         conn: conn,
+         identity: writer_identity,
+         storage_mode: :disk,
+         reader?: true
+       })}
+    else
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  def open_reader(_adapter), do: {:error, :unsupported_readers}
+
+  @doc "Interrupts a statement running on this SQLite reader connection."
+  @spec interrupt_reader(t()) :: :ok | {:error, term()}
+  def interrupt_reader(%__MODULE__{storage_mode: :memory}), do: {:error, :unsupported_readers}
+
+  def interrupt_reader(%__MODULE__{conn: conn, reader?: true}), do: Connection.interrupt(conn)
+
+  @doc false
+  @spec invalidate_identity_cache(Connection.handle()) :: term()
+  def invalidate_identity_cache(conn), do: Process.delete({@identity_cache_key, conn})
+
+  @impl true
+  def open(path, _options \\ %{}) do
+    with {:ok, conn} <- Connection.open(path, mode: [:readwrite]),
+         :ok <- Schema.configure(conn),
+         {:ok, identity} <- Schema.validate(conn) do
+      {:ok, Context.bind(%__MODULE__{path: path, conn: conn, identity: decode_identity(identity)})}
+    else
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  @impl true
+  def close(%__MODULE__{conn: conn, context_ref: context_ref} = adapter) do
+    IndexCatalog.clear_cache(conn)
+    Views.clear_cache(conn)
+    QueryRunner.clear_cache(conn)
+    invalidate_identity_cache(conn)
+    checkpoint_on_close(adapter)
+    result = Connection.close(conn)
+    remove_empty_sidecars(adapter)
+    Context.release(context_ref)
+    result
+  end
+
+  defp checkpoint_on_close(%__MODULE__{reader?: true}), do: :ok
+
+  defp checkpoint_on_close(%__MODULE__{storage_mode: :disk, conn: conn}),
+    do: Connection.checkpoint(conn)
+
+  defp checkpoint_on_close(_adapter), do: :ok
+
+  defp remove_empty_sidecars(%__MODULE__{reader?: true}), do: :ok
+
+  defp remove_empty_sidecars(%__MODULE__{storage_mode: :disk, path: path})
+       when is_binary(path) and path != ":memory:" do
+    Enum.each(["-wal", "-shm"], fn suffix ->
+      sidecar = path <> suffix
+
+      case File.stat(sidecar) do
+        {:ok, %{size: 0}} -> File.rm(sidecar)
+        _ -> :ok
+      end
+    end)
+  end
+
+  defp remove_empty_sidecars(_adapter), do: :ok
+
+  @impl true
+  def identity(%__MODULE__{reader?: true, conn: conn, identity: identity}) do
+    read_identity_metadata(conn, identity)
+  end
+
+  def identity(%__MODULE__{conn: conn, identity: identity}) do
+    case Process.get({@identity_cache_key, conn}) do
+      {:ok, _cached_identity} = cached ->
+        cached
+
+      nil ->
+        load_and_cache_identity(conn, identity)
+    end
+  end
+
+  defp load_and_cache_identity(conn, identity) do
+    result = read_identity_metadata(conn, identity)
+    if match?({:ok, _}, result), do: Process.put({@identity_cache_key, conn}, result)
+    result
+  end
+
+  defp read_identity_metadata(conn, identity) do
+    case Connection.query(
+           conn,
+           "SELECT database_kind, current_sequence, history_epoch, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
+         ) do
+      {:ok,
+       [
+         [
+           database_kind,
+           sequence,
+           history_epoch,
+           floor,
+           compaction_epoch,
+           boundary_digest,
+           config_json
+         ]
+       ]} ->
+        with {:ok, database_kind} <- VialKeeper.DatabaseKind.from_storage(database_kind) do
+          config = identity_config(config_json, identity)
+
+          {:ok,
+           %{
+             identity
+             | database_kind: database_kind,
+               current_sequence: sequence,
+               history_epoch: history_epoch,
+               retention_floor_sequence: floor,
+               compaction_epoch: compaction_epoch,
+               retention_boundary_digest: boundary_digest,
+               config: config,
+               config_json: config_json,
+               retention_mode: get_in(config, ["retention", "mode"]) || "disabled"
+           }}
+        end
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp identity_config(config_json, identity) do
+    if config_json == identity.config_json, do: identity.config, else: decode_json!(config_json)
+  end
+
+  @impl true
+  def update_config(%__MODULE__{conn: conn}, config) do
+    with {:ok, bounded} <- VialKeeper.Config.merge_and_bound(config),
+         {:ok, json} <- Canonical.encode(bounded),
+         :ok <- Connection.execute(conn, "UPDATE db_meta SET config_json = ? WHERE id = 1", [json]) do
+      invalidate_identity_cache(conn)
+      {:ok, bounded}
+    else
+      {:error, error} -> {:error, normalize_error(error)}
+    end
+  end
+
+  @impl true
+  def integrity_check(%__MODULE__{} = adapter, options \\ %{}) when is_map(options) do
+    Services.Integrity.check(to_context(adapter), options)
+  end
+
+  @impl true
+  def get_document(%__MODULE__{} = adapter, request) when is_map(request) do
+    document_id = MapAccess.get(request, :document_id)
+    revision_id = MapAccess.get(request, :revision)
+    include_conflicts = MapAccess.get(request, :include_conflicts, false)
+
+    if is_nil(revision_id) and not include_conflicts do
+      winner_get(adapter, document_id)
+    else
+      Transaction.run_snapshot_on_adapter(adapter, fn snap ->
+        lookup_document(snap, document_id, revision_id, include_conflicts)
+      end)
+    end
+  end
+
+  def get_document(_adapter, _request),
+    do: {:error, VialKeeper.Error.invalid_request("document request must be an object")}
+
+  @impl true
+  def get_revision(%__MODULE__{} = adapter, request) when is_map(request) do
+    Transaction.run_snapshot_on_adapter(adapter, fn snap ->
+      document_id = MapAccess.get(request, :document_id)
+      revision_id = MapAccess.get(request, :revision_id)
+
+      with {:ok, doc} <- Documents.find(snap.conn, document_id),
+           {:ok, revision} <- Revisions.find(snap.conn, doc.doc_key, revision_id) do
+        {:ok, Documents.to_result(doc, revision, [])}
+      end
+    end)
+  end
+
+  def get_revision(_adapter, _request),
+    do: {:error, VialKeeper.Error.invalid_request("revision request must be an object")}
+
+  @doc "Applies a local put/delete via `VialKeeper.Storage.Services` (not an Adapter callback)."
+  def apply_local_mutation(adapter, request) when is_map(request) do
+    with :ok <- ensure_writable(adapter) do
+      Services.apply_local_mutation(to_context(adapter), request)
+    end
+  end
+
+  def apply_local_mutation(_adapter, _request),
+    do: {:error, VialKeeper.Error.invalid_request("mutation request must be an object")}
+
+  @doc "Applies a bulk mutation batch via `VialKeeper.Storage.Services` (not an Adapter callback)."
+  def apply_bulk_mutation(adapter, request) when is_map(request) do
+    with :ok <- ensure_writable(adapter) do
+      trace_bulk_mutation(adapter, request)
+    end
+  end
+
+  def apply_bulk_mutation(_adapter, _request),
+    do: {:error, VialKeeper.Error.invalid_request("bulk mutation request must be an object")}
+
+  @doc "Resolves a conflict via `VialKeeper.Storage.Services` (not an Adapter callback)."
+  def resolve_conflict(adapter, request) when is_map(request) do
+    with :ok <- ensure_writable(adapter) do
+      Services.resolve_conflict(to_context(adapter), request)
+    end
+  end
+
+  def resolve_conflict(_adapter, _request),
+    do: {:error, VialKeeper.Error.invalid_request("conflict request must be an object")}
+
+  @impl true
+  def read_changes(%__MODULE__{conn: conn} = adapter, request) when is_map(request) do
+    since = MapAccess.get(request, :since, 0)
+    limit = MapAccess.get(request, :limit, 100)
+
+    with :ok <- RequestValidation.validate_non_negative_integer(since, "since"),
+         {:ok, identity} <-
+           SQLite.trace_sqlite_phase(:changes_identity, fn -> identity(adapter) end),
+         :ok <- RequestValidation.validate_changes_since_floor(since, identity),
+         :ok <-
+           RequestValidation.validate_changes_limit(
+             limit,
+             get_in(identity, [:config, "changes", "max_batch"])
+           ),
+         {:ok, {rows, page_has_more}} <-
+           SQLite.trace_sqlite_phase(:changes_fetch, [entries: limit], fn ->
+             Changes.fetch_page(conn, since, limit)
+           end),
+         {:ok, results} <-
+           SQLite.trace_sqlite_phase(:changes_decode, [entries: length(rows)], fn ->
+             Changes.decode_rows(rows)
+           end),
+         last_sequence <- List.last(results, %{sequence: since}).sequence,
+         {:ok, has_more} <-
+           SQLite.trace_sqlite_phase(:changes_has_more, fn ->
+             {:ok, page_has_more}
+           end) do
+      {:ok, Page.new(results, last_sequence, has_more)}
+    else
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  def read_changes(_adapter, _request),
+    do: {:error, VialKeeper.Error.invalid_request("changes request must be an object")}
+
+  @impl true
+  def has_local_origin_changes?(%__MODULE__{conn: conn}),
+    do: Changes.has_local_origin_changes?(conn)
+
+  @impl true
+  def has_local_origin_changes?(%__MODULE__{conn: conn}, peer_database_uuid),
+    do: Changes.has_local_origin_changes?(conn, peer_database_uuid)
+
+  @impl true
+  def clear_pending_local_causal(%__MODULE__{} = adapter),
+    do: clear_pending_local_causal(adapter, nil)
+
+  @impl true
+  def clear_pending_local_causal(%__MODULE__{conn: conn}, peer_database_uuid) do
+    case Retention.clear_pending_local_causal(conn, peer_database_uuid) do
+      :ok -> {:ok, :cleared}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @doc "Imports revision chains via `VialKeeper.Storage.Services` (not an Adapter callback)."
+  def import_revision_chains(adapter, request) when is_map(request) do
+    with :ok <- ensure_writable(adapter) do
+      Services.import_revision_chains(to_context(adapter), request)
+    end
+  end
+
+  def import_revision_chains(_adapter, _request),
+    do: {:error, VialKeeper.Error.invalid_request("revision import request must be an object")}
+
+  @impl true
+  def get_local_record(%__MODULE__{conn: conn}, namespace, key),
+    do: LocalRecords.fetch(conn, namespace, key)
+
+  @impl true
+  def put_local_record_cas(%__MODULE__{} = adapter, request) when is_map(request),
+    do: transaction(adapter, fn -> LocalRecords.put_cas_tx(adapter, request) end)
+
+  def put_local_record_cas(_adapter, _request),
+    do: {:error, VialKeeper.Error.invalid_request("local record request must be an object")}
+
+  @impl true
+  def list_replication_jobs(%__MODULE__{conn: conn}), do: ReplicationJobs.list_all(conn)
+
+  @impl true
+  def put_replication_job(%__MODULE__{conn: conn}, job), do: ReplicationJobs.upsert(conn, job)
+
+  @impl true
+  def delete_replication_job(%__MODULE__{conn: conn}, job_id),
+    do: ReplicationJobs.delete_by_id(conn, job_id)
+
+  @impl true
+  def create_index(%__MODULE__{conn: conn} = adapter, definition) do
+    uuid = adapter_identity_uuid(adapter)
+    index_id = MapAccess.get(definition, :index_id)
+    index_type = MapAccess.get(definition, :type)
+
+    Query.build_index(uuid, index_id, index_type, fn ->
+      transaction(adapter, fn -> IndexCatalog.create_tx(conn, definition) end)
+    end)
+  end
+
+  @impl true
+  def delete_index(%__MODULE__{} = adapter, index_id) do
+    transaction(adapter, fn -> IndexCatalog.delete_tx(adapter.conn, index_id) end)
+  end
+
+  @impl true
+  def rebuild_index(%__MODULE__{conn: conn} = adapter, index_id) do
+    uuid = adapter_identity_uuid(adapter)
+
+    Query.build_index(uuid, index_id, nil, fn ->
+      transaction(adapter, fn -> IndexCatalog.rebuild_tx(conn, index_id) end)
+    end)
+  end
+
+  @impl true
+  def list_indexes(%__MODULE__{conn: conn} = adapter),
+    do: IndexCatalog.list(conn, cache: not adapter.reader?)
+
+  @impl true
+  def execute_query(%__MODULE__{} = adapter, request) when is_map(request) do
+    identity =
+      SQLite.trace_sqlite_phase(:query_identity, fn -> adapter_identity(adapter) end)
+
+    prepared_request =
+      SQLite.trace_sqlite_phase(:query_prepare_request, fn -> prepare_query_request(request) end)
+
+    case prepared_request do
+      {:ok, normalized} -> QueryRunner.execute(adapter, normalized, identity)
+      {:error, _} = error -> error
+    end
+  end
+
+  def execute_query(_adapter, _request),
+    do: {:error, VialKeeper.Error.invalid_request("query must be an object")}
+
+  @impl true
+  def execute_subscription_snapshot(%__MODULE__{} = adapter, request) when is_map(request) do
+    identity =
+      SQLite.trace_sqlite_phase(:query_identity, fn -> adapter_identity(adapter) end)
+
+    prepared_request =
+      SQLite.trace_sqlite_phase(:query_prepare_request, fn ->
+        prepare_subscription_snapshot_request(adapter, request)
+      end)
+
+    case prepared_request do
+      {:ok, normalized} -> QueryRunner.subscription_snapshot(adapter, normalized, identity)
+      {:error, _} = error -> error
+    end
+  end
+
+  def execute_subscription_snapshot(_adapter, _request),
+    do:
+      {:error, VialKeeper.Error.invalid_request("subscription snapshot request must be an object")}
+
+  @impl true
+  def get_revisions_batch(%__MODULE__{} = adapter, requests) when is_list(requests) do
+    Services.get_revisions_batch(to_context(adapter), requests)
+  end
+
+  def get_revisions_batch(_adapter, _requests),
+    do: {:error, VialKeeper.Error.invalid_request("revision batch requests must be a list")}
+
+  @impl true
+  def explain_query(%__MODULE__{} = adapter, request) when is_map(request) do
+    case prepare_query_request(request) do
+      {:ok, normalized} -> QueryRunner.explain(adapter, normalized)
+      {:error, _} = error -> error
+    end
+  end
+
+  def explain_query(_adapter, _request),
+    do: {:error, VialKeeper.Error.invalid_request("query explanation must be an object")}
+
+  defp prepare_query_request(%Prepared{} = prepared),
+    do: Normalizer.normalize_public_request(prepared)
+
+  defp prepare_query_request(request) when is_map(request) do
+    StrictCache.memoize(
+      :public_query_normalization,
+      request,
+      @query_normalization_cache_limit,
+      fn -> Normalizer.normalize_public_request(request) end
+    )
+  end
+
+  defp prepare_subscription_snapshot_request(adapter, request) when is_map(request) do
+    with {:ok, identity} <- identity(adapter) do
+      SubscriptionRequest.prepare_snapshot(request, Map.get(identity, :config, %{}))
+    end
+  end
+
+  defp transaction(%__MODULE__{} = adapter, fun) when is_function(fun, 0) do
+    Transaction.run_on_adapter(adapter, fn _tx_adapter -> fun.() end)
+  end
+
+  defp winner_get(adapter, document_id) do
+    SQLite.trace_sqlite_phase(:document_lookup, fn ->
+      case Documents.load_winner(adapter.conn, document_id) do
+        {:ok, nil} ->
+          {:error, VialKeeper.Error.document_not_found("document not found")}
+
+        {:ok, {:deleted, winning_revision}} ->
+          {:error,
+           VialKeeper.Error.document_not_found("document is deleted", %{
+             winning_revision: winning_revision
+           })}
+
+        {:ok, result} when is_map(result) ->
+          {:ok, result}
+
+        {:error, _} = error ->
+          error
+      end
+    end)
+  end
+
+  defp lookup_document(adapter, document_id, revision_id, include_conflicts) do
+    with {:ok, doc} <-
+           SQLite.trace_sqlite_phase(:document_lookup, fn ->
+             Documents.find(adapter.conn, document_id)
+           end),
+         {:ok, revision} <-
+           SQLite.trace_sqlite_phase(:revision_lookup, fn ->
+             choose_revision(adapter, doc, revision_id)
+           end) do
+      leaves =
+        if include_conflicts do
+          SQLite.trace_sqlite_phase(:document_leaves, fn ->
+            Revisions.leaves(adapter.conn, doc.doc_key)
+          end)
+        else
+          []
+        end
+
+      {:ok, Documents.to_result(doc, revision, leaves)}
+    end
+  end
+
+  defp choose_revision(_adapter, nil, _revision),
+    do: {:error, VialKeeper.Error.document_not_found("document not found")}
+
+  defp choose_revision(adapter, doc, nil) do
+    if doc.winning_deleted,
+      do:
+        {:error,
+         VialKeeper.Error.document_not_found("document is deleted", %{
+           winning_revision: doc.winning_revision
+         })},
+      else: Revisions.find(adapter.conn, doc.doc_key, doc.winning_revision)
+  end
+
+  defp choose_revision(adapter, doc, revision),
+    do: Revisions.find(adapter.conn, doc.doc_key, revision)
+
+  defp adapter_identity(adapter) do
+    case identity(adapter) do
+      {:ok, value} -> value
+      _ -> %{current_sequence: 0, config: VialKeeper.Config.defaults()}
+    end
+  end
+
+  # The database UUID from the adapter identity, used by index instrumentation.
+  # Falls back to nil when the identity cannot be read so the span is still
+  # emitted without the attribute.
+  defp adapter_identity_uuid(adapter) do
+    case identity(adapter) do
+      {:ok, %{database_uuid: uuid}} when is_binary(uuid) -> uuid
+      _ -> nil
+    end
+  end
+
+  defp ensure_writable(%__MODULE__{identity: %{database_kind: :derived}}),
+    do:
+      {:error,
+       VialKeeper.Error.derived_database_read_only(
+         "derived databases accept writes only from their materializer"
+       )}
+
+  defp ensure_writable(_adapter), do: :ok
+
+  defp trace_bulk_mutation(adapter, request) do
+    operations = MapAccess.get(request, :operations, [])
+    entries = if(is_list(operations), do: length(operations), else: 0)
+
+    SQLite.trace_sqlite_phase(:bulk_prepare, [entries: entries], fn ->
+      finalize_bulk_mutation(adapter, request, entries)
+    end)
+  end
+
+  defp finalize_bulk_mutation(adapter, request, entries) do
+    SQLite.trace_sqlite_phase(:bulk_finalize, [entries: entries], fn ->
+      Services.apply_bulk_mutation(to_context(adapter), request)
+    end)
+  end
+
+  defp decode_json(json), do: StrictDecoder.decode(json)
+
+  defp decode_json!(json) do
+    case decode_json(json) do
+      {:ok, value} -> value
+      _ -> nil
+    end
+  end
+
+  defp decode_identity(identity) do
+    config = decode_json!(identity.config_json)
+
+    identity
+    |> Map.put(:config, config)
+    |> Map.put(:retention_floor, Map.get(identity, :retention_floor_sequence))
+    |> Map.put(:retention_floor_sequence, Map.get(identity, :retention_floor_sequence, 0))
+    |> Map.put(:compaction_epoch, Map.get(identity, :compaction_epoch, 0))
+    |> Map.put(:retention_mode, get_in(config, ["retention", "mode"]) || "disabled")
+  end
+
+  defp normalize_error(:unsupported_readers), do: :unsupported_readers
+  defp normalize_error(reason), do: Errors.normalize(reason)
+
+  defp match_reader_uuid(uuid, identity) when is_map(identity) do
+    expected = MapAccess.get(identity, :database_uuid)
+
+    if uuid == expected do
+      :ok
+    else
+      {:error,
+       VialKeeper.Error.database_unavailable(
+         "database UUID mismatch",
+         VialKeeper.Error.identity_mismatch_details(:uuid_mismatch, expected, uuid)
+       )}
+    end
+  end
+
+  defp match_reader_uuid(_uuid, _identity),
+    do: {:error, VialKeeper.Error.internal_error("writer identity is missing")}
+
+  defp storage_mode(path, options) do
+    requested =
+      MapAccess.get(options, :storage_mode, if(path == ":memory:", do: :memory, else: :disk))
+
+    case {requested, path == ":memory:"} do
+      {:disk, false} ->
+        {:ok, :disk}
+
+      {:memory, true} ->
+        {:ok, :memory}
+
+      {:memory, false} ->
+        {:error,
+         VialKeeper.Error.invalid_request("in-memory SQLite databases must use the :memory: path")}
+
+      {:disk, true} ->
+        {:error, VialKeeper.Error.invalid_request(":memory: requires storage_mode: :memory")}
+
+      _ ->
+        {:error, VialKeeper.Error.invalid_request("SQLite storage mode must be :disk or :memory")}
+    end
+  end
+
+  defp ensure_parent_directory(_path, :memory), do: :ok
+
+  defp ensure_parent_directory(path, :disk) do
+    File.mkdir_p!(Path.dirname(path))
+    :ok
+  end
+
+  defp connection_path(_path, :memory), do: ":memory:"
+  defp connection_path(path, :disk), do: path
+
+  defp valid_uuid?(uuid) when is_binary(uuid) do
+    Regex.match?(
+      ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      uuid
+    )
+  end
+
+  defp valid_uuid?(_), do: false
+
+  defp maybe_put_fault(identity, key, fun) when is_function(fun, 1),
+    do: Map.put(identity, key, fun)
+
+  defp maybe_put_fault(identity, _key, _), do: identity
+end

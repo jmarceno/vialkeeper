@@ -1,4 +1,4 @@
-defmodule ElixirDB.Storage.Contracts.Views do
+defmodule VialKeeper.Storage.Contracts.Views do
   @moduledoc """
   Shared local-view contract tests for storage adapters.
   """
@@ -7,9 +7,9 @@ defmodule ElixirDB.Storage.Contracts.Views do
     # The contract tests must be injected into each adapter module.
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
     quote do
-      use ElixirDB.Storage.AdapterCase, unquote(opts)
+      use VialKeeper.Storage.AdapterCase, unquote(opts)
 
-      alias ElixirDB.Storage.AdapterCase
+      alias VialKeeper.Storage.AdapterCase
 
       @view %{
         "name" => "scores",
@@ -79,7 +79,7 @@ defmodule ElixirDB.Storage.Contracts.Views do
                    "removals" => []
                  })
 
-        assert {:error, %ElixirDB.Error{code: :bookmark_stale}} =
+        assert {:error, %VialKeeper.Error{code: :bookmark_stale}} =
                  @adapter.query_view(adapter, %{
                    "view_id" => view_id,
                    "bookmark" => bookmark,

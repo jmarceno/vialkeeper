@@ -1,21 +1,21 @@
-defmodule ElixirDB.StorageAdapter.ReadSnapshotTest do
+defmodule VialKeeper.StorageAdapter.ReadSnapshotTest do
   @moduledoc "Covers deferred snapshot isolation for concurrent writers."
   use ExUnit.Case, async: true
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.SQLite.{Adapter, Context, Lifecycle}
-  alias ElixirDB.Storage.Transaction
+  alias VialKeeper.Storage.SQLite.{Adapter, Context, Lifecycle}
+  alias VialKeeper.Storage.Transaction
 
   test "in-flight snapshot does not see a concurrent writer commit" do
-    {:ok, bundle} = ElixirDB.TempDatabase.create(prefix: "elixirdb-read-snapshot")
-    sqlite = ElixirDB.TempDatabase.sqlite_path(bundle)
+    {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-read-snapshot")
+    sqlite = VialKeeper.TempDatabase.sqlite_path(bundle)
 
     assert {:ok, writer} = Adapter.create(sqlite, %{storage_mode: :disk})
 
     on_exit(fn ->
       _ = Adapter.close(writer)
-      ElixirDB.TempDatabase.cleanup(bundle)
+      VialKeeper.TempDatabase.cleanup(bundle)
     end)
 
     assert {:ok, %{revision: revision}} =
@@ -66,14 +66,14 @@ defmodule ElixirDB.StorageAdapter.ReadSnapshotTest do
   end
 
   test "nested snapshots join the outer snapshot" do
-    {:ok, bundle} = ElixirDB.TempDatabase.create(prefix: "elixirdb-nested-snapshot")
-    sqlite = ElixirDB.TempDatabase.sqlite_path(bundle)
+    {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-nested-snapshot")
+    sqlite = VialKeeper.TempDatabase.sqlite_path(bundle)
 
     assert {:ok, writer} = Adapter.create(sqlite, %{storage_mode: :disk})
 
     on_exit(fn ->
       _ = Adapter.close(writer)
-      ElixirDB.TempDatabase.cleanup(bundle)
+      VialKeeper.TempDatabase.cleanup(bundle)
     end)
 
     assert {:ok, reader_ctx} = Lifecycle.open_reader(Adapter.to_context(writer))
@@ -87,14 +87,14 @@ defmodule ElixirDB.StorageAdapter.ReadSnapshotTest do
   end
 
   test "conflict get and revision get stay on one snapshot" do
-    {:ok, bundle} = ElixirDB.TempDatabase.create(prefix: "elixirdb-read-snapshot-multi")
-    sqlite = ElixirDB.TempDatabase.sqlite_path(bundle)
+    {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-read-snapshot-multi")
+    sqlite = VialKeeper.TempDatabase.sqlite_path(bundle)
 
     assert {:ok, writer} = Adapter.create(sqlite, %{storage_mode: :disk})
 
     on_exit(fn ->
       _ = Adapter.close(writer)
-      ElixirDB.TempDatabase.cleanup(bundle)
+      VialKeeper.TempDatabase.cleanup(bundle)
     end)
 
     assert {:ok, %{revision: revision}} =

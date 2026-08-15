@@ -1,4 +1,4 @@
-defmodule ElixirDB.ModelGenerators do
+defmodule VialKeeper.ModelGenerators do
   @moduledoc """
   StreamData generators for revision histories, documents, and conflict scenarios.
 
@@ -7,11 +7,11 @@ defmodule ElixirDB.ModelGenerators do
   pure model and storage adapter.
   """
 
-  alias ElixirDB.Domain.Revision
-  alias ElixirDB.OperationFixtures
-  alias ElixirDB.RevisionFixtures
-  alias ElixirDB.Revisions.Id
-  alias ElixirDB.Revisions.Wire
+  alias VialKeeper.Domain.Revision
+  alias VialKeeper.OperationFixtures
+  alias VialKeeper.RevisionFixtures
+  alias VialKeeper.Revisions.Id
+  alias VialKeeper.Revisions.Wire
 
   @doc """
   Generates a non-empty document ID suitable for Version 1 identity rules.

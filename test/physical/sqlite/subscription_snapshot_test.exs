@@ -1,11 +1,11 @@
-defmodule ElixirDB.StorageAdapter.SubscriptionSnapshotTest do
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.SubscriptionSnapshotTest do
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Query.SubscriptionRequest
+  alias VialKeeper.Query.SubscriptionRequest
 
-  @config ElixirDB.Config.defaults()
+  @config VialKeeper.Config.defaults()
 
   defp snapshot(adapter, selector, opts) do
     {:ok, normalized} =
@@ -20,7 +20,7 @@ defmodule ElixirDB.StorageAdapter.SubscriptionSnapshotTest do
   end
 
   test "rejects sort in subscription snapshot command request", %{adapter: adapter} do
-    assert {:error, %ElixirDB.Error{code: :invalid_request, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request, message: message}} =
              @adapter.execute_subscription_snapshot(adapter, %{
                selector: %{"/type" => "task"},
                sort: [%{"/priority" => "desc"}]
@@ -30,7 +30,7 @@ defmodule ElixirDB.StorageAdapter.SubscriptionSnapshotTest do
   end
 
   test "rejects max_members above configured ceiling", %{adapter: adapter} do
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              snapshot(adapter, %{"/type" => "task"}, max_members: 10_000)
   end
 
@@ -64,7 +64,7 @@ defmodule ElixirDB.StorageAdapter.SubscriptionSnapshotTest do
                })
     end
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              snapshot(adapter, %{"/type" => "task"}, max_members: 2)
   end
 

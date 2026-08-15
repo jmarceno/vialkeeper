@@ -1,22 +1,22 @@
-defmodule ElixirDB.Query.SubscriptionCreditsTest do
+defmodule VialKeeper.Query.SubscriptionCreditsTest do
   @moduledoc "Covers subscription credit accounting and backpressure."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Query.{SubscriptionHub, Subscriptions}
-  alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Query.{SubscriptionHub, Subscriptions}
+  alias VialKeeper.Runtime.{ChangeNotifier, DatabaseCatalog}
 
   @buffer 3
 
   setup do
-    rel = "subscription-credits-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    rel = "subscription-credits-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     abs = Path.join(root, rel)
-    ElixirDB.TempDatabase.cleanup(abs)
+    VialKeeper.TempDatabase.cleanup(abs)
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
     uuid = identity.database_uuid
@@ -30,7 +30,7 @@ defmodule ElixirDB.Query.SubscriptionCreditsTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(abs)
     end)
 
     {:ok, uuid: uuid}
@@ -57,7 +57,7 @@ defmodule ElixirDB.Query.SubscriptionCreditsTest do
         next
       end)
 
-    assert {:error, %{type: :error, error: %ElixirDB.Error{code: :subscription_overloaded}}} =
+    assert {:error, %{type: :error, error: %VialKeeper.Error{code: :subscription_overloaded}}} =
              Subscriptions.next(slow, 5_000)
 
     refute Process.alive?(slow)
@@ -106,7 +106,7 @@ defmodule ElixirDB.Query.SubscriptionCreditsTest do
 
     assert peak <= @buffer + 1
 
-    assert {:error, %{type: :error, error: %ElixirDB.Error{code: :subscription_overloaded}}} =
+    assert {:error, %{type: :error, error: %VialKeeper.Error{code: :subscription_overloaded}}} =
              Subscriptions.next(slow, 5_000)
   end
 
@@ -146,7 +146,7 @@ defmodule ElixirDB.Query.SubscriptionCreditsTest do
     assert {:ok, %{type: :caught_up}} = drain_snapshot(subscription)
 
     [{hub, _}] =
-      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
     Enum.each(1..(@buffer * 3), fn _ ->
       SubscriptionHub.return_credit(uuid, subscription)
@@ -169,7 +169,7 @@ defmodule ElixirDB.Query.SubscriptionCreditsTest do
     assert {:ok, %{type: :caught_up}} = drain_snapshot(subscription)
 
     [{hub, _}] =
-      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
     # Use one credit without consuming, leaving one credit available.
     assert {:ok, %{revision: revision, sequence: first_sequence}} =

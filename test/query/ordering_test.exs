@@ -1,9 +1,9 @@
-defmodule ElixirDB.Query.OrderingTest do
+defmodule VialKeeper.Query.OrderingTest do
   @moduledoc "Covers query sort values and continuation cursor ordering."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Query.Ordering
+  alias VialKeeper.Query.Ordering
 
   test "preserves missing, null, scalar, and document-id ordering" do
     documents = [

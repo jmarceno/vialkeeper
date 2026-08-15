@@ -1,4 +1,4 @@
-defmodule ElixirDB.ApplicationStartupTest do
+defmodule VialKeeper.ApplicationStartupTest do
   @moduledoc """
   CONFIG-005 failsafe: the listener safety decision enforces that a
   non-loopback interface requires authentication, TLS, or the explicit
@@ -6,21 +6,21 @@ defmodule ElixirDB.ApplicationStartupTest do
   """
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Application
+  alias VialKeeper.Application
 
   @loopback [ip: {127, 0, 0, 1}, port: 4000]
   @loopback_v6 [ip: {0, 0, 0, 0, 0, 0, 0, 1}, port: 4000]
   @remote [ip: {10, 0, 0, 5}, port: 4000]
 
   setup do
-    previous_auth = Elixir.Application.get_env(:elixir_db, :auth)
-    previous_tls = Elixir.Application.get_env(:elixir_db, :tls)
-    previous_security = Elixir.Application.get_env(:elixir_db, :security)
+    previous_auth = Elixir.Application.get_env(:vial_keeper, :auth)
+    previous_tls = Elixir.Application.get_env(:vial_keeper, :tls)
+    previous_security = Elixir.Application.get_env(:vial_keeper, :security)
 
     on_exit(fn ->
-      Elixir.Application.put_env(:elixir_db, :auth, previous_auth)
-      Elixir.Application.put_env(:elixir_db, :tls, previous_tls)
-      Elixir.Application.put_env(:elixir_db, :security, previous_security)
+      Elixir.Application.put_env(:vial_keeper, :auth, previous_auth)
+      Elixir.Application.put_env(:vial_keeper, :tls, previous_tls)
+      Elixir.Application.put_env(:vial_keeper, :security, previous_security)
     end)
 
     :ok
@@ -28,15 +28,15 @@ defmodule ElixirDB.ApplicationStartupTest do
 
   defp configure(opts) do
     Elixir.Application.put_env(
-      :elixir_db,
+      :vial_keeper,
       :auth,
       Keyword.get(opts, :auth, enabled: false, token_digests: [])
     )
 
-    Elixir.Application.put_env(:elixir_db, :tls, Keyword.get(opts, :tls, enabled: false))
+    Elixir.Application.put_env(:vial_keeper, :tls, Keyword.get(opts, :tls, enabled: false))
 
     Elixir.Application.put_env(
-      :elixir_db,
+      :vial_keeper,
       :security,
       Keyword.get(opts, :security, allow_insecure_remote: false)
     )

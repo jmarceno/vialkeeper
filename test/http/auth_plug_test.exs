@@ -1,4 +1,4 @@
-defmodule ElixirDB.HTTP.AuthPlugTest do
+defmodule VialKeeper.HTTP.AuthPlugTest do
   @moduledoc """
   Bearer-token authentication (`AUTH-001`, `AUTH-004`).
 
@@ -12,22 +12,23 @@ defmodule ElixirDB.HTTP.AuthPlugTest do
 
   import Plug.Test
 
-  alias ElixirDB.HTTP.Router
+  alias VialKeeper.HTTP.Router
 
   # A real token/digest pair (32 random bytes, hex; SHA-256 of the token).
   @token :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
   @digest String.downcase(:crypto.hash(:sha256, @token) |> Base.encode16(case: :lower))
 
   setup do
-    previous = Application.get_env(:elixir_db, :auth)
-    on_exit(fn -> Application.put_env(:elixir_db, :auth, previous) end)
+    previous = Application.get_env(:vial_keeper, :auth)
+    on_exit(fn -> Application.put_env(:vial_keeper, :auth, previous) end)
     :ok
   end
 
   defp auth_enabled,
-    do: Application.put_env(:elixir_db, :auth, enabled: true, token_digests: [@digest])
+    do: Application.put_env(:vial_keeper, :auth, enabled: true, token_digests: [@digest])
 
-  defp auth_disabled, do: Application.put_env(:elixir_db, :auth, enabled: false, token_digests: [])
+  defp auth_disabled,
+    do: Application.put_env(:vial_keeper, :auth, enabled: false, token_digests: [])
 
   # AuthPlug.init/1 reads Application env, so a fresh conn through the Router
   # exercises init+call. We hit a path that returns 200 when authed.
@@ -122,11 +123,11 @@ defmodule ElixirDB.HTTP.AuthPlugTest do
   end
 
   test "token digest from a freshly generated pair authenticates" do
-    # Mirrors `bin/elixir_db token`: generate raw token, store its digest,
+    # Mirrors `bin/vial_keeper token`: generate raw token, store its digest,
     # present the raw token.
     raw = :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
     digest = String.downcase(:crypto.hash(:sha256, raw) |> Base.encode16(case: :lower))
-    Application.put_env(:elixir_db, :auth, enabled: true, token_digests: [digest])
+    Application.put_env(:vial_keeper, :auth, enabled: true, token_digests: [digest])
 
     conn = request("GET", "/v1/databases", raw)
     refute conn.halted

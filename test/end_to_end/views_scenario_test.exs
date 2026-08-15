@@ -1,17 +1,17 @@
-defmodule ElixirDB.EndToEnd.ViewsScenarioTest do
+defmodule VialKeeper.EndToEnd.ViewsScenarioTest do
   @moduledoc "End-to-end tests for declarative view HTTP behavior."
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Views
+  alias VialKeeper.Eventual
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Views
 
   test "replication transfers documents only and view state survives reopen" do
     prefix = "views-e2e-#{System.unique_integer([:positive])}"
-    source_path = prefix <> "-source.elixirdb"
-    target_path = prefix <> "-target.elixirdb"
+    source_path = prefix <> "-source.vialkeeper"
+    target_path = prefix <> "-target.vialkeeper"
 
     {:ok, source} = DatabaseCatalog.create(source_path)
     {:ok, target} = DatabaseCatalog.create(target_path)
@@ -23,7 +23,7 @@ defmodule ElixirDB.EndToEnd.ViewsScenarioTest do
           ] do
         _ = DatabaseCatalog.close(uuid)
         _ = DatabaseCatalog.unregister(uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+        VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
       end
     end)
 
@@ -35,7 +35,7 @@ defmodule ElixirDB.EndToEnd.ViewsScenarioTest do
              })
 
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(source.database_uuid, %{
+             VialKeeper.Documents.put(source.database_uuid, %{
                id: "doc",
                body: %{"kind" => "task", "value" => 1}
              })
@@ -43,27 +43,27 @@ defmodule ElixirDB.EndToEnd.ViewsScenarioTest do
     await_view(source.database_uuid, view_id, 1)
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(source.database_uuid, target.database_uuid)
+             VialKeeper.Replication.one_shot(source.database_uuid, target.database_uuid)
 
     assert {:ok, %{revision: ^revision, body: %{"kind" => "task", "value" => 1}}} =
-             ElixirDB.Documents.get(target.database_uuid, %{id: "doc"})
+             VialKeeper.Documents.get(target.database_uuid, %{id: "doc"})
 
     assert {:ok, []} = Views.list(target.database_uuid)
 
-    assert {:error, %ElixirDB.Error{code: :view_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :view_not_found}} =
              Views.state(target.database_uuid, view_id)
 
     assert {:ok, %{revision: deleted_revision}} =
-             ElixirDB.Documents.delete(source.database_uuid, %{id: "doc", if_revision: revision})
+             VialKeeper.Documents.delete(source.database_uuid, %{id: "doc", if_revision: revision})
 
     assert deleted_revision != revision
     await_view(source.database_uuid, view_id, 0)
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(source.database_uuid, target.database_uuid)
+             VialKeeper.Replication.one_shot(source.database_uuid, target.database_uuid)
 
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
-             ElixirDB.Documents.get(target.database_uuid, %{id: "doc"})
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
+             VialKeeper.Documents.get(target.database_uuid, %{id: "doc"})
 
     assert :ok = DatabaseCatalog.close(source.database_uuid)
     assert {:ok, [%{"view_id" => ^view_id, "name" => "live"}]} = Views.list(source.database_uuid)
@@ -72,8 +72,8 @@ defmodule ElixirDB.EndToEnd.ViewsScenarioTest do
 
   test "view rows follow the winning revision when replication creates a conflict" do
     prefix = "views-e2e-conflict-#{System.unique_integer([:positive])}"
-    source_path = prefix <> "-source.elixirdb"
-    target_path = prefix <> "-target.elixirdb"
+    source_path = prefix <> "-source.vialkeeper"
+    target_path = prefix <> "-target.vialkeeper"
 
     {:ok, source} = DatabaseCatalog.create(source_path)
     {:ok, target} = DatabaseCatalog.create(target_path)
@@ -85,7 +85,7 @@ defmodule ElixirDB.EndToEnd.ViewsScenarioTest do
           ] do
         _ = DatabaseCatalog.close(uuid)
         _ = DatabaseCatalog.unregister(uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+        VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
       end
     end)
 
@@ -97,24 +97,24 @@ defmodule ElixirDB.EndToEnd.ViewsScenarioTest do
              })
 
     assert {:ok, %{revision: source_revision}} =
-             ElixirDB.Documents.put(source.database_uuid, %{
+             VialKeeper.Documents.put(source.database_uuid, %{
                id: "conflicted",
                body: %{"kind" => "task", "value" => "source"}
              })
 
     assert {:ok, %{revision: target_revision}} =
-             ElixirDB.Documents.put(target.database_uuid, %{
+             VialKeeper.Documents.put(target.database_uuid, %{
                id: "conflicted",
                body: %{"kind" => "task", "value" => "target"}
              })
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(target.database_uuid, source.database_uuid)
+             VialKeeper.Replication.one_shot(target.database_uuid, source.database_uuid)
 
     assert source_revision != target_revision
 
     assert {:ok, %{revision: winning_revision, body: winning_body, conflicts: conflicts}} =
-             ElixirDB.Documents.get(source.database_uuid, %{
+             VialKeeper.Documents.get(source.database_uuid, %{
                id: "conflicted",
                include_conflicts: true
              })
@@ -135,14 +135,14 @@ defmodule ElixirDB.EndToEnd.ViewsScenarioTest do
   end
 
   test "compaction preserves a caught-up view" do
-    path = "views-e2e-compact-#{System.unique_integer([:positive])}.elixirdb"
+    path = "views-e2e-compact-#{System.unique_integer([:positive])}.vialkeeper"
     {:ok, identity} = DatabaseCatalog.create(path)
     uuid = identity.database_uuid
 
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     assert {:ok, %{"view_id" => view_id}} =
@@ -154,7 +154,7 @@ defmodule ElixirDB.EndToEnd.ViewsScenarioTest do
 
     for {id, value} <- [{"a", 1}, {"b", 2}] do
       assert {:ok, _} =
-               ElixirDB.Documents.put(uuid, %{id: id, body: %{"kind" => "task", "value" => value}})
+               VialKeeper.Documents.put(uuid, %{id: id, body: %{"kind" => "task", "value" => value}})
     end
 
     await_view(uuid, view_id, 2)

@@ -1,4 +1,4 @@
-defmodule ElixirDB.Observability.OtelCase do
+defmodule VialKeeper.Observability.OtelCase do
   @moduledoc """
   ExUnit case for observability tests.
 
@@ -8,14 +8,14 @@ defmodule ElixirDB.Observability.OtelCase do
   This case clears the recorder between tests so assertions are isolated.
   """
 
-  alias ElixirDB.Observability.{OtelCase, TestExporter}
-  alias ElixirDB.Observability.TestMetricExporter
+  alias VialKeeper.Observability.{OtelCase, TestExporter}
+  alias VialKeeper.Observability.TestMetricExporter
   use ExUnit.CaseTemplate
 
   using do
     quote do
-      alias ElixirDB.Observability.{OtelCase, TestExporter}
-      alias ElixirDB.Observability.TestMetricExporter
+      alias VialKeeper.Observability.{OtelCase, TestExporter}
+      alias VialKeeper.Observability.TestMetricExporter
     end
   end
 

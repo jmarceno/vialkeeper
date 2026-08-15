@@ -1,4 +1,4 @@
-defmodule ElixirDB.Runtime.AdmissionClassificationTest do
+defmodule VialKeeper.Runtime.AdmissionClassificationTest do
   @moduledoc """
   Proves trusted operation origins acquire the intended service class and do not
   silently fall back to foreground.
@@ -7,20 +7,20 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Query.Subscriptions
-  alias ElixirDB.Replication.BlobRepresentationStream
-  alias ElixirDB.Replication.LocalEndpoint
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Query.Subscriptions
+  alias VialKeeper.Replication.BlobRepresentationStream
+  alias VialKeeper.Replication.LocalEndpoint
 
-  alias ElixirDB.Runtime.{
+  alias VialKeeper.Runtime.{
     AttachmentCoordinator,
     DatabaseCatalog,
     RetentionScheduler
   }
 
-  alias ElixirDB.TestServer
-  alias ElixirDB.TestSupport.AdmissionClassProbe
+  alias VialKeeper.TestServer
+  alias VialKeeper.TestSupport.AdmissionClassProbe
 
   @forbidden_trusted [:foreground]
   @forbidden_foreground [:subscription, :replication, :maintenance]
@@ -35,10 +35,10 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
     if tags[:no_module_setup] do
       :ok
     else
-      rel = "admission-class-#{System.unique_integer([:positive])}.elixirdb"
-      root = ElixirDB.Config.database_root()
+      rel = "admission-class-#{System.unique_integer([:positive])}.vialkeeper"
+      root = VialKeeper.Config.database_root()
       abs = Path.join(root, rel)
-      ElixirDB.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(abs)
 
       assert {:ok, identity} = DatabaseCatalog.create(rel)
       uuid = identity.database_uuid
@@ -48,7 +48,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
         AdmissionClassProbe.uninstall()
         _ = DatabaseCatalog.close(uuid)
         _ = DatabaseCatalog.unregister(uuid)
-        ElixirDB.TempDatabase.cleanup(abs)
+        VialKeeper.TempDatabase.cleanup(abs)
       end)
 
       {:ok, uuid: uuid}
@@ -198,7 +198,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
       assert {:ok, %{type: :caught_up}} = Subscriptions.next(pid, 5_000)
 
       [{hub, _}] =
-        Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+        Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
       :sys.suspend(hub)
 
@@ -261,7 +261,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
       end
 
       [{hub, _}] =
-        Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+        Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
       :sys.suspend(hub)
 
@@ -330,7 +330,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
           @forbidden_trusted,
           fn ->
             assert {:ok, %{status: 200}} =
-                     ElixirDB.TestReplicationWire.request(
+                     VialKeeper.TestReplicationWire.request(
                        :get,
                        server.base_url <> "/v1/databases/#{uuid}/replication/identity"
                      )
@@ -403,7 +403,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
         "version" => 1,
         "replication_id" => replication_id,
         "checkpoint_version" => 1,
-        "session_id" => ElixirDB.UUID.v4(),
+        "session_id" => VialKeeper.UUID.v4(),
         "source_sequence" => 0,
         "source_history_epoch" => identity.history_epoch,
         "source_compaction_epoch" => Map.get(identity, :compaction_epoch, 0),
@@ -536,10 +536,10 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
   describe "maintenance origins" do
     @tag :no_module_setup
     test "RetentionScheduler schedule identity read" do
-      rel = "admission-maint-schedule-#{System.unique_integer([:positive])}.elixirdb"
-      root = ElixirDB.Config.database_root()
+      rel = "admission-maint-schedule-#{System.unique_integer([:positive])}.vialkeeper"
+      root = VialKeeper.Config.database_root()
       abs = Path.join(root, rel)
-      ElixirDB.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(abs)
 
       assert {:ok, identity} = DatabaseCatalog.create(rel)
       uuid = identity.database_uuid
@@ -548,7 +548,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
         AdmissionClassProbe.uninstall()
         _ = DatabaseCatalog.close(uuid)
         _ = DatabaseCatalog.unregister(uuid)
-        ElixirDB.TempDatabase.cleanup(abs)
+        VialKeeper.TempDatabase.cleanup(abs)
       end)
 
       assert {:ok, _} = DatabaseCatalog.open(uuid)
@@ -569,7 +569,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
 
       assert [{scheduler_pid, _}] =
                Registry.lookup(
-                 ElixirDB.Runtime.DatabaseRegistry,
+                 VialKeeper.Runtime.DatabaseRegistry,
                  {:retention_scheduler, uuid}
                )
 
@@ -625,7 +625,7 @@ defmodule ElixirDB.Runtime.AdmissionClassificationTest do
 
       assert [{scheduler_pid, _}] =
                Registry.lookup(
-                 ElixirDB.Runtime.DatabaseRegistry,
+                 VialKeeper.Runtime.DatabaseRegistry,
                  {:retention_scheduler, uuid}
                )
 

@@ -1,12 +1,12 @@
-defmodule ElixirDB.Attachments.StoreRefTest do
+defmodule VialKeeper.Attachments.StoreRefTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Attachments.{FilesystemStore, StoreRef}
-  alias ElixirDB.DatabaseBundle
-  alias ElixirDB.TempDatabase
+  alias VialKeeper.Attachments.{FilesystemStore, StoreRef}
+  alias VialKeeper.DatabaseBundle
+  alias VialKeeper.TempDatabase
 
   test "external read-only refs read the shared CAS and reject every write entry point" do
-    {:ok, bundle_path} = TempDatabase.create(prefix: "elixirdb-external-cas")
+    {:ok, bundle_path} = TempDatabase.create(prefix: "vialkeeper-external-cas")
     {:ok, bundle} = DatabaseBundle.create(bundle_path)
 
     on_exit(fn -> TempDatabase.cleanup(bundle_path) end)

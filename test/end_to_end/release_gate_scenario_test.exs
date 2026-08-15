@@ -1,4 +1,4 @@
-defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
+defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
   @moduledoc """
   End-to-end scenario covering the release-gate sequence.
 
@@ -9,21 +9,21 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
 
   @moduletag :integration
 
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Replication.Id
-  alias ElixirDB.Runtime.DatabaseCatalog
   alias Plug.Conn
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Replication.Id
+  alias VialKeeper.Runtime.DatabaseCatalog
   @tag :slow
   test "release-gate scenario with local endpoints" do
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     prefix = "release-gate-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     # Step 1 — create and register two databases through the Version 1 HTTP API.
@@ -39,35 +39,35 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
       for {uuid, path} <- [{a_uuid, a_path}, {b_uuid, b_path}] do
         _ = DatabaseCatalog.close(uuid)
         _ = DatabaseCatalog.unregister(uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
     # Step 2 — write independently and retry a mutation after losing its response.
     assert {:ok, %{revision: a_root, replayed: false}} =
-             ElixirDB.Documents.put(a_uuid, %{id: "alpha", body: %{"side" => "a", "n" => 1}})
+             VialKeeper.Documents.put(a_uuid, %{id: "alpha", body: %{"side" => "a", "n" => 1}})
 
     assert {:ok, %{revision: ^a_root, replayed: true}} =
-             ElixirDB.Documents.put(a_uuid, %{id: "alpha", body: %{"side" => "a", "n" => 1}})
+             VialKeeper.Documents.put(a_uuid, %{id: "alpha", body: %{"side" => "a", "n" => 1}})
 
     assert {:ok, %{revision: b_root}} =
-             ElixirDB.Documents.put(b_uuid, %{id: "beta", body: %{"side" => "b", "n" => 1}})
+             VialKeeper.Documents.put(b_uuid, %{id: "beta", body: %{"side" => "b", "n" => 1}})
 
     assert {:ok, %{revision: conflict_seed}} =
-             ElixirDB.Documents.put(a_uuid, %{id: "shared", body: %{"v" => 0}})
+             VialKeeper.Documents.put(a_uuid, %{id: "shared", body: %{"v" => 0}})
 
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
     # Step 3 — create divergent revisions through replication + local writes.
     assert {:ok, %{revision: left}} =
-             ElixirDB.Documents.put(a_uuid, %{
+             VialKeeper.Documents.put(a_uuid, %{
                id: "shared",
                if_revision: conflict_seed,
                body: %{"v" => "left"}
              })
 
     assert {:ok, %{revision: right}} =
-             ElixirDB.Documents.put(b_uuid, %{
+             VialKeeper.Documents.put(b_uuid, %{
                id: "shared",
                if_revision: conflict_seed,
                body: %{"v" => "right"}
@@ -76,14 +76,14 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
     assert left != right
 
     # Step 4 — replicate both directions and verify active conflicts.
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(b_uuid, a_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(b_uuid, a_uuid)
 
     assert {:ok, %{conflicts: a_conflicts}} =
-             ElixirDB.Documents.get(a_uuid, %{id: "shared", include_conflicts: true})
+             VialKeeper.Documents.get(a_uuid, %{id: "shared", include_conflicts: true})
 
     assert {:ok, %{conflicts: b_conflicts}} =
-             ElixirDB.Documents.get(b_uuid, %{id: "shared", include_conflicts: true})
+             VialKeeper.Documents.get(b_uuid, %{id: "shared", include_conflicts: true})
 
     assert [_] = a_conflicts
     assert [_] = b_conflicts
@@ -96,32 +96,32 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
 
     # Second conflict document for delete-all resolution.
     assert {:ok, %{revision: c_seed}} =
-             ElixirDB.Documents.put(a_uuid, %{id: "doomed", body: %{"x" => 1}})
+             VialKeeper.Documents.put(a_uuid, %{id: "doomed", body: %{"x" => 1}})
 
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
     assert {:ok, %{revision: c_left}} =
-             ElixirDB.Documents.put(a_uuid, %{
+             VialKeeper.Documents.put(a_uuid, %{
                id: "doomed",
                if_revision: c_seed,
                body: %{"x" => "L"}
              })
 
     assert {:ok, %{revision: c_right}} =
-             ElixirDB.Documents.put(b_uuid, %{
+             VialKeeper.Documents.put(b_uuid, %{
                id: "doomed",
                if_revision: c_seed,
                body: %{"x" => "R"}
              })
 
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(b_uuid, a_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(b_uuid, a_uuid)
 
     # Step 5 — resolve one conflict to a surviving body and another by deleting all.
     live = Enum.sort([left, right])
 
     assert {:ok, %{revision: resolved, replayed: false}} =
-             ElixirDB.Documents.resolve(a_uuid, %{
+             VialKeeper.Documents.resolve(a_uuid, %{
                id: "shared",
                expected_live_revisions: live,
                chosen_parent_revision: left,
@@ -131,22 +131,22 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
     doomed_live = Enum.sort([c_left, c_right])
 
     assert {:ok, %{revision: deleted}} =
-             ElixirDB.Documents.resolve(a_uuid, %{
+             VialKeeper.Documents.resolve(a_uuid, %{
                id: "doomed",
                expected_live_revisions: doomed_live,
                delete_all: true
              })
 
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
     assert {:ok, %{revision: ^resolved, body: %{"v" => "merged"}, conflicts: []}} =
-             ElixirDB.Documents.get(b_uuid, %{id: "shared", include_conflicts: true})
+             VialKeeper.Documents.get(b_uuid, %{id: "shared", include_conflicts: true})
 
     assert {:ok, %{revision: ^deleted, deleted: true}} =
-             ElixirDB.Documents.get(b_uuid, %{id: "doomed", revision: deleted})
+             VialKeeper.Documents.get(b_uuid, %{id: "doomed", revision: deleted})
 
     # Step 6 — verify changes entries contain the final physical leaf sets.
-    assert {:ok, %{results: changes}} = ElixirDB.Changes.read(a_uuid, %{since: 0, limit: 100})
+    assert {:ok, %{results: changes}} = VialKeeper.Changes.read(a_uuid, %{since: 0, limit: 100})
 
     shared_change =
       changes
@@ -174,14 +174,14 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
 
     # Step 7 — structured + full-text indexes and pointer-keyed projections.
     assert {:ok, %{"index_id" => structured_id}} =
-             ElixirDB.Query.create_index(a_uuid, %{
+             VialKeeper.Query.create_index(a_uuid, %{
                "name" => "by-side",
                "type" => "structured",
                "fields" => [%{"path" => "/side", "type" => "string", "direction" => "asc"}]
              })
 
     assert {:ok, %{"index_id" => fts_id}} =
-             ElixirDB.Query.create_index(a_uuid, %{
+             VialKeeper.Query.create_index(a_uuid, %{
                "name" => "body-text",
                "type" => "full_text",
                "fields" => ["/side"],
@@ -189,7 +189,7 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
              })
 
     assert {:ok, %{documents: [projected], selected_index: ^structured_id}} =
-             ElixirDB.Query.execute(a_uuid, %{
+             VialKeeper.Query.execute(a_uuid, %{
                "selector" => %{"/side" => "a"},
                "fields" => ["/side"],
                "index" => "by-side",
@@ -200,17 +200,17 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
     assert projected.fields["/side"] == "a"
 
     assert {:ok, %{documents: [%{id: "alpha"}], selected_index: ^fts_id}} =
-             ElixirDB.Query.execute(a_uuid, %{
+             VialKeeper.Query.execute(a_uuid, %{
                "search" => %{"index" => "body-text", "text" => "a", "mode" => "all"},
                "limit" => 10
              })
 
     # Step 8 — paginated queries; mutate; old bookmark becomes stale.
     assert {:ok, _} =
-             ElixirDB.Documents.put(a_uuid, %{id: "gamma", body: %{"side" => "a", "n" => 2}})
+             VialKeeper.Documents.put(a_uuid, %{id: "gamma", body: %{"side" => "a", "n" => 2}})
 
     assert {:ok, page1} =
-             ElixirDB.Query.execute(a_uuid, %{
+             VialKeeper.Query.execute(a_uuid, %{
                "selector" => %{"/side" => "a"},
                "index" => "by-side",
                "limit" => 1
@@ -220,7 +220,7 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
     assert [_] = page1.documents
 
     assert {:ok, %{documents: [%{id: "gamma"}]}} =
-             ElixirDB.Query.execute(a_uuid, %{
+             VialKeeper.Query.execute(a_uuid, %{
                "selector" => %{"/side" => "a"},
                "index" => "by-side",
                "limit" => 1,
@@ -228,13 +228,13 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
              })
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(a_uuid, %{
+             VialKeeper.Documents.put(a_uuid, %{
                id: "delta",
                body: %{"side" => "a", "n" => 3}
              })
 
-    assert {:error, %ElixirDB.Error{code: :bookmark_stale}} =
-             ElixirDB.Query.execute(a_uuid, %{
+    assert {:error, %VialKeeper.Error{code: :bookmark_stale}} =
+             VialKeeper.Query.execute(a_uuid, %{
                "selector" => %{"/side" => "a"},
                "index" => "by-side",
                "limit" => 1,
@@ -242,7 +242,7 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
              })
 
     # Steps 9–11 — checkpointed replication, verify local-only state, clean stop.
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
     assert {:ok, replication_id} =
              Id.calculate(a_uuid, b_uuid, "push", "one_shot")
@@ -257,26 +257,26 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
     assert a_checkpoint["source_sequence"] >= 1
 
     # Local indexes / checkpoints are not protocol-replicated as documents.
-    assert {:ok, b_indexes} = ElixirDB.Query.list_indexes(b_uuid)
+    assert {:ok, b_indexes} = VialKeeper.Query.list_indexes(b_uuid)
     refute Enum.any?(b_indexes, &(&1["index_id"] == structured_id))
     refute Enum.any?(b_indexes, &(&1["index_id"] == fts_id))
 
-    assert {:ok, %{revision: ^a_root}} = ElixirDB.Documents.get(b_uuid, %{id: "alpha"})
-    assert {:ok, %{revision: ^b_root}} = ElixirDB.Documents.get(a_uuid, %{id: "beta"})
+    assert {:ok, %{revision: ^a_root}} = VialKeeper.Documents.get(b_uuid, %{id: "alpha"})
+    assert {:ok, %{revision: ^b_root}} = VialKeeper.Documents.get(a_uuid, %{id: "beta"})
 
     assert :ok = DatabaseCatalog.close(a_uuid)
     assert :ok = DatabaseCatalog.close(b_uuid)
 
     # Steps 12–16 — OS copy, re-register, rebuild indexes, verify integrity.
-    a_copy = prefix <> "-a-copy.elixirdb"
-    b_copy = prefix <> "-b-copy.elixirdb"
+    a_copy = prefix <> "-a-copy.vialkeeper"
+    b_copy = prefix <> "-b-copy.vialkeeper"
     File.cp_r!(Path.join(root, a_path), Path.join(root, a_copy))
     File.cp_r!(Path.join(root, b_path), Path.join(root, b_copy))
 
     on_exit(fn ->
       for path <- [a_copy, b_copy] do
         abs = Path.join(root, path)
-        ElixirDB.TempDatabase.cleanup(abs)
+        VialKeeper.TempDatabase.cleanup(abs)
       end
     end)
 
@@ -288,17 +288,17 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
     assert a_restored.database_uuid == a_uuid
     assert b_restored.database_uuid == b_uuid
 
-    assert {:ok, indexes} = ElixirDB.Query.list_indexes(a_uuid)
+    assert {:ok, indexes} = VialKeeper.Query.list_indexes(a_uuid)
 
     for %{"index_id" => index_id} <- indexes do
-      assert {:ok, %{rebuilt: true}} = ElixirDB.Query.rebuild_index(a_uuid, index_id)
+      assert {:ok, %{rebuilt: true}} = VialKeeper.Query.rebuild_index(a_uuid, index_id)
     end
 
     assert {:ok, %{revision: ^resolved, body: %{"v" => "merged"}}} =
-             ElixirDB.Documents.get(a_uuid, %{id: "shared"})
+             VialKeeper.Documents.get(a_uuid, %{id: "shared"})
 
     assert {:ok, %{revision: ^deleted, deleted: true}} =
-             ElixirDB.Documents.get(a_uuid, %{id: "doomed", revision: deleted})
+             VialKeeper.Documents.get(a_uuid, %{id: "doomed", revision: deleted})
 
     assert {:ok, %{ok: true}} =
              DatabaseCatalog.command(a_uuid, {:command, :integrity_check, %{}})
@@ -307,7 +307,7 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
              DatabaseCatalog.command(b_uuid, {:command, :integrity_check, %{}})
 
     assert {:ok, %{documents: docs}} =
-             ElixirDB.Query.execute(a_uuid, %{
+             VialKeeper.Query.execute(a_uuid, %{
                "selector" => %{"/side" => "a"},
                "index" => "by-side",
                "limit" => 10
@@ -318,17 +318,17 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
 
   @tag :slow
   test "replicates a live leaf alongside a deleted conflict branch" do
-    alias ElixirDB.RevisionFixtures
-    alias ElixirDB.Revisions.Id, as: RevisionId
-    alias ElixirDB.Storage.AdapterCase
+    alias VialKeeper.RevisionFixtures
+    alias VialKeeper.Revisions.Id, as: RevisionId
+    alias VialKeeper.Storage.AdapterCase
 
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     prefix = "release-gate-del-conflict-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -338,7 +338,7 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -379,16 +379,16 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
                }
              })
 
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
     assert {:ok, %{revision: ^left, conflicts: []}} =
-             ElixirDB.Documents.get(b_uuid, %{id: document_id, include_conflicts: true})
+             VialKeeper.Documents.get(b_uuid, %{id: document_id, include_conflicts: true})
 
     # Tombstone is a physical leaf, not a live conflict entry.
     assert {:ok, %{revision: ^right_deleted, deleted: true}} =
-             ElixirDB.Documents.get(b_uuid, %{id: document_id, revision: right_deleted})
+             VialKeeper.Documents.get(b_uuid, %{id: document_id, revision: right_deleted})
 
-    assert {:ok, %{results: changes}} = ElixirDB.Changes.read(b_uuid, %{since: 0, limit: 100})
+    assert {:ok, %{results: changes}} = VialKeeper.Changes.read(b_uuid, %{since: 0, limit: 100})
 
     change =
       changes
@@ -408,12 +408,12 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
            end)
 
     a_leaves_before = document_leaf_set(a_uuid, document_id)
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(b_uuid, a_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(b_uuid, a_uuid)
     assert document_leaf_set(a_uuid, document_id) == a_leaves_before
   end
 
   defp document_leaf_set(uuid, document_id) do
-    assert {:ok, %{results: changes}} = ElixirDB.Changes.read(uuid, %{since: 0, limit: 100})
+    assert {:ok, %{results: changes}} = VialKeeper.Changes.read(uuid, %{since: 0, limit: 100})
 
     change =
       changes
@@ -428,7 +428,7 @@ defmodule ElixirDB.EndToEnd.ReleaseGateScenarioTest do
   end
 
   defp conflict_winner(uuid) do
-    {:ok, %{revision: revision}} = ElixirDB.Documents.get(uuid, %{id: "shared"})
+    {:ok, %{revision: revision}} = VialKeeper.Documents.get(uuid, %{id: "shared"})
     revision
   end
 

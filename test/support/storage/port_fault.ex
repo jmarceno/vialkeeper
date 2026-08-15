@@ -1,4 +1,4 @@
-defmodule ElixirDB.Storage.PortFault do
+defmodule VialKeeper.Storage.PortFault do
   @moduledoc """
   Injects scheduled failures at shared service transaction/port checkpoints.
 
@@ -6,7 +6,7 @@ defmodule ElixirDB.Storage.PortFault do
   `derived_fault`) rather than wrapping every high-level adapter callback.
   """
 
-  alias ElixirDB.FaultAdapter, as: Fault
+  alias VialKeeper.FaultAdapter, as: Fault
 
   @retention_points MapSet.new([
                       :before_compact_retention,
@@ -33,7 +33,7 @@ defmodule ElixirDB.Storage.PortFault do
   end
 
   @doc "Runs compact retention through the real adapter, honoring before/after points."
-  @spec compact_retention(adapter(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @spec compact_retention(adapter(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def compact_retention(adapter, request \\ %{})
 
   def compact_retention(%{__struct__: mod} = adapter, request) when is_map(request) do
@@ -44,25 +44,25 @@ defmodule ElixirDB.Storage.PortFault do
   end
 
   @doc "Runs apply_view_batch through the real adapter."
-  @spec apply_view_batch(adapter(), map()) :: {:ok, map()} | {:error, ElixirDB.Error.t()}
+  @spec apply_view_batch(adapter(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def apply_view_batch(%{__struct__: mod} = adapter, request) when is_map(request),
     do: mod.apply_view_batch(adapter, request)
 
   @doc "Runs apply_derived_source_batch through the real adapter."
   @spec apply_derived_source_batch(adapter(), map()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
+          {:ok, map()} | {:error, VialKeeper.Error.t()}
   def apply_derived_source_batch(%{__struct__: mod} = adapter, request) when is_map(request),
     do: mod.apply_derived_source_batch(adapter, request)
 
   @doc "Runs apply_derived_rebuild_page through the real adapter."
   @spec apply_derived_rebuild_page(adapter(), map()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
+          {:ok, map()} | {:error, VialKeeper.Error.t()}
   def apply_derived_rebuild_page(%{__struct__: mod} = adapter, request) when is_map(request),
     do: mod.apply_derived_rebuild_page(adapter, request)
 
   @doc "Runs prune_derived_rebuild_stale_page through the real adapter."
   @spec prune_derived_rebuild_stale_page(adapter(), map()) ::
-          {:ok, map()} | {:error, ElixirDB.Error.t()}
+          {:ok, map()} | {:error, VialKeeper.Error.t()}
   def prune_derived_rebuild_stale_page(%{__struct__: mod} = adapter, request)
       when is_map(request),
       do: mod.prune_derived_rebuild_stale_page(adapter, request)
@@ -96,7 +96,7 @@ defmodule ElixirDB.Storage.PortFault do
       fun when is_function(fun, 1) ->
         case fun.(point) do
           :ok -> :ok
-          {:error, %ElixirDB.Error{} = error} -> {:error, error}
+          {:error, %VialKeeper.Error{} = error} -> {:error, error}
         end
 
       _ ->

@@ -1,18 +1,18 @@
-defmodule ElixirDB.Runtime.RetentionSchedulerTest do
+defmodule VialKeeper.Runtime.RetentionSchedulerTest do
   @moduledoc "Covers scheduled retention compaction through database owners."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Eventual
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @tag :slow
   test "scheduled compaction runs through the owner without contacting peers" do
-    relative = "retention-scheduler-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    relative = "retention-scheduler-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), relative)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     uuid = identity.database_uuid
@@ -54,14 +54,14 @@ defmodule ElixirDB.Runtime.RetentionSchedulerTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
   end
 
   test "disabled schedule does not arm compaction timer" do
-    relative = "retention-scheduler-off-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    relative = "retention-scheduler-off-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), relative)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     uuid = identity.database_uuid
@@ -72,7 +72,7 @@ defmodule ElixirDB.Runtime.RetentionSchedulerTest do
 
     assert [{pid, _}] =
              Registry.lookup(
-               ElixirDB.Runtime.DatabaseRegistry,
+               VialKeeper.Runtime.DatabaseRegistry,
                {:retention_scheduler, uuid}
              )
 
@@ -84,7 +84,7 @@ defmodule ElixirDB.Runtime.RetentionSchedulerTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
   end
 end

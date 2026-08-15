@@ -1,22 +1,22 @@
-defmodule ElixirDB.Observability.OverloadMetricTest do
+defmodule VialKeeper.Observability.OverloadMetricTest do
   @moduledoc """
-  Saturate admission and assert `elixir_db.database.overload.count`
+  Saturate admission and assert `vial_keeper.database.overload.count`
   increments and NO span is created (overload is not a unit of work). Also
   verify migrated modules no longer emit bare telemetry events.
   """
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Observability.{TestExporter, TestMetricExporter}
-  alias ElixirDB.Runtime.{AdmissionPolicy, AdmissionSupervisor, DatabaseAdmission}
+  alias VialKeeper.Eventual
+  alias VialKeeper.Observability.{TestExporter, TestMetricExporter}
+  alias VialKeeper.Runtime.{AdmissionPolicy, AdmissionSupervisor, DatabaseAdmission}
 
-  @metric "elixir_db.database.overload.count"
+  @metric "vial_keeper.database.overload.count"
 
   test "saturating admission increments overload.count and creates no span" do
-    uuid = ElixirDB.UUID.v4()
+    uuid = VialKeeper.UUID.v4()
     limit = 1
 
     {:ok, policy} =
@@ -52,7 +52,7 @@ defmodule ElixirDB.Observability.OverloadMetricTest do
     assert_receive :acquired, 1_000
 
     # The limit is reached, so this acquisition must overload.
-    assert {:error, %ElixirDB.Error{code: :database_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :database_overloaded}} =
              DatabaseAdmission.with_token(uuid, fn ->
                flunk("overloaded request must not run")
              end)
@@ -62,7 +62,7 @@ defmodule ElixirDB.Observability.OverloadMetricTest do
     ref = Process.monitor(holder)
     assert_receive {:DOWN, ^ref, :process, _, _}, 2_000
 
-    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission_supervisor, uuid}) do
+    case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:admission_supervisor, uuid}) do
       [{pid, _}] -> Supervisor.stop(pid)
       [] -> :ok
     end
@@ -77,7 +77,7 @@ defmodule ElixirDB.Observability.OverloadMetricTest do
       message: "overload.count did not increment for #{uuid}"
     )
 
-    assert TestExporter.spans_named("elixir_db.database.overload") == [],
+    assert TestExporter.spans_named("vial_keeper.database.overload") == [],
            "overload must be a counter only, not a span"
   end
 
@@ -85,8 +85,8 @@ defmodule ElixirDB.Observability.OverloadMetricTest do
     # Migrated modules must not keep bare :telemetry.execute emitters; OTel
     # instrumentation owns overload and admission observability instead.
     for file <- [
-          "lib/elixir_db/runtime/database_admission.ex",
-          "lib/elixir_db/replication.ex"
+          "lib/vial_keeper/runtime/database_admission.ex",
+          "lib/vial_keeper/replication.ex"
         ] do
       source = File.read!(file)
 

@@ -1,23 +1,23 @@
-defmodule ElixirDB.Replication.PhaseTransitionsTest do
+defmodule VialKeeper.Replication.PhaseTransitionsTest do
   @moduledoc "Covers replication worker state transitions and failure recovery."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.FaultAdapter
-  alias ElixirDB.Replication.Id
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Replication.Worker
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.FaultAdapter
+  alias VialKeeper.Replication.Id
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Replication.Worker
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   setup do
     prefix = "phases-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -27,7 +27,7 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+        VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
       end
     end)
 
@@ -36,7 +36,7 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
 
   test "worker emits mandated phases through checkpoint_source", %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "phases", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "phases", body: %{"n" => 1}})
 
     {:ok, agent} = Agent.start_link(fn -> [] end)
     assert {:ok, source} = LocalEndpoint.new(a.database_uuid)
@@ -51,7 +51,7 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
              )
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -96,7 +96,7 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
            ]
 
     assert {:ok, %{body: %{"n" => 1}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "phases"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "phases"})
   end
 
   test "FaultAdapter can schedule a one-shot retryable failure without skipping work", %{
@@ -104,16 +104,16 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
     b: b
   } do
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "fault", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "fault", body: %{"n" => 1}})
 
     fault =
       FaultAdapter.wrap(:endpoint)
       |> FaultAdapter.inject(
         :before_import,
-        {:once, ElixirDB.Error.database_closed("injected retryable fault")}
+        {:once, VialKeeper.Error.database_closed("injected retryable fault")}
       )
 
-    assert {:error, %ElixirDB.Error{code: :database_closed}, fault_after} =
+    assert {:error, %VialKeeper.Error{code: :database_closed}, fault_after} =
              FaultAdapter.maybe_fail(fault, :before_import)
 
     assert fault_after.faults == %{}
@@ -121,15 +121,15 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
     assert {:ok, _} = FaultAdapter.maybe_fail(fault_after, :before_import)
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(a.database_uuid, b.database_uuid)
+             VialKeeper.Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, %{revision: ^revision, body: %{"n" => 1}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "fault"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "fault"})
   end
 
   test "worker transfers cleanly when diff has no missing documents", %{a: a, b: b} do
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "already-present", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "already-present", body: %{"n" => 1}})
 
     {:ok, source} = LocalEndpoint.new(a.database_uuid)
     {:ok, target} = LocalEndpoint.new(b.database_uuid)
@@ -149,7 +149,7 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
              Id.calculate(a.database_uuid, b.database_uuid, "push", "continuous")
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -174,7 +174,7 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
     ref = Process.monitor(pid)
     :gen_statem.cast(pid, :start)
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         phases = Agent.get(seen, & &1)
         :transfer in phases and :import in phases
@@ -187,6 +187,6 @@ defmodule ElixirDB.Replication.PhaseTransitionsTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
 
     assert {:ok, %{revision: ^revision, body: %{"n" => 1}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "already-present"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "already-present"})
   end
 end

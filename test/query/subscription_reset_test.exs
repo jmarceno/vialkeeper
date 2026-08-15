@@ -1,20 +1,20 @@
-defmodule ElixirDB.Query.SubscriptionResetTest do
+defmodule VialKeeper.Query.SubscriptionResetTest do
   @moduledoc "Covers subscription reset behavior across retention boundaries."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Query.Subscriptions
-  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Query.Subscriptions
+  alias VialKeeper.Runtime.{AttachmentCoordinator, DatabaseCatalog}
 
   setup do
-    rel = "subscription-reset-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    rel = "subscription-reset-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     abs = Path.join(root, rel)
-    ElixirDB.TempDatabase.cleanup(abs)
+    VialKeeper.TempDatabase.cleanup(abs)
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
     uuid = identity.database_uuid
@@ -36,7 +36,7 @@ defmodule ElixirDB.Query.SubscriptionResetTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(abs)
     end)
 
     {:ok, uuid: uuid}
@@ -59,7 +59,7 @@ defmodule ElixirDB.Query.SubscriptionResetTest do
            end)
 
     [{hub, _}] =
-      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
     :sys.suspend(hub)
 
@@ -116,7 +116,7 @@ defmodule ElixirDB.Query.SubscriptionResetTest do
              Subscriptions.next(subscription, 5_000)
 
     [{hub, _}] =
-      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
     :sys.suspend(hub)
     assert {:ok, _} = put(uuid, "newer", %{"title" => "three"})
@@ -145,7 +145,7 @@ defmodule ElixirDB.Query.SubscriptionResetTest do
     _ = collect_until_caught_up(subscription, [])
 
     [{hub, _}] =
-      Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
+      Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid})
 
     cursor_before = :sys.get_state(hub).cursor_sequence
     :sys.suspend(hub)

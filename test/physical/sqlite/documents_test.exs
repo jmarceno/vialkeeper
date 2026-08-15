@@ -1,20 +1,20 @@
-defmodule ElixirDB.StorageAdapter.DocumentsTest do
+defmodule VialKeeper.StorageAdapter.DocumentsTest do
   @moduledoc "Covers SQLite document adapter persistence semantics."
 
   use ExUnit.Case, async: true
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.SQLite.Adapter
+  alias VialKeeper.Storage.SQLite.Adapter
 
   setup do
-    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-test")
+    {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-test")
 
     on_exit(fn ->
-      ElixirDB.TempDatabase.cleanup(bundle_path)
+      VialKeeper.TempDatabase.cleanup(bundle_path)
     end)
 
-    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
+    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
     on_exit(fn -> Adapter.close(adapter) end)
     {:ok, adapter: adapter}
@@ -64,7 +64,7 @@ defmodule ElixirDB.StorageAdapter.DocumentsTest do
                if_revision: second
              })
 
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
              Adapter.get_document(adapter, %{document_id: "doc"})
 
     assert {:ok, %{deleted: true, revision: ^tombstone}} =
@@ -86,7 +86,7 @@ defmodule ElixirDB.StorageAdapter.DocumentsTest do
                body: %{"x" => true}
              })
 
-    assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+    assert {:error, %VialKeeper.Error{code: :revision_conflict}} =
              Adapter.apply_local_mutation(adapter, %{
                operation: :put,
                document_id: "doc",

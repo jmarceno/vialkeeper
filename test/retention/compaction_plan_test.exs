@@ -1,8 +1,8 @@
-defmodule ElixirDB.Retention.CompactionPlanTest do
+defmodule VialKeeper.Retention.CompactionPlanTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Domain.Revision
-  alias ElixirDB.Retention.CompactionPlan
+  alias VialKeeper.Domain.Revision
+  alias VialKeeper.Retention.CompactionPlan
 
   test "zero history depth retains only the winning revision" do
     revisions = linear_chain("doc", 4)

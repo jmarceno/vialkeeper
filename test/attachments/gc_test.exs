@@ -1,4 +1,4 @@
-defmodule ElixirDB.Attachments.GCTest do
+defmodule VialKeeper.Attachments.GCTest do
   @moduledoc """
   §22.7 attachment GC and stable-frontier post-compact seam proofs.
 
@@ -9,22 +9,22 @@ defmodule ElixirDB.Attachments.GCTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Attachments
-  alias ElixirDB.Attachments.FilesystemStore
-  alias ElixirDB.Attachments.Manifest
-  alias ElixirDB.DatabaseBundle
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Revisions.{Id, Wire}
-  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
+  alias VialKeeper.Attachments
+  alias VialKeeper.Attachments.FilesystemStore
+  alias VialKeeper.Attachments.Manifest
+  alias VialKeeper.DatabaseBundle
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Revisions.{Id, Wire}
+  alias VialKeeper.Runtime.{AttachmentCoordinator, DatabaseCatalog}
 
   setup do
-    previous_hook = Application.get_env(:elixir_db, :attachment_gc_hook)
+    previous_hook = Application.get_env(:vial_keeper, :attachment_gc_hook)
     on_exit(fn -> restore_gc_hook(previous_hook) end)
 
-    relative = "attachment-gc-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    relative = "attachment-gc-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), relative)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     uuid = identity.database_uuid
@@ -33,7 +33,7 @@ defmodule ElixirDB.Attachments.GCTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: uuid, absolute: absolute}
@@ -89,7 +89,7 @@ defmodule ElixirDB.Attachments.GCTest do
 
   test "both losing and winning conflict branches retain their attachment blobs", %{uuid: uuid} do
     document_id = "conflict-attachments"
-    history_id = ElixirDB.RevisionFixtures.shared_history_id()
+    history_id = VialKeeper.RevisionFixtures.shared_history_id()
     left_digest = upload!(uuid, "left-conflict-attachment")
     right_digest = upload!(uuid, "right-conflict-attachment")
 
@@ -157,7 +157,7 @@ defmodule ElixirDB.Attachments.GCTest do
     gate = make_ref()
     parent = self()
 
-    Application.put_env(:elixir_db, :attachment_gc_hook, fn
+    Application.put_env(:vial_keeper, :attachment_gc_hook, fn
       {:before_delete, _} ->
         send(parent, {:gc_entered, gate})
 
@@ -219,7 +219,7 @@ defmodule ElixirDB.Attachments.GCTest do
     gate = make_ref()
     parent = self()
 
-    Application.put_env(:elixir_db, :attachment_gc_hook, fn
+    Application.put_env(:vial_keeper, :attachment_gc_hook, fn
       {:before_delete, _} ->
         send(parent, {:gc_entered, gate})
 
@@ -261,7 +261,7 @@ defmodule ElixirDB.Attachments.GCTest do
     assert {:ok, token} = AttachmentCoordinator.acquire_read(uuid)
     assert :ok = AttachmentCoordinator.release(uuid, token)
 
-    Application.delete_env(:elixir_db, :attachment_gc_hook)
+    Application.delete_env(:vial_keeper, :attachment_gc_hook)
     assert {:ok, _} = Attachments.gc(uuid)
     refute blob_exists?(uuid, drop)
   end
@@ -384,7 +384,7 @@ defmodule ElixirDB.Attachments.GCTest do
     parent = self()
     delete_gate = make_ref()
 
-    Application.put_env(:elixir_db, :attachment_gc_hook, fn
+    Application.put_env(:vial_keeper, :attachment_gc_hook, fn
       {:before_delete, ^digest} ->
         send(parent, {:delete_blocked, delete_gate})
 
@@ -408,7 +408,7 @@ defmodule ElixirDB.Attachments.GCTest do
     gc_task = Task.async(fn -> Attachments.gc(uuid) end)
     assert_receive {:delete_blocked, ^delete_gate}, 2_000
 
-    assert {:error, %ElixirDB.Error{code: :attachment_overloaded}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_overloaded}} =
              Attachments.resolve_manifest_for_mutation(uuid, %{
                "a.bin" => %{"blob" => digest, "content_type" => "application/octet-stream"}
              })
@@ -423,7 +423,7 @@ defmodule ElixirDB.Attachments.GCTest do
     parent = self()
     delete_gate = make_ref()
 
-    Application.put_env(:elixir_db, :attachment_gc_hook, fn
+    Application.put_env(:vial_keeper, :attachment_gc_hook, fn
       {:before_delete, ^digest} ->
         send(parent, {:delete_blocked, delete_gate})
 
@@ -511,7 +511,7 @@ defmodule ElixirDB.Attachments.GCTest do
     # Drop digest is pending-only; expire it so GC targets it.
     expire_pending!(uuid, drop)
 
-    Application.put_env(:elixir_db, :attachment_gc_hook, fn
+    Application.put_env(:vial_keeper, :attachment_gc_hook, fn
       {:before_delete, ^drop} ->
         raise "simulated mid-gc crash"
 
@@ -538,7 +538,7 @@ defmodule ElixirDB.Attachments.GCTest do
     assert {:ok, token} = AttachmentCoordinator.acquire_read(uuid)
     assert :ok = AttachmentCoordinator.release(uuid, token)
 
-    Application.delete_env(:elixir_db, :attachment_gc_hook)
+    Application.delete_env(:vial_keeper, :attachment_gc_hook)
     assert {:ok, _} = Attachments.gc(uuid)
     assert blob_exists?(uuid, keep)
     refute blob_exists?(uuid, drop)
@@ -606,6 +606,6 @@ defmodule ElixirDB.Attachments.GCTest do
     end
   end
 
-  defp restore_gc_hook(nil), do: Application.delete_env(:elixir_db, :attachment_gc_hook)
-  defp restore_gc_hook(hook), do: Application.put_env(:elixir_db, :attachment_gc_hook, hook)
+  defp restore_gc_hook(nil), do: Application.delete_env(:vial_keeper, :attachment_gc_hook)
+  defp restore_gc_hook(hook), do: Application.put_env(:vial_keeper, :attachment_gc_hook, hook)
 end

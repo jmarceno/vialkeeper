@@ -1,9 +1,9 @@
-defmodule ElixirDB.Storage.PortsTest do
+defmodule VialKeeper.Storage.PortsTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Storage.{BackendContext, OpaqueHandle, Ports, Registry, Transaction}
+  alias VialKeeper.Storage.{BackendContext, OpaqueHandle, Ports, Registry, Transaction}
 
-  alias ElixirDB.Storage.Ports.{
+  alias VialKeeper.Storage.Ports.{
     ChangeLog,
     DocumentFacts,
     Errors,
@@ -12,12 +12,12 @@ defmodule ElixirDB.Storage.PortsTest do
     RetentionRecords
   }
 
-  alias ElixirDB.Storage.Memory.Lifecycle, as: MemoryLifecycle
-  alias ElixirDB.Storage.Sentinel.Adapter, as: Sentinel
-  alias ElixirDB.Storage.Sentinel.Lifecycle, as: SentinelLifecycle
-  alias ElixirDB.Storage.SQLite.Adapter, as: SQLite
-  alias ElixirDB.Storage.SQLite.DocumentFacts, as: SQLiteDocumentFacts
-  alias ElixirDB.Storage.SQLite.Lifecycle, as: SQLiteLifecycle
+  alias VialKeeper.Storage.Memory.Lifecycle, as: MemoryLifecycle
+  alias VialKeeper.Storage.Sentinel.Adapter, as: Sentinel
+  alias VialKeeper.Storage.Sentinel.Lifecycle, as: SentinelLifecycle
+  alias VialKeeper.Storage.SQLite.Adapter, as: SQLite
+  alias VialKeeper.Storage.SQLite.DocumentFacts, as: SQLiteDocumentFacts
+  alias VialKeeper.Storage.SQLite.Lifecycle, as: SQLiteLifecycle
 
   test "every port family has a behaviour module" do
     for family <- Ports.families() do
@@ -66,7 +66,10 @@ defmodule ElixirDB.Storage.PortsTest do
 
   test "sentinel lifecycle and transaction ports work without a SQLite connection" do
     root =
-      Path.join(System.tmp_dir!(), "elixirdb-ports-sentinel-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "vialkeeper-ports-sentinel-#{System.unique_integer([:positive])}"
+      )
 
     on_exit(fn -> File.rm_rf(root) end)
 
@@ -95,7 +98,7 @@ defmodule ElixirDB.Storage.PortsTest do
     assert :ok = SQLiteLifecycle.close(sqlite)
 
     root =
-      Path.join(System.tmp_dir!(), "elixirdb-ports-memory-#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "vialkeeper-ports-memory-#{System.unique_integer([:positive])}")
 
     on_exit(fn -> File.rm_rf(root) end)
 
@@ -118,11 +121,11 @@ defmodule ElixirDB.Storage.PortsTest do
     refute match?(%{conn: _}, ref)
     assert is_nil(Map.get(ref, :conn))
     refute function_exported?(BackendContext, :conn, 1)
-    refute function_exported?(ElixirDB.Runtime.DatabaseOwner, :unwrap_handle!, 1)
+    refute function_exported?(VialKeeper.Runtime.DatabaseOwner, :unwrap_handle!, 1)
     refute function_exported?(SQLite, :unwrap_handle!, 1)
 
     # Shared/runtime modules must not call OpaqueHandle.unwrap (Reach-enforced).
-    owner_source = File.read!("lib/elixir_db/runtime/database_owner.ex")
+    owner_source = File.read!("lib/vial_keeper/runtime/database_owner.ex")
     refute owner_source =~ "OpaqueHandle.unwrap"
     refute owner_source =~ "unwrap_handle!"
 
@@ -130,7 +133,7 @@ defmodule ElixirDB.Storage.PortsTest do
     {:dictionary, entries} = Process.info(self(), :dictionary)
 
     refute Enum.any?(entries, fn
-             {{ElixirDB.Storage.OpaqueHandle, _}, _} -> true
+             {{VialKeeper.Storage.OpaqueHandle, _}, _} -> true
              {key, _} when is_tuple(key) -> inspect(key) =~ "OpaqueHandle"
              _ -> false
            end)
@@ -140,13 +143,13 @@ defmodule ElixirDB.Storage.PortsTest do
 
     # Bare GenServer unwrap without Context on the caller stack is rejected.
     assert {:error, :forbidden} =
-             GenServer.call(ElixirDB.Storage.OpaqueHandle.Server, {:unwrap, ref})
+             GenServer.call(VialKeeper.Storage.OpaqueHandle.Server, {:unwrap, ref})
 
     # Forged stacktrace payloads must not authorize unwrap.
-    fake = [{ElixirDB.Storage.SQLite.Context, :unwrap, 1, []}]
+    fake = [{VialKeeper.Storage.SQLite.Context, :unwrap, 1, []}]
 
     assert {:error, :forbidden} =
-             GenServer.call(ElixirDB.Storage.OpaqueHandle.Server, {:unwrap, ref, fake})
+             GenServer.call(VialKeeper.Storage.OpaqueHandle.Server, {:unwrap, ref, fake})
 
     # Foreign process cannot unwrap.
     parent = self()
@@ -206,10 +209,10 @@ defmodule ElixirDB.Storage.PortsTest do
   end
 
   test "Ports.Errors normalizes untyped backend failures" do
-    assert %ElixirDB.Error{code: :internal_error} = Errors.normalize({:sqlite, :busy})
-    error = ElixirDB.Error.invalid_request("nope")
+    assert %VialKeeper.Error{code: :internal_error} = Errors.normalize({:sqlite, :busy})
+    error = VialKeeper.Error.invalid_request("nope")
     assert Errors.normalize(error) == error
-    assert {:error, %ElixirDB.Error{}} = Errors.wrap({:error, :boom})
+    assert {:error, %VialKeeper.Error{}} = Errors.wrap({:error, :boom})
     assert {:ok, 1} = Errors.wrap({:ok, 1})
   end
 
@@ -225,8 +228,8 @@ defmodule ElixirDB.Storage.PortsTest do
     ]
 
     for path <-
-          Path.wildcard("lib/elixir_db/storage/ports/*.ex") ++
-            ["lib/elixir_db/storage/transaction.ex"] do
+          Path.wildcard("lib/vial_keeper/storage/ports/*.ex") ++
+            ["lib/vial_keeper/storage/transaction.ex"] do
       source = File.read!(path)
 
       for marker <- forbidden do
@@ -234,7 +237,7 @@ defmodule ElixirDB.Storage.PortsTest do
       end
     end
 
-    transaction_source = File.read!("lib/elixir_db/storage/transaction.ex")
+    transaction_source = File.read!("lib/vial_keeper/storage/transaction.ex")
     refute transaction_source =~ "BEGIN"
     refute transaction_source =~ "COMMIT"
     refute transaction_source =~ "Exqlite"

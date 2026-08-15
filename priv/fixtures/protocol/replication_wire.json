@@ -67,7 +67,7 @@
       "content-type": "application/json",
       "content-encoding": "zstd",
       "accept-encoding": "zstd",
-      "x-elixirdb-uncompressed-length": "canonical-non-negative-integer"
+      "x-vialkeeper-uncompressed-length": "canonical-non-negative-integer"
     }
   },
   {

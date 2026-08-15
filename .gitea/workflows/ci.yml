@@ -27,13 +27,13 @@ jobs:
         run: mix release.build
       - name: Emit release metadata
         env:
-          ELIXIR_DB_ROOT: ${{ runner.temp }}/elixirdb-root
+          VIAL_KEEPER_ROOT: ${{ runner.temp }}/vialkeeper-root
           MIX_ENV: prod
         run: |
-          mkdir -p artifacts "$ELIXIR_DB_ROOT"
-          bin=_build/prod/rel/elixir_db/bin/elixir_db
-          "$bin" eval 'IO.inspect(ElixirDB.Diagnostics.runtime(), pretty: true)' > artifacts/release-metadata.txt
-          "$bin" eval 'IO.puts(:erlang.iolist_to_binary(JSON.encode_to_iodata!(ElixirDB.Diagnostics.runtime())))' > artifacts/release-metadata.json || printf '{"error":"release metadata JSON encoding failed"}\n' > artifacts/release-metadata.json
+          mkdir -p artifacts "$VIAL_KEEPER_ROOT"
+          bin=_build/prod/rel/vial_keeper/bin/vial_keeper
+          "$bin" eval 'IO.inspect(VialKeeper.Diagnostics.runtime(), pretty: true)' > artifacts/release-metadata.txt
+          "$bin" eval 'IO.puts(:erlang.iolist_to_binary(JSON.encode_to_iodata!(VialKeeper.Diagnostics.runtime())))' > artifacts/release-metadata.json || printf '{"error":"release metadata JSON encoding failed"}\n' > artifacts/release-metadata.json
       - name: Upload release metadata
         if: always()
         uses: actions/upload-artifact@v4
@@ -43,5 +43,5 @@ jobs:
       - name: Upload OTP release
         uses: actions/upload-artifact@v4
         with:
-          name: elixir-db-release
-          path: _build/prod/rel/elixir_db
+          name: vialkeeper-release
+          path: _build/prod/rel/vial_keeper

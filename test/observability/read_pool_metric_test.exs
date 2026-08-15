@@ -1,61 +1,61 @@
-defmodule ElixirDB.Observability.ReadPoolMetricTest do
+defmodule VialKeeper.Observability.ReadPoolMetricTest do
   @moduledoc """
   Read-pool wait, occupancy, and exclusive-quiesce metrics with bounded,
   payload-free attributes.
   """
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Observability.TestMetricExporter
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.View.Manager
+  alias VialKeeper.Eventual
+  alias VialKeeper.Observability.TestMetricExporter
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.View.Manager
 
-  @active_metric "elixir_db.database.read_pool.active"
-  @queued_metric "elixir_db.database.read_pool.queued"
-  @wait_metric "elixir_db.database.read_pool.wait"
-  @quiesce_metric "elixir_db.database.read_pool.quiesce.duration"
+  @active_metric "vial_keeper.database.read_pool.active"
+  @queued_metric "vial_keeper.database.read_pool.queued"
+  @wait_metric "vial_keeper.database.read_pool.wait"
+  @quiesce_metric "vial_keeper.database.read_pool.quiesce.duration"
 
   setup do
-    previous_limits = Application.get_env(:elixir_db, :host_limits)
+    previous_limits = Application.get_env(:vial_keeper, :host_limits)
 
     limits =
       (previous_limits || [])
       |> Keyword.put(:read_pool_size, 1)
       |> Keyword.put(:read_queue_limit, 1)
 
-    Application.put_env(:elixir_db, :host_limits, limits)
+    Application.put_env(:vial_keeper, :host_limits, limits)
 
-    relative = "read-pool-metric-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), relative)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    relative = "read-pool-metric-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), relative)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     assert {:ok, _} = DatabaseCatalog.open(identity.database_uuid)
     assert :ok = Manager.await_resumed(identity.database_uuid)
 
     on_exit(fn ->
-      Application.delete_env(:elixir_db, :read_pool_sync)
-      Application.put_env(:elixir_db, :host_limits, previous_limits)
+      Application.delete_env(:vial_keeper, :read_pool_sync)
+      Application.put_env(:vial_keeper, :host_limits, previous_limits)
       _ = DatabaseCatalog.close(identity.database_uuid)
       _ = DatabaseCatalog.unregister(identity.database_uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: identity.database_uuid}
   end
 
   test "emits occupancy, wait outcomes, and quiesce duration", %{uuid: uuid} do
-    assert {:ok, _} = ElixirDB.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
+    assert {:ok, _} = VialKeeper.Documents.put(uuid, %{id: "doc", body: %{"n" => 1}})
 
     gate = make_ref()
-    Application.put_env(:elixir_db, :read_pool_sync, {self(), gate, uuid, :get_document})
+    Application.put_env(:vial_keeper, :read_pool_sync, {self(), gate, uuid, :get_document})
 
-    holder = Task.async(fn -> ElixirDB.Documents.get(uuid, %{id: "doc"}) end)
+    holder = Task.async(fn -> VialKeeper.Documents.get(uuid, %{id: "doc"}) end)
     assert_receive {^gate, :before_begin, worker}, 2_000
 
-    waiter = Task.async(fn -> ElixirDB.Documents.get(uuid, %{id: "doc"}) end)
+    waiter = Task.async(fn -> VialKeeper.Documents.get(uuid, %{id: "doc"}) end)
 
     Eventual.eventually(
       fn ->
@@ -66,10 +66,10 @@ defmodule ElixirDB.Observability.ReadPoolMetricTest do
       message: "expected active and queued read-pool occupancy datapoints"
     )
 
-    assert {:error, %ElixirDB.Error{code: :database_overloaded}} =
-             ElixirDB.Documents.get(uuid, %{id: "doc"})
+    assert {:error, %VialKeeper.Error{code: :database_overloaded}} =
+             VialKeeper.Documents.get(uuid, %{id: "doc"})
 
-    Application.delete_env(:elixir_db, :read_pool_sync)
+    Application.delete_env(:vial_keeper, :read_pool_sync)
     send(worker, {:go, gate})
     assert {:ok, %{id: "doc"}} = Task.await(holder, 5_000)
     assert {:ok, %{id: "doc"}} = Task.await(waiter, 5_000)

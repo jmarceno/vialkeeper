@@ -1,9 +1,9 @@
-defmodule ElixirDB.Federation.NormalizerTest do
+defmodule VialKeeper.Federation.NormalizerTest do
   @moduledoc "Covers strict federation request normalization and fingerprints."
 
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Federation.Normalizer
+  alias VialKeeper.Federation.Normalizer
 
   @source "123e4567-e89b-12d3-a456-426614174000"
   @other_source "123e4567-e89b-12d3-a456-426614174001"
@@ -48,16 +48,16 @@ defmodule ElixirDB.Federation.NormalizerTest do
     assert invalid(%{databases: [@source, @source], query: %{}})
     assert invalid(%{databases: ["not-a-uuid"], query: %{}})
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              Normalizer.normalize(%{databases: List.duplicate(@source, 17), query: %{}})
   end
 
   test "reads the validated host federation source limit" do
-    previous = Application.get_env(:elixir_db, :federation)
-    on_exit(fn -> Application.put_env(:elixir_db, :federation, previous) end)
-    Application.put_env(:elixir_db, :federation, max_sources: 1)
+    previous = Application.get_env(:vial_keeper, :federation)
+    on_exit(fn -> Application.put_env(:vial_keeper, :federation, previous) end)
+    Application.put_env(:vial_keeper, :federation, max_sources: 1)
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              Normalizer.normalize(%{databases: [@source, @other_source], query: %{}})
   end
 
@@ -65,11 +65,11 @@ defmodule ElixirDB.Federation.NormalizerTest do
     assert {:ok, normalized} = Normalizer.normalize(%{databases: [@source], query: %{}})
     assert normalized.query.limit == 50
 
-    previous = Application.get_env(:elixir_db, :host_limits)
-    on_exit(fn -> Application.put_env(:elixir_db, :host_limits, previous) end)
-    Application.put_env(:elixir_db, :host_limits, max_query_results: 10)
+    previous = Application.get_env(:vial_keeper, :host_limits)
+    on_exit(fn -> Application.put_env(:vial_keeper, :host_limits, previous) end)
+    Application.put_env(:vial_keeper, :host_limits, max_query_results: 10)
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              Normalizer.normalize(%{databases: [@source], query: %{limit: 11}})
   end
 
@@ -86,6 +86,6 @@ defmodule ElixirDB.Federation.NormalizerTest do
   end
 
   defp invalid(request) do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} = Normalizer.normalize(request)
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} = Normalizer.normalize(request)
   end
 end

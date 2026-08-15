@@ -1,20 +1,20 @@
-defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
+defmodule VialKeeper.HTTP.UnknownFieldsAndRoutesTest do
   @moduledoc "Covers HTTP unknown-field rejection and route validation."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestReplicationWire
-  alias ElixirDB.TestServer
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestReplicationWire
+  alias VialKeeper.TestServer
 
   test "registration rejects unknown fields" do
     server = TestServer.start_supervised!()
 
     assert {:ok, %{status: 400, body: body}} =
              Req.post(server.base_url <> "/v1/registrations",
-               json: %{"path" => "http-unknown-reg.elixirdb", "extra" => true}
+               json: %{"path" => "http-unknown-reg.vialkeeper", "extra" => true}
              )
 
     assert %{"error" => %{"code" => "invalid_request", "retryable" => false}} = body
@@ -22,7 +22,7 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
 
   test "GET databases plus table-driven unknown fields over Bandit" do
     server = TestServer.start_supervised!()
-    path = "http-list-#{System.unique_integer([:positive])}.elixirdb"
+    path = "http-list-#{System.unique_integer([:positive])}.vialkeeper"
 
     assert {:ok, %{status: 201, body: created}} =
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -32,7 +32,7 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     assert {:ok, %{status: 200, body: listed}} = Req.get(server.base_url <> "/v1/databases")
@@ -92,7 +92,7 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
          "endpoint" => %{
            "kind" => "remote",
            "base_url" => "http://127.0.0.1:9",
-           "database_uuid" => ElixirDB.UUID.v4()
+           "database_uuid" => VialKeeper.UUID.v4()
          },
          "enabled" => false,
          "mystery" => true
@@ -111,7 +111,7 @@ defmodule ElixirDB.HTTP.UnknownFieldsAndRoutesTest do
          "version" => 1,
          "checkpoint_version" => 1,
          "replication_id" => replication_id,
-         "session_id" => ElixirDB.UUID.v4(),
+         "session_id" => VialKeeper.UUID.v4(),
          "source_sequence" => 0,
          "history" => [],
          "extra" => true

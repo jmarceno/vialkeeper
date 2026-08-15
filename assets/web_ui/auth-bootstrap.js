@@ -1,9 +1,9 @@
 (function () {
   "use strict";
 
-  var TOKEN_KEY = "elixir_db_bearer";
-  var START_EVENT = "elixirdb:start";
-  var LOGOUT_EVENT = "elixirdb:logout";
+  var TOKEN_KEY = "vial_keeper_bearer";
+  var START_EVENT = "vialkeeper:start";
+  var LOGOUT_EVENT = "vialkeeper:logout";
 
   function token() {
     try {
@@ -86,7 +86,7 @@
       if (!(target instanceof Element)) {
         return;
       }
-      var button = target.closest("[data-elixirdb-logout]");
+      var button = target.closest("[data-vialkeeper-logout]");
       if (!button) {
         return;
       }
@@ -97,7 +97,7 @@
     hideAuthForm();
 
     // Wait for window load so deferred HTMX has processed hx-trigger listeners
-    // before the first elixirdb:start event is dispatched.
+    // before the first vialkeeper:start event is dispatched.
     if (document.readyState === "complete") {
       dispatchStart();
     } else {
@@ -132,7 +132,7 @@
       showAuthForm();
       return;
     }
-    // Auth-disabled fragment responses advertise x-elixirdb-auth: off so a
+    // Auth-disabled fragment responses advertise x-vialkeeper-auth: off so a
     // leftover session token can be discarded without a second probe.
     if (xhr.status >= 200 && xhr.status < 300) {
       var path = "";
@@ -141,7 +141,7 @@
       } catch (_error) {
         path = "";
       }
-      if (path === "/ui/fragments/home" && xhr.getResponseHeader("x-elixirdb-auth") === "off") {
+      if (path === "/ui/fragments/home" && xhr.getResponseHeader("x-vialkeeper-auth") === "off") {
         setToken("");
       }
     }

@@ -1,25 +1,25 @@
-defmodule ElixirDB.Replication.CheckpointRecoveryTest do
+defmodule VialKeeper.Replication.CheckpointRecoveryTest do
   @moduledoc "Covers checkpoint reconciliation, retention, and replication recovery."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Domain.PeerPosition
-  alias ElixirDB.Error
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Replication
-  alias ElixirDB.Replication.{CheckpointReconciler, LocalEndpoint}
-  alias ElixirDB.Retention.Frontier
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.TempDatabase
+  alias VialKeeper.Domain.PeerPosition
+  alias VialKeeper.Error
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Replication
+  alias VialKeeper.Replication.{CheckpointReconciler, LocalEndpoint}
+  alias VialKeeper.Retention.Frontier
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.TempDatabase
 
   setup do
     prefix = "ckpt-recovery-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [a_path, b_path] do
       TempDatabase.cleanup(Path.join(root, path))
@@ -63,7 +63,7 @@ defmodule ElixirDB.Replication.CheckpointRecoveryTest do
 
   test "bootstrap revision pages return chains and continuation metadata", %{a: a} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "boot-doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "boot-doc", body: %{"n" => 1}})
 
     assert {:ok, page} =
              DatabaseCatalog.command(
@@ -159,7 +159,7 @@ defmodule ElixirDB.Replication.CheckpointRecoveryTest do
     b: b
   } do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "ckpt-recovery-doc", body: %{"v" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "ckpt-recovery-doc", body: %{"v" => 1}})
 
     {:ok, source} = LocalEndpoint.new(a.database_uuid)
     {:ok, target} = LocalEndpoint.new(b.database_uuid)
@@ -171,7 +171,7 @@ defmodule ElixirDB.Replication.CheckpointRecoveryTest do
              })
 
     assert result.status == :completed
-    assert {:ok, doc} = ElixirDB.Documents.get(b.database_uuid, %{id: "ckpt-recovery-doc"})
+    assert {:ok, doc} = VialKeeper.Documents.get(b.database_uuid, %{id: "ckpt-recovery-doc"})
     assert doc.body["v"] == 1
   end
 

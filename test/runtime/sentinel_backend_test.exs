@@ -1,19 +1,19 @@
-defmodule ElixirDB.Runtime.SentinelBackendTest do
+defmodule VialKeeper.Runtime.SentinelBackendTest do
   @moduledoc "Proves the runtime can create/open/close/identify via a non-SQL backend."
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Runtime.{DatabaseCatalog, ReadPool}
-  alias ElixirDB.Storage.Sentinel.Adapter
+  alias VialKeeper.Runtime.{DatabaseCatalog, ReadPool}
+  alias VialKeeper.Storage.Sentinel.Adapter
 
   setup do
-    previous = Application.get_env(:elixir_db, :storage_backend)
-    Application.put_env(:elixir_db, :storage_backend, Adapter)
+    previous = Application.get_env(:vial_keeper, :storage_backend)
+    Application.put_env(:vial_keeper, :storage_backend, Adapter)
 
     on_exit(fn ->
       if is_nil(previous) do
-        Application.delete_env(:elixir_db, :storage_backend)
+        Application.delete_env(:vial_keeper, :storage_backend)
       else
-        Application.put_env(:elixir_db, :storage_backend, previous)
+        Application.put_env(:vial_keeper, :storage_backend, previous)
       end
     end)
 
@@ -21,7 +21,7 @@ defmodule ElixirDB.Runtime.SentinelBackendTest do
   end
 
   test "catalog create/open/identity/close works with the sentinel backend" do
-    relative = "sentinel-runtime-#{System.unique_integer([:positive])}.elixirdb"
+    relative = "sentinel-runtime-#{System.unique_integer([:positive])}.vialkeeper"
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     uuid = identity.database_uuid || identity["database_uuid"]
@@ -38,7 +38,7 @@ defmodule ElixirDB.Runtime.SentinelBackendTest do
   end
 
   test "owner returns typed unsupported errors for missing storage capabilities" do
-    relative = "sentinel-unsupported-#{System.unique_integer([:positive])}.elixirdb"
+    relative = "sentinel-unsupported-#{System.unique_integer([:positive])}.vialkeeper"
 
     assert {:ok, identity} = DatabaseCatalog.create(relative)
     uuid = identity.database_uuid || identity["database_uuid"]
@@ -58,7 +58,7 @@ defmodule ElixirDB.Runtime.SentinelBackendTest do
         ] do
       result = DatabaseCatalog.command(uuid, command)
 
-      assert match?({:error, %ElixirDB.Error{code: :invalid_request}}, result),
+      assert match?({:error, %VialKeeper.Error{code: :invalid_request}}, result),
              "sentinel #{inspect(command)} => #{inspect(result)}"
     end
   end

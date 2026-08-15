@@ -1,4 +1,4 @@
-defmodule ElixirDB.Replication.WorkerStatesTest do
+defmodule VialKeeper.Replication.WorkerStatesTest do
   @moduledoc """
   Harden the worker state proof.
 
@@ -12,20 +12,20 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
 
   @moduletag :integration
 
-  alias ElixirDB.FaultAdapter
-  alias ElixirDB.Replication.Id
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Replication.Worker
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.FaultAdapter
+  alias VialKeeper.Replication.Id
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Replication.Worker
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   setup do
     prefix = "worker-states-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -35,7 +35,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -45,7 +45,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
   test "worker emits :idle initially, then the full active-state sequence through checkpoint_source",
        %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     {:ok, source} = LocalEndpoint.new(a.database_uuid)
     {:ok, target} = LocalEndpoint.new(b.database_uuid)
@@ -59,7 +59,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
              )
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -112,12 +112,12 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
     assert :completed in states
 
     assert {:ok, %{body: %{"n" => 1}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "doc"})
   end
 
   test "phase task crash with active transfer children cleans the child task", %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "crash-transfer", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "crash-transfer", body: %{"n" => 1}})
 
     {:ok, source} = LocalEndpoint.new(a.database_uuid)
     {:ok, target} = LocalEndpoint.new(b.database_uuid)
@@ -126,7 +126,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
              Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -168,10 +168,10 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
 
   test "transfer barrier completes before import begins", %{a: a, b: b} do
     assert {:ok, %{blob: digest}} =
-             ElixirDB.Attachments.upload_stream(a.database_uuid, ["barrier"])
+             VialKeeper.Attachments.upload_stream(a.database_uuid, ["barrier"])
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{
+             VialKeeper.Documents.put(a.database_uuid, %{
                id: "barrier-doc",
                body: %{"n" => 1},
                attachments: %{
@@ -186,7 +186,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
              Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -230,7 +230,10 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
 
   test "worker terminate cleans an active transfer phase and its children", %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "terminate-transfer", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{
+               id: "terminate-transfer",
+               body: %{"n" => 1}
+             })
 
     {:ok, source} = LocalEndpoint.new(a.database_uuid)
     {:ok, target} = LocalEndpoint.new(b.database_uuid)
@@ -239,7 +242,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
              Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -283,7 +286,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
   test "worker emits a :backoff state on an injected retryable fault before retrying",
        %{a: a, b: b} do
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     {:ok, source} = LocalEndpoint.new(a.database_uuid)
     {:ok, target} = LocalEndpoint.new(b.database_uuid)
@@ -297,7 +300,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
              )
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -311,7 +314,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
         FaultAdapter.wrap(:replication)
         |> FaultAdapter.inject(
           :import,
-          {:once, ElixirDB.Error.database_closed("injected retryable fault")}
+          {:once, VialKeeper.Error.database_closed("injected retryable fault")}
         )
       end)
 
@@ -344,7 +347,7 @@ defmodule ElixirDB.Replication.WorkerStatesTest do
     assert :completed in states
 
     assert {:ok, %{revision: ^revision, body: %{"n" => 1}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "doc"})
   end
 
   # Collect the ordered worker state_notify messages this process received. Each is sent as

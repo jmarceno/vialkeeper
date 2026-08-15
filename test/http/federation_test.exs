@@ -1,22 +1,22 @@
-defmodule ElixirDB.HTTP.FederationTest do
+defmodule VialKeeper.HTTP.FederationTest do
   @moduledoc "Covers the HTTP federation request and response contract."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Federation.Normalizer
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
+  alias VialKeeper.Documents
+  alias VialKeeper.Federation.Normalizer
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
 
   setup do
-    root = ElixirDB.Config.database_root()
-    first_path = "federation-http-a-#{System.unique_integer([:positive])}.elixirdb"
-    second_path = "federation-http-b-#{System.unique_integer([:positive])}.elixirdb"
+    root = VialKeeper.Config.database_root()
+    first_path = "federation-http-a-#{System.unique_integer([:positive])}.vialkeeper"
+    second_path = "federation-http-b-#{System.unique_integer([:positive])}.vialkeeper"
 
     Enum.each([first_path, second_path], fn path ->
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end)
 
     assert {:ok, first} = DatabaseCatalog.create(first_path)
@@ -26,7 +26,7 @@ defmodule ElixirDB.HTTP.FederationTest do
       for {identity, path} <- [{first, first_path}, {second, second_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -120,13 +120,13 @@ defmodule ElixirDB.HTTP.FederationTest do
       fingerprint: normalized.fingerprint
     }
 
-    previous = Application.get_env(:elixir_db, :federation_saved_queries, :missing)
-    Application.put_env(:elixir_db, :federation_saved_queries, [saved])
+    previous = Application.get_env(:vial_keeper, :federation_saved_queries, :missing)
+    Application.put_env(:vial_keeper, :federation_saved_queries, [saved])
 
     on_exit(fn ->
       case previous do
-        :missing -> Application.delete_env(:elixir_db, :federation_saved_queries)
-        value -> Application.put_env(:elixir_db, :federation_saved_queries, value)
+        :missing -> Application.delete_env(:vial_keeper, :federation_saved_queries)
+        value -> Application.put_env(:vial_keeper, :federation_saved_queries, value)
       end
     end)
 
@@ -179,13 +179,13 @@ defmodule ElixirDB.HTTP.FederationTest do
       fingerprint: normalized.fingerprint
     }
 
-    previous = Application.get_env(:elixir_db, :federation_saved_queries, :missing)
-    Application.put_env(:elixir_db, :federation_saved_queries, [saved])
+    previous = Application.get_env(:vial_keeper, :federation_saved_queries, :missing)
+    Application.put_env(:vial_keeper, :federation_saved_queries, [saved])
 
     on_exit(fn ->
       case previous do
-        :missing -> Application.delete_env(:elixir_db, :federation_saved_queries)
-        value -> Application.put_env(:elixir_db, :federation_saved_queries, value)
+        :missing -> Application.delete_env(:vial_keeper, :federation_saved_queries)
+        value -> Application.put_env(:vial_keeper, :federation_saved_queries, value)
       end
     end)
 

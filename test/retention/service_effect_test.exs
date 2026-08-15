@@ -1,4 +1,4 @@
-defmodule ElixirDB.Retention.ServiceEffectTest do
+defmodule VialKeeper.Retention.ServiceEffectTest do
   @moduledoc """
   Property and effect proofs that Retention.Service plan decisions match
   compact_retention outcomes on Memory (and SQLite when cheap).
@@ -7,12 +7,12 @@ defmodule ElixirDB.Retention.ServiceEffectTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias ElixirDB.Retention.Frontier
-  alias ElixirDB.Retention.Service, as: RetentionService
-  alias ElixirDB.Storage.AdapterCase
-  alias ElixirDB.Storage.BackendContext
-  alias ElixirDB.Storage.Ports.Access
-  alias ElixirDB.Storage.Services.Facts
+  alias VialKeeper.Retention.Frontier
+  alias VialKeeper.Retention.Service, as: RetentionService
+  alias VialKeeper.Storage.AdapterCase
+  alias VialKeeper.Storage.BackendContext
+  alias VialKeeper.Storage.Ports.Access
+  alias VialKeeper.Storage.Services.Facts
 
   @retention_config %{
     "retention" => %{
@@ -24,8 +24,8 @@ defmodule ElixirDB.Retention.ServiceEffectTest do
   }
 
   @adapters [
-    ElixirDB.Storage.Memory.Adapter,
-    ElixirDB.Storage.SQLite.Adapter
+    VialKeeper.Storage.Memory.Adapter,
+    VialKeeper.Storage.SQLite.Adapter
   ]
 
   for adapter <- @adapters do
@@ -38,7 +38,7 @@ defmodule ElixirDB.Retention.ServiceEffectTest do
                 depth <- StreamData.integer(1..3),
                 max_runs: 12
               ) do
-          {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-ret-effect")
+          {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-ret-effect")
           path = AdapterCase.adapter_path(@adapter, bundle_path)
           {:ok, adapter} = @adapter.create(path, %{})
 
@@ -90,7 +90,7 @@ defmodule ElixirDB.Retention.ServiceEffectTest do
             end
           after
             _ = @adapter.close(adapter)
-            ElixirDB.TempDatabase.cleanup(bundle_path)
+            VialKeeper.TempDatabase.cleanup(bundle_path)
           end
         end
       end
@@ -119,7 +119,7 @@ defmodule ElixirDB.Retention.ServiceEffectTest do
   defp load_meta(%BackendContext{} = context) do
     case Access.port(context, :lifecycle).identity(context) do
       {:ok, identity} when is_map(identity) ->
-        config = Map.get(identity, :config) || ElixirDB.Config.defaults()
+        config = Map.get(identity, :config) || VialKeeper.Config.defaults()
 
         {:ok,
          %{

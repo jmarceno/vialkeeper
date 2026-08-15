@@ -1,13 +1,13 @@
-defmodule ElixirDB.Shadow.SourceIndependenceTest do
+defmodule VialKeeper.Shadow.SourceIndependenceTest do
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Shadow.{Definition, Reconciler, Registry}
+  alias VialKeeper.Shadow.{Definition, Reconciler, Registry}
 
   defmodule BlockingEndpoint do
     defstruct [:waiter]
 
     def capabilities(%__MODULE__{}, _timeout),
-      do: {:ok, ElixirDB.Shadow.Protocol.response("00000000-0000-4000-8000-000000000001")}
+      do: {:ok, VialKeeper.Shadow.Protocol.response("00000000-0000-4000-8000-000000000001")}
 
     def inspect(%__MODULE__{waiter: waiter}, _request, _timeout) do
       send(waiter, {:inspect_blocked, self()})
@@ -24,8 +24,8 @@ defmodule ElixirDB.Shadow.SourceIndependenceTest do
   end
 
   test "source writes complete while shadow control is blocked on inspect" do
-    {source_uuid, path} = ElixirDB.ShadowSource.open!("shadow-indep")
-    attachment_location = Path.join(ElixirDB.Config.database_root(), "indep-blobs")
+    {source_uuid, path} = VialKeeper.ShadowSource.open!("shadow-indep")
+    attachment_location = Path.join(VialKeeper.Config.database_root(), "indep-blobs")
     File.mkdir_p!(attachment_location)
 
     assert {:ok, definition} =
@@ -44,15 +44,15 @@ defmodule ElixirDB.Shadow.SourceIndependenceTest do
 
     on_exit(fn ->
       if Process.alive?(pid), do: GenServer.stop(pid, :normal)
-      ElixirDB.ShadowSource.close!(source_uuid, path)
+      VialKeeper.ShadowSource.close!(source_uuid, path)
     end)
 
     assert_receive {:inspect_blocked, task_pid}, 1_000
 
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(source_uuid, %{id: "live", body: %{"ok" => true}})
+             VialKeeper.Documents.put(source_uuid, %{id: "live", body: %{"ok" => true}})
 
-    assert {:ok, %{revision: ^revision}} = ElixirDB.Documents.get(source_uuid, %{id: "live"})
+    assert {:ok, %{revision: ^revision}} = VialKeeper.Documents.get(source_uuid, %{id: "live"})
     send(task_pid, :continue)
   end
 end

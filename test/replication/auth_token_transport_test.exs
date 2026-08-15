@@ -1,4 +1,4 @@
-defmodule ElixirDB.Replication.AuthTokenTransportTest do
+defmodule VialKeeper.Replication.AuthTokenTransportTest do
   @moduledoc """
   AUTH-003: a remote endpoint's `auth_token` is presented as an
   `Authorization: Bearer` header on outbound replication wire calls.
@@ -14,7 +14,7 @@ defmodule ElixirDB.Replication.AuthTokenTransportTest do
     @moduledoc false
     use Plug.Router
 
-    alias ElixirDB.Replication.WireCompression
+    alias VialKeeper.Replication.WireCompression
 
     plug(:match)
     plug(:dispatch)
@@ -45,14 +45,14 @@ defmodule ElixirDB.Replication.AuthTokenTransportTest do
       |> Plug.Conn.put_resp_content_type("application/json")
       |> Plug.Conn.put_resp_header("content-encoding", "zstd")
       |> Plug.Conn.put_resp_header(
-        "x-elixirdb-uncompressed-length",
+        "x-vialkeeper-uncompressed-length",
         Integer.to_string(encoded.uncompressed_length)
       )
       |> Plug.Conn.send_resp(200, encoded.body)
     end
   end
 
-  alias ElixirDB.Replication.RemoteEndpoint
+  alias VialKeeper.Replication.RemoteEndpoint
 
   @uuid "11111111-1111-4111-8111-111111111111"
 

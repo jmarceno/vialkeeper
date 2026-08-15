@@ -1,19 +1,19 @@
-defmodule ElixirDB.HTTP.ReplicationAuthTokenRedactionTest do
+defmodule VialKeeper.HTTP.ReplicationAuthTokenRedactionTest do
   @moduledoc """
   Guards that the machine-API replication GET routes never echo a stored raw
   `auth_token` back in the response body. Redaction happens in JobManager; these
   routes delegate to `JobManager.list/1` and `JobManager.get/2`.
   """
 
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Runtime.DatabaseCatalog
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
   setup do
-    path = "http-redact-%{System.unique_integer([:positive])}.elixirdb"
+    path = "http-redact-%{System.unique_integer([:positive])}.vialkeeper"
     conn = call(:post, "/v1/databases", %{"path" => path})
     assert conn.status == 201
     {:ok, %{"data" => %{"database_uuid" => uuid}}} = decode(conn.resp_body)
@@ -21,7 +21,7 @@ defmodule ElixirDB.HTTP.ReplicationAuthTokenRedactionTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     {:ok, uuid: uuid}

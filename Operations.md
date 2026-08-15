@@ -1,20 +1,20 @@
-# ElixirDB operations
+# VialKeeper operations
 
-Runbook for deploying and running a Version 1 ElixirDB host. For API usage
+Runbook for deploying and running a Version 1 VialKeeper host. For API usage
 from applications, see [README.md](README.md).
 
 Production and staging run an assembled OTP release. `mix` is for local
 development and CI only.
 
 ```text
-ELIXIR_DB_ROOT/
+VIAL_KEEPER_ROOT/
   host.toml              # listener, auth, TLS, limits, federation, …
   registrations.json     # routing only (UUID → relative path)
-  notes.elixirdb/        # one bundle per logical database
+  notes.vialkeeper/        # one bundle per logical database
     <backend data>       # backend-owned durable artifact
     blobs/
     tmp/
-  notes.elixirdb.lease   # transient exclusive ownership (not data)
+  notes.vialkeeper.lease   # transient exclusive ownership (not data)
   _derived/…             # optional derived DBs from materialized views
 ```
 
@@ -29,12 +29,12 @@ export MIX_ENV=prod
 mix release.build
 ```
 
-Output: `_build/prod/rel/elixir_db/` (includes ERTS). Copy that tree to the
+Output: `_build/prod/rel/vial_keeper/` (includes ERTS). Copy that tree to the
 target host (same OS/ABI as the build machine).
 
 ```sh
-/opt/elixir_db/bin/elixir_db eval \
-  'IO.inspect(ElixirDB.Diagnostics.runtime(), pretty: true)'
+/opt/vial_keeper/bin/vial_keeper eval \
+  'IO.inspect(VialKeeper.Diagnostics.runtime(), pretty: true)'
 ```
 
 `Diagnostics.runtime/0` reports Mix app version and runtime / selected-backend
@@ -45,19 +45,19 @@ identity from the BEAMs. It does not read git metadata.
 ## Start and stop
 
 ```sh
-export ELIXIR_DB_ROOT=/var/lib/elixirdb
+export VIAL_KEEPER_ROOT=/var/lib/vialkeeper
 
-/opt/elixir_db/bin/elixir_db daemon   # background
-# or: /opt/elixir_db/bin/elixir_db start
+/opt/vial_keeper/bin/vial_keeper daemon   # background
+# or: /opt/vial_keeper/bin/vial_keeper start
 ```
 
 ```sh
-/opt/elixir_db/bin/elixir_db pid
-/opt/elixir_db/bin/elixir_db remote   # remote console
-/opt/elixir_db/bin/elixir_db stop
+/opt/vial_keeper/bin/vial_keeper pid
+/opt/vial_keeper/bin/vial_keeper remote   # remote console
+/opt/vial_keeper/bin/vial_keeper stop
 ```
 
-On first start in an empty root, ElixirDB creates the directory and a fully
+On first start in an empty root, VialKeeper creates the directory and a fully
 commented `host.toml` from `priv/host.toml`. Existing `host.toml` is **never**
 overwritten.
 
@@ -65,7 +65,7 @@ Default listener: **loopback only** `127.0.0.1:4000`. Binding a non-loopback
 address requires `[auth] enabled = true` or `[tls] enabled = true`, unless
 you set `[security] allow_insecure_remote = true` (risky).
 
-Stop with `bin/elixir_db stop` or SIGTERM. Open databases close; each runtime
+Stop with `bin/vial_keeper stop` or SIGTERM. Open databases close; each runtime
 releases its ownership lease.
 
 ### Development only
@@ -111,7 +111,7 @@ When `[auth] enabled = true`:
 Generate a token:
 
 ```sh
-/opt/elixir_db/bin/elixir_db token
+/opt/vial_keeper/bin/vial_keeper token
 # token:  <64-char hex>   ← clients send this
 # digest: <64-char hex>   ← paste into host.toml
 ```
@@ -134,7 +134,7 @@ restart. There is no runtime revocation API. Failures always return
 
 Remote replication to an auth-enabled target: put the raw token in the job
 endpoint as `auth_token`. The replication wire requires `Accept-Encoding: zstd`.
-JSON bodies use `Content-Encoding: zstd` and `x-elixirdb-uncompressed-length`.
+JSON bodies use `Content-Encoding: zstd` and `x-vialkeeper-uncompressed-length`.
 Generic HTTP compression is disabled on the listener so public `/v1` JSON is
 never auto-compressed.
 
@@ -156,7 +156,7 @@ Self-signed for local tests:
 
 ```sh
 openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-  -keyout "$ELIXIR_DB_ROOT/key.pem" -out "$ELIXIR_DB_ROOT/cert.pem" \
+  -keyout "$VIAL_KEEPER_ROOT/key.pem" -out "$VIAL_KEEPER_ROOT/cert.pem" \
   -subj "/CN=localhost"
 ```
 
@@ -170,7 +170,7 @@ Clients never send absolute filesystem paths. Create/register take **relative**
 paths that must not escape the root (`..`, symlinks).
 
 ```text
-notes.elixirdb/
+notes.vialkeeper/
 ├── <backend data>     # metadata, revisions, indexes, views, jobs, …
 ├── blobs/             # attachment representations (<prefix>/<digest>.blob)
 └── tmp/               # incomplete uploads (not authoritative)
@@ -182,18 +182,18 @@ notes.elixirdb/
 {
   "version": 1,
   "databases": [
-    {"uuid": "…", "path": "notes.elixirdb", "database_kind": "ordinary"}
+    {"uuid": "…", "path": "notes.vialkeeper", "database_kind": "ordinary"}
   ]
 }
 ```
 
 `database_kind` is a reconstructible hint. Backend metadata inside the bundle
-wins on open. Unregistered bundles under the root stay inert — ElixirDB does
+wins on open. Unregistered bundles under the root stay inert — VialKeeper does
 **not** auto-adopt them.
 
 | Action | How |
 | ------ | --- |
-| Create | `POST /v1/databases` `{"path":"notes.elixirdb"}` |
+| Create | `POST /v1/databases` `{"path":"notes.vialkeeper"}` |
 | Register existing | `POST /v1/registrations` `{"path":"…"}` |
 | List / info | `GET /v1/databases`, `GET /v1/databases/:uuid` |
 | Close | `POST /v1/databases/:uuid/close` |
@@ -210,7 +210,7 @@ Public identity is the UUID, never the path. Duplicate UUID →
 ```mermaid
 flowchart LR
   A[Stop writers / disable continuous deps] --> B[Close database]
-  B --> C[Copy whole .elixirdb dir]
+  B --> C[Copy whole .vialkeeper dir]
   C --> D[Place under destination root]
   D --> E[POST /v1/registrations]
   E --> F[Use UUID as before]
@@ -222,7 +222,7 @@ flowchart LR
    first.
 2. `POST /v1/databases/:uuid/close`. Live subscriptions end with `closed`.
    Confirm no attachment upload/download/GC is still running.
-3. Copy the complete closed `.elixirdb` directory with ordinary OS tools.
+3. Copy the complete closed `.vialkeeper` directory with ordinary OS tools.
 4. Ignore `.lease` — it is transient ownership, not data.
 5. At the destination: place the bundle, then register the relative path.
 6. Traffic addresses the same UUID (document routes auto-open, or open via
@@ -234,10 +234,10 @@ rejected. Copying is backup/relocation, **not** cloning.
 Do not copy an active crash-recoverable bundle piecemeal: keep every
 backend-owned recovery artifact with the durable data until recovery finishes.
 SQLite-specific journal pairing is documented in
-[lib/elixir_db/storage/sqlite/BACKEND.md](lib/elixir_db/storage/sqlite/BACKEND.md).
+[lib/vial_keeper/storage/sqlite/BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).
 
 Derived bundles are often created as
-`_derived/<slug>--<short-uuid>.derived.elixirdb`. Path and suffix are
+`_derived/<slug>--<short-uuid>.derived.vialkeeper`. Path and suffix are
 operator hints; `database_kind = derived` is authoritative. A clean derived
 bundle can be moved/renamed and re-registered; materialization state stays
 inside the bundle.
@@ -271,7 +271,7 @@ retryable).
 
 Safe recovery:
 
-1. Confirm no live ElixirDB process owns the DB (`bin/elixir_db pid`, process
+1. Confirm no live VialKeeper process owns the DB (`bin/vial_keeper pid`, process
    list). A healthy owner always holds the lease while open.
 2. After a crash, a leftover `.lease` **file** with no live exclusive lock
    can be reopened normally. Do **not** delete `.lease` while another process
@@ -281,7 +281,7 @@ Safe recovery:
 4. Never delete or rewrite backend data artifacts to “clear” a lease.
 
 SQLite implements ownership with an exclusive sidecar lease; see
-[BACKEND.md](lib/elixir_db/storage/sqlite/BACKEND.md).
+[BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).
 
 ---
 
@@ -435,11 +435,11 @@ allowed to finish.
 
 Remote wire behavior: every non-empty JSON request/response between peers is
 one bounded Zstandard frame (`Content-Encoding: zstd` plus
-`x-elixirdb-uncompressed-length`); attachment payloads transfer as the stored
+`x-vialkeeper-uncompressed-length`); attachment payloads transfer as the stored
 `.blob` representation byte-for-byte
-(`application/vnd.elixirdb.blob-representation`, no HTTP `Content-Encoding`),
+(`application/vnd.vialkeeper.blob-representation`, no HTTP `Content-Encoding`),
 so the target never re-encodes. Troubleshooting: a peer that answers with
-plain uncompressed JSON on wire routes is not an ElixirDB replication
+plain uncompressed JSON on wire routes is not an VialKeeper replication
 endpoint (or an intermediary rewrote the response) — the job fails with
 `replication_incompatible`; malformed frames, wrong declared lengths, and
 over-limit bodies are rejected deterministically with `invalid_request` /
@@ -473,7 +473,7 @@ The worker side is configured independently:
 enabled = true
 storage_root = "shadows"                 # relative to the database root
 control_token_digests = ["<sha256-digest>"]
-allowed_attachment_roots = ["/srv/elixirdb/cas"]
+allowed_attachment_roots = ["/srv/vialkeeper/cas"]
 allowed_source_origins = ["https://source.example"]
 ```
 
@@ -489,7 +489,7 @@ For a remote worker, add a named `[[shadow_controller.location]]` with
 `control_timeout_ms`, and `read_timeout_ms`. Local locations omit remote
 fields. The source's `source_base_url` and `source_bearer_token` are used for
 source-side worker operations and must be kept as secrets. Attachment roots
-are existing external CAS directories; ElixirDB does not copy them into the
+are existing external CAS directories; VialKeeper does not copy them into the
 shadow bundle.
 
 The worker lifecycle is `bootstrapping` until a later replication proof marks
@@ -500,12 +500,12 @@ public.
 ### Shadow read routing
 
 Public document and attachment reads default to `eventual` when a ready shadow
-route exists. Send `x-elixirdb-read-consistency: primary` to bypass the shadow
+route exists. Send `x-vialkeeper-read-consistency: primary` to bypass the shadow
 explicitly; `eventual` may also be sent explicitly. The source keeps an exact
 in-memory route snapshot containing the source/shadow UUIDs, generation, operation ID,
 and endpoint; a route is never selected by UUID alone. Shadow point and bulk
-read responses include `x-elixirdb-read-served-by: shadow` and the durable
-`x-elixirdb-source-watermark`. Source-served responses, including fallback and
+read responses include `x-vialkeeper-read-served-by: shadow` and the durable
+`x-vialkeeper-source-watermark`. Source-served responses, including fallback and
 explicit `primary` consistency, identify `source` and omit the watermark.
 
 A lagging document, revision, or attachment miss falls back the request (the
@@ -654,31 +654,31 @@ not block the hot path.
 
 | Event | Span | Metric |
 | ----- | ---- | ------ |
-| Database open | `elixir_db.database.open` | `….open.count` |
-| Database command | `elixir_db.database.command` | `….command.duration` |
-| Admission overload | — | `elixir_db.database.overload.count` |
-| Admission wait | — | `elixir_db.database.admission.wait` |
-| Read pool occupancy / wait / exclusive drain | — | `elixir_db.database.read_pool.active`, `….queued`, `….wait`, `….quiesce.duration` |
-| Changes read | `elixir_db.changes.read` | `….duration` |
-| Query execute | `elixir_db.query.execute` | `….duration` |
-| Index build | `elixir_db.index.build` | `….duration` |
-| Replication batch / transfer / checkpoint | matching `elixir_db.replication.*` | matching |
-| Replication remote wire | — | `elixir_db.replication.wire.bytes` + `….wire.codec.duration` |
+| Database open | `vial_keeper.database.open` | `….open.count` |
+| Database command | `vial_keeper.database.command` | `….command.duration` |
+| Admission overload | — | `vial_keeper.database.overload.count` |
+| Admission wait | — | `vial_keeper.database.admission.wait` |
+| Read pool occupancy / wait / exclusive drain | — | `vial_keeper.database.read_pool.active`, `….queued`, `….wait`, `….quiesce.duration` |
+| Changes read | `vial_keeper.changes.read` | `….duration` |
+| Query execute | `vial_keeper.query.execute` | `….duration` |
+| Index build | `vial_keeper.index.build` | `….duration` |
+| Replication batch / transfer / checkpoint | matching `vial_keeper.replication.*` | matching |
+| Replication remote wire | — | `vial_keeper.replication.wire.bytes` + `….wire.codec.duration` |
 | Subscription update / open / overload | `….subscription.update` | matching counters |
-| View update / query | `elixir_db.view.*` | matching |
-| Federation query | `elixir_db.federation.query` | `….duration` |
-| Derived view batch | `elixir_db.derived_view.batch` | `….duration` |
-| HTTP request | `elixir_db.http.request` | `….duration` |
-| Shadow read / route fallback | `elixir_db.shadow.*` | count + duration |
-| Attachment read / write / GC | `elixir_db.attachment.*` | count + duration |
+| View update / query | `vial_keeper.view.*` | matching |
+| Federation query | `vial_keeper.federation.query` | `….duration` |
+| Derived view batch | `vial_keeper.derived_view.batch` | `….duration` |
+| HTTP request | `vial_keeper.http.request` | `….duration` |
+| Shadow read / route fallback | `vial_keeper.shadow.*` | count + duration |
+| Attachment read / write / GC | `vial_keeper.attachment.*` | count + duration |
 
-`error.code` uses stable atoms from `ElixirDB.Error` (e.g.
+`error.code` uses stable atoms from `VialKeeper.Error` (e.g.
 `revision_conflict`). Expected domain errors leave span status UNSET; only
 `internal_error` (and unknown adapter failures) mark ERROR.
 
 ### Attribute allow-list
 
-Owned by `ElixirDB.Observability.Attributes`. Includes `db.uuid` (never the
+Owned by `VialKeeper.Observability.Attributes`. Includes `db.uuid` (never the
 filesystem path), `command.type`, `error.code`, `outcome`, HTTP method/route
 template/status, index/replication/admission/subscription/view/federation
 ids and bounded counts, plus the bounded remote-wire dimensions (`direction`,
@@ -692,7 +692,7 @@ revision bodies, full remote URLs, tokens, or raw codec error text.
 - Outbound replication: current context injected so push jobs share one
   `trace_id` across hosts.
 - Finch client telemetry is bridged to OTel. Bandit server is **not** bridged
-  (would double-span with `elixir_db.http.request`).
+  (would double-span with `vial_keeper.http.request`).
 
 ### Optional in-process snapshot
 
@@ -706,12 +706,12 @@ OTLP collection is configured via `otlp_endpoint` only.
 
 ```text
 [ ] Build release on matching OS/ABI
-[ ] Set ELIXIR_DB_ROOT; first start creates host.toml
+[ ] Set VIAL_KEEPER_ROOT; first start creates host.toml
 [ ] Bind non-loopback only with auth and/or TLS
 [ ] Paste token digests into [auth]; clients use raw tokens
 [ ] Put TLS cert/key under the database root when enabled
 [ ] Register bundles explicitly; do not rely on auto-scan
-[ ] Close before offline copy; copy whole .elixirdb; skip .lease
+[ ] Close before offline copy; copy whole .vialkeeper; skip .lease
 [ ] Disable materialized views before closing their sources
 [ ] Point otlp_endpoint only if a collector is ready
 [ ] Prefer Diagnostics.runtime/0 + integrity-check for support dumps
@@ -722,11 +722,11 @@ OTLP collection is configured via `otlp_endpoint` only.
 Product semantics live in shared services and storage ports. A backend
 replacement should touch only:
 
-- `lib/elixir_db/storage/ports/` contracts and the new backend tree
+- `lib/vial_keeper/storage/ports/` contracts and the new backend tree
 - backend-owned bundle artifact / ownership / capability code
 - physical tests under `test/physical/<backend>/`
 
 Do not reimplement mutation, replication, retention, query, view, or derived
 materialization algorithms inside the backend. For the current SQLite
 implementation notes, see
-[lib/elixir_db/storage/sqlite/BACKEND.md](lib/elixir_db/storage/sqlite/BACKEND.md).
+[lib/vial_keeper/storage/sqlite/BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).

@@ -1,4 +1,4 @@
-defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
+defmodule VialKeeper.EndToEnd.HotJournalRecoveryTest do
   @moduledoc """
   Crash recovery with a hot write-ahead log.
 
@@ -6,8 +6,8 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
   during `apply_local_mutation` is not exercised here — that path shares the test
   VM and is hard to interrupt atomically without racing the commit. Instead this
   test SIGKILLs a child OS process that opened the same file via
-  `ElixirDB.Storage.SQLite.Adapter.open/1` and held an in-flight SQLite write,
-  leaving a real `-wal` beside an ElixirDB-shaped database. Catalog reopen
+  `VialKeeper.Storage.SQLite.Adapter.open/1` and held an in-flight SQLite write,
+  leaving a real `-wal` beside an VialKeeper-shaped database. Catalog reopen
   must recover, preserve the preimage committed document, then prove portability.
   """
   use ExUnit.Case, async: false
@@ -15,22 +15,22 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
   @moduletag :sqlite_physical
   @moduletag :integration
 
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @tag :slow
   test "SIGKILL of Adapter-holding child leaves -wal; reopen recovers; then portable" do
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     File.mkdir_p!(root)
 
-    rel = "e2e-hot-journal-#{System.unique_integer([:positive])}.elixirdb"
+    rel = "e2e-hot-journal-#{System.unique_integer([:positive])}.vialkeeper"
     abs = Path.join(root, rel)
-    sqlite = ElixirDB.TempDatabase.sqlite_path(abs)
+    sqlite = VialKeeper.TempDatabase.sqlite_path(abs)
     wal = sqlite <> "-wal"
-    copy_rel = String.replace_suffix(rel, ".elixirdb", "-copy.elixirdb")
+    copy_rel = String.replace_suffix(rel, ".vialkeeper", "-copy.vialkeeper")
     copy_abs = Path.join(root, copy_rel)
 
     for path <- [abs, copy_abs] do
-      ElixirDB.TempDatabase.cleanup(path)
+      VialKeeper.TempDatabase.cleanup(path)
     end
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
@@ -39,12 +39,12 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(abs)
-      ElixirDB.TempDatabase.cleanup(copy_abs)
+      VialKeeper.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(copy_abs)
     end)
 
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(uuid, %{id: "durable", body: %{"committed" => true}})
+             VialKeeper.Documents.put(uuid, %{id: "durable", body: %{"committed" => true}})
 
     assert :ok = DatabaseCatalog.close(uuid)
 
@@ -71,19 +71,19 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     assert {:ok, _} = DatabaseCatalog.open(uuid)
 
     assert {:ok, %{revision: ^revision, body: %{"committed" => true}}} =
-             ElixirDB.Documents.get(uuid, %{id: "durable"})
+             VialKeeper.Documents.get(uuid, %{id: "durable"})
 
     # In-flight probe mutation from the killed child must not leave a half-applied
-    # ElixirDB document (probe uses a side table / raw SQL, not a document id).
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
-             ElixirDB.Documents.get(uuid, %{id: "in-flight"})
+    # VialKeeper document (probe uses a side table / raw SQL, not a document id).
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
+             VialKeeper.Documents.get(uuid, %{id: "in-flight"})
 
     assert {:ok, %{ok: true}} =
              DatabaseCatalog.command(uuid, {:command, :integrity_check, %{}})
 
     # Touched write clears leftover WAL files after recovery and checkpoint.
     assert {:ok, %{revision: post}} =
-             ElixirDB.Documents.put(uuid, %{
+             VialKeeper.Documents.put(uuid, %{
                id: "after-recovery",
                body: %{"recovered" => true}
              })
@@ -99,10 +99,10 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     assert restored.database_uuid == uuid
 
     assert {:ok, %{revision: ^revision, body: %{"committed" => true}}} =
-             ElixirDB.Documents.get(uuid, %{id: "durable"})
+             VialKeeper.Documents.get(uuid, %{id: "durable"})
 
     assert {:ok, %{revision: ^post, body: %{"recovered" => true}}} =
-             ElixirDB.Documents.get(uuid, %{id: "after-recovery"})
+             VialKeeper.Documents.get(uuid, %{id: "after-recovery"})
 
     assert {:ok, %{ok: true}} =
              DatabaseCatalog.command(uuid, {:command, :integrity_check, %{}})
@@ -114,31 +114,31 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
     _ = File.rm(ready)
     _ = File.rm(pid_file)
 
-    # Child OS process opens via Adapter.open (same entry ElixirDB uses), begins a
+    # Child OS process opens via Adapter.open (same entry VialKeeper uses), begins a
     # write, signals readiness while -wal exists, then sleeps until SIGKILL.
     script = """
     ready = #{inspect(ready)}
     pid_file = #{inspect(pid_file)}
     path = #{inspect(sqlite_path)}
     File.write!(pid_file, System.pid())
-    {:ok, _} = Application.ensure_all_started(:elixir_db)
-    {:ok, adapter} = ElixirDB.Storage.SQLite.Adapter.open(path)
-    :ok = ElixirDB.Storage.SQLite.Connection.execute(adapter.conn, "PRAGMA wal_autocheckpoint=0")
-    :ok = ElixirDB.Storage.SQLite.Connection.execute(adapter.conn, "BEGIN IMMEDIATE")
+    {:ok, _} = Application.ensure_all_started(:vial_keeper)
+    {:ok, adapter} = VialKeeper.Storage.SQLite.Adapter.open(path)
+    :ok = VialKeeper.Storage.SQLite.Connection.execute(adapter.conn, "PRAGMA wal_autocheckpoint=0")
+    :ok = VialKeeper.Storage.SQLite.Connection.execute(adapter.conn, "BEGIN IMMEDIATE")
     :ok =
-      ElixirDB.Storage.SQLite.Connection.execute(
+      VialKeeper.Storage.SQLite.Connection.execute(
         adapter.conn,
         "CREATE TABLE IF NOT EXISTS __hot_journal_probe(x INTEGER)"
       )
     :ok =
-      ElixirDB.Storage.SQLite.Connection.execute(
+      VialKeeper.Storage.SQLite.Connection.execute(
         adapter.conn,
         "INSERT INTO __hot_journal_probe VALUES (1)"
       )
-    :ok = ElixirDB.Storage.SQLite.Connection.execute(adapter.conn, "COMMIT")
-    :ok = ElixirDB.Storage.SQLite.Connection.execute(adapter.conn, "BEGIN IMMEDIATE")
+    :ok = VialKeeper.Storage.SQLite.Connection.execute(adapter.conn, "COMMIT")
+    :ok = VialKeeper.Storage.SQLite.Connection.execute(adapter.conn, "BEGIN IMMEDIATE")
     :ok =
-      ElixirDB.Storage.SQLite.Connection.execute(
+      VialKeeper.Storage.SQLite.Connection.execute(
         adapter.conn,
         "INSERT INTO __hot_journal_probe VALUES (2)"
       )
@@ -200,6 +200,6 @@ defmodule ElixirDB.EndToEnd.HotJournalRecoveryTest do
   end
 
   defp wait_until(fun, message) do
-    ElixirDB.Eventual.eventually(fun, timeout: 15_000, message: message)
+    VialKeeper.Eventual.eventually(fun, timeout: 15_000, message: message)
   end
 end

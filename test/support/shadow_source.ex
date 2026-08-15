@@ -1,13 +1,13 @@
-defmodule ElixirDB.ShadowSource do
+defmodule VialKeeper.ShadowSource do
   @moduledoc "Opens and tears down ordinary source databases for shadow tests."
 
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Shadow.RouteTable
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Shadow.RouteTable
 
   @spec open!(binary()) :: {binary(), binary()}
   def open!(prefix) when is_binary(prefix) do
-    source_uuid = ElixirDB.UUID.v4()
-    path = "#{prefix}-#{System.unique_integer([:positive])}.elixirdb"
+    source_uuid = VialKeeper.UUID.v4()
+    path = "#{prefix}-#{System.unique_integer([:positive])}.vialkeeper"
     {:ok, _} = DatabaseCatalog.create(path, %{database_uuid: source_uuid})
     {:ok, _} = DatabaseCatalog.open(source_uuid)
     {source_uuid, path}
@@ -20,7 +20,7 @@ defmodule ElixirDB.ShadowSource do
     _ = DatabaseCatalog.unregister(source_uuid)
 
     if is_binary(path) do
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end
 
     :ok

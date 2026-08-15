@@ -1,7 +1,7 @@
-defmodule ElixirDB.TestSupport.AdmissionGenerators do
+defmodule VialKeeper.TestSupport.AdmissionGenerators do
   @moduledoc "StreamData generators for admission policy and scheduler properties."
 
-  alias ElixirDB.Runtime.{AdmissionPolicy, ServiceClass}
+  alias VialKeeper.Runtime.{AdmissionPolicy, ServiceClass}
 
   @reserved_keys [
     :foreground_reserved_slots,

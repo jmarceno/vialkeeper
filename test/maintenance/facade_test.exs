@@ -1,17 +1,17 @@
-defmodule ElixirDB.Maintenance.FacadeTest do
+defmodule VialKeeper.Maintenance.FacadeTest do
   @moduledoc "Covers the application facade for database maintenance operations."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Error
-  alias ElixirDB.Maintenance
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Documents
+  alias VialKeeper.Error
+  alias VialKeeper.Maintenance
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   test "unknown databases return typed errors and invalid compact requests are rejected" do
-    uuid = ElixirDB.UUID.v4()
+    uuid = VialKeeper.UUID.v4()
 
     assert {:error, %Error{}} = Maintenance.compact(uuid, %{})
     assert {:error, %Error{}} = Maintenance.integrity_check(uuid)
@@ -21,7 +21,7 @@ defmodule ElixirDB.Maintenance.FacadeTest do
   end
 
   test "compact returns the public retention stats shape" do
-    path = "maintenance-facade-#{System.unique_integer([:positive])}.elixirdb"
+    path = "maintenance-facade-#{System.unique_integer([:positive])}.vialkeeper"
     assert {:ok, identity} = DatabaseCatalog.create(path)
     uuid = identity.database_uuid
 
@@ -65,7 +65,7 @@ defmodule ElixirDB.Maintenance.FacadeTest do
   defp cleanup(uuid, path) do
     _ = DatabaseCatalog.close(uuid)
     _ = DatabaseCatalog.unregister(uuid)
-    root = ElixirDB.Config.database_root()
-    ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+    root = VialKeeper.Config.database_root()
+    VialKeeper.TempDatabase.cleanup(Path.join(root, path))
   end
 end

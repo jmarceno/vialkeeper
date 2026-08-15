@@ -1,4 +1,4 @@
-defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
+defmodule VialKeeper.Observability.NoNetworkWhenUnconfiguredTest do
   @moduledoc """
   With no otlp_endpoint configured in host.toml, the app
   wires NO exporter and opens no collector connection; with one set, the OTLP
@@ -18,7 +18,7 @@ defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
   @project_root Path.expand("../..", __DIR__)
 
   defp fresh_root do
-    Path.join(System.tmp_dir!(), "elixirdb-nonet-#{System.unique_integer([:positive])}")
+    Path.join(System.tmp_dir!(), "vialkeeper-nonet-#{System.unique_integer([:positive])}")
   end
 
   test "otlp_endpoint unset: app starts, no exporter is wired, exporter app never starts" do
@@ -36,7 +36,7 @@ defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
       System.cmd("mix", ["run", "-e", script],
         cd: @project_root,
         stderr_to_stdout: true,
-        env: %{"MIX_ENV" => "dev", "ELIXIR_DB_ROOT" => root}
+        env: %{"MIX_ENV" => "dev", "VIAL_KEEPER_ROOT" => root}
       )
 
     _ = File.rm_rf(root)
@@ -66,7 +66,7 @@ defmodule ElixirDB.Observability.NoNetworkWhenUnconfiguredTest do
       System.cmd("mix", ["run", "--no-start", "-e", script],
         cd: @project_root,
         stderr_to_stdout: true,
-        env: %{"MIX_ENV" => "dev", "ELIXIR_DB_ROOT" => root}
+        env: %{"MIX_ENV" => "dev", "VIAL_KEEPER_ROOT" => root}
       )
 
     _ = File.rm_rf(root)

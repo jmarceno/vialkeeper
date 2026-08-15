@@ -1,12 +1,12 @@
-defmodule ElixirDB.TestRevisionId do
+defmodule VialKeeper.TestRevisionId do
   @moduledoc "Test helper for calculating revisions with shared fixture history IDs."
 
-  alias ElixirDB.Attachments.Manifest
-  alias ElixirDB.RevisionFixtures
-  alias ElixirDB.Revisions.Id
+  alias VialKeeper.Attachments.Manifest
+  alias VialKeeper.RevisionFixtures
+  alias VialKeeper.Revisions.Id
 
   @spec calculate(binary(), binary() | nil, boolean(), map() | nil, Manifest.t() | map()) ::
-          {:ok, binary()} | {:error, ElixirDB.Error.t()}
+          {:ok, binary()} | {:error, VialKeeper.Error.t()}
   def calculate(document_id, parent, deleted, body, attachments \\ %{}) do
     Id.calculate(
       document_id,
@@ -19,7 +19,7 @@ defmodule ElixirDB.TestRevisionId do
   end
 
   @spec calculate(binary(), binary(), binary() | nil, boolean(), map() | nil, Manifest.t() | map()) ::
-          {:ok, binary()} | {:error, ElixirDB.Error.t()}
+          {:ok, binary()} | {:error, VialKeeper.Error.t()}
   def calculate(document_id, history_id, parent, deleted, body, attachments) do
     Id.calculate(document_id, history_id, parent, deleted, body, attachments)
   end

@@ -1,35 +1,35 @@
-defmodule ElixirDB.Shadow.RemoteReplicationE2ETest do
+defmodule VialKeeper.Shadow.RemoteReplicationE2ETest do
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Attachments
-  alias ElixirDB.Replication.Profile
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Shadow.{ReadRouter, RemoteEndpoint, Replicator, RouteTable, Worker}
-  alias ElixirDB.TestServer
+  alias VialKeeper.Attachments
+  alias VialKeeper.Replication.Profile
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Shadow.{ReadRouter, RemoteEndpoint, Replicator, RouteTable, Worker}
+  alias VialKeeper.TestServer
 
   @moduletag :integration
 
   setup do
     prefix = "shadow-remote-e2e-#{System.unique_integer([:positive])}"
-    source_path = prefix <> ".elixirdb"
+    source_path = prefix <> ".vialkeeper"
     worker_storage_root = prefix <> "-worker"
-    source_uuid = ElixirDB.UUID.v4()
-    shadow_uuid = ElixirDB.UUID.v4()
-    operation_id = ElixirDB.UUID.v4()
-    root = ElixirDB.Config.database_root()
+    source_uuid = VialKeeper.UUID.v4()
+    shadow_uuid = VialKeeper.UUID.v4()
+    operation_id = VialKeeper.UUID.v4()
+    root = VialKeeper.Config.database_root()
     source_absolute = Path.join(root, source_path)
     source_blob_root = Path.join(source_absolute, "blobs")
     control_token = prefix <> "-control-token"
     control_token_digest = :crypto.hash(:sha256, control_token) |> Base.encode16(case: :lower)
-    previous_worker = Application.get_env(:elixir_db, :shadow_worker, [])
+    previous_worker = Application.get_env(:vial_keeper, :shadow_worker, [])
 
-    ElixirDB.TempDatabase.cleanup(source_absolute)
+    VialKeeper.TempDatabase.cleanup(source_absolute)
 
     assert {:ok, source} = DatabaseCatalog.create(source_path, %{database_uuid: source_uuid})
     server = TestServer.start_supervised!()
 
     Application.put_env(
-      :elixir_db,
+      :vial_keeper,
       :shadow_worker,
       enabled: true,
       storage_root: worker_storage_root,
@@ -52,11 +52,11 @@ defmodule ElixirDB.Shadow.RemoteReplicationE2ETest do
 
     on_exit(fn ->
       _ = Worker.destroy(Map.take(request, ["source_uuid", "generation"]))
-      Application.put_env(:elixir_db, :shadow_worker, previous_worker)
+      Application.put_env(:vial_keeper, :shadow_worker, previous_worker)
       _ = DatabaseCatalog.close(source_uuid)
       _ = DatabaseCatalog.unregister(source_uuid)
-      ElixirDB.TempDatabase.cleanup(source_absolute)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, worker_storage_root))
+      VialKeeper.TempDatabase.cleanup(source_absolute)
+      VialKeeper.TempDatabase.cleanup(Path.join(root, worker_storage_root))
       RouteTable.delete(source_uuid)
     end)
 
@@ -86,7 +86,7 @@ defmodule ElixirDB.Shadow.RemoteReplicationE2ETest do
              Attachments.upload_stream(source.database_uuid, [payload])
 
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(source.database_uuid, %{
+             VialKeeper.Documents.put(source.database_uuid, %{
                "id" => "attached",
                "body" => %{"source" => "remote"},
                "attachments" => %{

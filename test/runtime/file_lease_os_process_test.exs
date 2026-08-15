@@ -1,4 +1,4 @@
-defmodule ElixirDB.Storage.SQLite.OwnershipOsProcessTest do
+defmodule VialKeeper.Storage.SQLite.OwnershipOsProcessTest do
   @moduledoc """
   Gap D3: lease exclusion across real OS processes (not same-BEAM GenServers).
 
@@ -7,16 +7,16 @@ defmodule ElixirDB.Storage.SQLite.OwnershipOsProcessTest do
   """
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.Ownership
+  alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.Storage.SQLite.Ownership
 
   @moduletag :sqlite_physical
   @moduletag :os_process
   @moduletag :slow
 
   setup do
-    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-os-lease")
-    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
+    {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-os-lease")
+    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
     :ok = Adapter.close(adapter)
 
@@ -25,7 +25,7 @@ defmodule ElixirDB.Storage.SQLite.OwnershipOsProcessTest do
 
     on_exit(fn ->
       _ = File.write(stop, "stop")
-      ElixirDB.TempDatabase.cleanup(bundle_path)
+      VialKeeper.TempDatabase.cleanup(bundle_path)
       _ = File.rm(ready)
       _ = File.rm(stop)
     end)
@@ -47,7 +47,7 @@ defmodule ElixirDB.Storage.SQLite.OwnershipOsProcessTest do
     ready = #{inspect(ready)}
     stop = #{inspect(stop)}
 
-    case GenServer.start(ElixirDB.Storage.SQLite.Ownership, path) do
+    case GenServer.start(VialKeeper.Storage.SQLite.Ownership, path) do
       {:ok, lease} ->
         File.write!(ready, "HELD:" <> to_string(:os.getpid()))
 
@@ -79,7 +79,7 @@ defmodule ElixirDB.Storage.SQLite.OwnershipOsProcessTest do
       end)
 
     ready_body =
-      ElixirDB.Eventual.eventually(
+      VialKeeper.Eventual.eventually(
         fn ->
           case File.read(ready) do
             {:ok, "HELD:" <> _ = body} -> {:ok, body}
@@ -95,7 +95,7 @@ defmodule ElixirDB.Storage.SQLite.OwnershipOsProcessTest do
     assert child_os_pid != parent_os_pid
     assert String.match?(child_os_pid, ~r/^\d+$/)
 
-    assert {:error, %ElixirDB.Error{code: :database_in_use, retryable: true}} =
+    assert {:error, %VialKeeper.Error{code: :database_in_use, retryable: true}} =
              GenServer.start(Ownership, path)
 
     File.write!(stop, "stop")

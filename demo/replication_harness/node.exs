@@ -1,10 +1,10 @@
-Application.put_env(:elixir_db, :observability_dashboard, true)
+Application.put_env(:vial_keeper, :observability_dashboard, true)
 
 dashboard_reader = %{
-  id: :elixir_db_demo_dashboard_reader,
+  id: :vial_keeper_demo_dashboard_reader,
   module: :otel_metric_reader,
   config: %{
-    exporter: {ElixirDB.Observability.Dashboard, %{}},
+    exporter: {VialKeeper.Observability.Dashboard, %{}},
     export_interval_ms: 1_000
   }
 }
@@ -17,14 +17,14 @@ Application.put_env(
   [dashboard_reader | Enum.reject(configured_readers, &(&1[:id] == dashboard_reader.id))]
 )
 
-defmodule ElixirDB.ReplicationHarness.Node do
-  alias ElixirDB.Runtime.DatabaseCatalog
+defmodule VialKeeper.ReplicationHarness.Node do
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @poll_interval 100
 
   def main([mode]) when mode in ["web", "cli", "worker"] do
     configure_runtime!(mode)
-    {:ok, _} = Application.ensure_all_started(:elixir_db)
+    {:ok, _} = Application.ensure_all_started(:vial_keeper)
 
     case mode do
       "web" -> web_node()
@@ -38,23 +38,23 @@ defmodule ElixirDB.ReplicationHarness.Node do
 
   defp configure_runtime!(mode) do
     root = database_root()
-    port = System.fetch_env!("ELIXIR_DB_PORT") |> String.to_integer()
+    port = System.fetch_env!("VIAL_KEEPER_PORT") |> String.to_integer()
 
-    Application.put_env(:elixir_db, :database_root, root)
-    Application.put_env(:elixir_db, :listener, ip: {127, 0, 0, 1}, port: port)
+    Application.put_env(:vial_keeper, :database_root, root)
+    Application.put_env(:vial_keeper, :listener, ip: {127, 0, 0, 1}, port: port)
 
     case mode do
       "web" ->
-        Application.put_env(:elixir_db, :auth, auth_config())
-        Application.put_env(:elixir_db, :shadow_controller, shadow_controller_config())
+        Application.put_env(:vial_keeper, :auth, auth_config())
+        Application.put_env(:vial_keeper, :shadow_controller, shadow_controller_config())
 
       "cli" ->
-        Application.put_env(:elixir_db, :auth, auth_config())
+        Application.put_env(:vial_keeper, :auth, auth_config())
 
       "worker" ->
-        Application.put_env(:elixir_db, :auth, enabled: false, token_digests: [])
+        Application.put_env(:vial_keeper, :auth, enabled: false, token_digests: [])
 
-        Application.put_env(:elixir_db, :shadow_worker,
+        Application.put_env(:vial_keeper, :shadow_worker,
           enabled: true,
           storage_root: "shadows",
           control_token_digests: [digest(control_token())],
@@ -78,7 +78,7 @@ defmodule ElixirDB.ReplicationHarness.Node do
     b = create!("web-b.db")
 
     assert_ok!(
-      ElixirDB.Documents.put(a.database_uuid, %{
+      VialKeeper.Documents.put(a.database_uuid, %{
         id: "seed",
         body: %{"source" => "Client A", "message" => "Seeded by the harness", "n" => 0}
       })
@@ -158,7 +158,7 @@ defmodule ElixirDB.ReplicationHarness.Node do
   defp cli_node do
     cli_config = System.fetch_env!("DEMO_C_CONFIG")
     ready_config = System.fetch_env!("DEMO_READY_CONFIG")
-    port = System.fetch_env!("ELIXIR_DB_PORT")
+    port = System.fetch_env!("VIAL_KEEPER_PORT")
     c = create!("native-c.db")
     endpoint = "http://127.0.0.1:#{port}"
 
@@ -170,7 +170,7 @@ defmodule ElixirDB.ReplicationHarness.Node do
 
     IO.puts("Elixir native client started")
     IO.puts("  Database C: #{c.database_uuid}")
-    IO.puts("  Native changes feed: ElixirDB.Changes.wait/2")
+    IO.puts("  Native changes feed: VialKeeper.Changes.wait/2")
     IO.puts("  Waiting for A → C replication…")
 
     wait_for_file!(ready_config, 120_000)
@@ -189,7 +189,7 @@ defmodule ElixirDB.ReplicationHarness.Node do
       "control_endpoint" => endpoint,
       "control_token" => control_token(),
       "database_root" => database_root(),
-      "port" => System.fetch_env!("ELIXIR_DB_PORT") |> String.to_integer(),
+      "port" => System.fetch_env!("VIAL_KEEPER_PORT") |> String.to_integer(),
       "pid" => System.pid()
     })
 
@@ -198,7 +198,7 @@ defmodule ElixirDB.ReplicationHarness.Node do
   end
 
   defp print_changes(uuid, since) do
-    case ElixirDB.Changes.wait(uuid, %{since: since, limit: 100, wait_ms: 30_000}) do
+    case VialKeeper.Changes.wait(uuid, %{since: since, limit: 100, wait_ms: 30_000}) do
       {:ok, %{results: changes, last_sequence: last_sequence}} ->
         Enum.each(changes, fn change ->
           IO.puts(
@@ -210,7 +210,7 @@ defmodule ElixirDB.ReplicationHarness.Node do
 
         print_changes(uuid, max(since, last_sequence))
 
-      {:error, %ElixirDB.Error{} = error} ->
+      {:error, %VialKeeper.Error{} = error} ->
         IO.puts(:stderr, "[native-c] changes feed error code=#{error.code}: #{error.message}")
         Process.sleep(@poll_interval)
         print_changes(uuid, since)
@@ -240,7 +240,7 @@ defmodule ElixirDB.ReplicationHarness.Node do
       }
     }
 
-    case ElixirDB.Replication.JobManager.put(source_uuid, definition) do
+    case VialKeeper.Replication.JobManager.put(source_uuid, definition) do
       {:ok, %{job_id: job_id}} -> job_id
       {:error, error} -> raise "could not enable replication: #{inspect(error)}"
     end
@@ -323,7 +323,7 @@ defmodule ElixirDB.ReplicationHarness.Node do
   end
 
   defp server_url do
-    port = System.fetch_env!("ELIXIR_DB_PORT")
+    port = System.fetch_env!("VIAL_KEEPER_PORT")
     "http://127.0.0.1:#{port}"
   end
 
@@ -331,7 +331,7 @@ defmodule ElixirDB.ReplicationHarness.Node do
     System.get_env("DEMO_SOURCE_ENDPOINT", server_url())
   end
 
-  defp database_root, do: System.fetch_env!("ELIXIR_DB_ROOT") |> Path.expand()
+  defp database_root, do: System.fetch_env!("VIAL_KEEPER_ROOT") |> Path.expand()
 
   defp write_json!(path, value) do
     File.mkdir_p!(Path.dirname(path))
@@ -394,4 +394,4 @@ defmodule ElixirDB.ReplicationHarness.Node do
   end
 end
 
-ElixirDB.ReplicationHarness.Node.main(System.argv())
+VialKeeper.ReplicationHarness.Node.main(System.argv())

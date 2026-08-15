@@ -1,11 +1,11 @@
-defmodule ElixirDB.Replication.ZstdFrameTest do
+defmodule VialKeeper.Replication.ZstdFrameTest do
   @moduledoc "Structural coverage for exactly one ordinary Zstandard frame."
 
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias ElixirDB.Error
-  alias ElixirDB.Replication.ZstdFrame
+  alias VialKeeper.Error
+  alias VialKeeper.Replication.ZstdFrame
 
   @magic <<0x28, 0xB5, 0x2F, 0xFD>>
 

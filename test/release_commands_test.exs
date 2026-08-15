@@ -1,12 +1,12 @@
-defmodule ElixirDB.ReleaseCommandsTest do
+defmodule VialKeeper.ReleaseCommandsTest do
   @moduledoc """
-  `ElixirDB.ReleaseCommands.token/0` and `generate_token/0` (`AUTH-002`):
+  `VialKeeper.ReleaseCommands.token/0` and `generate_token/0` (`AUTH-002`):
   the generated token is 256-bit random hex, and the digest is the SHA-256 of
   the raw token, matching what the AuthPlug compares against.
   """
   use ExUnit.Case, async: true
 
-  alias ElixirDB.ReleaseCommands
+  alias VialKeeper.ReleaseCommands
 
   test "generate_token returns a 64-character lowercase hex raw token" do
     {raw, _digest} = ReleaseCommands.generate_token()

@@ -1,4 +1,4 @@
-defmodule ElixirDB.TestSupport.GarbageGenerators do
+defmodule VialKeeper.TestSupport.GarbageGenerators do
   @moduledoc """
   Depth-bounded StreamData generators for adversarial public-input testing.
   """

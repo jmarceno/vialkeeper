@@ -1,17 +1,17 @@
-defmodule ElixirDB.Runtime.SubscriptionCommandsTest do
+defmodule VialKeeper.Runtime.SubscriptionCommandsTest do
   @moduledoc "Covers database-owner subscription command behavior."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   setup do
-    rel = "subscription-cmd-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    rel = "subscription-cmd-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     abs = Path.join(root, rel)
-    ElixirDB.TempDatabase.cleanup(abs)
+    VialKeeper.TempDatabase.cleanup(abs)
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
     uuid = identity.database_uuid
@@ -19,7 +19,7 @@ defmodule ElixirDB.Runtime.SubscriptionCommandsTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(abs)
     end)
 
     assert {:ok, _} =
@@ -51,7 +51,7 @@ defmodule ElixirDB.Runtime.SubscriptionCommandsTest do
   end
 
   test "owner rejects forbidden subscription snapshot fields", %{uuid: uuid} do
-    assert {:error, %ElixirDB.Error{code: :invalid_request, message: message}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request, message: message}} =
              DatabaseCatalog.command(
                uuid,
                {:command, :execute_subscription_snapshot,
@@ -82,7 +82,7 @@ defmodule ElixirDB.Runtime.SubscriptionCommandsTest do
   end
 
   test "owner rejects invalid revision batch requests", %{uuid: uuid} do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              DatabaseCatalog.command(
                uuid,
                {:command, :get_revisions_batch,

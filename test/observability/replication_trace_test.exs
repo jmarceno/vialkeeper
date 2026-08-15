@@ -1,39 +1,39 @@
-defmodule ElixirDB.Observability.ReplicationTraceTest do
+defmodule VialKeeper.Observability.ReplicationTraceTest do
   @moduledoc """
   Replication trace continuity.
 
-    * A one-shot local replication emits one `elixir_db.replication.batch`
-      span wrapping the cycle, with both `elixir_db.replication.checkpoint`
+    * A one-shot local replication emits one `vial_keeper.replication.batch`
+      span wrapping the cycle, with both `vial_keeper.replication.checkpoint`
       spans as children sharing the same trace_id (§6.2).
     * The batch duration histogram records the real `revisions_written`.
     * A one-shot REMOTE replication propagates the trace via W3C traceparent:
-      the wire `elixir_db.http.request` spans on the target server share the
+      the wire `vial_keeper.http.request` spans on the target server share the
       worker's trace_id (§6.2, §9 two-server criterion — both servers run in
       this VM, so both span sets land in the same in-memory exporter).
   """
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.Observability.{TestExporter, TestMetricExporter}
-  alias ElixirDB.Replication.Id
-  alias ElixirDB.Replication.JobManager
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Replication.RemoteEndpoint
-  alias ElixirDB.Replication.Worker
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
+  alias VialKeeper.Eventual
+  alias VialKeeper.Observability.{TestExporter, TestMetricExporter}
+  alias VialKeeper.Replication.Id
+  alias VialKeeper.Replication.JobManager
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Replication.RemoteEndpoint
+  alias VialKeeper.Replication.Worker
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
 
   setup do
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     prefix = "obs-repl-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -44,7 +44,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
         _ = disable_jobs(identity.database_uuid)
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -64,7 +64,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
   end
 
   test "local one-shot replication: batch and checkpoint spans share one trace", %{a: a, b: b} do
-    assert {:ok, _} = ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
+    assert {:ok, _} = VialKeeper.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     {:ok, source} = LocalEndpoint.new(a.database_uuid)
     {:ok, target} = LocalEndpoint.new(b.database_uuid)
@@ -73,7 +73,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
       Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -93,19 +93,19 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
 
     batch_spans =
-      TestExporter.spans_named("elixir_db.replication.batch")
+      TestExporter.spans_named("vial_keeper.replication.batch")
       |> Enum.filter(fn s ->
         TestExporter.span_attr(s, :"replication.id") == replication_id
       end)
 
     checkpoint_spans =
-      TestExporter.spans_named("elixir_db.replication.checkpoint")
+      TestExporter.spans_named("vial_keeper.replication.checkpoint")
       |> Enum.filter(fn s ->
         TestExporter.span_attr(s, :"replication.id") == replication_id
       end)
 
     assert [_] = batch_spans,
-           "expected exactly one batch span, got: #{inspect(Enum.map(TestExporter.spans_named("elixir_db.replication.batch"), & &1[:span_id]))}"
+           "expected exactly one batch span, got: #{inspect(Enum.map(TestExporter.spans_named("vial_keeper.replication.batch"), & &1[:span_id]))}"
 
     batch = hd(batch_spans)
 
@@ -127,7 +127,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     # The batch duration histogram carries the real revisions_written (§5.6).
     Eventual.eventually(
       fn ->
-        TestMetricExporter.datapoints("elixir_db.replication.batch.duration")
+        TestMetricExporter.datapoints("vial_keeper.replication.batch.duration")
         |> Enum.any?(fn dp ->
           TestMetricExporter.datapoint_attr(dp, :"replication.id") == replication_id and
             TestMetricExporter.datapoint_attr(dp, :revisions_written) == 1
@@ -145,13 +145,13 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     server_a = TestServer.start_supervised!()
     server_b = TestServer.start_supervised!()
 
-    assert {:ok, _} = ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
+    assert {:ok, _} = VialKeeper.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     {:ok, replication_id} =
       Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -176,7 +176,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     # effects: the document arrives on the target, then the batch span is
     # recorded (it ends after checkpoint_source).
     Eventual.eventually(
-      fn -> match?({:ok, _}, ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})) end,
+      fn -> match?({:ok, _}, VialKeeper.Documents.get(b.database_uuid, %{id: "doc"})) end,
       timeout: 15_000,
       message: "replicated document never arrived on the target"
     )
@@ -184,7 +184,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     batch_spans =
       Eventual.eventually(
         fn ->
-          case TestExporter.spans_named("elixir_db.replication.batch")
+          case TestExporter.spans_named("vial_keeper.replication.batch")
                |> Enum.filter(fn s ->
                  TestExporter.span_attr(s, :"replication.id") == replication_id
                end) do
@@ -203,7 +203,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     # proof the traceparent was injected outbound and extracted inbound (§6.2,
     # §9). Job-management routes (/replications) are excluded.
     wire_spans =
-      TestExporter.spans_named("elixir_db.http.request")
+      TestExporter.spans_named("vial_keeper.http.request")
       |> Enum.filter(fn s ->
         route = TestExporter.span_attr(s, :"http.route")
         is_binary(route) and String.contains?(route, "/replication/")
@@ -211,7 +211,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
 
     assert wire_spans != [],
            "no http.request spans for replication wire routes; got routes: " <>
-             "#{inspect(Enum.map(TestExporter.spans_named("elixir_db.http.request"), &TestExporter.span_attr(&1, :"http.route")))}"
+             "#{inspect(Enum.map(TestExporter.spans_named("vial_keeper.http.request"), &TestExporter.span_attr(&1, :"http.route")))}"
 
     # Handshake wire calls (identity/get_checkpoint) happen BEFORE the batch
     # span starts (§5.6: the batch wraps read→diff→fetch→import→checkpoint),
@@ -235,10 +235,10 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     payload = String.duplicate("wire-metric-payload-", 512)
 
     assert {:ok, %{blob: digest}} =
-             ElixirDB.Attachments.upload_stream(a.database_uuid, [payload])
+             VialKeeper.Attachments.upload_stream(a.database_uuid, [payload])
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{
+             VialKeeper.Documents.put(a.database_uuid, %{
                id: "wire-metrics-doc",
                body: %{"ok" => true},
                attachments: %{
@@ -252,7 +252,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     {:ok, replication_id} = Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -272,31 +272,31 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
 
     Eventual.eventually(
-      fn -> TestMetricExporter.datapoints("elixir_db.replication.batch.duration") != [] end,
+      fn -> TestMetricExporter.datapoints("vial_keeper.replication.batch.duration") != [] end,
       timeout: 8_000,
       message: "local batch duration was not exported"
     )
 
-    assert TestMetricExporter.datapoints("elixir_db.replication.wire.bytes") == []
-    assert TestMetricExporter.datapoints("elixir_db.replication.wire.codec.duration") == []
+    assert TestMetricExporter.datapoints("vial_keeper.replication.wire.bytes") == []
+    assert TestMetricExporter.datapoints("vial_keeper.replication.wire.codec.duration") == []
 
     # A remote one-shot replication records every JSON and blob boundary.
     server_b = TestServer.start_supervised!()
-    c_path = "obs-repl-wire-#{System.unique_integer([:positive])}-c.elixirdb"
+    c_path = "obs-repl-wire-#{System.unique_integer([:positive])}-c.vialkeeper"
     {:ok, c} = DatabaseCatalog.create(c_path)
 
     on_exit(fn ->
       _ = disable_jobs(c.database_uuid)
       _ = DatabaseCatalog.close(c.database_uuid)
       _ = DatabaseCatalog.unregister(c.database_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), c_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), c_path))
     end)
 
     {:ok, remote_replication_id} =
       Id.calculate(a.database_uuid, c.database_uuid, "push", "one_shot")
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         c.database_uuid,
         remote_replication_id
@@ -322,12 +322,12 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     :gen_statem.cast(remote_pid, :start)
     assert_receive {:DOWN, ^remote_ref, :process, ^remote_pid, :normal}, 15_000
 
-    assert {:ok, _} = ElixirDB.Documents.get(c.database_uuid, %{id: "wire-metrics-doc"})
+    assert {:ok, _} = VialKeeper.Documents.get(c.database_uuid, %{id: "wire-metrics-doc"})
 
     wire_datapoints =
       Eventual.eventually(
         fn ->
-          datapoints = TestMetricExporter.datapoints("elixir_db.replication.wire.bytes")
+          datapoints = TestMetricExporter.datapoints("vial_keeper.replication.wire.bytes")
           kinds = MapSet.new(datapoints, &TestMetricExporter.datapoint_attr(&1, :payload_kind))
 
           if MapSet.subset?(MapSet.new([:json, :blob]), kinds), do: {:ok, datapoints}, else: false
@@ -358,7 +358,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
       Eventual.eventually(
         fn ->
           datapoints =
-            TestMetricExporter.datapoints("elixir_db.replication.wire.codec.duration")
+            TestMetricExporter.datapoints("vial_keeper.replication.wire.codec.duration")
 
           operations = MapSet.new(datapoints, &TestMetricExporter.datapoint_attr(&1, :operation))
 
@@ -380,10 +380,10 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
 
   test "transfer span records bounded measurements without private data", %{a: a, b: b} do
     assert {:ok, %{blob: digest}} =
-             ElixirDB.Attachments.upload_stream(a.database_uuid, ["abc"])
+             VialKeeper.Attachments.upload_stream(a.database_uuid, ["abc"])
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{
+             VialKeeper.Documents.put(a.database_uuid, %{
                id: "transfer-observability",
                body: %{"ok" => true},
                attachments: %{
@@ -396,7 +396,7 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     {:ok, replication_id} = Id.calculate(a.database_uuid, b.database_uuid, "push", "one_shot")
 
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         a.database_uuid,
         b.database_uuid,
         replication_id
@@ -416,18 +416,18 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
 
     [transfer] =
-      TestExporter.spans_named("elixir_db.replication.transfer")
+      TestExporter.spans_named("vial_keeper.replication.transfer")
       |> Enum.filter(&(TestExporter.span_attr(&1, :"replication.id") == replication_id))
 
     [batch] =
-      TestExporter.spans_named("elixir_db.replication.batch")
+      TestExporter.spans_named("vial_keeper.replication.batch")
       |> Enum.filter(&(TestExporter.span_attr(&1, :"replication.id") == replication_id))
 
     assert transfer[:trace_id] == batch[:trace_id]
     assert transfer[:parent_span_id] == batch[:span_id]
 
     [blob_transfer] =
-      TestExporter.spans_named("elixir_db.replication.blob.transfer")
+      TestExporter.spans_named("vial_keeper.replication.blob.transfer")
       |> Enum.filter(&(TestExporter.span_attr(&1, :"replication.id") == replication_id))
 
     assert blob_transfer[:trace_id] == transfer[:trace_id]
@@ -461,8 +461,8 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     end
 
     exported_transfer_spans =
-      TestExporter.spans_named("elixir_db.replication.transfer") ++
-        TestExporter.spans_named("elixir_db.replication.blob.transfer")
+      TestExporter.spans_named("vial_keeper.replication.transfer") ++
+        TestExporter.spans_named("vial_keeper.replication.blob.transfer")
 
     for sentinel <- [digest, "transfer-observability", "file.txt"] do
       refute inspect(exported_transfer_spans) =~ sentinel,
@@ -472,11 +472,11 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     Eventual.eventually(
       fn ->
         duration_datapoints =
-          TestMetricExporter.datapoints("elixir_db.replication.transfer.duration")
+          TestMetricExporter.datapoints("vial_keeper.replication.transfer.duration")
 
         duration_datapoint = List.first(duration_datapoints)
 
-        count_datapoints = TestMetricExporter.datapoints("elixir_db.replication.transfer.count")
+        count_datapoints = TestMetricExporter.datapoints("vial_keeper.replication.transfer.count")
 
         is_map(duration_datapoint) and
           Enum.any?(count_datapoints, &((&1[:value] || 0) >= 1)) and
@@ -497,10 +497,10 @@ defmodule ElixirDB.Observability.ReplicationTraceTest do
     )
 
     transfer_metric_text =
-      (TestMetricExporter.datapoints("elixir_db.replication.transfer.duration") ++
-         TestMetricExporter.datapoints("elixir_db.replication.transfer.count") ++
-         TestMetricExporter.datapoints("elixir_db.replication.blob.transfer.duration") ++
-         TestMetricExporter.datapoints("elixir_db.replication.blob.transfer.count"))
+      (TestMetricExporter.datapoints("vial_keeper.replication.transfer.duration") ++
+         TestMetricExporter.datapoints("vial_keeper.replication.transfer.count") ++
+         TestMetricExporter.datapoints("vial_keeper.replication.blob.transfer.duration") ++
+         TestMetricExporter.datapoints("vial_keeper.replication.blob.transfer.count"))
       |> inspect()
 
     for sentinel <- [digest, "transfer-observability", "file.txt"] do

@@ -1,7 +1,7 @@
-defmodule ElixirDB.Runtime.DiagnosticsTest do
+defmodule VialKeeper.Runtime.DiagnosticsTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Diagnostics
+  alias VialKeeper.Diagnostics
 
   test "runtime/0 records release metadata including the app version" do
     metadata = Diagnostics.runtime()
@@ -20,8 +20,8 @@ defmodule ElixirDB.Runtime.DiagnosticsTest do
     assert metadata.app_version == Diagnostics.app_version()
   end
 
-  test "app_version/0 matches the loaded :elixir_db application vsn" do
+  test "app_version/0 matches the loaded :vial_keeper application vsn" do
     assert Diagnostics.app_version() ==
-             :elixir_db |> Application.spec(:vsn) |> List.to_string()
+             :vial_keeper |> Application.spec(:vsn) |> List.to_string()
   end
 end

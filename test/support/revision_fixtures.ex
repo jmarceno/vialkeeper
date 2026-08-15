@@ -1,4 +1,4 @@
-defmodule ElixirDB.RevisionFixtures do
+defmodule VialKeeper.RevisionFixtures do
   @moduledoc "Shared deterministic history identifiers for revision tests."
 
   @shared_history_id "11111111-1111-4111-8111-111111111111"

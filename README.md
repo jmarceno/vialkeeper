@@ -1,18 +1,18 @@
-# ElixirDB
+# VialKeeper
 
-ElixirDB is a revisioned JSON document database that runs as one Elixir OTP
-application. Each database is a portable `.elixirdb` bundle on disk. Clients
+VialKeeper is a revisioned JSON document database that runs as one Elixir OTP
+application. Each database is a portable `.vialkeeper` bundle on disk. Clients
 talk JSON over HTTP `/v1`, or call Elixir modules in-process. Clients submit
 structured requests rather than backend engine commands.
 
 ```text
-Your app  ──HTTP /v1──►  ElixirDB host
+Your app  ──HTTP /v1──►  VialKeeper host
                 │
                 ▼
          database root/
            host.toml
            registrations.json
-           notes.elixirdb/      # portable database bundle
+           notes.vialkeeper/      # portable database bundle
              <backend data>     # backend-owned durable artifact
              blobs/             # attachment representations (digest.blob)
              tmp/               # incomplete uploads (not authoritative)
@@ -61,11 +61,11 @@ Deploy, auth, TLS, copy/move, leases, and host limits: see
 
 Default listener: `http://127.0.0.1:4000` (loopback, auth off). When
 `[auth] enabled = true` in `host.toml`, send the raw token from
-`bin/elixir_db token`.
+`bin/vial_keeper token`.
 
 ```typescript
 const baseUrl = "http://127.0.0.1:4000";
-const bearerToken = process.env.ELIXIRDB_TOKEN; // only if auth is enabled
+const bearerToken = process.env.VIALKEEPER_TOKEN; // only if auth is enabled
 
 type Envelope<T> = {
   request_id: string;
@@ -92,7 +92,7 @@ async function postJson<T>(
 }
 
 const created = await postJson<{ database_uuid: string }>("/v1/databases", {
-  path: "notes.elixirdb",
+  path: "notes.vialkeeper",
 });
 if (created.status !== 201 || !created.envelope.data) {
     throw new Error(created.envelope.error?.message ?? "creation failed");
@@ -121,10 +121,10 @@ in the JSON body, not the URL path. Unknown JSON fields are rejected.
 ### Elixir (in-process)
 
 ```elixir
-alias ElixirDB.Runtime.DatabaseCatalog
-alias ElixirDB.Documents
+alias VialKeeper.Runtime.DatabaseCatalog
+alias VialKeeper.Documents
 
-{:ok, %{database_uuid: uuid}} = DatabaseCatalog.create("notes.elixirdb")
+{:ok, %{database_uuid: uuid}} = DatabaseCatalog.create("notes.vialkeeper")
 
 {:ok, %{revision: rev1}} =
   Documents.put(uuid, %{id: "note-1", body: %{"title" => "Hello", "done" => false}})
@@ -148,13 +148,13 @@ Embed as a Mix dependency:
 # mix.exs
 defp deps do
   [
-    {:elixir_db, path: "../elixirdb"}
-    # or: {:elixir_db, git: "https://git.example.com/owner/elixirdb.git"}
+    {:vial_keeper, path: "../vialkeeper"}
+    # or: {:vial_keeper, git: "https://git.example.com/owner/vialkeeper.git"}
   ]
 end
 ```
 
-Databases live under `ELIXIR_DB_ROOT` (default `./data`). Paths in create /
+Databases live under `VIAL_KEEPER_ROOT` (default `./data`). Paths in create /
 register are **relative** to that root.
 
 ---
@@ -270,7 +270,7 @@ FTS modes: `all`, `any`, `phrase`, `prefix`. List / delete / rebuild:
 `GET …/indexes`, `DELETE …/indexes/:index_id`,
 `POST …/indexes/:index_id/rebuild`.
 
-**Elixir:** `ElixirDB.Query.execute/2`, `explain/2`, `create_index/2`,
+**Elixir:** `VialKeeper.Query.execute/2`, `explain/2`, `create_index/2`,
 `list_indexes/1`, `delete_index/2`, `rebuild_index/2`.
 
 ---
@@ -296,7 +296,7 @@ const stream = await fetch(`${baseUrl}/v1/databases/${uuid}/changes/stream`, {
 });
 ```
 
-**Elixir:** `ElixirDB.Changes.read/2`, `wait/2`.
+**Elixir:** `VialKeeper.Changes.read/2`, `wait/2`.
 
 ---
 
@@ -338,7 +338,7 @@ const download = await fetch(`${baseUrl}/v1/databases/${uuid}/attachments/get`, 
 });
 ```
 
-**Elixir:** `ElixirDB.Attachments.upload_stream/2`, `open_stream/2`. Attachment
+**Elixir:** `VialKeeper.Attachments.upload_stream/2`, `open_stream/2`. Attachment
 names are metadata, not filesystem paths.
 
 ---
@@ -380,7 +380,7 @@ const res = await fetch(`${baseUrl}/v1/databases/${uuid}/query/stream`, {
 Subscription state is **not** stored in the database. After reopen, clients
 must subscribe again.
 
-**Elixir:** `ElixirDB.Query.Subscriptions.open/3`, `next/2`, `close/1`.
+**Elixir:** `VialKeeper.Query.Subscriptions.open/3`, `next/2`, `close/1`.
 
 ---
 
@@ -408,7 +408,7 @@ await postJson(`/v1/databases/${uuid}/views/${view.envelope.data!.view_id}/query
 Other routes: `GET …/views`, `DELETE …/views/:view_id`,
 `POST …/views/:view_id/rebuild`.
 
-**Elixir:** `ElixirDB.Views.create/2`, `query/3`, `rebuild/2`, `list/1`,
+**Elixir:** `VialKeeper.Views.create/2`, `query/3`, `rebuild/2`, `list/1`,
 `delete/2`.
 
 ---
@@ -447,15 +447,15 @@ Control: `GET …/replications`, `…/:job_id`, `…/start`, `…/cancel`,
 after restart. One-shot jobs end in `completed` or `failed`.
 
 Remote peer HTTP (`/v1/databases/:uuid/replication/…`) sends Zstandard-compressed
-JSON (`Content-Encoding: zstd`, `x-elixirdb-uncompressed-length`). Public document
+JSON (`Content-Encoding: zstd`, `x-vialkeeper-uncompressed-length`). Public document
 and job APIs stay uncompressed JSON even when a client sends `Accept-Encoding: zstd`.
 Attachment payloads transfer as the stored representation byte for byte — raw or
 Zstandard as chosen at ingest — using
-`application/vnd.elixirdb.blob-representation` without HTTP `Content-Encoding`,
+`application/vnd.vialkeeper.blob-representation` without HTTP `Content-Encoding`,
 and the target installs them without probing or re-encoding.
 
-**Elixir:** `ElixirDB.Replication.JobManager` (`put/2`, `start/2`, …) and
-`ElixirDB.Replication`.
+**Elixir:** `VialKeeper.Replication.JobManager` (`put/2`, `start/2`, …) and
+`VialKeeper.Replication`.
 
 Operator details (job states, transfer limits, peer auth):
 [Operations.md](Operations.md).
@@ -473,7 +473,7 @@ asynchronous and returns `202`.
 await putJson(`/v1/databases/${sourceUuid}/shadow`, {
   enabled: true,
   location: "worker-a",
-  attachment_location: "/srv/elixirdb/cas",
+  attachment_location: "/srv/vialkeeper/cas",
 });
 
 const status = await getJson(`/v1/databases/${sourceUuid}/shadow`);
@@ -488,14 +488,14 @@ Zstandard JSON wire.
 
 Once a generation is ready, eligible point, bulk, and attachment reads default
 to eventual routing only while the public source is an ordinary open database.
-Send `x-elixirdb-read-consistency: primary` to bypass the
+Send `x-vialkeeper-read-consistency: primary` to bypass the
 shadow explicitly. Reads are served by the exact generation snapshot when
 possible. A lagging document, revision, or attachment miss falls back to the
 source for that request and keeps the route. Transport, protocol, identity, or
 store failure falls back once, retires only that exact snapshot, notifies
 reconciliation, and reports
-`x-elixirdb-read-served-by: source`. Shadow-served responses report `shadow`
-plus the durable `x-elixirdb-source-watermark`. Attachment downloads use the
+`x-vialkeeper-read-served-by: source`. Shadow-served responses report `shadow`
+plus the durable `x-vialkeeper-source-watermark`. Attachment downloads use the
 same consistency choice and stream from the configured external CAS without
 copying attachment bytes into the shadow bundle. A closed or unregistered
 source is never served from a shadow.
@@ -534,13 +534,13 @@ Named saved queries live in `host.toml` (`[[federation.saved_query]]`). List /
 run: `GET /v1/federation/saved-queries`,
 `POST /v1/federation/saved-queries/execute` with `{ name, limit?, bookmark? }`.
 
-**Elixir:** `ElixirDB.Federation.query/1`, `ElixirDB.Federation.SavedQueries`.
+**Elixir:** `VialKeeper.Federation.query/1`, `VialKeeper.Federation.SavedQueries`.
 
 ---
 
 ## Materialized federated views
 
-A materialized view is a **derived** `.elixirdb` bundle. Generated documents
+A materialized view is a **derived** `.vialkeeper` bundle. Generated documents
 are externally read-only (`derived_database_read_only`). You can still query,
 index, add local views, and use it as a replication **source**.
 
@@ -548,7 +548,7 @@ index, add local views, and use it as a replication **source**.
 flowchart TB
   S1[Source A] --> M[Materializer]
   S2[Source B] --> M
-  M --> D["Derived .elixirdb<br/>generated docs"]
+  M --> D["Derived .vialkeeper<br/>generated docs"]
 ```
 
 ```typescript
@@ -573,10 +573,10 @@ await postJson(`/v1/materialized-views/${derived}/disable`, {});
 ```
 
 Disable materialization before closing a source or the derived database.
-Bundles are usually created under `_derived/…derived.elixirdb` (path is a
+Bundles are usually created under `_derived/…derived.vialkeeper` (path is a
 hint; `database_kind = derived` in metadata is authoritative).
 
-**Elixir:** `ElixirDB.MaterializedViews.create/1`, `enable/1`, `disable/1`,
+**Elixir:** `VialKeeper.MaterializedViews.create/1`, `enable/1`, `disable/1`,
 `refresh/1`, `rebuild/1`, `get/1`, `list/0`.
 
 ---
@@ -604,9 +604,9 @@ When a limit is hit you typically see `resource_limit`, `payload_too_large`,
 
 1. Stop writers and continuous jobs that need the DB open.
 2. `POST /v1/databases/:uuid/close`.
-3. Copy the whole `.elixirdb` directory with normal OS tools.
+3. Copy the whole `.vialkeeper` directory with normal OS tools.
 4. On the destination: place the bundle, then `POST /v1/registrations`
-   with `{ "path": "notes.elixirdb" }`.
+   with `{ "path": "notes.vialkeeper" }`.
 
 Do not treat `.lease` as data. Copying keeps the same UUID — two copies on
 one host are rejected. Full procedures:
@@ -636,7 +636,7 @@ one host are rejected. Full procedures:
 
 ---
 
-## Developing ElixirDB itself
+## Developing VialKeeper itself
 
 ```sh
 mix deps.get
@@ -653,8 +653,8 @@ when changing storage, runtime, domain, or product-model code:
 mix storage.boundary_check
 ```
 
-`ElixirDB.Diagnostics.runtime/0` reports application / Elixir / OTP /
+`VialKeeper.Diagnostics.runtime/0` reports application / Elixir / OTP /
 selected-backend / protocol versions from the assembled BEAMs.
 
 Operator runbook: [Operations.md](Operations.md). SQLite backend layout and
-controls: [lib/elixir_db/storage/sqlite/BACKEND.md](lib/elixir_db/storage/sqlite/BACKEND.md).
+controls: [lib/vial_keeper/storage/sqlite/BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).

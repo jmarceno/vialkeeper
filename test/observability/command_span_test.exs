@@ -1,34 +1,34 @@
-defmodule ElixirDB.Observability.CommandSpanTest do
+defmodule VialKeeper.Observability.CommandSpanTest do
   @moduledoc """
-  Assert the `elixir_db.database.command` span is emitted with the
+  Assert the `vial_keeper.database.command` span is emitted with the
   correct `command.type`; that a `:revision_conflict` put sets `error.code`
   and keeps status UNSET; that an injected `:internal_error` sets status
   ERROR; and parentage (no HTTP → root span).
   """
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Observability.Instrumentation.Database
-  alias ElixirDB.Observability.TestExporter
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Observability.Instrumentation.Database
+  alias VialKeeper.Observability.TestExporter
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   setup do
     # The catalog creates the file under database_root; clean up THERE (a
     # leftover from a previous run would fail create with "database file
     # already exists").
-    rel = "obs-cmd-#{System.unique_integer([:positive])}.elixirdb"
+    rel = "obs-cmd-#{System.unique_integer([:positive])}.vialkeeper"
     {:ok, %{database_uuid: uuid}} = DatabaseCatalog.create(rel)
 
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      root = ElixirDB.Config.database_root()
-      ElixirDB.TempDatabase.cleanup(Path.join(root, rel))
+      root = VialKeeper.Config.database_root()
+      VialKeeper.TempDatabase.cleanup(Path.join(root, rel))
     end)
 
     [uuid: uuid]
@@ -43,7 +43,7 @@ defmodule ElixirDB.Observability.CommandSpanTest do
   end
 
   test "a get emits a command span with command.type: :get", %{uuid: uuid} do
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
              Documents.get(uuid, %{id: "nope"})
 
     span = command_span(uuid, &(TestExporter.span_attr(&1, :"command.type") == :get))
@@ -66,7 +66,7 @@ defmodule ElixirDB.Observability.CommandSpanTest do
 
     # Stale-parent retry of the already-committed rev2 body: TX-006 requires a
     # revision_conflict (not a replay) once a later revision changed state.
-    assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+    assert {:error, %VialKeeper.Error{code: :revision_conflict}} =
              Documents.put(uuid, %{id: "doc-c", if_revision: rev1, body: %{"v" => 2}})
 
     span =
@@ -81,7 +81,7 @@ defmodule ElixirDB.Observability.CommandSpanTest do
   end
 
   test "an injected :internal_error sets span status ERROR", %{uuid: uuid} do
-    error = ElixirDB.Error.internal_error("injected for the error-policy test")
+    error = VialKeeper.Error.internal_error("injected for the error-policy test")
 
     assert {:error, ^error} =
              Database.command(
@@ -104,7 +104,7 @@ defmodule ElixirDB.Observability.CommandSpanTest do
   defp command_span(uuid, predicate) when is_function(predicate, 1) do
     Eventual.eventually(
       fn ->
-        TestExporter.spans_named("elixir_db.database.command")
+        TestExporter.spans_named("vial_keeper.database.command")
         |> Enum.find(fn span ->
           TestExporter.span_attr(span, :"db.uuid") == uuid and predicate.(span)
         end)

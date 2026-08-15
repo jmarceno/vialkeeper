@@ -1,20 +1,20 @@
-defmodule ElixirDB.HTTP.MaterializedViewsTest do
+defmodule VialKeeper.HTTP.MaterializedViewsTest do
   @moduledoc "Covers the materialized-view HTTP contract and generated-data access."
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.JSON.Canonical
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
+  alias VialKeeper.Eventual
+  alias VialKeeper.JSON.Canonical
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
 
   test "creates, reports, queries, indexes, and views generated documents" do
     server = TestServer.start_supervised!()
-    source_path = "http-materialized-source-#{System.unique_integer([:positive])}.elixirdb"
-    source_abs = Path.join(ElixirDB.Config.database_root(), source_path)
-    ElixirDB.TempDatabase.cleanup(source_abs)
-    on_exit(fn -> ElixirDB.TempDatabase.cleanup(source_abs) end)
+    source_path = "http-materialized-source-#{System.unique_integer([:positive])}.vialkeeper"
+    source_abs = Path.join(VialKeeper.Config.database_root(), source_path)
+    VialKeeper.TempDatabase.cleanup(source_abs)
+    on_exit(fn -> VialKeeper.TempDatabase.cleanup(source_abs) end)
 
     assert {:ok, %{status: 201, body: %{"data" => %{"database_uuid" => source_uuid}}}} =
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => source_path})
@@ -49,7 +49,7 @@ defmodule ElixirDB.HTTP.MaterializedViewsTest do
 
     assert created["database_kind"] == "derived"
     assert created["database_path"] =~ "_derived/http-sales--"
-    assert created["database_path"] =~ ".derived.elixirdb"
+    assert created["database_path"] =~ ".derived.vialkeeper"
     assert is_binary(created["definition_digest"])
 
     assert {:ok, %{status: 200, body: %{"data" => listed}}} =
@@ -155,10 +155,10 @@ defmodule ElixirDB.HTTP.MaterializedViewsTest do
 
   test "enforces lifecycle actions and disabled refresh rules" do
     server = TestServer.start_supervised!()
-    source_path = "http-materialized-lifecycle-#{System.unique_integer([:positive])}.elixirdb"
-    source_abs = Path.join(ElixirDB.Config.database_root(), source_path)
-    ElixirDB.TempDatabase.cleanup(source_abs)
-    on_exit(fn -> ElixirDB.TempDatabase.cleanup(source_abs) end)
+    source_path = "http-materialized-lifecycle-#{System.unique_integer([:positive])}.vialkeeper"
+    source_abs = Path.join(VialKeeper.Config.database_root(), source_path)
+    VialKeeper.TempDatabase.cleanup(source_abs)
+    on_exit(fn -> VialKeeper.TempDatabase.cleanup(source_abs) end)
 
     assert {:ok, %{status: 201, body: %{"data" => %{"database_uuid" => source_uuid}}}} =
              Req.post(server.base_url <> "/v1/databases", json: %{"path" => source_path})
@@ -233,7 +233,7 @@ defmodule ElixirDB.HTTP.MaterializedViewsTest do
       disable_derived(uuid)
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
   end
 

@@ -1,11 +1,11 @@
-defmodule ElixirDB.Observability.TestMetricExporter do
+defmodule VialKeeper.Observability.TestMetricExporter do
   @moduledoc """
   In-memory metric exporter for tests. Implements the exporter callbacks the
   `otel_metric_reader` invokes (`init/1`, `export/4`, `force_flush/0`,
   `shutdown/1`) and stores every exported metric in an ETS table.
 
   The test metric reader (see `config/test.exs`) exports periodically, so
-  tests poll with `ElixirDB.Eventual`. Compiled only under `:test` (it lives
+  tests poll with `VialKeeper.Eventual`. Compiled only under `:test` (it lives
   under `test/support`).
   """
 

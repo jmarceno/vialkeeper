@@ -1,18 +1,18 @@
-defmodule ElixirDB.Shadow.StorageContractTest do
+defmodule VialKeeper.Shadow.StorageContractTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Storage.AdapterCase
-  alias ElixirDB.Storage.Memory.Adapter, as: MemoryAdapter
-  alias ElixirDB.Storage.Ports.Access
-  alias ElixirDB.Storage.SQLite.Adapter, as: SQLiteAdapter
-  alias ElixirDB.TempDatabase
-  alias ElixirDB.UUID
+  alias VialKeeper.Storage.AdapterCase
+  alias VialKeeper.Storage.Memory.Adapter, as: MemoryAdapter
+  alias VialKeeper.Storage.Ports.Access
+  alias VialKeeper.Storage.SQLite.Adapter, as: SQLiteAdapter
+  alias VialKeeper.TempDatabase
+  alias VialKeeper.UUID
 
   @adapters [MemoryAdapter, SQLiteAdapter]
 
   test "shadow metadata is durable and source origins are monotonic" do
     for adapter_mod <- @adapters do
-      {:ok, bundle_path} = TempDatabase.create(prefix: "elixirdb-shadow-contract")
+      {:ok, bundle_path} = TempDatabase.create(prefix: "vialkeeper-shadow-contract")
       path = AdapterCase.adapter_path(adapter_mod, bundle_path)
       source_uuid = UUID.v4()
       shadow_uuid = UUID.v4()

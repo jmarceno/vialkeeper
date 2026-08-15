@@ -1,22 +1,22 @@
-defmodule ElixirDB.HTTP.ShadowControlTest do
+defmodule VialKeeper.HTTP.ShadowControlTest do
   use ExUnit.Case, async: false
 
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.Replication.WireCompression
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.Replication.WireCompression
 
   test "control plane requires its own bearer token and compresses JSON" do
     token = "shadow-control-#{System.unique_integer([:positive])}"
     digest = :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
-    previous = Application.get_env(:elixir_db, :shadow_worker, [])
+    previous = Application.get_env(:vial_keeper, :shadow_worker, [])
 
-    Application.put_env(:elixir_db, :shadow_worker,
+    Application.put_env(:vial_keeper, :shadow_worker,
       enabled: true,
       storage_root: "shadows",
       control_token_digests: [digest],
       allowed_attachment_roots: []
     )
 
-    on_exit(fn -> Application.put_env(:elixir_db, :shadow_worker, previous) end)
+    on_exit(fn -> Application.put_env(:vial_keeper, :shadow_worker, previous) end)
 
     unauthenticated = Plug.Test.conn(:get, "/v1/control-plane/capabilities", "") |> Router.call([])
 

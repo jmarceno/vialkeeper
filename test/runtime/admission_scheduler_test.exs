@@ -1,4 +1,4 @@
-defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
+defmodule VialKeeper.Runtime.AdmissionSchedulerTest do
   @moduledoc """
   Unit and integration tests for per-database admission scheduling, capacity,
   and owner execution paths.
@@ -7,9 +7,9 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
+  alias VialKeeper.Eventual
 
-  alias ElixirDB.Runtime.{
+  alias VialKeeper.Runtime.{
     AdmissionModel,
     AdmissionPolicy,
     AdmissionSupervisor,
@@ -23,16 +23,16 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
   @default_keyword AdmissionPolicy.default_keyword()
 
   setup do
-    uuid = ElixirDB.UUID.v4()
+    uuid = VialKeeper.UUID.v4()
     limit = 8
     policy = policy_for_limit(limit)
     {:ok, supervisor} = AdmissionSupervisor.start_link({uuid, limit, policy})
 
     on_exit(fn ->
-      Application.delete_env(:elixir_db, :admitted_command_sync)
-      Application.delete_env(:elixir_db, :admission_test_hook)
-      Application.delete_env(:elixir_db, :executor_drain_sync_timeout)
-      Application.delete_env(:elixir_db, :executor_drain_sync_retry_ms)
+      Application.delete_env(:vial_keeper, :admitted_command_sync)
+      Application.delete_env(:vial_keeper, :admission_test_hook)
+      Application.delete_env(:vial_keeper, :executor_drain_sync_timeout)
+      Application.delete_env(:vial_keeper, :executor_drain_sync_retry_ms)
 
       if Process.alive?(supervisor) do
         try do
@@ -83,12 +83,12 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
   defp with_sync_gate(fun) do
     ref = make_ref()
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {self(), ref})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {self(), ref})
 
     try do
       fun.(ref)
     after
-      Application.delete_env(:elixir_db, :admitted_command_sync)
+      Application.delete_env(:vial_keeper, :admitted_command_sync)
     end
   end
 
@@ -138,7 +138,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
   describe "capacity rejection" do
     test "rejects when admission limit is saturated" do
       small_limit = 1
-      small_uuid = ElixirDB.UUID.v4()
+      small_uuid = VialKeeper.UUID.v4()
       policy = policy_for_limit(small_limit)
       {:ok, sup} = AdmissionSupervisor.start_link({small_uuid, small_limit, policy})
 
@@ -154,7 +154,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
       {holder, ref} = hold_permit(small_uuid)
 
-      assert {:error, %ElixirDB.Error{code: :database_overloaded}} =
+      assert {:error, %VialKeeper.Error{code: :database_overloaded}} =
                DatabaseAdmission.execute_owner(small_uuid, :foreground, fn -> :never end)
 
       release_holder(holder, ref)
@@ -183,7 +183,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
       hook_ref = make_ref()
       request_ref = make_ref()
       deadline = System.monotonic_time(:millisecond) + 1
-      :ok = Application.put_env(:elixir_db, :admission_test_hook, {parent, hook_ref})
+      :ok = Application.put_env(:vial_keeper, :admission_test_hook, {parent, hook_ref})
       {holder, holder_ref} = hold_permit(uuid)
 
       caller =
@@ -212,7 +212,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
       assert_receive {
                        :expired_result,
                        {:error,
-                        %ElixirDB.Error{
+                        %VialKeeper.Error{
                           code: :internal_error,
                           details: %{reason: :deadline_exhausted}
                         }}
@@ -228,7 +228,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
     test "execute timeout retains permit until executor completes" do
       small_limit = 1
-      small_uuid = ElixirDB.UUID.v4()
+      small_uuid = VialKeeper.UUID.v4()
       policy = policy_for_limit(small_limit)
       {:ok, sup} = AdmissionSupervisor.start_link({small_uuid, small_limit, policy})
 
@@ -268,7 +268,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
       assert_receive {:execute_result, result}, 2_000
 
-      assert match?({:error, %ElixirDB.Error{}}, result) or
+      assert match?({:error, %VialKeeper.Error{}}, result) or
                match?({:exit, {:timeout, _}}, result)
 
       ref = Process.monitor(caller)
@@ -277,7 +277,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
       assert {:ok, stats} = DatabaseAdmission.stats(small_uuid)
       assert stats.total_occupancy == 1
 
-      assert {:error, %ElixirDB.Error{code: :database_overloaded}} =
+      assert {:error, %VialKeeper.Error{code: :database_overloaded}} =
                DatabaseAdmission.execute_owner(small_uuid, :foreground, fn -> :never end)
 
       send(executor_pid, :finish)
@@ -480,9 +480,9 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
   describe "owner restart" do
     test "owner crash recreates admission with no stale permit or queued work" do
-      relative = "admission-owner-restart-#{System.unique_integer([:positive])}.elixirdb"
-      absolute = Path.join(ElixirDB.Config.database_root(), relative)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      relative = "admission-owner-restart-#{System.unique_integer([:positive])}.vialkeeper"
+      absolute = Path.join(VialKeeper.Config.database_root(), relative)
+      VialKeeper.TempDatabase.cleanup(absolute)
 
       assert {:ok, identity} = DatabaseCatalog.create(relative)
       uuid = identity.database_uuid
@@ -491,14 +491,14 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
       on_exit(fn ->
         _ = DatabaseCatalog.close(uuid)
         _ = DatabaseCatalog.unregister(uuid)
-        ElixirDB.TempDatabase.cleanup(absolute)
+        VialKeeper.TempDatabase.cleanup(absolute)
       end)
 
       [{owner_before, _}] =
-        Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+        Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid})
 
       [{admission_before, _}] =
-        Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid})
+        Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:admission, uuid})
 
       parent = self()
       gate = make_ref()
@@ -524,7 +524,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
       Eventual.eventually(
         fn ->
-          case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid}) do
+          case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:admission, uuid}) do
             [{pid, _}] when pid != admission_before -> Process.alive?(pid)
             _ -> false
           end
@@ -590,7 +590,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
         await_stats(uuid, &(&1.queued_foreground == 1))
 
-        Application.delete_env(:elixir_db, :admitted_command_sync)
+        Application.delete_env(:vial_keeper, :admitted_command_sync)
 
         Process.exit(executor_pid, :kill)
         ref = Process.monitor(executor_pid)
@@ -648,7 +648,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
         refute_receive {:successor, ^successor_ref}, 0
 
-        Application.delete_env(:elixir_db, :admitted_command_sync)
+        Application.delete_env(:vial_keeper, :admitted_command_sync)
         GenServer.cast(FakeOwner.via(uuid), :release_block)
 
         assert_receive {:successor, ^successor_ref}, 2_000
@@ -665,8 +665,8 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
     test "drain sync timeout retries without granting successor until owner completes", %{
       uuid: uuid
     } do
-      :ok = Application.put_env(:elixir_db, :executor_drain_sync_timeout, 1)
-      :ok = Application.put_env(:elixir_db, :executor_drain_sync_retry_ms, 5)
+      :ok = Application.put_env(:vial_keeper, :executor_drain_sync_timeout, 1)
+      :ok = Application.put_env(:vial_keeper, :executor_drain_sync_retry_ms, 5)
       parent = self()
 
       with_sync_gate(fn gate_ref ->
@@ -703,9 +703,9 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
         refute_receive {:successor, ^successor_ref}, 50
 
-        Application.delete_env(:elixir_db, :admitted_command_sync)
-        Application.delete_env(:elixir_db, :executor_drain_sync_timeout)
-        Application.delete_env(:elixir_db, :executor_drain_sync_retry_ms)
+        Application.delete_env(:vial_keeper, :admitted_command_sync)
+        Application.delete_env(:vial_keeper, :executor_drain_sync_timeout)
+        Application.delete_env(:vial_keeper, :executor_drain_sync_retry_ms)
         GenServer.cast(FakeOwner.via(uuid), :release_block)
 
         assert_receive {:successor, ^successor_ref}, 2_000
@@ -731,7 +731,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
       assert_receive :owner_ran, 2_000
 
       [{admission_pid, _}] =
-        Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid})
+        Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:admission, uuid})
 
       send(admission_pid, {:executor_drain, make_ref()})
 
@@ -753,7 +753,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
     end
 
     test "executor crash after owner call releases permit", %{uuid: uuid} do
-      assert {:error, %ElixirDB.Error{}} =
+      assert {:error, %VialKeeper.Error{}} =
                DatabaseAdmission.execute_owner(uuid, :foreground, fn ->
                  raise "boom"
                end)
@@ -795,17 +795,17 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
         assert_receive :owner_blocked, 2_000
 
         [{admission_pid, _}] =
-          Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid})
+          Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:admission, uuid})
 
         Process.exit(admission_pid, :kill)
         ref = Process.monitor(admission_pid)
         assert_receive {:DOWN, ^ref, :process, ^admission_pid, _}, 2_000
 
-        assert {:error, %ElixirDB.Error{code: :database_closed}} = DatabaseAdmission.stats(uuid)
+        assert {:error, %VialKeeper.Error{code: :database_closed}} = DatabaseAdmission.stats(uuid)
 
         refute GenServer.call(FakeOwner.via(uuid), :owner_idle?, 1_000)
 
-        Application.delete_env(:elixir_db, :admitted_command_sync)
+        Application.delete_env(:vial_keeper, :admitted_command_sync)
         GenServer.cast(FakeOwner.via(uuid), :release_block)
 
         Eventual.eventually(
@@ -845,7 +845,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
       assert {:ok, 1} = DatabaseAdmission.active_count(uuid)
 
       [{admission_pid, _}] =
-        Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid})
+        Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:admission, uuid})
 
       Process.exit(admission_pid, :kill)
       ref = Process.monitor(admission_pid)
@@ -853,7 +853,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
       Eventual.eventually(
         fn ->
-          case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid}) do
+          case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:admission, uuid}) do
             [{pid, _}] when pid != admission_pid -> Process.alive?(pid)
             _ -> false
           end
@@ -961,7 +961,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
       assert :ok = DatabaseAdmission.begin_close(uuid)
       assert {:ok, true} = DatabaseAdmission.closing?(uuid)
 
-      assert {:error, %ElixirDB.Error{code: :database_closed}} =
+      assert {:error, %VialKeeper.Error{code: :database_closed}} =
                DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :never end)
 
       queued =
@@ -969,7 +969,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
           DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :queued end)
         end)
 
-      assert {:error, %ElixirDB.Error{code: :database_closed}} = Task.await(queued, 2_000)
+      assert {:error, %VialKeeper.Error{code: :database_closed}} = Task.await(queued, 2_000)
 
       send(executor_pid, :finish)
       assert :done = Task.await(active, 2_000)
@@ -1071,7 +1071,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
   describe "occupancy bounds" do
     test "concurrent enqueue occupancy never exceeds limit" do
       small_limit = 3
-      small_uuid = ElixirDB.UUID.v4()
+      small_uuid = VialKeeper.UUID.v4()
       policy = policy_for_limit(small_limit)
       {:ok, sup} = AdmissionSupervisor.start_link({small_uuid, small_limit, policy})
 
@@ -1113,7 +1113,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
       await_stats(small_uuid, &(&1.total_occupancy == small_limit))
 
-      assert {:error, %ElixirDB.Error{code: :database_overloaded}} =
+      assert {:error, %VialKeeper.Error{code: :database_overloaded}} =
                GenServer.call(
                  DatabaseAdmission.via(small_uuid),
                  {:acquire, make_ref(), :foreground, deadline, :permit},
@@ -1135,7 +1135,7 @@ defmodule ElixirDB.Runtime.AdmissionSchedulerTest do
 
   describe "deadline budget" do
     test "execute_owner fails immediately when timeout budget is exhausted", %{uuid: uuid} do
-      assert {:error, %ElixirDB.Error{}} =
+      assert {:error, %VialKeeper.Error{}} =
                DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :should_not_run end, 0)
     end
   end
@@ -1222,7 +1222,7 @@ defmodule FakeOwner do
   @moduledoc "Minimal stand-in owner process for admission scheduler tests."
   use GenServer
 
-  alias ElixirDB.Runtime.DatabaseRegistry
+  alias VialKeeper.Runtime.DatabaseRegistry
 
   def start_link(uuid) do
     GenServer.start_link(__MODULE__, uuid, name: via(uuid))

@@ -1,4 +1,4 @@
-defmodule ElixirDB.Safety.ShadowControlContainmentTest do
+defmodule VialKeeper.Safety.ShadowControlContainmentTest do
   @moduledoc """
   Exercises malformed shadow control-plane requests through the real HTTP router.
 
@@ -11,18 +11,18 @@ defmodule ElixirDB.Safety.ShadowControlContainmentTest do
   @moduletag :integration
 
   @control_token "shadow-control-containment-token"
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @identity_fields ~w(source_uuid shadow_uuid generation operation_id)
   @read_paths ~w(reads/document reads/documents/bulk reads/attachment)
 
   setup do
-    previous_shadow_worker = Application.get_env(:elixir_db, :shadow_worker)
+    previous_shadow_worker = Application.get_env(:vial_keeper, :shadow_worker)
     configure_control_auth(previous_shadow_worker)
 
-    path = "shadow-safety-#{System.unique_integer([:positive])}.elixirdb"
+    path = "shadow-safety-#{System.unique_integer([:positive])}.vialkeeper"
     conn = public_json_request(:post, "/v1/databases", %{"path" => path})
 
     assert conn.status == 201
@@ -30,7 +30,7 @@ defmodule ElixirDB.Safety.ShadowControlContainmentTest do
 
     process_pids = %{
       catalog: Process.whereis(DatabaseCatalog),
-      shadow_supervisor: Process.whereis(ElixirDB.Shadow.Supervisor)
+      shadow_supervisor: Process.whereis(VialKeeper.Shadow.Supervisor)
     }
 
     assert Enum.all?(process_pids, fn {_name, pid} -> is_pid(pid) and Process.alive?(pid) end)
@@ -39,7 +39,7 @@ defmodule ElixirDB.Safety.ShadowControlContainmentTest do
       restore_shadow_worker(previous_shadow_worker)
       _ = DatabaseCatalog.close(source_uuid)
       _ = DatabaseCatalog.unregister(source_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     {:ok, process_pids: process_pids, source_uuid: source_uuid}
@@ -190,11 +190,11 @@ defmodule ElixirDB.Safety.ShadowControlContainmentTest do
   defp provision_body(source_uuid, generation) do
     %{
       "source_uuid" => source_uuid,
-      "shadow_uuid" => ElixirDB.UUID.v4(),
+      "shadow_uuid" => VialKeeper.UUID.v4(),
       "generation" => generation,
-      "operation_id" => ElixirDB.UUID.v4(),
+      "operation_id" => VialKeeper.UUID.v4(),
       "attachment_store_type" => "external_cas",
-      "attachment_location" => "/tmp/elixirdb-shadow-safety",
+      "attachment_location" => "/tmp/vialkeeper-shadow-safety",
       "specification_digest" => String.duplicate("a", 64)
     }
   end
@@ -202,9 +202,9 @@ defmodule ElixirDB.Safety.ShadowControlContainmentTest do
   defp read_body(source_uuid, generation) do
     %{
       "source_uuid" => source_uuid,
-      "shadow_uuid" => ElixirDB.UUID.v4(),
+      "shadow_uuid" => VialKeeper.UUID.v4(),
       "generation" => generation,
-      "operation_id" => ElixirDB.UUID.v4(),
+      "operation_id" => VialKeeper.UUID.v4(),
       "id" => "document",
       "name" => "attachment"
     }
@@ -224,17 +224,17 @@ defmodule ElixirDB.Safety.ShadowControlContainmentTest do
   defp wire_request(method, path, nil) do
     method
     |> Plug.Test.conn(path)
-    |> put_headers(ElixirDB.TestReplicationWire.accept_headers())
+    |> put_headers(VialKeeper.TestReplicationWire.accept_headers())
     |> put_control_auth()
     |> Router.call([])
   end
 
   defp wire_request(method, path, body) do
-    encoded = ElixirDB.TestReplicationWire.encode!(body)
+    encoded = VialKeeper.TestReplicationWire.encode!(body)
 
     method
     |> Plug.Test.conn(path, encoded.body)
-    |> put_headers(ElixirDB.TestReplicationWire.json_headers(encoded))
+    |> put_headers(VialKeeper.TestReplicationWire.json_headers(encoded))
     |> put_control_auth()
     |> Router.call([])
   end
@@ -290,7 +290,7 @@ defmodule ElixirDB.Safety.ShadowControlContainmentTest do
   end
 
   defp process_name(:catalog), do: DatabaseCatalog
-  defp process_name(:shadow_supervisor), do: ElixirDB.Shadow.Supervisor
+  defp process_name(:shadow_supervisor), do: VialKeeper.Shadow.Supervisor
 
   defp configure_control_auth(previous) do
     digest = :crypto.hash(:sha256, @control_token) |> Base.encode16(case: :lower)
@@ -300,22 +300,22 @@ defmodule ElixirDB.Safety.ShadowControlContainmentTest do
       |> Kernel.||([])
       |> Keyword.put(:control_token_digests, [digest])
 
-    Application.put_env(:elixir_db, :shadow_worker, next)
+    Application.put_env(:vial_keeper, :shadow_worker, next)
   end
 
-  defp restore_shadow_worker(nil), do: Application.delete_env(:elixir_db, :shadow_worker)
+  defp restore_shadow_worker(nil), do: Application.delete_env(:vial_keeper, :shadow_worker)
 
   defp restore_shadow_worker(previous),
-    do: Application.put_env(:elixir_db, :shadow_worker, previous)
+    do: Application.put_env(:vial_keeper, :shadow_worker, previous)
 
   defp max_bulk_operations,
-    do: ElixirDB.Config.host_limits()[:max_bulk_operations] || 500
+    do: VialKeeper.Config.host_limits()[:max_bulk_operations] || 500
 
   defp response_payload(conn) do
     encoding = conn |> Plug.Conn.get_resp_header("content-encoding") |> List.first()
 
     if is_binary(encoding) and String.contains?(encoding, "zstd") do
-      ElixirDB.TestReplicationWire.decode_response(conn.resp_headers, conn.resp_body)
+      VialKeeper.TestReplicationWire.decode_response(conn.resp_headers, conn.resp_body)
     else
       conn.resp_body
     end

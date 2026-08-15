@@ -1,7 +1,7 @@
-defmodule ElixirDB.Query.PredicateTest do
+defmodule VialKeeper.Query.PredicateTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Query.Predicate
+  alias VialKeeper.Query.Predicate
 
   test "classifies JSON values and compares exact JSON values" do
     assert Predicate.json_type(nil) == :null

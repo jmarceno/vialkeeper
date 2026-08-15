@@ -1,19 +1,19 @@
-defmodule ElixirDB.DerivedView.RuntimeTest do
+defmodule VialKeeper.DerivedView.RuntimeTest do
   @moduledoc "Covers runtime materialization, source changes, and derived-session recovery."
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.DerivedView.{Manager, Worker}
-  alias ElixirDB.Eventual
-  alias ElixirDB.JSON.Canonical
-  alias ElixirDB.MaterializedViews
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TempDatabase
+  alias VialKeeper.DerivedView.{Manager, Worker}
+  alias VialKeeper.Eventual
+  alias VialKeeper.JSON.Canonical
+  alias VialKeeper.MaterializedViews
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TempDatabase
 
   setup do
-    path = "derived-runtime-source-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), path)
+    path = "derived-runtime-source-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), path)
     TempDatabase.cleanup(absolute)
 
     {:ok, source} = DatabaseCatalog.create(path)
@@ -24,7 +24,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
 
   test "rebuilds a source and follows later updates and removals", %{source_uuid: source_uuid} do
     assert {:ok, first} =
-             ElixirDB.Documents.put(source_uuid, %{
+             VialKeeper.Documents.put(source_uuid, %{
                id: "one",
                body: %{"kind" => "sale", "amount" => 2}
              })
@@ -36,7 +36,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
 
     assert Eventual.eventually(
              fn ->
-               case ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id}) do
+               case VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id}) do
                  {:ok, %{body: %{"value" => 2}}} -> true
                  _ -> false
                end
@@ -45,7 +45,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
            )
 
     assert {:ok, updated} =
-             ElixirDB.Documents.put(source_uuid, %{
+             VialKeeper.Documents.put(source_uuid, %{
                id: "one",
                if_revision: first.revision,
                body: %{"kind" => "sale", "amount" => 7}
@@ -53,7 +53,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
 
     assert Eventual.eventually(
              fn ->
-               case ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id}) do
+               case VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id}) do
                  {:ok, %{body: %{"value" => 7}}} -> true
                  _ -> false
                end
@@ -62,13 +62,13 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
            )
 
     assert {:ok, _deleted} =
-             ElixirDB.Documents.delete(source_uuid, %{id: "one", if_revision: updated.revision})
+             VialKeeper.Documents.delete(source_uuid, %{id: "one", if_revision: updated.revision})
 
     assert Eventual.eventually(
              fn ->
                match?(
-                 {:error, %ElixirDB.Error{code: :document_not_found}},
-                 ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id})
+                 {:error, %VialKeeper.Error{code: :document_not_found}},
+                 VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id})
                )
              end,
              message: "materialized removal was not generated"
@@ -93,7 +93,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
     on_exit(fn -> cleanup(derived.database_uuid, derived_bundle) end)
 
     assert {:ok, first} =
-             ElixirDB.Documents.put(source_uuid, %{
+             VialKeeper.Documents.put(source_uuid, %{
                id: "restart",
                body: %{"kind" => "sale", "amount" => 3}
              })
@@ -102,7 +102,10 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
 
     assert Eventual.eventually(
              fn ->
-               match?({:ok, _}, ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id}))
+               match?(
+                 {:ok, _},
+                 VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id})
+               )
              end,
              message: "materializer did not process the first change"
            )
@@ -126,7 +129,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
              )
 
     assert {:ok, _second} =
-             ElixirDB.Documents.put(source_uuid, %{
+             VialKeeper.Documents.put(source_uuid, %{
                id: "restart",
                if_revision: first.revision,
                body: %{"kind" => "sale", "amount" => 9}
@@ -134,7 +137,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
 
     assert Eventual.eventually(
              fn ->
-               case ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id}) do
+               case VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id}) do
                  {:ok, %{body: %{"value" => 9}}} -> true
                  _ -> false
                end
@@ -156,7 +159,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
 
     [{old_tasks, _}] =
       Registry.lookup(
-        ElixirDB.Runtime.DatabaseRegistry,
+        VialKeeper.Runtime.DatabaseRegistry,
         {:derived_task_supervisor, derived.database_uuid}
       )
 
@@ -167,7 +170,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
                with {:ok, worker} <- Worker.pid(derived.database_uuid),
                     [{tasks, _}] <-
                       Registry.lookup(
-                        ElixirDB.Runtime.DatabaseRegistry,
+                        VialKeeper.Runtime.DatabaseRegistry,
                         {:derived_task_supervisor, derived.database_uuid}
                       ) do
                  worker != old_worker and tasks != old_tasks
@@ -212,28 +215,28 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
              message: "manager did not reconstruct durable materializer state"
            )
 
-    assert {:error, %ElixirDB.Error{code: :database_not_closable}} =
+    assert {:error, %VialKeeper.Error{code: :database_not_closable}} =
              Manager.ensure_closable(source_uuid)
   end
 
   test "processes multiple sources in stable order and refreshes grouped output", %{
     source_uuid: first_source_uuid
   } do
-    second_path = "derived-runtime-second-#{System.unique_integer([:positive])}.elixirdb"
-    second_bundle = Path.join(ElixirDB.Config.database_root(), second_path)
+    second_path = "derived-runtime-second-#{System.unique_integer([:positive])}.vialkeeper"
+    second_bundle = Path.join(VialKeeper.Config.database_root(), second_path)
     TempDatabase.cleanup(second_bundle)
     {:ok, second_source} = DatabaseCatalog.create(second_path)
 
     on_exit(fn -> cleanup(second_source.database_uuid, second_bundle) end)
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(first_source_uuid, %{
+             VialKeeper.Documents.put(first_source_uuid, %{
                id: "first",
                body: %{"kind" => "sale", "slot" => 1, "amount" => 2}
              })
 
     assert {:ok, second_put} =
-             ElixirDB.Documents.put(second_source.database_uuid, %{
+             VialKeeper.Documents.put(second_source.database_uuid, %{
                id: "second",
                body: %{"kind" => "sale", "slot" => 2, "amount" => 5}
              })
@@ -250,14 +253,14 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
     }
 
     {:ok, derived} = MaterializedViews.create(request)
-    derived_bundle = Path.join(ElixirDB.Config.database_root(), derived.database_path)
+    derived_bundle = Path.join(VialKeeper.Config.database_root(), derived.database_path)
     on_exit(fn -> cleanup(derived.database_uuid, derived_bundle) end)
 
     generated_id = group_id(["sale"])
 
     assert Eventual.eventually(
              fn ->
-               case ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id}) do
+               case VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id}) do
                  {:ok, %{body: %{"value" => 7.0}}} -> true
                  _ -> false
                end
@@ -266,7 +269,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
            )
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(second_source.database_uuid, %{
+             VialKeeper.Documents.put(second_source.database_uuid, %{
                id: "second",
                if_revision: second_put.revision,
                body: %{"kind" => "sale", "slot" => 2, "amount" => 8}
@@ -274,7 +277,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
 
     assert Eventual.eventually(
              fn ->
-               case ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id}) do
+               case VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id}) do
                  {:ok, %{body: %{"value" => 10.0}}} -> true
                  _ -> false
                end
@@ -288,7 +291,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
     on_exit(fn -> cleanup(derived.database_uuid, derived_bundle) end)
 
     assert {:ok, first} =
-             ElixirDB.Documents.put(source_uuid, %{
+             VialKeeper.Documents.put(source_uuid, %{
                id: "paused",
                body: %{"kind" => "sale", "amount" => 1}
              })
@@ -297,7 +300,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
 
     assert Eventual.eventually(
              fn ->
-               case ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id}) do
+               case VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id}) do
                  {:ok, %{body: %{"value" => 1}}} -> true
                  _ -> false
                end
@@ -313,7 +316,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
              )
 
     assert {:ok, _paused_update} =
-             ElixirDB.Documents.put(source_uuid, %{
+             VialKeeper.Documents.put(source_uuid, %{
                id: "paused",
                if_revision: first.revision,
                body: %{"kind" => "sale", "amount" => 4}
@@ -322,7 +325,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
     assert Eventual.eventually_equal(
              1,
              fn ->
-               case ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id}) do
+               case VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id}) do
                  {:ok, %{body: %{"value" => value}}} -> value
                  _ -> nil
                end
@@ -339,7 +342,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
 
     assert Eventual.eventually(
              fn ->
-               case ElixirDB.Documents.get(derived.database_uuid, %{id: generated_id}) do
+               case VialKeeper.Documents.get(derived.database_uuid, %{id: generated_id}) do
                  {:ok, %{body: %{"value" => 4}}} -> true
                  _ -> false
                end
@@ -356,7 +359,7 @@ defmodule ElixirDB.DerivedView.RuntimeTest do
     }
 
     {:ok, identity} = MaterializedViews.create(request)
-    bundle = Path.join(ElixirDB.Config.database_root(), identity.database_path)
+    bundle = Path.join(VialKeeper.Config.database_root(), identity.database_path)
     {:ok, identity, bundle}
   end
 

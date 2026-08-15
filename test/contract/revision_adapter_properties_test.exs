@@ -1,8 +1,8 @@
 for {name, adapter_module} <- [
-      {"SQLite", ElixirDB.Storage.SQLite.Adapter},
-      {"Memory", ElixirDB.Storage.Memory.Adapter}
+      {"SQLite", VialKeeper.Storage.SQLite.Adapter},
+      {"Memory", VialKeeper.Storage.Memory.Adapter}
     ] do
-  defmodule Module.concat([ElixirDB.Contract, "#{name}RevisionAdapterPropertiesTest"]) do
+  defmodule Module.concat([VialKeeper.Contract, "#{name}RevisionAdapterPropertiesTest"]) do
     @moduledoc """
     Random operation histories produce identical revision trees,
     winners, active conflicts, tombstones, and replay results in the pure model and
@@ -12,13 +12,13 @@ for {name, adapter_module} <- [
     use ExUnit.Case, async: false
     use ExUnitProperties
 
-    alias ElixirDB.ModelGenerators
-    alias ElixirDB.RevisionFixtures
-    alias ElixirDB.RevisionHistoryModel
-    alias ElixirDB.Revisions.{Id, Winner}
-    alias ElixirDB.Storage.AdapterCase
-    alias ElixirDB.Storage.Services
-    alias ElixirDB.Storage.Services.Facts
+    alias VialKeeper.ModelGenerators
+    alias VialKeeper.RevisionFixtures
+    alias VialKeeper.RevisionHistoryModel
+    alias VialKeeper.Revisions.{Id, Winner}
+    alias VialKeeper.Storage.AdapterCase
+    alias VialKeeper.Storage.Services
+    alias VialKeeper.Storage.Services.Facts
 
     @adapter adapter_module
     @moduletag :property
@@ -28,7 +28,7 @@ for {name, adapter_module} <- [
               history <- ModelGenerators.revision_operation_history(),
               max_runs: 40
             ) do
-        {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-props")
+        {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-rev-props")
         path = AdapterCase.adapter_path(@adapter, bundle_path)
         {:ok, adapter} = @adapter.create(path, %{})
 
@@ -48,7 +48,7 @@ for {name, adapter_module} <- [
             _ = @adapter.close(reopened)
           end
         after
-          ElixirDB.TempDatabase.cleanup(bundle_path)
+          VialKeeper.TempDatabase.cleanup(bundle_path)
         end
       end
     end
@@ -62,7 +62,7 @@ for {name, adapter_module} <- [
                 ]),
               max_runs: 25
             ) do
-        {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-resolve")
+        {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-rev-resolve")
         path = AdapterCase.adapter_path(@adapter, bundle_path)
         {:ok, adapter} = @adapter.create(path, %{})
 
@@ -88,7 +88,7 @@ for {name, adapter_module} <- [
             _ = @adapter.close(reopened)
           end
         after
-          ElixirDB.TempDatabase.cleanup(bundle_path)
+          VialKeeper.TempDatabase.cleanup(bundle_path)
         end
       end
     end
@@ -104,7 +104,7 @@ for {name, adapter_module} <- [
         body = Map.put(body, "_v", 1)
         next_body = Map.put(next_body, "_v", 2)
         stale_body = Map.put(stale_body, "_v", 3)
-        {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-stale")
+        {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-rev-stale")
         path = AdapterCase.adapter_path(@adapter, bundle_path)
         {:ok, adapter} = @adapter.create(path, %{})
 
@@ -152,7 +152,7 @@ for {name, adapter_module} <- [
             _ = @adapter.close(reopened)
           end
         after
-          ElixirDB.TempDatabase.cleanup(bundle_path)
+          VialKeeper.TempDatabase.cleanup(bundle_path)
         end
       end
     end
@@ -163,7 +163,7 @@ for {name, adapter_module} <- [
 
       snapshots =
         Enum.map(import_order_permutations(), fn order ->
-          {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-order")
+          {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-rev-order")
           path = AdapterCase.adapter_path(@adapter, bundle_path)
           {:ok, adapter} = @adapter.create(path, %{})
 
@@ -185,7 +185,7 @@ for {name, adapter_module} <- [
               _ = @adapter.close(reopened)
             end
           after
-            ElixirDB.TempDatabase.cleanup(bundle_path)
+            VialKeeper.TempDatabase.cleanup(bundle_path)
           end
         end)
 
@@ -217,7 +217,7 @@ for {name, adapter_module} <- [
     end
 
     test "list_ancestors and get_revision_chains agree on depth-8 chain" do
-      {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-rev-depth8")
+      {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-rev-depth8")
       path = AdapterCase.adapter_path(@adapter, bundle_path)
       {:ok, adapter} = @adapter.create(path, %{})
 
@@ -252,7 +252,7 @@ for {name, adapter_module} <- [
         assert Enum.map(Enum.reverse(ancestors), & &1.revision_id) ++ [leaf] == expected_ids
       after
         _ = @adapter.close(adapter)
-        ElixirDB.TempDatabase.cleanup(bundle_path)
+        VialKeeper.TempDatabase.cleanup(bundle_path)
       end
     end
 
@@ -456,7 +456,7 @@ for {name, adapter_module} <- [
            {:ok, _} <- Services.import_revision_chains(context, %{chains: [right_chain]}) do
         {:ok, %{imported: [root, left, right], replayed: false}}
       else
-        {:error, %ElixirDB.Error{code: code}} -> {:error, code}
+        {:error, %VialKeeper.Error{code: code}} -> {:error, code}
       end
     end
 
@@ -512,7 +512,7 @@ for {name, adapter_module} <- [
        |> Map.reject(fn {_k, v} -> is_nil(v) end)}
     end
 
-    defp normalize_adapter_result({:error, %ElixirDB.Error{code: code}}), do: {:error, code}
+    defp normalize_adapter_result({:error, %VialKeeper.Error{code: code}}), do: {:error, code}
 
     defp assert_matching_results({:ok, model_result}, {:ok, adapter_result}) do
       assert is_map(model_result)
@@ -565,7 +565,7 @@ for {name, adapter_module} <- [
           assert doc.deleted == model_snap.winner_deleted
           assert_document_body(doc, model_snap)
 
-        {:error, %ElixirDB.Error{code: :document_not_found}} ->
+        {:error, %VialKeeper.Error{code: :document_not_found}} ->
           # Adapter may surface deleted winners as document_not_found.
           assert is_nil(model_snap.winner) or model_snap.winner_deleted == true
       end
@@ -748,7 +748,7 @@ for {name, adapter_module} <- [
       {:ok, tombstone} = Id.calculate(document_id, history_id, root, true, nil, %{})
 
       leaves = [
-        %ElixirDB.Domain.Revision{
+        %VialKeeper.Domain.Revision{
           document_id: document_id,
           history_id: history_id,
           revision_id: left,
@@ -758,7 +758,7 @@ for {name, adapter_module} <- [
           body: left_body,
           attachments: %{}
         },
-        %ElixirDB.Domain.Revision{
+        %VialKeeper.Domain.Revision{
           document_id: document_id,
           history_id: history_id,
           revision_id: right,
@@ -768,7 +768,7 @@ for {name, adapter_module} <- [
           body: right_body,
           attachments: %{}
         },
-        %ElixirDB.Domain.Revision{
+        %VialKeeper.Domain.Revision{
           document_id: document_id,
           history_id: history_id,
           revision_id: tombstone,

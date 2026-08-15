@@ -1,7 +1,7 @@
-defmodule ElixirDB.Runtime.DeadlineTest do
+defmodule VialKeeper.Runtime.DeadlineTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Runtime.Deadline
+  alias VialKeeper.Runtime.Deadline
 
   test "from_timeout maps :infinity to :infinity" do
     assert Deadline.from_timeout(:infinity) == :infinity

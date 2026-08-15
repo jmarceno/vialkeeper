@@ -1,4 +1,4 @@
-defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
+defmodule VialKeeper.EndToEnd.RestartConvergenceTest do
   @moduledoc """
   Gap D8 companion: replicate, stop/restart owners via close/open, verify state.
   """
@@ -6,19 +6,19 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
 
   @moduletag :integration
 
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Replication.Id
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Replication.Id
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @tag :slow
   test "replication converges across close/reopen of source and target owners" do
     prefix = "e2e-restart-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -28,18 +28,18 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
     assert {:ok, %{revision: first}} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(a.database_uuid, b.database_uuid)
+             VialKeeper.Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, %{revision: ^first}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "doc"})
 
     # Stop owners (releases file leases) and reopen.
     assert :ok = DatabaseCatalog.close(a.database_uuid)
@@ -48,23 +48,23 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
     assert {:ok, _} = DatabaseCatalog.open(b.database_uuid)
 
     assert {:ok, %{revision: ^first, body: %{"n" => 1}}} =
-             ElixirDB.Documents.get(a.database_uuid, %{id: "doc"})
+             VialKeeper.Documents.get(a.database_uuid, %{id: "doc"})
 
     assert {:ok, %{revision: ^first, body: %{"n" => 1}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "doc"})
 
     assert {:ok, %{revision: second}} =
-             ElixirDB.Documents.put(a.database_uuid, %{
+             VialKeeper.Documents.put(a.database_uuid, %{
                id: "doc",
                if_revision: first,
                body: %{"n" => 2}
              })
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(a.database_uuid, b.database_uuid)
+             VialKeeper.Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, %{revision: ^second, body: %{"n" => 2}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "doc"})
 
     # Second restart cycle: checkpointed resume must still transfer later changes.
     assert :ok = DatabaseCatalog.close(a.database_uuid)
@@ -73,17 +73,17 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
     assert {:ok, _} = DatabaseCatalog.open(b.database_uuid)
 
     assert {:ok, %{revision: third}} =
-             ElixirDB.Documents.put(a.database_uuid, %{
+             VialKeeper.Documents.put(a.database_uuid, %{
                id: "doc",
                if_revision: second,
                body: %{"n" => 3}
              })
 
     assert {:ok, %{status: :completed}} =
-             ElixirDB.Replication.one_shot(a.database_uuid, b.database_uuid)
+             VialKeeper.Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, %{revision: ^third, body: %{"n" => 3}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "doc"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "doc"})
 
     assert {:ok, %{ok: true}} =
              DatabaseCatalog.command(b.database_uuid, {:command, :integrity_check, %{}})
@@ -92,12 +92,12 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
   @tag :slow
   test "repeated one_shot replication is idempotent and does not advance checkpoints" do
     prefix = "e2e-idempotent-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -107,7 +107,7 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -116,10 +116,10 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
 
     for i <- 1..3 do
       assert {:ok, _} =
-               ElixirDB.Documents.put(a_uuid, %{id: "doc-#{i}", body: %{"n" => i}})
+               VialKeeper.Documents.put(a_uuid, %{id: "doc-#{i}", body: %{"n" => i}})
     end
 
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
     assert {:ok, replication_id} = Id.calculate(a_uuid, b_uuid, "push", "one_shot")
 
@@ -141,13 +141,13 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
     assert a_seq >= 3
 
     assert {:ok, %{results: b_changes_before}} =
-             ElixirDB.Changes.read(b_uuid, %{since: 0, limit: 100})
+             VialKeeper.Changes.read(b_uuid, %{since: 0, limit: 100})
 
     leaf_sets_before = leaf_sets_by_document(b_changes_before)
     doc_ids_before = MapSet.new(Enum.map(b_changes_before, &MapAccess.get(&1, :document_id)))
 
     for _ <- 1..4 do
-      assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
+      assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
     end
 
     assert {:ok, %{value: a_value_after}} =
@@ -180,7 +180,7 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
     assert Enum.count_until(noop_entries, 4) == 4
 
     assert {:ok, %{results: b_changes_after}} =
-             ElixirDB.Changes.read(b_uuid, %{since: 0, limit: 100})
+             VialKeeper.Changes.read(b_uuid, %{since: 0, limit: 100})
 
     assert MapSet.new(Enum.map(b_changes_after, &MapAccess.get(&1, :document_id))) ==
              doc_ids_before
@@ -189,15 +189,15 @@ defmodule ElixirDB.EndToEnd.RestartConvergenceTest do
 
     for id <- ["doc-1", "doc-2", "doc-3"] do
       assert {:ok, %{conflicts: []}} =
-               ElixirDB.Documents.get(b_uuid, %{id: id, include_conflicts: true})
+               VialKeeper.Documents.get(b_uuid, %{id: id, include_conflicts: true})
     end
 
     assert {:ok, %{revision: new_rev}} =
-             ElixirDB.Documents.put(a_uuid, %{id: "doc-4", body: %{"n" => 4}})
+             VialKeeper.Documents.put(a_uuid, %{id: "doc-4", body: %{"n" => 4}})
 
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
-    assert {:ok, %{revision: ^new_rev}} = ElixirDB.Documents.get(b_uuid, %{id: "doc-4"})
+    assert {:ok, %{revision: ^new_rev}} = VialKeeper.Documents.get(b_uuid, %{id: "doc-4"})
 
     assert {:ok, %{value: a_value_final}} =
              DatabaseCatalog.command(

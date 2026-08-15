@@ -1,4 +1,4 @@
-defmodule ElixirDB.Runtime.DatabaseIsolationTest do
+defmodule VialKeeper.Runtime.DatabaseIsolationTest do
   @moduledoc """
   Independent database runtime isolation: killing one runtime must not prevent
   a sibling from serving reads or leak documents and sequences across databases.
@@ -7,23 +7,23 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
 
   @moduletag :integration
 
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Runtime.{AdmissionPolicy, DatabaseCatalog}
-  alias ElixirDB.View.Manager
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Runtime.{AdmissionPolicy, DatabaseCatalog}
+  alias VialKeeper.View.Manager
 
   setup do
-    a_rel = "iso-a-#{System.unique_integer([:positive])}.elixirdb"
-    b_rel = "iso-b-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_rel = "iso-a-#{System.unique_integer([:positive])}.vialkeeper"
+    b_rel = "iso-b-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     a_abs = Path.join(root, a_rel)
     b_abs = Path.join(root, b_rel)
 
     for path <- [a_abs, b_abs] do
-      ElixirDB.TempDatabase.cleanup(path)
+      VialKeeper.TempDatabase.cleanup(path)
     end
 
-    previous_limits = Application.get_env(:elixir_db, :host_limits)
-    previous_policy = Application.get_env(:elixir_db, :admission_policy)
+    previous_limits = Application.get_env(:vial_keeper, :host_limits)
+    previous_policy = Application.get_env(:vial_keeper, :admission_policy)
 
     limits = Keyword.put(previous_limits || [], :admission_limit, 256)
 
@@ -36,15 +36,15 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
         maintenance_reserved_slots: 0
       )
 
-    Application.put_env(:elixir_db, :host_limits, limits)
-    Application.put_env(:elixir_db, :admission_policy, policy)
+    Application.put_env(:vial_keeper, :host_limits, limits)
+    Application.put_env(:vial_keeper, :admission_policy, policy)
 
     assert {:ok, a} = DatabaseCatalog.create(a_rel)
     assert {:ok, b} = DatabaseCatalog.create(b_rel)
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :host_limits, previous_limits)
-      Application.put_env(:elixir_db, :admission_policy, previous_policy)
+      Application.put_env(:vial_keeper, :host_limits, previous_limits)
+      Application.put_env(:vial_keeper, :admission_policy, previous_policy)
 
       for identity <- [a, b] do
         _ = DatabaseCatalog.close(identity.database_uuid)
@@ -52,7 +52,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
       end
 
       for path <- [a_abs, b_abs] do
-        ElixirDB.TempDatabase.cleanup(path)
+        VialKeeper.TempDatabase.cleanup(path)
       end
     end)
 
@@ -66,19 +66,19 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     assert :ok = Manager.await_resumed(uuid_b)
 
     assert {:ok, %{revision: rev_a}} =
-             ElixirDB.Documents.put(uuid_a, %{id: "a-doc", body: %{"side" => "a"}})
+             VialKeeper.Documents.put(uuid_a, %{id: "a-doc", body: %{"side" => "a"}})
 
     assert {:ok, %{revision: rev_b}} =
-             ElixirDB.Documents.put(uuid_b, %{id: "b-doc", body: %{"side" => "b"}})
+             VialKeeper.Documents.put(uuid_b, %{id: "b-doc", body: %{"side" => "b"}})
 
     assert {:ok, identity_b_before} = DatabaseCatalog.command(uuid_b, {:command, :identity, %{}})
     seq_b_before = MapAccess.get(identity_b_before, :current_sequence)
 
     assert [{runtime_a, _}] =
-             Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid_a})
+             Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:runtime, uuid_a})
 
     assert [{runtime_b, _}] =
-             Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid_b})
+             Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:runtime, uuid_b})
 
     owner_a = pids_for({:owner, uuid_a})
     pool_a = pids_for({:read_pool, uuid_a})
@@ -107,7 +107,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
 
     refute Process.alive?(runtime_a)
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         Enum.all?(victim_processes, fn pid -> not Process.alive?(pid) end)
       end,
@@ -120,23 +120,23 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     assert Process.alive?(runtime_b)
 
     assert [{^runtime_b, _}] =
-             Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid_b})
+             Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:runtime, uuid_b})
 
     assert {:ok, %{revision: ^rev_b, body: %{"side" => "b"}}} =
              retry_admission(
-               fn -> ElixirDB.Documents.get(uuid_b, %{id: "b-doc"}) end,
+               fn -> VialKeeper.Documents.get(uuid_b, %{id: "b-doc"}) end,
                "get sibling document after runtime kill"
              )
 
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
              retry_admission(
-               fn -> ElixirDB.Documents.get(uuid_b, %{id: "a-doc"}) end,
+               fn -> VialKeeper.Documents.get(uuid_b, %{id: "a-doc"}) end,
                "cross-database isolation read after runtime kill"
              )
 
-    assert {:ok, %ElixirDB.Storage.Results.ReadChanges{results: b_changes}} =
+    assert {:ok, %VialKeeper.Storage.Results.ReadChanges{results: b_changes}} =
              retry_admission(
-               fn -> ElixirDB.Changes.read(uuid_b, %{since: 0, limit: 100}) end,
+               fn -> VialKeeper.Changes.read(uuid_b, %{since: 0, limit: 100}) end,
                "changes read on sibling database after runtime kill"
              )
 
@@ -147,7 +147,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     assert {:ok, %{revision: _}} =
              retry_admission(
                fn ->
-                 ElixirDB.Documents.put(uuid_b, %{
+                 VialKeeper.Documents.put(uuid_b, %{
                    id: "b-doc",
                    if_revision: rev_b,
                    body: %{"side" => "b", "after" => true}
@@ -158,7 +158,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
 
     assert {:ok, %{body: %{"side" => "b", "after" => true}}} =
              retry_admission(
-               fn -> ElixirDB.Documents.get(uuid_b, %{id: "b-doc"}) end,
+               fn -> VialKeeper.Documents.get(uuid_b, %{id: "b-doc"}) end,
                "read updated sibling document after runtime kill"
              )
 
@@ -171,19 +171,19 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     seq_b_after = MapAccess.get(identity_b_after, :current_sequence)
     assert seq_b_after == seq_b_before + 1
 
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
-        case ElixirDB.Documents.get(uuid_a, %{id: "a-doc"}) do
+        case VialKeeper.Documents.get(uuid_a, %{id: "a-doc"}) do
           {:ok, %{revision: ^rev_a, body: %{"side" => "a"}}} ->
             true
 
-          {:error, %ElixirDB.Error{code: code}}
+          {:error, %VialKeeper.Error{code: code}}
           when code in [:database_closed, :database_unavailable, :database_not_registered] ->
             case DatabaseCatalog.open(uuid_a) do
               {:ok, _} ->
                 match?(
                   {:ok, %{revision: ^rev_a, body: %{"side" => "a"}}},
-                  ElixirDB.Documents.get(uuid_a, %{id: "a-doc"})
+                  VialKeeper.Documents.get(uuid_a, %{id: "a-doc"})
                 )
 
               _ ->
@@ -199,25 +199,25 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     )
 
     assert [{still_b, _}] =
-             Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:runtime, uuid_b})
+             Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:runtime, uuid_b})
 
     assert Process.alive?(still_b)
 
     assert {:ok, %{body: %{"side" => "b"}}} =
              retry_admission(
-               fn -> ElixirDB.Documents.get(uuid_b, %{id: "b-doc"}) end,
+               fn -> VialKeeper.Documents.get(uuid_b, %{id: "b-doc"}) end,
                "sibling database remained readable after victim runtime kill"
              )
   end
 
   defp pids_for(key) do
-    Enum.map(Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, key), &elem(&1, 0))
+    Enum.map(Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, key), &elem(&1, 0))
   end
 
   defp assert_sibling_admission_ready(uuid) do
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
-        case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:admission, uuid}) do
+        case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:admission, uuid}) do
           [{pid, _}] when is_pid(pid) -> Process.alive?(pid)
           _ -> false
         end
@@ -228,17 +228,17 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
   end
 
   defp retry_admission(fun, message) do
-    ElixirDB.Eventual.eventually(
+    VialKeeper.Eventual.eventually(
       fn ->
         try do
           case fun.() do
             {:ok, _} = ok ->
               {:ok, ok}
 
-            {:error, %ElixirDB.Error{code: :document_not_found}} = error ->
+            {:error, %VialKeeper.Error{code: :document_not_found}} = error ->
               {:ok, error}
 
-            {:error, %ElixirDB.Error{code: code}}
+            {:error, %VialKeeper.Error{code: code}}
             when code in [:database_closed, :database_unavailable, :database_not_registered] ->
               false
 
@@ -261,7 +261,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     assert {:ok, _} = DatabaseCatalog.open(uuid_a)
 
     assert {:ok, %{revision: base}} =
-             ElixirDB.Documents.put(uuid_a, %{id: "doc", body: %{"n" => 0}})
+             VialKeeper.Documents.put(uuid_a, %{id: "doc", body: %{"n" => 0}})
 
     n = 200
 
@@ -269,7 +269,7 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
       1..n
       |> Enum.map(fn i ->
         Task.async(fn ->
-          ElixirDB.Documents.put(uuid_a, %{id: "doc", if_revision: base, body: %{"n" => i}})
+          VialKeeper.Documents.put(uuid_a, %{id: "doc", if_revision: base, body: %{"n" => i}})
         end)
       end)
       |> Task.await_many(30_000)
@@ -284,13 +284,13 @@ defmodule ElixirDB.Runtime.DatabaseIsolationTest do
     assert Enum.count_until(errors, n) == n - 1
 
     assert Enum.all?(errors, fn
-             {:error, %ElixirDB.Error{code: :revision_conflict}} -> true
+             {:error, %VialKeeper.Error{code: :revision_conflict}} -> true
              _ -> false
            end)
 
     assert winner != base
 
     assert {:ok, %{revision: ^winner, conflicts: []}} =
-             ElixirDB.Documents.get(uuid_a, %{id: "doc", include_conflicts: true})
+             VialKeeper.Documents.get(uuid_a, %{id: "doc", include_conflicts: true})
   end
 end

@@ -1,10 +1,10 @@
-defmodule ElixirDB.Query.NormalizerTest do
+defmodule VialKeeper.Query.NormalizerTest do
   @moduledoc "Covers query selector normalization and generated predicates."
 
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias ElixirDB.Query.{Normalizer, Predicate}
+  alias VialKeeper.Query.{Normalizer, Predicate}
 
   test "normalizes Boolean and field operators into one predicate tree" do
     assert {:ok, normalized} =
@@ -30,10 +30,10 @@ defmodule ElixirDB.Query.NormalizerTest do
                selector: %{"/profile" => %{"$eq" => %{"$kind" => "A"}}}
              })
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Normalizer.normalize(%{selector: %{"/profile" => %{"$kind" => "A", "$eq" => "A"}}})
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Normalizer.normalize(%{selector: %{"/profile" => %{"name" => "A", "$eq" => "A"}}})
   end
 
@@ -79,7 +79,7 @@ defmodule ElixirDB.Query.NormalizerTest do
 
     children = Enum.map(1..65, fn n -> %{"/value" => n} end)
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              Normalizer.normalize(%{selector: %{"$or" => children}})
 
     depth_32 = Enum.reduce(1..30, %{"/value" => 1}, fn _n, selector -> %{"$not" => selector} end)
@@ -87,7 +87,7 @@ defmodule ElixirDB.Query.NormalizerTest do
 
     depth_33 = Enum.reduce(1..31, %{"/value" => 1}, fn _n, selector -> %{"$not" => selector} end)
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              Normalizer.normalize(%{selector: depth_33})
 
     assert {:ok, _normalized} =
@@ -97,25 +97,25 @@ defmodule ElixirDB.Query.NormalizerTest do
                  |> Map.put("$not", %{"/special" => 1})
              })
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              Normalizer.normalize(%{
                selector: Enum.into(1..128, %{}, fn n -> {"/v#{n}", n} end)
              })
   end
 
   test "rejects atom and string keys that collide after stringification" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Normalizer.normalize(%{selector: %{:selector => 1, "selector" => 2}})
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Normalizer.normalize(%{selector: %{"/value" => %{:foo => 1, "foo" => 2}}})
   end
 
   test "does not treat false selector or sort as absent" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Normalizer.normalize(%{selector: false})
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Normalizer.normalize(%{sort: false})
   end
 
@@ -131,7 +131,7 @@ defmodule ElixirDB.Query.NormalizerTest do
 
     assert {:ok, _} = Normalizer.normalize(%{selector: accepted})
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              Normalizer.normalize(%{selector: rejected})
   end
 
@@ -142,22 +142,22 @@ defmodule ElixirDB.Query.NormalizerTest do
              })
 
     for operator <- ["$and", "$or", "$nor"] do
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+      assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                Normalizer.normalize(%{selector: %{operator => []}})
 
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+      assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                Normalizer.normalize(%{selector: %{operator => %{"/state" => "open"}}})
     end
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              Normalizer.normalize(%{selector: %{"$not" => [%{"/state" => "open"}]}})
   end
 
   test "rejects semantic complexity before dispatching to a database owner" do
     selector = %{"$or" => Enum.map(1..65, &%{"/value" => &1})}
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
-             ElixirDB.Query.execute("not-a-database", %{selector: selector})
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
+             VialKeeper.Query.execute("not-a-database", %{selector: selector})
   end
 
   test "fingerprints normalized selector source rather than compiled regex state" do

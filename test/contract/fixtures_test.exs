@@ -1,20 +1,20 @@
-defmodule ElixirDB.Contract.FixturesTest do
+defmodule VialKeeper.Contract.FixturesTest do
   @moduledoc """
   Contract tests that load language-neutral fixtures from priv/fixtures.
   """
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Domain.Checkpoint
-  alias ElixirDB.JSON.Canonical
-  alias ElixirDB.Query.FullText
-  alias ElixirDB.Replication.{CheckpointReconciler, Id}
-  alias ElixirDB.Revisions.Id, as: RevisionId
-  alias ElixirDB.Storage.SQLite.Adapter
+  alias VialKeeper.Domain.Checkpoint
+  alias VialKeeper.JSON.Canonical
+  alias VialKeeper.Query.FullText
+  alias VialKeeper.Replication.{CheckpointReconciler, Id}
+  alias VialKeeper.Revisions.Id, as: RevisionId
+  alias VialKeeper.Storage.SQLite.Adapter
 
-  @fixtures_root Application.app_dir(:elixir_db, "priv/fixtures")
+  @fixtures_root Application.app_dir(:vial_keeper, "priv/fixtures")
 
-  test "canonical JSON object fixtures match ElixirDB.JSON.Canonical" do
+  test "canonical JSON object fixtures match VialKeeper.JSON.Canonical" do
     fixtures = load_json!("canonical_json/objects.json")
     assert [_ | _] = fixtures
 
@@ -33,7 +33,7 @@ defmodule ElixirDB.Contract.FixturesTest do
     end
   end
 
-  test "RFC 8785 Appendix B number fixtures match ElixirDB.JSON.Canonical" do
+  test "RFC 8785 Appendix B number fixtures match VialKeeper.JSON.Canonical" do
     fixtures = load_json!("canonical_json/numbers.json")
     assert [_ | _] = fixtures
 
@@ -56,14 +56,14 @@ defmodule ElixirDB.Contract.FixturesTest do
     end
   end
 
-  test "revision ID fixtures match ElixirDB.Revisions.Id (REV-002)" do
+  test "revision ID fixtures match VialKeeper.Revisions.Id (REV-002)" do
     fixtures = load_json!("revision_ids/vectors.json")
     assert [_ | _] = fixtures
 
     for fixture <- fixtures do
       case fixture do
         %{"expect_error" => code} ->
-          assert {:error, %ElixirDB.Error{code: actual_code}} =
+          assert {:error, %VialKeeper.Error{code: actual_code}} =
                    RevisionId.calculate(%{
                      document_id: fixture["document_id"],
                      history_id: fixture["history_id"],
@@ -106,7 +106,7 @@ defmodule ElixirDB.Contract.FixturesTest do
     end
   end
 
-  test "unicode_words_v1 tokenization fixtures match ElixirDB.Query.FullText (QUERY-015)" do
+  test "unicode_words_v1 tokenization fixtures match VialKeeper.Query.FullText (QUERY-015)" do
     fixtures = load_json!("tokenization/unicode_words_v1.json")
     assert [_ | _] = fixtures
 
@@ -164,7 +164,7 @@ defmodule ElixirDB.Contract.FixturesTest do
     assert Enum.any?(replication, &(&1["id"] == "compressed-json-headers"))
   end
 
-  test "replication ID fixtures match ElixirDB.Replication.Id (REPL-006)" do
+  test "replication ID fixtures match VialKeeper.Replication.Id (REPL-006)" do
     fixtures = load_json!("protocol/replication_ids.json")
     assert [_ | _] = fixtures
 
@@ -247,15 +247,15 @@ defmodule ElixirDB.Contract.FixturesTest do
       {:ok, %Checkpoint{}} ->
         assert fixture["expect"]["ok"] == true, fixture["id"]
 
-      {:error, %ElixirDB.Error{code: code}} ->
+      {:error, %VialKeeper.Error{code: code}} ->
         assert fixture["expect"]["ok"] == false, fixture["id"]
         assert Atom.to_string(code) == fixture["expect"]["error_code"], fixture["id"]
     end
   end
 
   defp execute_checkpoint_cas_scenario(fixture) do
-    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "elixirdb-fixture-cas")
-    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
+    {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-fixture-cas")
+    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
     assert {:ok, adapter} = Adapter.create(path, %{})
 
     try do
@@ -283,7 +283,7 @@ defmodule ElixirDB.Contract.FixturesTest do
               assert replayed == expect["replayed"],
                      "#{fixture["id"]} put replayed"
             else
-              assert {:error, %ElixirDB.Error{code: code}} = result
+              assert {:error, %VialKeeper.Error{code: code}} = result
               assert Atom.to_string(code) == expect["error_code"]
             end
 
@@ -298,15 +298,17 @@ defmodule ElixirDB.Contract.FixturesTest do
       end
     after
       _ = Adapter.close(adapter)
-      ElixirDB.TempDatabase.cleanup(bundle_path)
+      VialKeeper.TempDatabase.cleanup(bundle_path)
     end
   end
 
   defp fts5_token_counts(input, remove_diacritics) do
     {:ok, bundle_path} =
-      ElixirDB.TempDatabase.create(prefix: "elixirdb-fts5-#{System.unique_integer([:positive])}")
+      VialKeeper.TempDatabase.create(
+        prefix: "vialkeeper-fts5-#{System.unique_integer([:positive])}"
+      )
 
-    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
+    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
     {:ok, conn} = Exqlite.Sqlite3.open(path)
 
     try do
@@ -344,7 +346,7 @@ defmodule ElixirDB.Contract.FixturesTest do
       rows
     after
       Exqlite.Sqlite3.close(conn)
-      ElixirDB.TempDatabase.cleanup(bundle_path)
+      VialKeeper.TempDatabase.cleanup(bundle_path)
     end
   end
 

@@ -1,6 +1,6 @@
-defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
+defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
   @moduledoc """
-  Uses real Bandit HTTP, real `.elixirdb` bundles, live query subscriptions,
+  Uses real Bandit HTTP, real `.vialkeeper` bundles, live query subscriptions,
   background retention scheduling, and bounded concurrent local replication.
   Grant ordering and occupancy are proven with deterministic instrumentation,
   not wall-clock timing.
@@ -29,12 +29,12 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
   import ExUnit.Assertions
 
-  alias ElixirDB.Attachments
-  alias ElixirDB.Eventual
-  alias ElixirDB.Query.Subscriptions
-  alias ElixirDB.Replication.{JobManager, LocalEndpoint}
+  alias VialKeeper.Attachments
+  alias VialKeeper.Eventual
+  alias VialKeeper.Query.Subscriptions
+  alias VialKeeper.Replication.{JobManager, LocalEndpoint}
 
-  alias ElixirDB.Runtime.{
+  alias VialKeeper.Runtime.{
     AdmissionPolicy,
     AttachmentCoordinator,
     DatabaseAdmission,
@@ -43,35 +43,35 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     RetentionScheduler
   }
 
-  alias ElixirDB.TestServer
-  alias ElixirDB.TestSupport.{AdmissionClassProbe, AdmissionScenario}
-  alias ElixirDB.View.Manager
+  alias VialKeeper.TestServer
+  alias VialKeeper.TestSupport.{AdmissionClassProbe, AdmissionScenario}
+  alias VialKeeper.View.Manager
 
   @admission_limit 12
   @blob_payload "admission-e2e-attachment-payload"
 
   setup do
-    previous_limits = Application.get_env(:elixir_db, :host_limits)
-    previous_policy = Application.get_env(:elixir_db, :admission_policy)
+    previous_limits = Application.get_env(:vial_keeper, :host_limits)
+    previous_policy = Application.get_env(:vial_keeper, :admission_policy)
 
     limits = Keyword.put(previous_limits || [], :admission_limit, @admission_limit)
     policy = AdmissionPolicy.default_keyword()
 
-    Application.put_env(:elixir_db, :host_limits, limits)
-    Application.put_env(:elixir_db, :admission_policy, policy)
+    Application.put_env(:vial_keeper, :host_limits, limits)
+    Application.put_env(:vial_keeper, :admission_policy, policy)
 
     on_exit(fn ->
       AdmissionClassProbe.uninstall()
       AdmissionScenario.uninstall_test_hook()
-      Application.delete_env(:elixir_db, :admitted_command_sync)
-      Application.delete_env(:elixir_db, :admitted_command_owner_body_sync)
-      Application.delete_env(:elixir_db, :read_pool_sync)
-      Application.delete_env(:elixir_db, :read_pool_owner_body_sync)
-      Application.delete_env(:elixir_db, :subscription_execute_snapshot_sync)
-      Application.delete_env(:elixir_db, :subscription_hub_pause_reads)
-      Application.delete_env(:elixir_db, :admission_test_hook)
-      Application.put_env(:elixir_db, :host_limits, previous_limits)
-      Application.put_env(:elixir_db, :admission_policy, previous_policy)
+      Application.delete_env(:vial_keeper, :admitted_command_sync)
+      Application.delete_env(:vial_keeper, :admitted_command_owner_body_sync)
+      Application.delete_env(:vial_keeper, :read_pool_sync)
+      Application.delete_env(:vial_keeper, :read_pool_owner_body_sync)
+      Application.delete_env(:vial_keeper, :subscription_execute_snapshot_sync)
+      Application.delete_env(:vial_keeper, :subscription_hub_pause_reads)
+      Application.delete_env(:vial_keeper, :admission_test_hook)
+      Application.put_env(:vial_keeper, :host_limits, previous_limits)
+      Application.put_env(:vial_keeper, :admission_policy, previous_policy)
     end)
 
     :ok
@@ -294,13 +294,13 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
   defp bootstrap_seeded_pair! do
     server = TestServer.start_supervised!()
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     prefix = "admission-e2e-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     a_uuid = create_database!(server, a_path)
@@ -314,7 +314,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
       _ = DatabaseCatalog.unregister(b_uuid)
 
       for path <- [a_path, b_path] do
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -411,7 +411,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   defp prove_retention_maintenance!(a_uuid, probe_ref) do
     assert [{scheduler_pid, _}] =
              Registry.lookup(
-               ElixirDB.Runtime.DatabaseRegistry,
+               VialKeeper.Runtime.DatabaseRegistry,
                {:retention_scheduler, a_uuid}
              )
 
@@ -501,7 +501,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     parent = self()
     gate_ref = make_ref()
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, gate_ref, uuid})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, gate_ref, uuid})
 
     blocker =
       Task.async(fn ->
@@ -538,7 +538,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     refute_receive {^hook_ref, :granted, ^request_ref, _, _}, 0
 
     send(blocker_exec, {:go, gate_ref})
-    Application.delete_env(:elixir_db, :admitted_command_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_sync)
     Task.await(blocker, 5_000)
   end
 
@@ -552,7 +552,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     :ok =
       Application.put_env(
-        :elixir_db,
+        :vial_keeper,
         :subscription_execute_snapshot_sync,
         {parent, snapshot_gate, uuid}
       )
@@ -578,7 +578,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     assert Process.alive?(sub)
 
     # Pause further hub reads, then drain any in-flight admission so snapshot is alone.
-    :ok = Application.put_env(:elixir_db, :subscription_hub_pause_reads, uuid)
+    :ok = Application.put_env(:vial_keeper, :subscription_hub_pause_reads, uuid)
 
     AdmissionScenario.await_stats(uuid, &(&1.total_occupancy == 0 and &1.active_class == nil),
       timeout: 15_000
@@ -588,20 +588,20 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     :ok =
       Application.put_env(
-        :elixir_db,
+        :vial_keeper,
         :read_pool_sync,
         {parent, before_gate, uuid, :execute_subscription_snapshot}
       )
 
     :ok =
       Application.put_env(
-        :elixir_db,
+        :vial_keeper,
         :read_pool_owner_body_sync,
         {parent, body_gate, uuid, :execute_subscription_snapshot}
       )
 
     send(sub, {:go, snapshot_gate})
-    Application.delete_env(:elixir_db, :subscription_execute_snapshot_sync)
+    Application.delete_env(:vial_keeper, :subscription_execute_snapshot_sync)
 
     snap_executor = await_subscription_snapshot_at_read_body!(before_gate, body_gate)
 
@@ -617,8 +617,8 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     assert active >= 1
 
     send(snap_executor, {:go, body_gate})
-    Application.delete_env(:elixir_db, :read_pool_owner_body_sync)
-    Application.delete_env(:elixir_db, :subscription_hub_pause_reads)
+    Application.delete_env(:vial_keeper, :read_pool_owner_body_sync)
+    Application.delete_env(:vial_keeper, :subscription_hub_pause_reads)
 
     AdmissionScenario.await_stats(uuid, &(&1.total_occupancy == 0 and &1.active_class == nil),
       timeout: 10_000
@@ -639,7 +639,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   defp await_subscription_snapshot_at_read_body!(before_gate, body_gate) do
     assert_receive {^before_gate, :before_begin, snap_executor}, 10_000
     send(snap_executor, {:go, before_gate})
-    Application.delete_env(:elixir_db, :read_pool_sync)
+    Application.delete_env(:vial_keeper, :read_pool_sync)
     assert_receive {^body_gate, :owner_body, ^snap_executor}, 5_000
     snap_executor
   end
@@ -710,7 +710,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     gate = make_ref()
 
     assert {:ok, put} =
-             ElixirDB.Documents.put(uuid, %{
+             VialKeeper.Documents.put(uuid, %{
                "id" => "download-doc",
                "body" => %{},
                "attachments" => %{
@@ -870,7 +870,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     parent = self()
     a_gate = make_ref()
     b_gate = make_ref()
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, a_gate, a_uuid})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, a_gate, a_uuid})
 
     a_blocker =
       Task.async(fn ->
@@ -913,7 +913,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     # Force a non-vacuous B occupancy peak, then drain.
     AdmissionScenario.begin_peak_occupancy_tracking(b_uuid)
-    :ok = Application.put_env(:elixir_db, :admitted_command_sync, {parent, b_gate, b_uuid})
+    :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, b_gate, b_uuid})
 
     b_blocker =
       Task.async(fn ->
@@ -942,7 +942,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
     AdmissionScenario.assert_max_occupancy!(peak_b, @admission_limit)
 
     send(b_executor, {:go, b_gate})
-    Application.delete_env(:elixir_db, :admitted_command_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_sync)
     assert {:ok, _} = Task.await(b_blocker, 10_000)
     assert {:ok, _} = Task.await(b_waiter, 10_000)
     AdmissionScenario.await_stats(b_uuid, &(&1.total_occupancy == 0))
@@ -958,12 +958,12 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   end
 
   defp assert_close_drains_admission!(uuid, job_id, sub_a, sub_b) do
-    Application.delete_env(:elixir_db, :admitted_command_sync)
-    Application.delete_env(:elixir_db, :admitted_command_owner_body_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_sync)
+    Application.delete_env(:vial_keeper, :admitted_command_owner_body_sync)
     await_replication_active(uuid, job_id)
 
     # Active replication blocks close; callers must disable or cancel the job first.
-    assert {:error, %ElixirDB.Error{code: :database_not_closable}} =
+    assert {:error, %VialKeeper.Error{code: :database_not_closable}} =
              DatabaseCatalog.close(uuid)
 
     assert {:ok, false} = DatabaseAdmission.closing?(uuid)
@@ -1022,12 +1022,12 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
       message: "admission did not enter closing state"
     )
 
-    assert {:error, %ElixirDB.Error{code: :database_closed}} =
+    assert {:error, %VialKeeper.Error{code: :database_closed}} =
              DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :new_after_close end, 1_000)
 
-    assert {:error, %ElixirDB.Error{code: :database_closed}} = Task.await(queued, 5_000)
+    assert {:error, %VialKeeper.Error{code: :database_closed}} = Task.await(queued, 5_000)
 
-    assert {:error, %ElixirDB.Error{code: :database_closed}} =
+    assert {:error, %VialKeeper.Error{code: :database_closed}} =
              Task.await(replication_during_close, 5_000)
 
     send(executor_pid, :finish)
@@ -1045,9 +1045,11 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   end
 
   defp assert_correctness!(server, a_uuid, b_uuid, _job_id, _blob, sub_pid) do
-    assert {:ok, %{revision: _}} = ElixirDB.Documents.get(a_uuid, %{id: "task-open"})
-    assert {:ok, %{revision: _}} = ElixirDB.Documents.get(b_uuid, %{id: "task-open"})
-    assert {:ok, %{revision: attached_revision}} = ElixirDB.Documents.get(b_uuid, %{id: "attached"})
+    assert {:ok, %{revision: _}} = VialKeeper.Documents.get(a_uuid, %{id: "task-open"})
+    assert {:ok, %{revision: _}} = VialKeeper.Documents.get(b_uuid, %{id: "task-open"})
+
+    assert {:ok, %{revision: attached_revision}} =
+             VialKeeper.Documents.get(b_uuid, %{id: "attached"})
 
     assert {:ok, stream} =
              Attachments.open_stream(b_uuid, %{
@@ -1098,9 +1100,9 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
 
     assert is_integer(floor) and floor > 0
 
-    assert {:ok, %{status: :completed}} = ElixirDB.Replication.one_shot(a_uuid, b_uuid)
+    assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
-    assert {:ok, %{revision: _}} = ElixirDB.Documents.get(b_uuid, %{id: "sustained-16"})
+    assert {:ok, %{revision: _}} = VialKeeper.Documents.get(b_uuid, %{id: "sustained-16"})
     Subscriptions.close(sub_pid)
   end
 
@@ -1181,7 +1183,7 @@ defmodule ElixirDB.EndToEnd.AdmissionScenarioTest do
   defp await_replication_doc(uuid, id) do
     Eventual.eventually(
       fn ->
-        case ElixirDB.Documents.get(uuid, %{id: id}) do
+        case VialKeeper.Documents.get(uuid, %{id: id}) do
           {:ok, _} -> true
           _ -> false
         end

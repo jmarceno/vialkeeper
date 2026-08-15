@@ -1,22 +1,22 @@
-defmodule ElixirDB.Shadow.SourceOriginAllowlistTest do
+defmodule VialKeeper.Shadow.SourceOriginAllowlistTest do
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Error
-  alias ElixirDB.HostConfig
-  alias ElixirDB.Shadow.Worker
+  alias VialKeeper.Error
+  alias VialKeeper.HostConfig
+  alias VialKeeper.Shadow.Worker
 
   @journal_filename "managed_shadows.json"
 
   setup do
     prefix = "shadow-origin-#{System.unique_integer([:positive])}"
-    root = Path.join(ElixirDB.Config.database_root(), prefix)
+    root = Path.join(VialKeeper.Config.database_root(), prefix)
     managed_root = Path.join(root, "managed")
     external_root = Path.join(root, "external")
     attachment_location = Path.join(external_root, "blobs")
     File.mkdir_p!(attachment_location)
 
     on_exit(fn ->
-      ElixirDB.TempDatabase.cleanup(root)
+      VialKeeper.TempDatabase.cleanup(root)
     end)
 
     %{
@@ -128,10 +128,10 @@ defmodule ElixirDB.Shadow.SourceOriginAllowlistTest do
 
   defp provision_request(attachment_location) do
     %{
-      "source_uuid" => ElixirDB.UUID.v4(),
-      "shadow_uuid" => ElixirDB.UUID.v4(),
+      "source_uuid" => VialKeeper.UUID.v4(),
+      "shadow_uuid" => VialKeeper.UUID.v4(),
       "generation" => 1,
-      "operation_id" => ElixirDB.UUID.v4(),
+      "operation_id" => VialKeeper.UUID.v4(),
       "attachment_store_type" => "external_cas",
       "attachment_location" => attachment_location,
       "specification_digest" => String.duplicate("b", 64),

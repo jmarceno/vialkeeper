@@ -1,4 +1,4 @@
-# ElixirDB performance benchmarks
+# VialKeeper performance benchmarks
 
 Two opt-in runners live here. They are separate from the normal ExUnit gate:
 numbers are useful for trend detection, but they are not stable enough to make
@@ -100,7 +100,7 @@ after the report is written.
 ## ExQLite overhead control (SQLite backend diagnostic)
 
 `sqlite_exqlite_overhead_benchmark.exs` is an explicit SQLite/ExQLite control,
-not a product latency claim. It answers how much time each ElixirDB layer adds
+not a product latency claim. It answers how much time each VialKeeper layer adds
 over direct ExQLite calls. Run it in the production environment so OpenTelemetry
 uses its no-op provider and the benchmark process has no test exporter in its
 timed path:
@@ -123,9 +123,9 @@ samples, median/p95/p99, MAD, coefficient of variation, paired deltas, and
 percentage overhead relative to `pure_exqlite`:
 
 - `pure_exqlite` calls prepared statements through `Exqlite.Sqlite3`.
-- `elixir_db_connection` runs the same SQL through the ElixirDB connection
+- `vial_keeper_connection` runs the same SQL through the VialKeeper connection
   wrapper and statement cache.
-- `elixir_db_adapter` calls the public SQLite adapter operation.
+- `vial_keeper_adapter` calls the public SQLite adapter operation.
 
 The scenarios are `point_read`, `bulk_write`, `changes_read`, and
 `indexed_query`. Point reads use one winning-document join (document, revision,
@@ -136,9 +136,9 @@ and predicate in the direct and connection controls.
 The bulk-write ExQLite control is intentionally a physical baseline: it
 inserts the same final document, revision, change-feed, metadata, and
 replication-state rows in one prepared transaction. It does not reproduce
-ElixirDB validation, revision hashing/lookups, conflict handling, or retention
+VialKeeper validation, revision hashing/lookups, conflict handling, or retention
 orchestration. Therefore its adapter delta is the real cost of the current
-ElixirDB write path over direct SQLite storage, not merely the cost of a
+VialKeeper write path over direct SQLite storage, not merely the cost of a
 function call or NIF wrapper. The connection-vs-ExQLite delta isolates the
 connection wrapper for every scenario.
 
@@ -164,16 +164,16 @@ The ExQLite overhead runner also emits low-cardinality SQLite child spans when
 an OTLP endpoint is configured. They are deliberately phase-level backend
 diagnostics, not one span per SQL statement or document:
 
-- Reads: `elixir_db.sqlite.document.lookup` (winning get) and
-  `elixir_db.sqlite.revision.lookup` (historical revision get).
-- Bulk writes: `elixir_db.sqlite.mutation.bulk.prepare` and
-  `elixir_db.sqlite.mutation.bulk.finalize`.
-- Changes: `elixir_db.sqlite.changes.identity`, `.fetch`, `.decode`, and
+- Reads: `vial_keeper.sqlite.document.lookup` (winning get) and
+  `vial_keeper.sqlite.revision.lookup` (historical revision get).
+- Bulk writes: `vial_keeper.sqlite.mutation.bulk.prepare` and
+  `vial_keeper.sqlite.mutation.bulk.finalize`.
+- Changes: `vial_keeper.sqlite.changes.identity`, `.fetch`, `.decode`, and
   `.has_more`.
-- Indexed queries: `elixir_db.sqlite.query.prepare_request`, `.identity`,
+- Indexed queries: `vial_keeper.sqlite.query.prepare_request`, `.identity`,
   `.index_catalog`, and `.candidates`, plus the product span
-  `elixir_db.query.execute` for shared filter/order/project work.
-- Transactions: `elixir_db.sqlite.transaction.begin`, `.commit`, and
+  `vial_keeper.query.execute` for shared filter/order/project work.
+- Transactions: `vial_keeper.sqlite.transaction.begin`, `.commit`, and
   `.rollback`.
 
 The span attributes are restricted to existing safe fields such as bounded

@@ -1,9 +1,9 @@
-defmodule ElixirDB.Shadow.RemoteLifecycleE2ETest do
+defmodule VialKeeper.Shadow.RemoteLifecycleE2ETest do
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Shadow.RemoteEndpoint
-  alias ElixirDB.TestServer
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Shadow.RemoteEndpoint
+  alias VialKeeper.TestServer
 
   @moduletag :integration
 
@@ -11,14 +11,14 @@ defmodule ElixirDB.Shadow.RemoteLifecycleE2ETest do
     prefix = "shadow-remote-life-#{System.unique_integer([:positive])}"
     control_token = prefix <> "-token"
     digest = :crypto.hash(:sha256, control_token) |> Base.encode16(case: :lower)
-    previous = Application.get_env(:elixir_db, :shadow_worker, [])
-    root = ElixirDB.Config.database_root()
-    source_path = prefix <> "-source.elixirdb"
-    source_uuid = ElixirDB.UUID.v4()
+    previous = Application.get_env(:vial_keeper, :shadow_worker, [])
+    root = VialKeeper.Config.database_root()
+    source_path = prefix <> "-source.vialkeeper"
+    source_uuid = VialKeeper.UUID.v4()
     attachment_location = Path.join(root, source_path <> "/blobs")
     server = TestServer.start_supervised!()
 
-    Application.put_env(:elixir_db, :shadow_worker,
+    Application.put_env(:vial_keeper, :shadow_worker,
       enabled: true,
       storage_root: prefix <> "-worker",
       control_token_digests: [digest],
@@ -29,11 +29,11 @@ defmodule ElixirDB.Shadow.RemoteLifecycleE2ETest do
     File.mkdir_p!(attachment_location)
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :shadow_worker, previous)
+      Application.put_env(:vial_keeper, :shadow_worker, previous)
       _ = DatabaseCatalog.close(source_uuid)
       _ = DatabaseCatalog.unregister(source_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, source_path))
-      ElixirDB.TempDatabase.cleanup(Path.join(root, prefix <> "-worker"))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, source_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, prefix <> "-worker"))
     end)
 
     assert {:ok, remote} =
@@ -46,9 +46,9 @@ defmodule ElixirDB.Shadow.RemoteLifecycleE2ETest do
 
     request = %{
       "source_uuid" => source_uuid,
-      "shadow_uuid" => ElixirDB.UUID.v4(),
+      "shadow_uuid" => VialKeeper.UUID.v4(),
       "generation" => 1,
-      "operation_id" => ElixirDB.UUID.v4(),
+      "operation_id" => VialKeeper.UUID.v4(),
       "attachment_store_type" => "external_cas",
       "attachment_location" => attachment_location,
       "specification_digest" => String.duplicate("e", 64)

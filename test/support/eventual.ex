@@ -1,4 +1,4 @@
-defmodule ElixirDB.Eventual do
+defmodule VialKeeper.Eventual do
   @moduledoc """
   Deterministic wait/poll helpers for asynchronous test conditions.
 

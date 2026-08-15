@@ -1,23 +1,23 @@
-defmodule ElixirDB.Replication.CompactUnderLagTest do
+defmodule VialKeeper.Replication.CompactUnderLagTest do
   @moduledoc """
   Exercises continuous replication while retention compaction runs under
   deterministic endpoint delay and bounded transfer pressure.
   """
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.ChaosEndpoint
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Observability.TestMetricExporter
-  alias ElixirDB.Replication.Id
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Replication.Worker
-  alias ElixirDB.Runtime.AttachmentCoordinator
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.ChaosEndpoint
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Observability.TestMetricExporter
+  alias VialKeeper.Replication.Id
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Replication.Worker
+  alias VialKeeper.Runtime.AttachmentCoordinator
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @chaos_weights %{pass: 40, delay: 60}
   @delay_ms 2..5
@@ -33,12 +33,12 @@ defmodule ElixirDB.Replication.CompactUnderLagTest do
 
   setup do
     prefix = "compact-under-lag-#{System.unique_integer([:positive])}"
-    source_path = prefix <> "-source.elixirdb"
-    target_path = prefix <> "-target.elixirdb"
-    root = ElixirDB.Config.database_root()
+    source_path = prefix <> "-source.vialkeeper"
+    target_path = prefix <> "-target.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [source_path, target_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     assert {:ok, source_identity} = DatabaseCatalog.create(source_path)
@@ -57,7 +57,7 @@ defmodule ElixirDB.Replication.CompactUnderLagTest do
           ] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -108,7 +108,7 @@ defmodule ElixirDB.Replication.CompactUnderLagTest do
         receive do
           {:release_lag_barrier, ^barrier} -> :ok
         after
-          15_000 -> {:error, ElixirDB.Error.internal_error("lag barrier was not released")}
+          15_000 -> {:error, VialKeeper.Error.internal_error("lag barrier was not released")}
         end
       else
         :ok
@@ -160,7 +160,7 @@ defmodule ElixirDB.Replication.CompactUnderLagTest do
     assert is_binary(MapAccess.get(compacted_identity, :retention_boundary_digest))
     assert_compaction_boundary(source_uuid, compacted_identity)
 
-    assert {:error, %ElixirDB.Error{code: :history_truncated}} =
+    assert {:error, %VialKeeper.Error{code: :history_truncated}} =
              DatabaseCatalog.command(
                source_uuid,
                {:command, :read_changes, %{since: 0, limit: 100}}
@@ -209,7 +209,7 @@ defmodule ElixirDB.Replication.CompactUnderLagTest do
           receive do
             {:release_pressure_barrier, ^barrier, ^ordinal} -> :ok
           after
-            15_000 -> {:error, ElixirDB.Error.internal_error("pressure barrier was not released")}
+            15_000 -> {:error, VialKeeper.Error.internal_error("pressure barrier was not released")}
           end
         else
           :ok
@@ -253,7 +253,7 @@ defmodule ElixirDB.Replication.CompactUnderLagTest do
         fn ->
           points =
             TestMetricExporter.datapoints_matching(
-              "elixir_db.replication.transfer.duration",
+              "vial_keeper.replication.transfer.duration",
               %{:"replication.id" => replication_id}
             )
 
@@ -312,7 +312,7 @@ defmodule ElixirDB.Replication.CompactUnderLagTest do
 
   defp seed_checkpoints!(source_uuid, target_uuid, replication_id) do
     :ok =
-      ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+      VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
         source_uuid,
         target_uuid,
         replication_id
@@ -413,7 +413,7 @@ defmodule ElixirDB.Replication.CompactUnderLagTest do
 
   defp retryable_put(uuid, id, body) do
     case Documents.put(uuid, %{id: id, body: body}) do
-      {:error, %ElixirDB.Error{retryable: true}} -> false
+      {:error, %VialKeeper.Error{retryable: true}} -> false
       result -> {:ok, result}
     end
   end
@@ -421,7 +421,7 @@ defmodule ElixirDB.Replication.CompactUnderLagTest do
   defp write_documents_with_attachments(uuid, prefix, count) do
     Map.new(1..count, fn ordinal ->
       payload = String.duplicate("payload-#{ordinal}-", 256)
-      assert {:ok, %{blob: digest}} = ElixirDB.Attachments.upload_stream(uuid, [payload])
+      assert {:ok, %{blob: digest}} = VialKeeper.Attachments.upload_stream(uuid, [payload])
       id = "#{prefix}-#{ordinal}"
       body = %{"prefix" => prefix, "ordinal" => ordinal}
 
@@ -522,7 +522,7 @@ defmodule ElixirDB.Replication.CompactUnderLagTest do
   end
 
   defp target_leaf_map(uuid) do
-    case ElixirDB.Changes.read(uuid, %{since: 0, limit: 500}) do
+    case VialKeeper.Changes.read(uuid, %{since: 0, limit: 500}) do
       {:ok, %{results: changes}} ->
         Map.new(changes, fn change ->
           leaves =

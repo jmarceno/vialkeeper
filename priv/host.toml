@@ -1,4 +1,4 @@
-# ElixirDB host configuration.
+# VialKeeper host configuration.
 #
 # This file lives inside the database root and is created automatically on
 # first run. Edit it, then restart the release. It is never overwritten once
@@ -76,7 +76,7 @@ maintenance_reserved_slots = 1
 
 # Bearer-token authentication (AUTH-001). When enabled, every request must
 # present `Authorization: Bearer <token>`. Tokens are stored as SHA-256 hex
-# digests; generate a token and its digest with `bin/elixir_db token`.
+# digests; generate a token and its digest with `bin/vial_keeper token`.
 [auth]
 enabled = false
 tokens  = []
@@ -120,7 +120,7 @@ location = []
 # read_timeout_ms = 5000
 
 # Worker mode is also disabled by default. Attachment roots are absolute
-# worker-visible CAS blobs directories and are never copied by ElixirDB.
+# worker-visible CAS blobs directories and are never copied by VialKeeper.
 [shadow_worker]
 enabled = false
 storage_root = "shadows"

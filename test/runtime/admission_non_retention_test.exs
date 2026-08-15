@@ -1,4 +1,4 @@
-defmodule ElixirDB.Runtime.AdmissionNonRetentionTest do
+defmodule VialKeeper.Runtime.AdmissionNonRetentionTest do
   @moduledoc """
   Long-lived waits and byte streams must not retain an owner permit.
   """
@@ -6,22 +6,22 @@ defmodule ElixirDB.Runtime.AdmissionNonRetentionTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Attachments
-  alias ElixirDB.Eventual
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Query.Subscriptions
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Runtime.{ChangeNotifier, DatabaseAdmission, DatabaseCatalog}
-  alias ElixirDB.TestServer
+  alias VialKeeper.Attachments
+  alias VialKeeper.Eventual
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Query.Subscriptions
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Runtime.{ChangeNotifier, DatabaseAdmission, DatabaseCatalog}
+  alias VialKeeper.TestServer
 
   setup _context do
     {:ok, server: TestServer.start_supervised!()}
   end
 
   defp open_database!(suffix) do
-    rel = "admission-nonret-#{suffix}-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), rel)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    rel = "admission-nonret-#{suffix}-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), rel)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
     uuid = identity.database_uuid
@@ -30,7 +30,7 @@ defmodule ElixirDB.Runtime.AdmissionNonRetentionTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     uuid
@@ -60,7 +60,7 @@ defmodule ElixirDB.Runtime.AdmissionNonRetentionTest do
 
     waiter =
       Task.async(fn ->
-        ElixirDB.Changes.wait(uuid, %{since: 999_999, limit: 1, wait_ms: 5_000})
+        VialKeeper.Changes.wait(uuid, %{since: 999_999, limit: 1, wait_ms: 5_000})
       end)
 
     Eventual.eventually(
@@ -180,7 +180,7 @@ defmodule ElixirDB.Runtime.AdmissionNonRetentionTest do
     assert {:ok, %{blob: blob}} = Attachments.upload_stream(uuid, [payload])
 
     assert {:ok, put} =
-             ElixirDB.Documents.put(uuid, %{
+             VialKeeper.Documents.put(uuid, %{
                "id" => "dl-doc",
                "body" => %{},
                "attachments" => %{

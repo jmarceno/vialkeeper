@@ -1,4 +1,4 @@
-defmodule ElixirDB.Storage.Contracts.Retention do
+defmodule VialKeeper.Storage.Contracts.Retention do
   @moduledoc """
   Shared retention and attachment metadata contract tests for storage adapters.
   """
@@ -7,9 +7,9 @@ defmodule ElixirDB.Storage.Contracts.Retention do
     # The contract tests must be injected into each adapter module.
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
     quote do
-      use ElixirDB.Storage.AdapterCase, unquote(opts)
+      use VialKeeper.Storage.AdapterCase, unquote(opts)
 
-      alias ElixirDB.Domain.BoundaryPage
+      alias VialKeeper.Domain.BoundaryPage
 
       @digest_a String.duplicate("a", 64)
       @digest_b String.duplicate("b", 64)
@@ -99,7 +99,7 @@ defmodule ElixirDB.Storage.Contracts.Retention do
         assert {:ok, %{new_floor: 2, removed_changes: 2}} =
                  @adapter.compact_retention(adapter, %{})
 
-        assert {:error, %ElixirDB.Error{code: :history_truncated}} =
+        assert {:error, %VialKeeper.Error{code: :history_truncated}} =
                  @adapter.read_changes(adapter, %{since: 0, limit: 10})
 
         assert {:ok, %{results: [survivor], last_sequence: 3}} =
@@ -132,7 +132,7 @@ defmodule ElixirDB.Storage.Contracts.Retention do
                    value: base
                  })
 
-        assert {:error, %ElixirDB.Error{code: :rebase_required}} =
+        assert {:error, %VialKeeper.Error{code: :rebase_required}} =
                  @adapter.put_peer_position_cas(adapter, %{
                    expected_version: 1,
                    value: %{base | safe_source_sequence: 3}
@@ -167,7 +167,7 @@ defmodule ElixirDB.Storage.Contracts.Retention do
         assert {:ok, _} =
                  @adapter.get_revision(adapter, %{document_id: "doc", revision_id: winner})
 
-        assert {:error, %ElixirDB.Error{code: :revision_not_found}} =
+        assert {:error, %VialKeeper.Error{code: :revision_not_found}} =
                  @adapter.get_revision(adapter, %{document_id: "doc", revision_id: root})
 
         assert {:ok, report} = @adapter.integrity_check(adapter, %{})

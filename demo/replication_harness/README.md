@@ -1,4 +1,4 @@
-# ElixirDB Replication Lab
+# VialKeeper Replication Lab
 
 This is a manual, real-server test harness for the database runtime.
 
@@ -14,7 +14,7 @@ The launcher starts five cooperating processes:
 
 1. A web/database BEAM node on port `4100`, owning Database A and Database B.
 2. A separate native-client BEAM node on port `4101`, owning Database C and
-   printing its `ElixirDB.Changes.wait/2` feed to the terminal.
+   printing its `VialKeeper.Changes.wait/2` feed to the terminal.
 3. A managed shadow-worker BEAM node on port `4102`.
 4. A second managed shadow-worker BEAM node on port `4103`.
 5. A dependency-free Node.js static server on port `4180`. Its small local
@@ -64,7 +64,7 @@ Worker cards also expose Stop and Restart actions. These actions are bounded by
 the launcher-owned worker process and are useful for observing route
 invalidation and generation recovery without editing production configuration.
 The controller endpoints live only in the demo Node server; they do not add
-routes to the ElixirDB HTTP application.
+routes to the VialKeeper HTTP application.
 
 The page also reads the same OpenTelemetry metric stream used by the database:
 each BEAM node has a local one-second metric reader with no collector network
@@ -79,15 +79,15 @@ through the local demo server.
 Optional environment variables:
 
 ```sh
-ELIXIRDB_DEMO_DB_PORT=4200 \
-ELIXIRDB_DEMO_CLI_PORT=4201 \
-ELIXIRDB_DEMO_WORKER_A_PORT=4202 \
-ELIXIRDB_DEMO_WORKER_B_PORT=4203 \
-ELIXIRDB_DEMO_WEB_PORT=4280 \
+VIALKEEPER_DEMO_DB_PORT=4200 \
+VIALKEEPER_DEMO_CLI_PORT=4201 \
+VIALKEEPER_DEMO_WORKER_A_PORT=4202 \
+VIALKEEPER_DEMO_WORKER_B_PORT=4203 \
+VIALKEEPER_DEMO_WEB_PORT=4280 \
 ./scripts/run-replication-harness.sh
 ```
 
 By default the launcher uses an isolated directory below `tmp/` and removes it
-on exit. Set `ELIXIRDB_DEMO_ROOT=/absolute/path` to keep the data and logs for
+on exit. Set `VIALKEEPER_DEMO_ROOT=/absolute/path` to keep the data and logs for
 inspection; each run gets a unique child directory below that root, and an
 explicitly supplied root is never removed by the launcher.

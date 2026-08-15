@@ -1,20 +1,20 @@
-defmodule ElixirDB.StorageAdapter.ReadPoolConnectionTest do
+defmodule VialKeeper.StorageAdapter.ReadPoolConnectionTest do
   @moduledoc "Covers readonly SQLite snapshot connections."
   use ExUnit.Case, async: true
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.SQLite.{Adapter, Connection, Context, Lifecycle}
+  alias VialKeeper.Storage.SQLite.{Adapter, Connection, Context, Lifecycle}
 
   test "disk reader is readonly and query_only" do
-    {:ok, bundle} = ElixirDB.TempDatabase.create(prefix: "elixirdb-read-pool-conn")
-    sqlite = ElixirDB.TempDatabase.sqlite_path(bundle)
+    {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-read-pool-conn")
+    sqlite = VialKeeper.TempDatabase.sqlite_path(bundle)
 
     assert {:ok, writer} = Adapter.create(sqlite, %{storage_mode: :disk})
 
     on_exit(fn ->
       _ = Adapter.close(writer)
-      ElixirDB.TempDatabase.cleanup(bundle)
+      VialKeeper.TempDatabase.cleanup(bundle)
     end)
 
     assert {:ok, _} =

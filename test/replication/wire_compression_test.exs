@@ -1,10 +1,10 @@
-defmodule ElixirDB.Replication.WireCompressionTest do
+defmodule VialKeeper.Replication.WireCompressionTest do
   @moduledoc "Bounded Zstandard JSON encode/decode contract for replication envelopes."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Error
-  alias ElixirDB.Replication.{WireCompression, ZstdFrame}
+  alias VialKeeper.Error
+  alias VialKeeper.Replication.{WireCompression, ZstdFrame}
 
   @decoded_limit 4_096
 
@@ -209,7 +209,7 @@ defmodule ElixirDB.Replication.WireCompressionTest do
     [
       {"content-encoding", "zstd"},
       {"content-type", "application/json"},
-      {"x-elixirdb-uncompressed-length", Integer.to_string(length)}
+      {"x-vialkeeper-uncompressed-length", Integer.to_string(length)}
     ]
   end
 
@@ -217,7 +217,7 @@ defmodule ElixirDB.Replication.WireCompressionTest do
     [
       {"content-encoding", "zstd"},
       {"content-type", "application/json"},
-      {"x-elixirdb-uncompressed-length", value}
+      {"x-vialkeeper-uncompressed-length", value}
     ]
   end
 

@@ -1,10 +1,10 @@
-defmodule ElixirDB.StorageAdapter.AttachmentsTest do
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.AttachmentsTest do
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.SQLite.Connection
-  alias ElixirDB.Storage.SQLite.Revisions
+  alias VialKeeper.Storage.SQLite.Connection
+  alias VialKeeper.Storage.SQLite.Revisions
 
   @digest String.duplicate("a", 64)
   @other String.duplicate("b", 64)
@@ -27,7 +27,7 @@ defmodule ElixirDB.StorageAdapter.AttachmentsTest do
     assert {:ok, %{removed: 1}} =
              @adapter.remove_pending_blob_protection(adapter, %{digest: @digest})
 
-    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
              @adapter.resolve_blob_metadata(adapter, %{digest: @digest})
   end
 
@@ -53,7 +53,7 @@ defmodule ElixirDB.StorageAdapter.AttachmentsTest do
     assert {:ok, %{removed: 1}} =
              @adapter.cleanup_expired_pending_blobs(adapter, %{now: now})
 
-    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
              @adapter.resolve_blob_metadata(adapter, %{digest: @digest})
 
     assert {:ok, %{logical_size: 2}} =
@@ -164,7 +164,7 @@ defmodule ElixirDB.StorageAdapter.AttachmentsTest do
 
     assert {:ok, %{attachments: %{}}} = load_revision(adapter, "doc", cleared)
 
-    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
              @adapter.apply_local_mutation(adapter, %{
                operation: :put,
                document_id: "doc",
@@ -242,7 +242,7 @@ defmodule ElixirDB.StorageAdapter.AttachmentsTest do
                attachment_name: "file.txt"
              })
 
-    assert {:error, %ElixirDB.Error{code: :attachment_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_not_found}} =
              @adapter.resolve_attachment_ticket(adapter, %{
                id: "doc",
                revision: first,
@@ -317,7 +317,7 @@ defmodule ElixirDB.StorageAdapter.AttachmentsTest do
            document_id
          ]) do
       {:ok, [[doc_key]]} -> Revisions.find(adapter.conn, doc_key, revision_id)
-      {:ok, []} -> {:error, ElixirDB.Error.document_not_found("document not found")}
+      {:ok, []} -> {:error, VialKeeper.Error.document_not_found("document not found")}
       {:error, reason} -> {:error, reason}
     end
   end

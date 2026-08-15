@@ -1,5 +1,5 @@
-defmodule ElixirDB.StorageAdapter.PortabilityTest do
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.PortabilityTest do
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
@@ -22,12 +22,12 @@ defmodule ElixirDB.StorageAdapter.PortabilityTest do
     refute File.exists?(path <> "-wal")
     refute File.exists?(path <> "-shm")
 
-    {:ok, copy_bundle} = ElixirDB.TempDatabase.create(prefix: "elixirdb-portable-copy")
-    copy_sqlite = ElixirDB.TempDatabase.sqlite_path(copy_bundle)
+    {:ok, copy_bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-portable-copy")
+    copy_sqlite = VialKeeper.TempDatabase.sqlite_path(copy_bundle)
     File.cp!(path, copy_sqlite)
     refute File.exists?(copy_sqlite <> ".lease")
 
-    on_exit(fn -> ElixirDB.TempDatabase.cleanup(copy_bundle) end)
+    on_exit(fn -> VialKeeper.TempDatabase.cleanup(copy_bundle) end)
 
     assert {:ok, reopened} = @adapter.open(copy_sqlite)
 

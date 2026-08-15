@@ -1,14 +1,14 @@
-defmodule ElixirDB.Replication.CompactBootstrapTest do
+defmodule VialKeeper.Replication.CompactBootstrapTest do
   @moduledoc "Covers replication bootstrap after compaction."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Replication
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Replication
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @retention_config %{
     "retention" => %{
@@ -21,12 +21,12 @@ defmodule ElixirDB.Replication.CompactBootstrapTest do
 
   setup do
     prefix = "compact-boot-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -39,7 +39,7 @@ defmodule ElixirDB.Replication.CompactBootstrapTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -48,20 +48,20 @@ defmodule ElixirDB.Replication.CompactBootstrapTest do
 
   test "target bootstraps after source compaction advances floor beyond checkpoint", %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "first", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "first", body: %{"n" => 1}})
 
     assert {:ok, %{status: :completed}} = Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, %{body: %{"n" => 1}}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "first"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "first"})
 
     payload = String.duplicate("bootstrap-attachment-", 2_048)
 
     assert {:ok, %{blob: digest}} =
-             ElixirDB.Attachments.upload_stream(a.database_uuid, [payload])
+             VialKeeper.Attachments.upload_stream(a.database_uuid, [payload])
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{
+             VialKeeper.Documents.put(a.database_uuid, %{
                id: "second",
                body: %{"n" => 2},
                attachments: %{
@@ -80,14 +80,14 @@ defmodule ElixirDB.Replication.CompactBootstrapTest do
     assert {:ok, %{new_floor: 2}} =
              DatabaseCatalog.command(a.database_uuid, {:command, :compact_retention, %{}})
 
-    assert {:error, %ElixirDB.Error{code: :history_truncated}} =
+    assert {:error, %VialKeeper.Error{code: :history_truncated}} =
              DatabaseCatalog.command(
                a.database_uuid,
                {:command, :read_changes, %{since: 0, limit: 10}}
              )
 
-    assert {:error, %ElixirDB.Error{code: :document_not_found}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "second"})
+    assert {:error, %VialKeeper.Error{code: :document_not_found}} =
+             VialKeeper.Documents.get(b.database_uuid, %{id: "second"})
 
     {:ok, source} = LocalEndpoint.new(a.database_uuid)
     {:ok, target} = LocalEndpoint.new(b.database_uuid)
@@ -101,7 +101,7 @@ defmodule ElixirDB.Replication.CompactBootstrapTest do
     assert {:ok, %{status: :completed}} = Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, %{body: %{"n" => 2}, attachments: attachments}} =
-             ElixirDB.Documents.get(b.database_uuid, %{id: "second"})
+             VialKeeper.Documents.get(b.database_uuid, %{id: "second"})
 
     assert %{"payload.bin" => %{digest: ^digest}} = attachments
 
@@ -113,12 +113,12 @@ defmodule ElixirDB.Replication.CompactBootstrapTest do
 
   test "handshake reconcile marks bootstrap when checkpoint is below retention floor", %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "floor", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "floor", body: %{"n" => 1}})
 
     assert {:ok, %{status: :completed}} = Replication.one_shot(a.database_uuid, b.database_uuid)
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "after-floor", body: %{"n" => 2}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "after-floor", body: %{"n" => 2}})
 
     assert {:ok, _} = update_peer_safe(a.database_uuid, b.database_uuid, 2)
 

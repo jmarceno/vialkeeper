@@ -1,6 +1,6 @@
-defmodule ElixirDB.StorageAdapter.StructuredIndexesTest do
-  alias ElixirDB.Storage.SQLite.QueryCompiler
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.StructuredIndexesTest do
+  alias VialKeeper.Storage.SQLite.QueryCompiler
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
@@ -47,7 +47,7 @@ defmodule ElixirDB.StorageAdapter.StructuredIndexesTest do
     assert {:ok, remaining} = @adapter.list_indexes(adapter)
     refute Enum.any?(remaining, &(&1["index_id"] == index_id))
 
-    assert {:error, %ElixirDB.Error{code: :invalid_index_hint}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_index_hint}} =
              @adapter.execute_query(adapter, %{
                selector: %{"/type" => "task"},
                index: "by-type",
@@ -71,7 +71,7 @@ defmodule ElixirDB.StorageAdapter.StructuredIndexesTest do
     # A pointer must begin with '/'. This exercises the defensive error path in
     # QueryCompiler.sqlite_path/1 (consumed by index DDL and query SQL) instead of a bare
     # match that would raise MatchError on storage-layer misuse.
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
              QueryCompiler.sqlite_path("no-leading-slash")
   end
 

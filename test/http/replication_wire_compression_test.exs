@@ -1,4 +1,4 @@
-defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
+defmodule VialKeeper.HTTP.ReplicationWireCompressionTest do
   @moduledoc """
   Remote replication JSON is one bounded Zstandard frame on the wire.
 
@@ -8,13 +8,13 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
 
   setup do
-    path = "wire-json-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), path)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    path = "wire-json-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), path)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(path)
     uuid = identity.database_uuid
@@ -23,7 +23,7 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, uuid: uuid, base_url: server.base_url}
@@ -63,7 +63,7 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
     assert zstd_content_encoding?(response)
     assert zstd_magic?(response.body)
 
-    decoded = ElixirDB.TestReplicationWire.decode_response(response.headers, response.body)
+    decoded = VialKeeper.TestReplicationWire.decode_response(response.headers, response.body)
     assert decoded["error"]["code"] == "invalid_request"
   end
 
@@ -71,13 +71,13 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
     uuid: uuid,
     base_url: base_url
   } do
-    previous = Application.get_env(:elixir_db, :auth)
+    previous = Application.get_env(:vial_keeper, :auth)
 
     on_exit(fn ->
       restore_auth(previous)
     end)
 
-    Application.put_env(:elixir_db, :auth,
+    Application.put_env(:vial_keeper, :auth,
       enabled: true,
       token_digests: [:crypto.hash(:sha256, "expected-token")]
     )
@@ -105,17 +105,17 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
     base_url: base_url
   } do
     url = base_url <> "/v1/databases/#{uuid}/replication/revisions/diff"
-    encoded = ElixirDB.TestReplicationWire.encode!(%{"revisions" => []})
+    encoded = VialKeeper.TestReplicationWire.encode!(%{"revisions" => []})
     length_header = Integer.to_string(encoded.uncompressed_length)
     truncated = binary_part(encoded.body, 0, byte_size(encoded.body) - 1)
     concatenated = encoded.body <> encoded.body
     <<_magic::binary-size(4), frame_rest::binary>> = encoded.body
     corrupt_magic = <<0, 0, 0, 0>> <> frame_rest
-    decoded_limit = ElixirDB.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
+    decoded_limit = VialKeeper.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
 
     cases = [
       {"missing content-encoding",
-       [{"content-type", "application/json"}, {"x-elixirdb-uncompressed-length", length_header}],
+       [{"content-type", "application/json"}, {"x-vialkeeper-uncompressed-length", length_header}],
        encoded.body, 400, "invalid_request"},
       {"missing uncompressed length",
        [{"content-type", "application/json"}, {"content-encoding", "zstd"}], encoded.body, 400,
@@ -147,7 +147,7 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
       assert zstd_content_encoding?(response), "#{label}: error response is not compressed"
       assert zstd_magic?(response.body), "#{label}: error body is not a Zstandard frame"
 
-      decoded = ElixirDB.TestReplicationWire.decode_response(response.headers, response.body)
+      decoded = VialKeeper.TestReplicationWire.decode_response(response.headers, response.body)
       assert decoded["error"]["code"] == code, "#{label}: #{inspect(decoded)}"
     end
   end
@@ -171,7 +171,7 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
     [
       {"content-type", "application/json"},
       {"content-encoding", "zstd"},
-      {"x-elixirdb-uncompressed-length", uncompressed_length}
+      {"x-vialkeeper-uncompressed-length", uncompressed_length}
     ]
   end
 
@@ -191,7 +191,7 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
   end
 
   defp uncompressed_length_header(response) do
-    case Integer.parse(header(response, "x-elixirdb-uncompressed-length") || "") do
+    case Integer.parse(header(response, "x-vialkeeper-uncompressed-length") || "") do
       {int, ""} -> int
       _ -> 0
     end
@@ -218,6 +218,6 @@ defmodule ElixirDB.HTTP.ReplicationWireCompressionTest do
   defp header_value([value | _]) when is_binary(value), do: value
   defp header_value(_), do: nil
 
-  defp restore_auth(nil), do: Application.delete_env(:elixir_db, :auth)
-  defp restore_auth(value), do: Application.put_env(:elixir_db, :auth, value)
+  defp restore_auth(nil), do: Application.delete_env(:vial_keeper, :auth)
+  defp restore_auth(value), do: Application.put_env(:vial_keeper, :auth, value)
 end

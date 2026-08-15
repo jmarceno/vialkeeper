@@ -1,4 +1,4 @@
-defmodule ElixirDB.WebUI.ShellAuthTest do
+defmodule VialKeeper.WebUI.ShellAuthTest do
   @moduledoc """
   Host config, embedded assets, anonymous shell, and auth-boundary proofs for
   the embedded administration console.
@@ -8,25 +8,25 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
   @moduletag :integration
   import Plug.Test
 
-  alias ElixirDB.HostConfig
-  alias ElixirDB.HTTP.{AuthPlug, Router}
-  alias ElixirDB.WebUI
-  alias ElixirDB.WebUI.{Assets, HTML, Layout}
+  alias VialKeeper.HostConfig
+  alias VialKeeper.HTTP.{AuthPlug, Router}
+  alias VialKeeper.WebUI
+  alias VialKeeper.WebUI.{Assets, HTML, Layout}
 
   @token :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
   @digest String.downcase(:crypto.hash(:sha256, @token) |> Base.encode16(case: :lower))
 
   setup do
-    previous_auth = Application.get_env(:elixir_db, :auth)
-    previous_web_ui = Application.get_env(:elixir_db, :web_ui)
+    previous_auth = Application.get_env(:vial_keeper, :auth)
+    previous_web_ui = Application.get_env(:vial_keeper, :web_ui)
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :auth, previous_auth)
-      Application.put_env(:elixir_db, :web_ui, previous_web_ui)
+      Application.put_env(:vial_keeper, :auth, previous_auth)
+      Application.put_env(:vial_keeper, :web_ui, previous_web_ui)
     end)
 
-    Application.put_env(:elixir_db, :web_ui, enabled: true)
-    Application.put_env(:elixir_db, :auth, enabled: false, token_digests: [])
+    Application.put_env(:vial_keeper, :web_ui, enabled: true)
+    Application.put_env(:vial_keeper, :auth, enabled: false, token_digests: [])
     :ok
   end
 
@@ -55,15 +55,15 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
     do: Plug.Conn.put_req_header(conn, "authorization", "Bearer " <> token)
 
   defp enable_auth,
-    do: Application.put_env(:elixir_db, :auth, enabled: true, token_digests: [@digest])
+    do: Application.put_env(:vial_keeper, :auth, enabled: true, token_digests: [@digest])
 
-  defp disable_ui, do: Application.put_env(:elixir_db, :web_ui, enabled: false)
+  defp disable_ui, do: Application.put_env(:vial_keeper, :web_ui, enabled: false)
 
   test "defaults and shipped template enable the web UI without drift" do
     assert HostConfig.defaults()["web_ui"] == %{"enabled" => true}
 
     template =
-      :code.priv_dir(:elixir_db)
+      :code.priv_dir(:vial_keeper)
       |> Path.join("host.toml")
       |> File.read!()
 
@@ -73,7 +73,7 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
   end
 
   test "HostConfig loads web_ui.enabled overrides" do
-    dir = Path.join(System.tmp_dir!(), "elixirdb-webui-cfg-#{System.unique_integer([:positive])}")
+    dir = Path.join(System.tmp_dir!(), "vialkeeper-webui-cfg-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)
 
@@ -99,7 +99,7 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
     shell = request("GET", "/ui")
     assert shell.status == 200
     assert content_type(shell) =~ "text/html"
-    assert shell.resp_body =~ "ElixirDB"
+    assert shell.resp_body =~ "VialKeeper"
     assert shell.resp_body =~ ~s(name="htmx-config")
 
     assert shell.resp_body =~
@@ -107,7 +107,7 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
 
     assert shell.resp_body =~ ~s(hx-disinherit="*")
     assert shell.resp_body =~ ~s(id="app")
-    assert shell.resp_body =~ ~s(hx-trigger="elixirdb:start from:body")
+    assert shell.resp_body =~ ~s(hx-trigger="vialkeeper:start from:body")
     refute shell.resp_body =~ ~s(hx-trigger="load)
 
     refute shell.resp_body =~ "database_uuid"
@@ -122,8 +122,8 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
     home = request("GET", "/ui/fragments/home")
     assert home.status == 200
     assert home.resp_body =~ "Console"
-    assert get_header(home, "x-elixirdb-auth") == "off"
-    refute get_header(shell, "x-elixirdb-auth")
+    assert get_header(home, "x-vialkeeper-auth") == "off"
+    refute get_header(shell, "x-vialkeeper-auth")
   end
 
   test "auth enabled: shell and assets are anonymous; fragments require bearer" do
@@ -150,7 +150,7 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
     assert malformed.status == 401
     assert wrong.status == 401
     assert ok.status == 200
-    refute get_header(ok, "x-elixirdb-auth")
+    refute get_header(ok, "x-vialkeeper-auth")
     assert error_payload(missing) == error_payload(malformed)
     assert error_payload(missing) == error_payload(wrong)
   end
@@ -225,7 +225,7 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
     assert HTML.attr(hostile) == HTML.escape(hostile)
 
     shell = Layout.shell() |> IO.iodata_to_binary()
-    assert shell =~ "ElixirDB"
+    assert shell =~ "VialKeeper"
     refute shell =~ "<script>alert"
   end
 
@@ -244,7 +244,7 @@ defmodule ElixirDB.WebUI.ShellAuthTest do
 
   test "embedded asset bytes remain available after source assets are removed" do
     root =
-      Path.join(System.tmp_dir!(), "elixirdb-webui-embed-#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "vialkeeper-webui-embed-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf(root) end)

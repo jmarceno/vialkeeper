@@ -1,7 +1,7 @@
-defmodule ElixirDB.Query.RegexTest do
+defmodule VialKeeper.Query.RegexTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Query.Regex, as: QueryRegex
+  alias VialKeeper.Query.Regex, as: QueryRegex
 
   test "compiles with fixed Unicode semantics and matches strings" do
     assert {:ok, regex} = QueryRegex.compile("^café$")
@@ -12,21 +12,21 @@ defmodule ElixirDB.Query.RegexTest do
   end
 
   test "rejects invalid and oversized patterns" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} = QueryRegex.compile("(")
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} = QueryRegex.compile("(")
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              QueryRegex.compile(String.duplicate("a", 1_025))
 
     assert {:ok, _regex} = QueryRegex.compile(String.duplicate("a", 1_024))
   end
 
   test "does not accept invalid UTF-8 source" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} = QueryRegex.compile(<<255>>)
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} = QueryRegex.compile(<<255>>)
   end
 
   test "rejects inline option groups and keeps matching case-sensitive" do
     for source <- ["(?i)foo", "(?m)foo", "(?s)foo", "(?U)foo", "(?x)foo", "(?im-s:foo)"] do
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} = QueryRegex.compile(source)
+      assert {:error, %VialKeeper.Error{code: :invalid_request}} = QueryRegex.compile(source)
     end
 
     assert {:ok, regex} = QueryRegex.compile("foo")
@@ -42,7 +42,7 @@ defmodule ElixirDB.Query.RegexTest do
   test "returns resource_limit for bounded pathological matching" do
     assert {:ok, regex} = QueryRegex.compile("(a+)+$")
 
-    assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
              QueryRegex.match?(regex, String.duplicate("a", 1_000) <> "!")
   end
 end

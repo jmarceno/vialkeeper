@@ -1,4 +1,4 @@
-defmodule ElixirDB.RevisionHistoryModel do
+defmodule VialKeeper.RevisionHistoryModel do
   @moduledoc """
   Pure in-memory revision history applicator for adapter and model tests.
 
@@ -7,12 +7,12 @@ defmodule ElixirDB.RevisionHistoryModel do
   `Winner`, `ConflictResolution`, `Tree`, and `Id`.
   """
 
-  alias ElixirDB.Domain.Revision
-  alias ElixirDB.OperationFixtures
-  alias ElixirDB.RevisionFixtures
-  alias ElixirDB.Revisions.{ConflictResolution, Id, Tree, Winner}
-  alias ElixirDB.Revisions.Wire
-  alias ElixirDB.UUID
+  alias VialKeeper.Domain.Revision
+  alias VialKeeper.OperationFixtures
+  alias VialKeeper.RevisionFixtures
+  alias VialKeeper.Revisions.{ConflictResolution, Id, Tree, Winner}
+  alias VialKeeper.Revisions.Wire
+  alias VialKeeper.UUID
 
   @type state :: %{
           document_id: binary() | nil,
@@ -182,7 +182,7 @@ defmodule ElixirDB.RevisionHistoryModel do
 
   defp resolve_operation(state, document_id, leaves, live, expected, concrete) do
     case ConflictResolution.validate_leaf_set(leaves, expected) do
-      {:error, %ElixirDB.Error{code: code}} ->
+      {:error, %VialKeeper.Error{code: code}} ->
         %{state | last_result: {:error, code}, last_concrete_op: concrete}
 
       :ok ->
@@ -568,5 +568,5 @@ defmodule ElixirDB.RevisionHistoryModel do
     do: {:ok, Map.take(result, [:revision, :replayed, :conflicts, :imported])}
 
   defp normalize_result({:error, code}) when is_atom(code), do: {:error, code}
-  defp normalize_result({:error, %ElixirDB.Error{code: code}}), do: {:error, code}
+  defp normalize_result({:error, %VialKeeper.Error{code: code}}), do: {:error, code}
 end

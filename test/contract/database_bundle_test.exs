@@ -1,8 +1,8 @@
-defmodule ElixirDB.Contract.DatabaseBundleTest do
+defmodule VialKeeper.Contract.DatabaseBundleTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.DatabaseBundle
-  alias ElixirDB.PathSafety
+  alias VialKeeper.DatabaseBundle
+  alias VialKeeper.PathSafety
 
   test "within_root? rejects paths outside the bundle root" do
     root = Path.expand(System.tmp_dir!())
@@ -12,8 +12,10 @@ defmodule ElixirDB.Contract.DatabaseBundleTest do
   end
 
   test "validate rejects bundle components that resolve outside the root" do
-    root = Path.join(System.tmp_dir!(), "elixirdb-bundle-#{System.unique_integer([:positive])}")
-    outside = Path.join(System.tmp_dir!(), "elixirdb-outside-#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "vialkeeper-bundle-#{System.unique_integer([:positive])}")
+
+    outside =
+      Path.join(System.tmp_dir!(), "vialkeeper-outside-#{System.unique_integer([:positive])}")
 
     on_exit(fn ->
       File.rm_rf(root)
@@ -25,14 +27,14 @@ defmodule ElixirDB.Contract.DatabaseBundleTest do
     File.rm_rf!(Path.join(root, "blobs"))
     File.ln_s!(outside, Path.join(root, "blobs"))
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} = DatabaseBundle.validate(root)
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} = DatabaseBundle.validate(root)
   end
 
   test "prepare_for_open reclaims stale temporary uploads" do
     root =
       Path.join(
         System.tmp_dir!(),
-        "elixirdb-bundle-#{System.unique_integer([:positive])}"
+        "vialkeeper-bundle-#{System.unique_integer([:positive])}"
       )
 
     on_exit(fn -> File.rm_rf(root) end)

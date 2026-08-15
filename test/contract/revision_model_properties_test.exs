@@ -1,9 +1,9 @@
-defmodule ElixirDB.Contract.RevisionModelPropertiesTest do
+defmodule VialKeeper.Contract.RevisionModelPropertiesTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias ElixirDB.ModelGenerators
-  alias ElixirDB.Revisions.{ConflictResolution, Id, Winner}
+  alias VialKeeper.ModelGenerators
+  alias VialKeeper.Revisions.{ConflictResolution, Id, Winner}
 
   property "linear history winner is the tip regardless of shuffle of equal set" do
     check all(revisions <- ModelGenerators.linear_revision_history()) do
@@ -43,7 +43,7 @@ defmodule ElixirDB.Contract.RevisionModelPropertiesTest do
       assert :ok = ConflictResolution.validate_leaf_set(leaves, expected)
       assert :ok = ConflictResolution.validate_leaf_set(leaves, Enum.reverse(expected))
 
-      assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+      assert {:error, %VialKeeper.Error{code: :revision_conflict}} =
                ConflictResolution.validate_leaf_set(leaves, [hd(expected)])
     end
   end

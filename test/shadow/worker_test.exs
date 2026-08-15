@@ -1,12 +1,12 @@
-defmodule ElixirDB.Shadow.WorkerTest do
+defmodule VialKeeper.Shadow.WorkerTest do
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Shadow.Worker
+  alias VialKeeper.Shadow.Worker
 
   test "provision is idempotent and exact-generation destroy is fenced" do
     root =
       Path.join(
-        ElixirDB.Config.database_root(),
+        VialKeeper.Config.database_root(),
         "shadow-worker-#{System.unique_integer([:positive])}"
       )
 
@@ -14,8 +14,8 @@ defmodule ElixirDB.Shadow.WorkerTest do
     attachment_location = Path.join(external_root, "blobs")
     File.mkdir_p!(attachment_location)
 
-    source_uuid = ElixirDB.UUID.v4()
-    request = request(source_uuid, ElixirDB.UUID.v4(), 1, attachment_location)
+    source_uuid = VialKeeper.UUID.v4()
+    request = request(source_uuid, VialKeeper.UUID.v4(), 1, attachment_location)
     opts = [root: Path.join(root, "managed"), allowed_attachment_roots: [external_root]]
 
     identity_request =
@@ -23,7 +23,7 @@ defmodule ElixirDB.Shadow.WorkerTest do
 
     on_exit(fn ->
       _ = Worker.destroy(identity_request, opts)
-      ElixirDB.TempDatabase.cleanup(root)
+      VialKeeper.TempDatabase.cleanup(root)
     end)
 
     assert {:ok, %{"state" => "bootstrapping", "idempotent" => false}} =
@@ -32,13 +32,13 @@ defmodule ElixirDB.Shadow.WorkerTest do
     assert {:ok, %{"state" => "bootstrapping", "idempotent" => true}} =
              Worker.provision(request, opts)
 
-    replacement = request(source_uuid, ElixirDB.UUID.v4(), 1, attachment_location)
+    replacement = request(source_uuid, VialKeeper.UUID.v4(), 1, attachment_location)
     assert {:error, %{code: :shadow_generation_conflict}} = Worker.provision(replacement, opts)
 
     wrong_identity =
       request
       |> Map.take(["source_uuid", "shadow_uuid", "generation", "operation_id"])
-      |> Map.put("shadow_uuid", ElixirDB.UUID.v4())
+      |> Map.put("shadow_uuid", VialKeeper.UUID.v4())
 
     assert {:ok, %{"state" => "absent"}} = Worker.destroy(wrong_identity, opts)
     assert {:ok, %{"state" => "absent"}} = Worker.destroy(identity_request, opts)
@@ -49,7 +49,7 @@ defmodule ElixirDB.Shadow.WorkerTest do
       "source_uuid" => source_uuid,
       "shadow_uuid" => shadow_uuid,
       "generation" => generation,
-      "operation_id" => ElixirDB.UUID.v4(),
+      "operation_id" => VialKeeper.UUID.v4(),
       "attachment_store_type" => "external_cas",
       "attachment_location" => attachment_location,
       "specification_digest" => String.duplicate("b", 64)

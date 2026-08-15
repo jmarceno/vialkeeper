@@ -1,4 +1,4 @@
-defmodule ElixirDB.WebUI.ConsoleOpsTest do
+defmodule VialKeeper.WebUI.ConsoleOpsTest do
   @moduledoc """
   Federation, materialized-view, replication, maintenance, and observability
   proofs for the embedded administration console.
@@ -8,46 +8,46 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
   @moduletag :integration
   import Plug.Test
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Federation.Normalizer
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.MapAccess
-  alias ElixirDB.MaterializedViews
-  alias ElixirDB.Replication.JobManager
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Federation.Normalizer
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.MapAccess
+  alias VialKeeper.MaterializedViews
+  alias VialKeeper.Replication.JobManager
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @token :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
   @digest String.downcase(:crypto.hash(:sha256, @token) |> Base.encode16(case: :lower))
 
   setup do
-    previous_auth = Application.get_env(:elixir_db, :auth)
-    previous_web_ui = Application.get_env(:elixir_db, :web_ui)
-    previous_dashboard = Application.get_env(:elixir_db, :observability_dashboard)
-    previous_saved = Application.get_env(:elixir_db, :federation_saved_queries, :missing)
+    previous_auth = Application.get_env(:vial_keeper, :auth)
+    previous_web_ui = Application.get_env(:vial_keeper, :web_ui)
+    previous_dashboard = Application.get_env(:vial_keeper, :observability_dashboard)
+    previous_saved = Application.get_env(:vial_keeper, :federation_saved_queries, :missing)
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :auth, previous_auth)
-      Application.put_env(:elixir_db, :web_ui, previous_web_ui)
-      Application.put_env(:elixir_db, :observability_dashboard, previous_dashboard)
+      Application.put_env(:vial_keeper, :auth, previous_auth)
+      Application.put_env(:vial_keeper, :web_ui, previous_web_ui)
+      Application.put_env(:vial_keeper, :observability_dashboard, previous_dashboard)
 
       case previous_saved do
-        :missing -> Application.delete_env(:elixir_db, :federation_saved_queries)
-        value -> Application.put_env(:elixir_db, :federation_saved_queries, value)
+        :missing -> Application.delete_env(:vial_keeper, :federation_saved_queries)
+        value -> Application.put_env(:vial_keeper, :federation_saved_queries, value)
       end
     end)
 
-    Application.put_env(:elixir_db, :web_ui, enabled: true)
-    Application.put_env(:elixir_db, :auth, enabled: false, token_digests: [])
-    Application.put_env(:elixir_db, :observability_dashboard, false)
-    Application.put_env(:elixir_db, :federation_saved_queries, [])
+    Application.put_env(:vial_keeper, :web_ui, enabled: true)
+    Application.put_env(:vial_keeper, :auth, enabled: false, token_digests: [])
+    Application.put_env(:vial_keeper, :observability_dashboard, false)
+    Application.put_env(:vial_keeper, :federation_saved_queries, [])
 
-    root = ElixirDB.Config.database_root()
-    first_path = "webui-ops-a-#{System.unique_integer([:positive])}.elixirdb"
-    second_path = "webui-ops-b-#{System.unique_integer([:positive])}.elixirdb"
+    root = VialKeeper.Config.database_root()
+    first_path = "webui-ops-a-#{System.unique_integer([:positive])}.vialkeeper"
+    second_path = "webui-ops-b-#{System.unique_integer([:positive])}.vialkeeper"
 
     for path <- [first_path, second_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     assert {:ok, first} = DatabaseCatalog.create(first_path)
@@ -59,7 +59,7 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
       for {identity, path} <- [{first, first_path}, {second, second_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -104,7 +104,7 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
     do: Plug.Conn.put_req_header(conn, "authorization", "Bearer " <> token)
 
   defp enable_auth,
-    do: Application.put_env(:elixir_db, :auth, enabled: true, token_digests: [@digest])
+    do: Application.put_env(:vial_keeper, :auth, enabled: true, token_digests: [@digest])
 
   defp get_header(conn, name) do
     conn
@@ -122,12 +122,12 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
   defp cleanup_derived(created) do
     uuid = MapAccess.get(created, :database_uuid)
     path = MapAccess.get(created, :database_path)
-    bundle = if is_binary(path), do: Path.join(ElixirDB.Config.database_root(), path), else: nil
+    bundle = if is_binary(path), do: Path.join(VialKeeper.Config.database_root(), path), else: nil
 
     _ = DatabaseCatalog.command(uuid, {:command, :set_derived_enabled, %{enabled: false}})
     _ = DatabaseCatalog.close(uuid)
     _ = DatabaseCatalog.unregister(uuid)
-    if bundle, do: ElixirDB.TempDatabase.cleanup(bundle)
+    if bundle, do: VialKeeper.TempDatabase.cleanup(bundle)
   end
 
   test "ad-hoc federation renders source vector, order, and bookmark pagination", %{
@@ -201,7 +201,7 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
                }
              })
 
-    Application.put_env(:elixir_db, :federation_saved_queries, [
+    Application.put_env(:vial_keeper, :federation_saved_queries, [
       %{
         name: "open-tasks",
         databases: normalized.databases,
@@ -469,7 +469,7 @@ defmodule ElixirDB.WebUI.ConsoleOpsTest do
     assert disabled.resp_body =~ "Set application env :observability_dashboard to true"
     refute disabled.resp_body =~ "memory_bytes"
 
-    Application.put_env(:elixir_db, :observability_dashboard, true)
+    Application.put_env(:vial_keeper, :observability_dashboard, true)
     enabled = request("GET", "/ui/fragments/observability")
     assert enabled.status == 200
     assert enabled.resp_body =~ "Runtime"

@@ -1,7 +1,7 @@
 # Regenerates priv/fixtures/revision_ids/vectors.json for attachment-aware revision hashing.
 
-alias ElixirDB.JSON.Canonical
-alias ElixirDB.Revisions.Id
+alias VialKeeper.JSON.Canonical
+alias VialKeeper.Revisions.Id
 
 fixtures_path = Path.expand("priv/fixtures/revision_ids/vectors.json", File.cwd!())
 fixtures = fixtures_path |> File.read!() |> JSON.decode!()

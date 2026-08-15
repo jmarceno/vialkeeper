@@ -1,9 +1,9 @@
-defmodule ElixirDB.Federation.LifecycleTest do
+defmodule VialKeeper.Federation.LifecycleTest do
   @moduledoc "Covers ownership and shutdown of federation source tasks."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Federation.Executor
+  alias VialKeeper.Federation.Executor
 
   @source "123e4567-e89b-12d3-a456-426614174000"
 

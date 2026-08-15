@@ -1,5 +1,5 @@
-defmodule ElixirDB.StorageAdapter.ReplicationJobsTest do
-  use ElixirDB.Storage.AdapterCase, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.StorageAdapter.ReplicationJobsTest do
+  use VialKeeper.Storage.AdapterCase, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
@@ -12,7 +12,7 @@ defmodule ElixirDB.StorageAdapter.ReplicationJobsTest do
       "job_id" => job_id,
       "mode" => "one_shot",
       "direction" => "push",
-      "endpoint" => %{"kind" => "local", "database_uuid" => ElixirDB.UUID.v4()},
+      "endpoint" => %{"kind" => "local", "database_uuid" => VialKeeper.UUID.v4()},
       "enabled" => true
     }
 

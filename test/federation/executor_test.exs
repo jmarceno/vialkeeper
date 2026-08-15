@@ -1,10 +1,10 @@
-defmodule ElixirDB.Federation.ExecutorTest do
+defmodule VialKeeper.Federation.ExecutorTest do
   @moduledoc "Covers bounded federation execution and deterministic merging."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Error
-  alias ElixirDB.Federation.Executor
+  alias VialKeeper.Error
+  alias VialKeeper.Federation.Executor
 
   @source "123e4567-e89b-12d3-a456-426614174000"
   @other_source "123e4567-e89b-12d3-a456-426614174001"

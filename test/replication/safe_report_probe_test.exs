@@ -1,17 +1,17 @@
-defmodule ElixirDB.Replication.SafeReportProbeTest do
+defmodule VialKeeper.Replication.SafeReportProbeTest do
   @moduledoc "Covers safe replication reports during retention and attachment errors."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Eventual
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Replication
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Runtime.AttachmentCoordinator
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Storage.SQLite.Adapter
+  alias VialKeeper.Eventual
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Replication
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Runtime.AttachmentCoordinator
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.SQLite.Adapter
 
   @retention_config %{
     "retention" => %{
@@ -24,12 +24,12 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
 
   setup do
     prefix = "safe-probe-#{System.unique_integer([:positive])}"
-    a_path = prefix <> "-a.elixirdb"
-    b_path = prefix <> "-b.elixirdb"
-    root = ElixirDB.Config.database_root()
+    a_path = prefix <> "-a.vialkeeper"
+    b_path = prefix <> "-b.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [a_path, b_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, a} = DatabaseCatalog.create(a_path)
@@ -42,7 +42,7 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
       for {identity, path} <- [{a, a_path}, {b, b_path}] do
         _ = DatabaseCatalog.close(identity.database_uuid)
         _ = DatabaseCatalog.unregister(identity.database_uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -50,8 +50,8 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
   end
 
   test "adapter reports local-origin changes on target", %{b: b} do
-    {:ok, bundle_path} = ElixirDB.TempDatabase.create(prefix: "safe-probe-adapter")
-    path = ElixirDB.TempDatabase.sqlite_path(bundle_path)
+    {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "safe-probe-adapter")
+    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{database_uuid: b.database_uuid})
 
     try do
@@ -67,13 +67,13 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
       assert {:ok, true} = Adapter.has_local_origin_changes?(adapter)
     after
       Adapter.close(adapter)
-      ElixirDB.TempDatabase.cleanup(bundle_path)
+      VialKeeper.TempDatabase.cleanup(bundle_path)
     end
   end
 
   test "safe position does not advance when target has local-origin mutations", %{a: a, b: b} do
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "seed", body: %{"n" => 1}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "seed", body: %{"n" => 1}})
 
     assert {:ok, %{status: :completed}} = Replication.one_shot(a.database_uuid, b.database_uuid)
 
@@ -103,7 +103,7 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
     context = with_boundary_gates(context, source)
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "next", body: %{"n" => 2}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "next", body: %{"n" => 2}})
 
     assert {:ok, context} = run_batch(source, target, context, options)
 
@@ -111,12 +111,12 @@ defmodule ElixirDB.Replication.SafeReportProbeTest do
     assert first_safe > 0
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(b.database_uuid, %{id: "local-only", body: %{"x" => 1}})
+             VialKeeper.Documents.put(b.database_uuid, %{id: "local-only", body: %{"x" => 1}})
 
     assert {:ok, true} = LocalEndpoint.has_local_origin_changes?(target)
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(a.database_uuid, %{id: "later", body: %{"n" => 3}})
+             VialKeeper.Documents.put(a.database_uuid, %{id: "later", body: %{"n" => 3}})
 
     assert {:ok, blocked_context} = run_batch(source, target, context, options)
 

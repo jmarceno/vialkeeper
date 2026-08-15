@@ -1,13 +1,13 @@
-defmodule ElixirDB.Storage.Contracts.Query do
+defmodule VialKeeper.Storage.Contracts.Query do
   @moduledoc """
   Shared query contract tests for storage adapters.
   """
 
   defmacro __using__(opts) do
     quote do
-      use ElixirDB.Storage.AdapterCase, unquote(opts)
+      use VialKeeper.Storage.AdapterCase, unquote(opts)
 
-      alias ElixirDB.Storage.Ports.Access
+      alias VialKeeper.Storage.Ports.Access
 
       test "selector queries return canonical document-id order", %{adapter: adapter} do
         for {id, body} <- [

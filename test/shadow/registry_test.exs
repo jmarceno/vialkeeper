@@ -1,7 +1,7 @@
-defmodule ElixirDB.Shadow.RegistryTest do
+defmodule VialKeeper.Shadow.RegistryTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Shadow.{Definition, Observation, Registry}
+  alias VialKeeper.Shadow.{Definition, Observation, Registry}
 
   test "persists desired state, observations, and orphan records" do
     root = temp_root()
@@ -9,7 +9,7 @@ defmodule ElixirDB.Shadow.RegistryTest do
     {:ok, pid} = Registry.start_link(root: root, name: name)
     on_exit(fn -> stop(pid, root) end)
 
-    source_uuid = ElixirDB.UUID.v4()
+    source_uuid = VialKeeper.UUID.v4()
 
     assert {:ok, definition} =
              Definition.new(source_uuid, %{
@@ -46,7 +46,7 @@ defmodule ElixirDB.Shadow.RegistryTest do
     {:ok, pid} = Registry.start_link(root: root, name: name)
     on_exit(fn -> stop(pid, root) end)
 
-    source_uuid = ElixirDB.UUID.v4()
+    source_uuid = VialKeeper.UUID.v4()
 
     assert {:ok, first} =
              Definition.new(source_uuid, %{
@@ -74,7 +74,7 @@ defmodule ElixirDB.Shadow.RegistryTest do
     {:ok, pid} = Registry.start_link(root: root, name: name)
     on_exit(fn -> stop(pid, root) end)
 
-    source_uuid = ElixirDB.UUID.v4()
+    source_uuid = VialKeeper.UUID.v4()
 
     for generation <- 1..8 do
       assert :ok = Registry.record_orphan(source_uuid, %{"generation" => generation}, name)
@@ -86,7 +86,10 @@ defmodule ElixirDB.Shadow.RegistryTest do
 
   defp temp_root do
     root =
-      Path.join(System.tmp_dir!(), "elixirdb-shadow-registry-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "vialkeeper-shadow-registry-#{System.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(root)
     root

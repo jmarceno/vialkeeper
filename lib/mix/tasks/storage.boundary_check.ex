@@ -9,7 +9,7 @@ defmodule Mix.Tasks.Storage.BoundaryCheck do
 
   use Mix.Task
 
-  alias ElixirDB.Storage.BoundaryGuard
+  alias VialKeeper.Storage.BoundaryGuard
 
   @shortdoc "Checks backend-physical references stay inside their boundary"
 

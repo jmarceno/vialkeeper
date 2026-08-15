@@ -1,12 +1,12 @@
-defmodule ElixirDB.Attachments.MetadataRequestTest do
+defmodule VialKeeper.Attachments.MetadataRequestTest do
   @moduledoc "Contract and adversarial coverage for attachment metadata request helpers."
 
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias ElixirDB.Attachments.MetadataRequest
-  alias ElixirDB.Error
-  alias ElixirDB.TestSupport.GarbageGenerators
+  alias VialKeeper.Attachments.MetadataRequest
+  alias VialKeeper.Error
+  alias VialKeeper.TestSupport.GarbageGenerators
 
   @digest String.duplicate("a", 64)
 

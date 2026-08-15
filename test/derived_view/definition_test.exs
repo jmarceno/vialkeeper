@@ -1,11 +1,11 @@
-defmodule ElixirDB.DerivedView.DefinitionTest do
+defmodule VialKeeper.DerivedView.DefinitionTest do
   @moduledoc "Adversarial validation tests for materialized view definitions."
 
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias ElixirDB.DerivedView.Definition
-  alias ElixirDB.TestSupport.GarbageGenerators
+  alias VialKeeper.DerivedView.Definition
+  alias VialKeeper.TestSupport.GarbageGenerators
 
   @source_a "123e4567-e89b-12d3-a456-426614174000"
   @source_b "223e4567-e89b-42d3-b456-426614174001"
@@ -184,10 +184,10 @@ defmodule ElixirDB.DerivedView.DefinitionTest do
   end
 
   defp assert_error_code(definition, code, opts \\ @normalize_opts) do
-    assert {:error, %ElixirDB.Error{code: ^code}} = Definition.normalize(definition, opts)
+    assert {:error, %VialKeeper.Error{code: ^code}} = Definition.normalize(definition, opts)
   end
 
-  defp assert_typed_result({:error, %ElixirDB.Error{}}), do: :ok
+  defp assert_typed_result({:error, %VialKeeper.Error{}}), do: :ok
 
   defp assert_typed_result({:ok, normalized}) do
     assert %{

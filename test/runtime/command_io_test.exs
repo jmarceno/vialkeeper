@@ -1,12 +1,12 @@
-defmodule ElixirDB.Runtime.CommandIOTest do
+defmodule VialKeeper.Runtime.CommandIOTest do
   @moduledoc """
   Classification of command envelopes into `:read`, `:write`, and `:exclusive`
   IO classes, including the shadow-read allow-list invariant.
   """
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Commands
-  alias ElixirDB.Runtime.{CommandIO, DatabaseCommandPolicy}
+  alias VialKeeper.Commands
+  alias VialKeeper.Runtime.{CommandIO, DatabaseCommandPolicy}
 
   test "every command envelope has exactly one IO class" do
     classified = CommandIO.classes()

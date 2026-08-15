@@ -1,4 +1,4 @@
-defmodule ElixirDB.ReplicationChaosHelpers do
+defmodule VialKeeper.ReplicationChaosHelpers do
   @moduledoc """
   Shared deterministic setup and assertions for replication chaos scenarios.
 
@@ -8,13 +8,13 @@ defmodule ElixirDB.ReplicationChaosHelpers do
 
   import ExUnit.Assertions
 
-  alias ElixirDB.ChaosEndpoint
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Replication
-  alias ElixirDB.Replication.{Id, LocalEndpoint}
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Storage.AdapterCase
-  alias ElixirDB.TestRevisionId, as: RevisionId
+  alias VialKeeper.ChaosEndpoint
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Replication
+  alias VialKeeper.Replication.{Id, LocalEndpoint}
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.AdapterCase
+  alias VialKeeper.TestRevisionId, as: RevisionId
 
   @committed_seeds [11, 23, 37, 41, 53]
   @actions [:pass, :error, :delay, :duplicate, :reorder]
@@ -45,13 +45,13 @@ defmodule ElixirDB.ReplicationChaosHelpers do
   @doc "Creates isolated local databases identified by the supplied labels."
   @spec create_cluster!(binary(), [atom()], integer()) :: map()
   def create_cluster!(prefix, labels, seed) do
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     unique = System.unique_integer([:positive])
 
     entries =
       Map.new(labels, fn label ->
-        path = "#{prefix}-#{seed}-#{unique}-#{label}.elixirdb"
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        path = "#{prefix}-#{seed}-#{unique}-#{label}.vialkeeper"
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
 
         identity =
           DatabaseCatalog.create(path)
@@ -69,7 +69,7 @@ defmodule ElixirDB.ReplicationChaosHelpers do
     Enum.each(entries, fn {_label, %{identity: identity, path: path}} ->
       _ = DatabaseCatalog.close(identity.database_uuid)
       _ = DatabaseCatalog.unregister(identity.database_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end)
 
     :ok
@@ -422,7 +422,7 @@ defmodule ElixirDB.ReplicationChaosHelpers do
       |> ok!(seed, "read database identity")
 
     %{results: results} =
-      ElixirDB.Changes.read(uuid, %{since: 0, limit: @changes_limit})
+      VialKeeper.Changes.read(uuid, %{since: 0, limit: @changes_limit})
       |> ok!(seed, "read complete changes feed")
 
     endpoint = local_endpoint!(uuid, seed)
@@ -585,10 +585,10 @@ defmodule ElixirDB.ReplicationChaosHelpers do
       {:ok, %{status: :completed}} ->
         %{attempts: attempt, retryable_errors: attempt - 1}
 
-      {:error, %ElixirDB.Error{retryable: true}} when attempt < @maximum_attempts ->
+      {:error, %VialKeeper.Error{retryable: true}} when attempt < @maximum_attempts ->
         retry_one_shot(edge, seed, attempt + 1)
 
-      {:error, %ElixirDB.Error{retryable: true} = error} ->
+      {:error, %VialKeeper.Error{retryable: true} = error} ->
         flunk(
           "seed #{seed}: chaos edge #{edge.source_uuid}->#{edge.target_uuid} " <>
             "did not complete in #{@maximum_attempts} attempts: #{inspect(error)}"
@@ -669,7 +669,7 @@ defmodule ElixirDB.ReplicationChaosHelpers do
   defp seed_edge_checkpoints!(source_uuid, target_uuid, seed) do
     replication_id = replication_id!(source_uuid, target_uuid, seed)
 
-    ElixirDB.TestReplicationCheckpoint.seed_matching_checkpoints!(
+    VialKeeper.TestReplicationCheckpoint.seed_matching_checkpoints!(
       source_uuid,
       target_uuid,
       replication_id
@@ -762,13 +762,13 @@ defmodule ElixirDB.ReplicationChaosHelpers do
     request = if parent, do: Map.put(request, :if_revision, parent), else: request
 
     uuid
-    |> ElixirDB.Documents.put(request)
+    |> VialKeeper.Documents.put(request)
     |> ok!(seed, "put #{id}")
     |> Map.fetch!(:revision)
   end
 
   defp delete!(uuid, id, parent, seed) do
-    ElixirDB.Documents.delete(uuid, %{id: id, if_revision: parent})
+    VialKeeper.Documents.delete(uuid, %{id: id, if_revision: parent})
     |> ok!(seed, "delete #{id}")
     |> Map.fetch!(:revision)
   end

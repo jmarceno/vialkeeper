@@ -1,9 +1,9 @@
-defmodule ElixirDB.Attachments.RepresentationTest do
+defmodule VialKeeper.Attachments.RepresentationTest do
   @moduledoc "Canonical attachment representation trailer codec."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Attachments.Representation
+  alias VialKeeper.Attachments.Representation
 
   @logical_digest :crypto.hash(:sha256, "logical") |> Base.encode16(case: :lower)
   @payload_digest :crypto.hash(:sha256, "payload") |> Base.encode16(case: :lower)

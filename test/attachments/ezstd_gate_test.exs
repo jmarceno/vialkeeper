@@ -1,7 +1,7 @@
-defmodule ElixirDB.Attachments.EzstdGateTest do
+defmodule VialKeeper.Attachments.EzstdGateTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Attachments.Compression
+  alias VialKeeper.Attachments.Compression
 
   @chunk 4 * 1024
   @large_chunks 2_048
@@ -39,7 +39,9 @@ defmodule ElixirDB.Attachments.EzstdGateTest do
   end
 
   test "bounded memory for substantially larger-than-chunk payload without whole-file concat" do
-    path = Path.join(System.tmp_dir!(), "elixirdb-ezstd-#{System.unique_integer([:positive])}.zst")
+    path =
+      Path.join(System.tmp_dir!(), "vialkeeper-ezstd-#{System.unique_integer([:positive])}.zst")
+
     on_exit(fn -> File.rm(path) end)
     peak = :atomics.new(1, signed: false)
     baseline = process_memory()

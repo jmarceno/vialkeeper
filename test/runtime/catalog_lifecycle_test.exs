@@ -1,22 +1,22 @@
-defmodule ElixirDB.Runtime.CatalogLifecycleTest do
+defmodule VialKeeper.Runtime.CatalogLifecycleTest do
   @moduledoc "Covers database catalog identity, replacement, and lifecycle rules."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.DatabaseBundle
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Storage.SQLite.Adapter
+  alias VialKeeper.DatabaseBundle
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.SQLite.Adapter
 
   setup do
     prefix = "uuid-mismatch-#{System.unique_integer([:positive])}"
-    registered_path = prefix <> "-registered.elixirdb"
-    replacement_path = prefix <> "-replacement.elixirdb"
-    root = ElixirDB.Config.database_root()
+    registered_path = prefix <> "-registered.vialkeeper"
+    replacement_path = prefix <> "-replacement.vialkeeper"
+    root = VialKeeper.Config.database_root()
 
     for path <- [registered_path, replacement_path] do
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
     {:ok, registered} = DatabaseCatalog.create(registered_path)
@@ -25,8 +25,8 @@ defmodule ElixirDB.Runtime.CatalogLifecycleTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, registered_path))
-      ElixirDB.TempDatabase.cleanup(Path.join(root, replacement_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, registered_path))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, replacement_path))
     end)
 
     {:ok,
@@ -41,8 +41,8 @@ defmodule ElixirDB.Runtime.CatalogLifecycleTest do
   } do
     registered_bundle = Path.join(root, registered_path)
     replacement_bundle = Path.join(root, replacement_path)
-    registered_sqlite = ElixirDB.TempDatabase.sqlite_path(registered_bundle)
-    replacement_sqlite = ElixirDB.TempDatabase.sqlite_path(replacement_bundle)
+    registered_sqlite = VialKeeper.TempDatabase.sqlite_path(registered_bundle)
+    replacement_sqlite = VialKeeper.TempDatabase.sqlite_path(replacement_bundle)
 
     assert :ok = DatabaseCatalog.close(uuid)
 
@@ -54,7 +54,7 @@ defmodule ElixirDB.Runtime.CatalogLifecycleTest do
 
     File.cp!(replacement_sqlite, registered_sqlite)
 
-    assert {:error, %ElixirDB.Error{code: :database_unavailable, details: details}} =
+    assert {:error, %VialKeeper.Error{code: :database_unavailable, details: details}} =
              DatabaseCatalog.open(uuid)
 
     assert details.reason == :uuid_mismatch
@@ -65,6 +65,6 @@ defmodule ElixirDB.Runtime.CatalogLifecycleTest do
     entry = Enum.find(entries, &(&1.database_uuid == uuid))
     assert entry.state == :unavailable
 
-    assert [] = Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:owner, uuid})
+    assert [] = Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid})
   end
 end

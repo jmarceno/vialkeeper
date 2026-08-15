@@ -1,4 +1,4 @@
-defmodule ElixirDB.Storage.Contracts.Changes do
+defmodule VialKeeper.Storage.Contracts.Changes do
   @moduledoc """
   Shared changes-feed contract tests for storage adapters.
   """
@@ -7,10 +7,10 @@ defmodule ElixirDB.Storage.Contracts.Changes do
     # The contract tests must be injected into each adapter module.
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
     quote do
-      use ElixirDB.Storage.AdapterCase, unquote(opts)
+      use VialKeeper.Storage.AdapterCase, unquote(opts)
 
-      alias ElixirDB.MapAccess
-      alias ElixirDB.Storage.AdapterCase
+      alias VialKeeper.MapAccess
+      alias VialKeeper.Storage.AdapterCase
 
       test "changes are ordered by sequence and advance last_sequence", %{adapter: adapter} do
         assert {:ok, %{revision: _a}} =
@@ -51,10 +51,10 @@ defmodule ElixirDB.Storage.Contracts.Changes do
       end
 
       test "reject invalid since and oversized limit", %{adapter: adapter} do
-        assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+        assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                  @adapter.read_changes(adapter, %{since: -1, limit: 10})
 
-        assert {:error, %ElixirDB.Error{code: :resource_limit}} =
+        assert {:error, %VialKeeper.Error{code: :resource_limit}} =
                  @adapter.read_changes(adapter, %{since: 0, limit: 10_000})
       end
 
@@ -210,7 +210,7 @@ defmodule ElixirDB.Storage.Contracts.Changes do
         assert {:ok, %{database_uuid: uuid}} = @adapter.identity(adapter)
         assert {:ok, _} = @adapter.compact_retention(adapter, %{})
 
-        assert {:error, %ElixirDB.Error{code: :history_truncated, details: details}} =
+        assert {:error, %VialKeeper.Error{code: :history_truncated, details: details}} =
                  @adapter.read_changes(adapter, %{since: 0, limit: 10})
 
         assert details.database_uuid == uuid

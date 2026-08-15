@@ -1,4 +1,4 @@
-defmodule ElixirDB.Replication.BlobEndpointTest do
+defmodule VialKeeper.Replication.BlobEndpointTest do
   @moduledoc """
   Local and remote replication blob endpoint round-trips.
   """
@@ -6,18 +6,18 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Attachments
-  alias ElixirDB.Attachments.FilesystemStore
-  alias ElixirDB.Attachments.Manifest
-  alias ElixirDB.Eventual
-  alias ElixirDB.Replication.{BlobRepresentationStream, LocalEndpoint, RemoteEndpoint}
-  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
-  alias ElixirDB.TestServer
+  alias VialKeeper.Attachments
+  alias VialKeeper.Attachments.FilesystemStore
+  alias VialKeeper.Attachments.Manifest
+  alias VialKeeper.Eventual
+  alias VialKeeper.Replication.{BlobRepresentationStream, LocalEndpoint, RemoteEndpoint}
+  alias VialKeeper.Runtime.{AttachmentCoordinator, DatabaseCatalog}
+  alias VialKeeper.TestServer
 
   setup do
-    path = "blob-endpoint-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), path)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    path = "blob-endpoint-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), path)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(path)
     uuid = identity.database_uuid
@@ -26,7 +26,7 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     {:ok, endpoint} = LocalEndpoint.new(uuid)
@@ -67,7 +67,7 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
 
     assert {:ok, stream} = raw_stream(wrong, bytes)
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              LocalEndpoint.put_blob_representation(endpoint, stream)
   end
 
@@ -109,7 +109,7 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
                compressed: false
              )
 
-    decoded = ElixirDB.TestReplicationWire.decode_response(headers, body)
+    decoded = VialKeeper.TestReplicationWire.decode_response(headers, body)
     assert decoded["error"]["code"] == "attachment_blob_not_found"
   end
 
@@ -128,9 +128,9 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
     uuid: source_uuid,
     endpoint: source_endpoint
   } do
-    target_path = "blob-transfer-target-#{System.unique_integer([:positive])}.elixirdb"
-    target_absolute = Path.join(ElixirDB.Config.database_root(), target_path)
-    ElixirDB.TempDatabase.cleanup(target_absolute)
+    target_path = "blob-transfer-target-#{System.unique_integer([:positive])}.vialkeeper"
+    target_absolute = Path.join(VialKeeper.Config.database_root(), target_path)
+    VialKeeper.TempDatabase.cleanup(target_absolute)
 
     assert {:ok, target_identity} = DatabaseCatalog.create(target_path)
     target_uuid = target_identity.database_uuid
@@ -139,7 +139,7 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(target_uuid)
       _ = DatabaseCatalog.unregister(target_uuid)
-      ElixirDB.TempDatabase.cleanup(target_absolute)
+      VialKeeper.TempDatabase.cleanup(target_absolute)
     end)
 
     {:ok, target_endpoint} = LocalEndpoint.new(target_uuid)
@@ -188,13 +188,13 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
            )
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(source_uuid, %{
+             VialKeeper.Documents.put(source_uuid, %{
                "id" => "source-during-transfer",
                "body" => %{"ok" => true}
              })
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(target_uuid, %{
+             VialKeeper.Documents.put(target_uuid, %{
                "id" => "target-during-transfer",
                "body" => %{"ok" => true}
              })
@@ -227,9 +227,11 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
       assert {:ok, %{encoding: ^expected_encoding}} = FilesystemStore.stat(source_bundle, digest)
       source_bytes = representation_file_bytes!(source_bundle, digest)
 
-      target_path = "blob-copy-#{expected_encoding}-#{System.unique_integer([:positive])}.elixirdb"
-      target_absolute = Path.join(ElixirDB.Config.database_root(), target_path)
-      ElixirDB.TempDatabase.cleanup(target_absolute)
+      target_path =
+        "blob-copy-#{expected_encoding}-#{System.unique_integer([:positive])}.vialkeeper"
+
+      target_absolute = Path.join(VialKeeper.Config.database_root(), target_path)
+      VialKeeper.TempDatabase.cleanup(target_absolute)
       assert {:ok, target_identity} = DatabaseCatalog.create(target_path)
       target_uuid = target_identity.database_uuid
       assert {:ok, _} = DatabaseCatalog.open(target_uuid)
@@ -237,7 +239,7 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
       on_exit(fn ->
         _ = DatabaseCatalog.close(target_uuid)
         _ = DatabaseCatalog.unregister(target_uuid)
-        ElixirDB.TempDatabase.cleanup(target_absolute)
+        VialKeeper.TempDatabase.cleanup(target_absolute)
       end)
 
       {:ok, target_endpoint} = LocalEndpoint.new(target_uuid)
@@ -269,15 +271,15 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
     rejected = [
       {[{"content-encoding", "zstd"} | valid], 400, "invalid_request"},
       {replace_header(valid, "content-type", "application/octet-stream"), 400, "invalid_request"},
-      {replace_header(valid, "x-elixirdb-blob-format-version", "2"), 409, "unsupported_format"},
-      {replace_header(valid, "x-elixirdb-blob-encoding", "gzip"), 409, "unsupported_format"},
-      {replace_header(valid, "x-elixirdb-blob-logical-length", "01"), 400, "invalid_request"},
+      {replace_header(valid, "x-vialkeeper-blob-format-version", "2"), 409, "unsupported_format"},
+      {replace_header(valid, "x-vialkeeper-blob-encoding", "gzip"), 409, "unsupported_format"},
+      {replace_header(valid, "x-vialkeeper-blob-logical-length", "01"), 400, "invalid_request"},
       {replace_header(
          valid,
-         "x-elixirdb-blob-logical-length",
+         "x-vialkeeper-blob-logical-length",
          Integer.to_string(byte_size(bytes) + 1)
        ), 422, "integrity_violation"},
-      {replace_header(valid, "x-elixirdb-blob-payload-sha256", sha256_hex("other-bytes")), 422,
+      {replace_header(valid, "x-vialkeeper-blob-payload-sha256", sha256_hex("other-bytes")), 422,
        "integrity_violation"}
     ]
 
@@ -290,7 +292,7 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
                  compressed: false
                )
 
-      decoded = ElixirDB.TestReplicationWire.decode_response(response_headers, body)
+      decoded = VialKeeper.TestReplicationWire.decode_response(response_headers, body)
 
       assert response_status == status,
              "expected #{status} for #{inspect(headers)}, got #{response_status}: #{inspect(decoded)}"
@@ -298,7 +300,7 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
       assert decoded["error"]["code"] == code
     end
 
-    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
              Attachments.open_blob_representation(uuid, digest)
   end
 
@@ -314,11 +316,11 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
 
     headers = [
       {"accept-encoding", "zstd"},
-      {"content-type", "application/vnd.elixirdb.blob-representation"},
-      {"x-elixirdb-blob-format-version", "1"},
-      {"x-elixirdb-blob-encoding", "zstd"},
-      {"x-elixirdb-blob-logical-length", Integer.to_string(byte_size(payload))},
-      {"x-elixirdb-blob-payload-sha256", sha256_hex(encoded)},
+      {"content-type", "application/vnd.vialkeeper.blob-representation"},
+      {"x-vialkeeper-blob-format-version", "1"},
+      {"x-vialkeeper-blob-encoding", "zstd"},
+      {"x-vialkeeper-blob-logical-length", Integer.to_string(byte_size(payload))},
+      {"x-vialkeeper-blob-payload-sha256", sha256_hex(encoded)},
       {"content-length", Integer.to_string(byte_size(corrupted))}
     ]
 
@@ -330,10 +332,10 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
                compressed: false
              )
 
-    decoded = ElixirDB.TestReplicationWire.decode_response(response_headers, body)
+    decoded = VialKeeper.TestReplicationWire.decode_response(response_headers, body)
     assert decoded["error"]["code"] == "integrity_violation"
 
-    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
              Attachments.open_blob_representation(uuid, digest)
   end
 
@@ -358,10 +360,10 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
                compressed: false
              )
 
-    decoded = ElixirDB.TestReplicationWire.decode_response(response_headers, body)
+    decoded = VialKeeper.TestReplicationWire.decode_response(response_headers, body)
     assert decoded["error"]["code"] == "payload_too_large"
 
-    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
              Attachments.open_blob_representation(uuid, digest)
   end
 
@@ -392,23 +394,23 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
                  compressed: false
                )
 
-      decoded = ElixirDB.TestReplicationWire.decode_response(response_headers, body)
+      decoded = VialKeeper.TestReplicationWire.decode_response(response_headers, body)
       assert decoded["error"]["code"] == "attachment_overloaded"
     after
       assert :ok = AttachmentCoordinator.release(uuid, token)
     end
 
-    assert {:error, %ElixirDB.Error{code: :attachment_blob_not_found}} =
+    assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
              Attachments.open_blob_representation(uuid, digest)
   end
 
   defp valid_representation_headers(bytes, digest) do
     [
-      {"content-type", "application/vnd.elixirdb.blob-representation"},
-      {"x-elixirdb-blob-format-version", "1"},
-      {"x-elixirdb-blob-encoding", "raw"},
-      {"x-elixirdb-blob-logical-length", Integer.to_string(byte_size(bytes))},
-      {"x-elixirdb-blob-payload-sha256", digest},
+      {"content-type", "application/vnd.vialkeeper.blob-representation"},
+      {"x-vialkeeper-blob-format-version", "1"},
+      {"x-vialkeeper-blob-encoding", "raw"},
+      {"x-vialkeeper-blob-logical-length", Integer.to_string(byte_size(bytes))},
+      {"x-vialkeeper-blob-payload-sha256", digest},
       {"content-length", Integer.to_string(byte_size(bytes))}
     ]
   end
@@ -435,7 +437,7 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
 
   defp count_probes(fun) do
     parent = self()
-    :erlang.trace_pattern({ElixirDB.Attachments.Compression, :probe, 1}, true, [])
+    :erlang.trace_pattern({VialKeeper.Attachments.Compression, :probe, 1}, true, [])
     :erlang.trace(:existing, true, [:call, :set_on_spawn])
     :erlang.trace(parent, false, [:call])
 
@@ -444,7 +446,7 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
       receive_probes(0, 50)
     after
       :erlang.trace(:all, false, [:call])
-      :erlang.trace_pattern({ElixirDB.Attachments.Compression, :probe, 1}, false, [])
+      :erlang.trace_pattern({VialKeeper.Attachments.Compression, :probe, 1}, false, [])
       flush_traces()
     end
   end
@@ -453,7 +455,7 @@ defmodule ElixirDB.Replication.BlobEndpointTest do
 
   defp receive_probes(count, remaining) do
     receive do
-      {:trace, _pid, :call, {ElixirDB.Attachments.Compression, :probe, _}} ->
+      {:trace, _pid, :call, {VialKeeper.Attachments.Compression, :probe, _}} ->
         receive_probes(count + 1, remaining)
 
       {:trace, _pid, :call, _} ->

@@ -1,4 +1,4 @@
-defmodule ElixirDB.Storage.Contracts.Derived do
+defmodule VialKeeper.Storage.Contracts.Derived do
   @moduledoc """
   Shared derived-materialization contract tests for storage adapters.
   """
@@ -10,14 +10,14 @@ defmodule ElixirDB.Storage.Contracts.Derived do
 
     import ExUnit.Assertions
 
-    alias ElixirDB.DerivedView.{Definition, Engine}
-    alias ElixirDB.Storage.AdapterCase
-    alias ElixirDB.{TempDatabase, UUID}
+    alias VialKeeper.DerivedView.{Definition, Engine}
+    alias VialKeeper.Storage.AdapterCase
+    alias VialKeeper.{TempDatabase, UUID}
 
     def open_derived(adapter_mod) do
       source_uuid = UUID.v4()
       history_epoch = UUID.v4()
-      {:ok, bundle_path} = TempDatabase.create(prefix: "elixirdb-derived-contract")
+      {:ok, bundle_path} = TempDatabase.create(prefix: "vialkeeper-derived-contract")
       path = AdapterCase.adapter_path(adapter_mod, bundle_path)
 
       {:ok, definition} =
@@ -77,7 +77,7 @@ defmodule ElixirDB.Storage.Contracts.Derived do
 
       initial = Definition.initial_metadata(definition, materialization_id)
 
-      {:ok, bundle_path} = TempDatabase.create(prefix: "elixirdb-derived-stats")
+      {:ok, bundle_path} = TempDatabase.create(prefix: "vialkeeper-derived-stats")
       path = AdapterCase.adapter_path(adapter_mod, bundle_path)
 
       {:ok, adapter} =
@@ -134,7 +134,7 @@ defmodule ElixirDB.Storage.Contracts.Derived do
       assert {:ok, %{applied: true}} = adapter_mod.apply_derived_source_batch(ctx.adapter, removal)
 
       case adapter_mod.get_document(ctx.adapter, %{document_id: generated_id}) do
-        {:error, %ElixirDB.Error{code: :document_not_found}} -> :ok
+        {:error, %VialKeeper.Error{code: :document_not_found}} -> :ok
         {:ok, %{deleted: true}} -> :ok
         other -> flunk("expected deleted document, got: #{inspect(other)}")
       end
@@ -197,7 +197,7 @@ defmodule ElixirDB.Storage.Contracts.Derived do
 
       assert {:ok, %{applied: true}} = adapter_mod.apply_derived_source_batch(ctx.adapter, batch)
 
-      assert {:error, %ElixirDB.Error{code: :source_history_reset}} =
+      assert {:error, %VialKeeper.Error{code: :source_history_reset}} =
                adapter_mod.apply_derived_source_batch(ctx.adapter, %{
                  batch
                  | source_history_epoch: UUID.v4(),
@@ -250,7 +250,7 @@ defmodule ElixirDB.Storage.Contracts.Derived do
                adapter_mod.get_document(ctx.adapter, %{document_id: keep_id})
 
       case adapter_mod.get_document(ctx.adapter, %{document_id: drop_id}) do
-        {:error, %ElixirDB.Error{code: :document_not_found}} -> :ok
+        {:error, %VialKeeper.Error{code: :document_not_found}} -> :ok
         {:ok, %{deleted: true}} -> :ok
         other -> flunk("expected deleted document, got: #{inspect(other)}")
       end
@@ -266,9 +266,9 @@ defmodule ElixirDB.Storage.Contracts.Derived do
 
   defmacro __using__(opts) do
     quote do
-      use ElixirDB.Storage.AdapterCase, unquote(opts)
+      use VialKeeper.Storage.AdapterCase, unquote(opts)
 
-      alias ElixirDB.Storage.Contracts.Derived.Support
+      alias VialKeeper.Storage.Contracts.Derived.Support
 
       @adapter unquote(Keyword.fetch!(opts, :adapter))
 

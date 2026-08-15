@@ -1,20 +1,20 @@
-defmodule ElixirDB.Query.SubscriptionHubTest do
+defmodule VialKeeper.Query.SubscriptionHubTest do
   @moduledoc "Covers subscription hub lifecycle and event delivery."
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Documents
-  alias ElixirDB.Eventual
-  alias ElixirDB.Query.{SubscriptionHub, Subscriptions}
-  alias ElixirDB.Runtime.{ChangeNotifier, DatabaseCatalog}
+  alias VialKeeper.Documents
+  alias VialKeeper.Eventual
+  alias VialKeeper.Query.{SubscriptionHub, Subscriptions}
+  alias VialKeeper.Runtime.{ChangeNotifier, DatabaseCatalog}
 
   setup do
-    rel = "subscription-hub-#{System.unique_integer([:positive])}.elixirdb"
-    root = ElixirDB.Config.database_root()
+    rel = "subscription-hub-#{System.unique_integer([:positive])}.vialkeeper"
+    root = VialKeeper.Config.database_root()
     abs = Path.join(root, rel)
-    ElixirDB.TempDatabase.cleanup(abs)
+    VialKeeper.TempDatabase.cleanup(abs)
 
     assert {:ok, identity} = DatabaseCatalog.create(rel)
     uuid = identity.database_uuid
@@ -22,7 +22,7 @@ defmodule ElixirDB.Query.SubscriptionHubTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(abs)
+      VialKeeper.TempDatabase.cleanup(abs)
     end)
 
     {:ok, uuid: uuid}
@@ -64,7 +64,7 @@ defmodule ElixirDB.Query.SubscriptionHubTest do
     assert {:ok, %{type: :caught_up}} = Subscriptions.next(subscription)
 
     assert {:ok, [%{revision: first_revision}, %{revision: second_revision}]} =
-             ElixirDB.Documents.bulk_write(uuid, [
+             VialKeeper.Documents.bulk_write(uuid, [
                %{
                  "type" => "put",
                  "id" => "bulk-a",
@@ -205,7 +205,7 @@ defmodule ElixirDB.Query.SubscriptionHubTest do
     Eventual.eventually(
       fn ->
         spans =
-          TestExporter.spans_named("elixir_db.database.command")
+          TestExporter.spans_named("vial_keeper.database.command")
           |> Enum.filter(fn span ->
             TestExporter.span_attr(span, :"db.uuid") == uuid and
               TestExporter.span_attr(span, :"command.type") == :get_revisions_batch

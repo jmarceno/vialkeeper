@@ -1,7 +1,7 @@
 import Config
 
 # Host configuration defaults (database root, listener, limits, admission
-# policy, auth, tls, observability) live in `ElixirDB.HostConfig` and are
+# policy, auth, tls, observability) live in `VialKeeper.HostConfig` and are
 # loaded from `<database_root>/host.toml` at runtime by config/runtime.exs.
 
 config :logger, :console,
@@ -13,7 +13,7 @@ config :logger, :console,
 # would risk a network attempt on misconfiguration and break the "no network
 # when unconfigured" guarantee (OBSV-004). The exporter is wired exclusively by
 # config/runtime.exs when an otlp_endpoint is present in host.toml.
-config :opentelemetry, :resource, service: %{name: "elixir_db", version: "0.1.0"}
+config :opentelemetry, :resource, service: %{name: "vial_keeper", version: "0.1.0"}
 
 # Batch processor tuning; the key names are the SDK's actual ones:
 # scheduled_delay_ms / max_queue_size / exporting_timeout_ms). The values equal
@@ -33,10 +33,10 @@ config :opentelemetry_experimental, readers: []
 
 # Post-compact attachment GC is invoked from the runtime owner via configured MFA
 # so Reach layers stay acyclic (runtime must not depend on the application facade).
-config :elixir_db, :attachment_gc_module, ElixirDB.Attachments
+config :vial_keeper, :attachment_gc_module, VialKeeper.Attachments
 
-# Default physical backend. Runtime selects through ElixirDB.Storage.Registry;
-# tests may swap this for ElixirDB.Storage.Sentinel.Adapter.
-config :elixir_db, :storage_backend, ElixirDB.Storage.SQLite.Adapter
+# Default physical backend. Runtime selects through VialKeeper.Storage.Registry;
+# tests may swap this for VialKeeper.Storage.Sentinel.Adapter.
+config :vial_keeper, :storage_backend, VialKeeper.Storage.SQLite.Adapter
 
 import_config "#{config_env()}.exs"

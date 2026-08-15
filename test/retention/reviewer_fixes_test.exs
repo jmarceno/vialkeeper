@@ -1,23 +1,23 @@
-defmodule ElixirDB.Retention.ReviewerFixesTest do
+defmodule VialKeeper.Retention.ReviewerFixesTest do
   @moduledoc "Covers retention, replication, and boundary regression behavior."
 
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Config
-  alias ElixirDB.Documents
-  alias ElixirDB.Domain.{BoundaryPage, RetentionBoundary}
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Replication
-  alias ElixirDB.Replication.CheckpointReconciler
-  alias ElixirDB.Replication.LocalEndpoint
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Storage.AdapterCase
-  alias ElixirDB.Storage.SQLite.Adapter
-  alias ElixirDB.Storage.SQLite.RetentionRecords
-  alias ElixirDB.TempDatabase
-  alias ElixirDB.TestServer
+  alias VialKeeper.Config
+  alias VialKeeper.Documents
+  alias VialKeeper.Domain.{BoundaryPage, RetentionBoundary}
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Replication
+  alias VialKeeper.Replication.CheckpointReconciler
+  alias VialKeeper.Replication.LocalEndpoint
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.AdapterCase
+  alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.Storage.SQLite.RetentionRecords
+  alias VialKeeper.TempDatabase
+  alias VialKeeper.TestServer
 
   import AdapterCase, only: [wire_revision: 6]
 
@@ -205,7 +205,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
         |> Enum.find(fn %{boundary: boundary} -> boundary.document_id == "doc" end)
         |> then(fn %{boundary: boundary} -> boundary.history_id end)
 
-      assert {:error, %ElixirDB.Error{code: :revision_not_found}} =
+      assert {:error, %VialKeeper.Error{code: :revision_not_found}} =
                Adapter.get_revision(adapter, %{document_id: "doc", revision_id: root})
 
       losing_chain = [
@@ -270,7 +270,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
       {:ok, db} = open_db("reviewer-http-install")
 
       {:ok, %{status: 200, body: page}} =
-        ElixirDB.TestReplicationWire.request(
+        VialKeeper.TestReplicationWire.request(
           :post,
           server.base_url <> "/v1/databases/#{db.database_uuid}/replication/boundaries",
           %{}
@@ -283,7 +283,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
         })
 
       assert {:ok, %{status: 200}} =
-               ElixirDB.TestReplicationWire.request(
+               VialKeeper.TestReplicationWire.request(
                  :post,
                  server.base_url <>
                    "/v1/databases/#{db.database_uuid}/replication/boundaries/install",
@@ -315,7 +315,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
       }
 
       assert {:ok, %{status: 200}} =
-               ElixirDB.TestReplicationWire.request(
+               VialKeeper.TestReplicationWire.request(
                  :put,
                  server.base_url <>
                    "/v1/databases/#{db.database_uuid}/replication/peers/#{peer_uuid}",
@@ -323,7 +323,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
                )
 
       assert {:ok, %{status: 200, body: fetched}} =
-               ElixirDB.TestReplicationWire.request(
+               VialKeeper.TestReplicationWire.request(
                  :get,
                  server.base_url <>
                    "/v1/databases/#{db.database_uuid}/replication/peers/#{peer_uuid}"
@@ -353,7 +353,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
       }
 
       assert {:ok, %{status: 400}} =
-               ElixirDB.TestReplicationWire.request(
+               VialKeeper.TestReplicationWire.request(
                  :put,
                  server.base_url <>
                    "/v1/databases/#{db.database_uuid}/replication/peers/#{peer_uuid}",
@@ -444,7 +444,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
 
       incarnation = %{base | peer_history_epoch: "66666666-6666-4666-8666-666666666666"}
 
-      assert {:error, %ElixirDB.Error{code: :rebase_required}} =
+      assert {:error, %VialKeeper.Error{code: :rebase_required}} =
                DatabaseCatalog.command(
                  db.database_uuid,
                  {:command, :put_peer_position_cas, %{expected_version: 1, value: incarnation}}
@@ -501,7 +501,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
       }
 
       assert {:ok, %{status: 400}} =
-               ElixirDB.TestReplicationWire.request(
+               VialKeeper.TestReplicationWire.request(
                  :put,
                  server.base_url <>
                    "/v1/databases/#{db.database_uuid}/replication/checkpoints/repl-test",
@@ -525,7 +525,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
     test "bootstrap limit 0 returns 400 not 500" do
       {:ok, adapter} = open_adapter("reviewer-bootstrap")
 
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+      assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                Adapter.get_revision_chains(adapter, %{bootstrap: true, limit: 0})
     end
 
@@ -533,7 +533,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
       {:ok, adapter} = open_adapter("reviewer-purge-source-check")
       boundary = RetentionBoundary.retired("purge-check", "purge-history", [])
 
-      assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+      assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                Adapter.import_revision_chains(adapter, %{
                  chains: [],
                  source_database_uuid: "expected-source",
@@ -572,10 +572,10 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
 
       assert {:ok, _} = Adapter.compact_retention(adapter, %{})
 
-      assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+      assert {:error, %VialKeeper.Error{code: :document_not_found}} =
                Adapter.get_document(adapter, %{document_id: "gone"})
 
-      assert {:error, %ElixirDB.Error{code: :revision_not_found}} =
+      assert {:error, %VialKeeper.Error{code: :revision_not_found}} =
                Adapter.get_revision(adapter, %{document_id: "gone", revision_id: root})
     end
 
@@ -648,13 +648,13 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
       assert {:ok, %{new_floor: 2}} =
                DatabaseCatalog.command(source.database_uuid, {:command, :compact_retention, %{}})
 
-      assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+      assert {:error, %VialKeeper.Error{code: :document_not_found}} =
                Documents.get(source.database_uuid, %{id: "purged"})
 
       assert {:ok, %{status: :completed}} =
                Replication.one_shot(source.database_uuid, target.database_uuid)
 
-      assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+      assert {:error, %VialKeeper.Error{code: :document_not_found}} =
                Documents.get(target.database_uuid, %{id: "purged"})
     end
   end
@@ -740,7 +740,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
   end
 
   defp open_db(prefix) do
-    path = "#{prefix}-#{System.unique_integer([:positive])}.elixirdb"
+    path = "#{prefix}-#{System.unique_integer([:positive])}.vialkeeper"
     root = Config.database_root()
     TempDatabase.cleanup(Path.join(root, path))
     DatabaseCatalog.create(path)
@@ -760,7 +760,7 @@ defmodule ElixirDB.Retention.ReviewerFixesTest do
   end
 
   defp revision_history_id(adapter, document_id, revision_id) do
-    alias ElixirDB.Storage.SQLite.{Documents, Revisions}
+    alias VialKeeper.Storage.SQLite.{Documents, Revisions}
 
     {:ok, doc} = Documents.find(adapter.conn, document_id)
     {:ok, revision} = Revisions.find(adapter.conn, doc.doc_key, revision_id)

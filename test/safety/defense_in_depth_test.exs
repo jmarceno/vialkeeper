@@ -1,4 +1,4 @@
-defmodule ElixirDB.Safety.DefenseInDepthTest do
+defmodule VialKeeper.Safety.DefenseInDepthTest do
   @moduledoc """
   Proves the two final safety nets: even when source validation
   is bypassed and a handler *raises*, the raise is contained — never crashing the
@@ -20,17 +20,17 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
 
   @moduletag :integration
 
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Observability.Instrumentation.HTTP
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Observability.Instrumentation.HTTP
+  alias VialKeeper.Runtime.DatabaseCatalog
   # ==========================================================================
   # Catalog dispatch net
   # ==========================================================================
 
   describe "catalog dispatch safety net" do
     setup do
-      path = "dd-#{System.unique_integer([:positive])}.elixirdb"
+      path = "dd-#{System.unique_integer([:positive])}.vialkeeper"
       conn = call(:post, "/v1/databases", %{"path" => path})
       assert conn.status == 201
       {:ok, %{"data" => %{"database_uuid" => uuid}}} = decode(conn.resp_body)
@@ -38,7 +38,7 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
       on_exit(fn ->
         _ = DatabaseCatalog.close(uuid)
         _ = DatabaseCatalog.unregister(uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+        VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
       end)
 
       {:ok, uuid: uuid}
@@ -49,15 +49,15 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
       # An unknown command normalizes to itself and the owner returns a typed
       # invalid_request — proving the typed path never crashes.
       result = DatabaseCatalog.command(uuid, {:command, :__nonexistent__, %{}})
-      assert {:error, %ElixirDB.Error{}} = result
+      assert {:error, %VialKeeper.Error{}} = result
       assert_catalog_alive()
     end
 
     test "the shared catalog survives a raise and keeps serving other databases" do
       # Open two databases; force a failure on one and confirm the catalog (and the
       # other database) remain fully usable afterward.
-      path_a = "dd-a-#{System.unique_integer([:positive])}.elixirdb"
-      path_b = "dd-b-#{System.unique_integer([:positive])}.elixirdb"
+      path_a = "dd-a-#{System.unique_integer([:positive])}.vialkeeper"
+      path_b = "dd-b-#{System.unique_integer([:positive])}.vialkeeper"
 
       {:ok, %{database_uuid: uuid_a}} = DatabaseCatalog.create(path_a, %{})
       {:ok, %{database_uuid: uuid_b}} = DatabaseCatalog.create(path_b, %{})
@@ -67,14 +67,14 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
         _ = DatabaseCatalog.close(uuid_b)
         _ = DatabaseCatalog.unregister(uuid_a)
         _ = DatabaseCatalog.unregister(uuid_b)
-        ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path_a))
-        ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path_b))
+        VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path_a))
+        VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path_b))
       end)
 
       # Poison database A with a malformed command shape. The owner's normalize/1 maps
       # unknown shapes to a typed invalid_request (no crash); either way the net holds.
       for command <- [:get_document, :get_revision, :read_changes] do
-        assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+        assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                  DatabaseCatalog.command(uuid_a, {:command, command, :not_a_map})
       end
 
@@ -128,7 +128,7 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
     test "the real Router survives repeated malformed requests and stays responsive" do
       # Hammer the router with a variety of bodies that would have crashed before the
       # safety pass; assert every one returns a JSON envelope and the router keeps going.
-      path = "dd-hammer-#{System.unique_integer([:positive])}.elixirdb"
+      path = "dd-hammer-#{System.unique_integer([:positive])}.vialkeeper"
 
       create = call(:post, "/v1/databases", %{"path" => path})
       {:ok, %{"data" => %{"database_uuid" => uuid}}} = decode(create.resp_body)
@@ -136,7 +136,7 @@ defmodule ElixirDB.Safety.DefenseInDepthTest do
       on_exit(fn ->
         _ = DatabaseCatalog.close(uuid)
         _ = DatabaseCatalog.unregister(uuid)
-        ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+        VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
       end)
 
       killer_bodies = [

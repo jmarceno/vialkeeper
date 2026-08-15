@@ -1,9 +1,9 @@
-defmodule ElixirDB.Shadow.ReadRoutingContractTest do
+defmodule VialKeeper.Shadow.ReadRoutingContractTest do
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Shadow.{ReadRouter, RouteTable}
-  alias ElixirDB.Storage.Results
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Shadow.{ReadRouter, RouteTable}
+  alias VialKeeper.Storage.Results
 
   defmodule ProbeEndpoint do
     defstruct [:mode, :counter]
@@ -24,10 +24,10 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
     end
 
     def read_document(%__MODULE__{mode: :error}, _request, _timeout, _opts),
-      do: {:error, ElixirDB.Error.database_unavailable("probe unavailable")}
+      do: {:error, VialKeeper.Error.database_unavailable("probe unavailable")}
 
     def read_document(%__MODULE__{mode: :miss}, _request, _timeout, _opts),
-      do: {:error, ElixirDB.Error.document_not_found("document not found")}
+      do: {:error, VialKeeper.Error.document_not_found("document not found")}
 
     def bulk_read_documents(%__MODULE__{mode: :ok}, _request, _timeout, _opts) do
       {:ok,
@@ -59,15 +59,15 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
     end
 
     def bulk_read_documents(%__MODULE__{mode: :error}, _request, _timeout, _opts),
-      do: {:error, ElixirDB.Error.database_unavailable("probe unavailable")}
+      do: {:error, VialKeeper.Error.database_unavailable("probe unavailable")}
 
     def open_attachment_representation(_endpoint, _request, _timeout, _opts),
-      do: {:error, ElixirDB.Error.shadow_attachment_unavailable()}
+      do: {:error, VialKeeper.Error.shadow_attachment_unavailable()}
   end
 
   setup do
-    source_uuid = ElixirDB.UUID.v4()
-    path = "shadow-route-#{System.unique_integer([:positive])}.elixirdb"
+    source_uuid = VialKeeper.UUID.v4()
+    path = "shadow-route-#{System.unique_integer([:positive])}.vialkeeper"
     assert {:ok, _} = DatabaseCatalog.create(path, %{database_uuid: source_uuid})
     assert {:ok, _} = DatabaseCatalog.open(source_uuid)
 
@@ -75,7 +75,7 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
       RouteTable.delete(source_uuid)
       _ = DatabaseCatalog.close(source_uuid)
       _ = DatabaseCatalog.unregister(source_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     {:ok, source_uuid: source_uuid}
@@ -195,9 +195,9 @@ defmodule ElixirDB.Shadow.ReadRoutingContractTest do
              RouteTable.put(source_uuid, %{
                endpoint: endpoint,
                source_uuid: source_uuid,
-               shadow_uuid: ElixirDB.UUID.v4(),
+               shadow_uuid: VialKeeper.UUID.v4(),
                generation: 1,
-               operation_id: ElixirDB.UUID.v4()
+               operation_id: VialKeeper.UUID.v4()
              })
   end
 end

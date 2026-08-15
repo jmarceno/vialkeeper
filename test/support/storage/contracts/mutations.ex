@@ -1,4 +1,4 @@
-defmodule ElixirDB.Storage.Contracts.Mutations do
+defmodule VialKeeper.Storage.Contracts.Mutations do
   @moduledoc """
   Shared mutation and replay contract tests for storage adapters.
   """
@@ -9,9 +9,9 @@ defmodule ElixirDB.Storage.Contracts.Mutations do
     # The contract tests must be injected into each adapter module.
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
     quote do
-      use ElixirDB.Storage.AdapterCase, unquote(opts)
+      use VialKeeper.Storage.AdapterCase, unquote(opts)
 
-      alias ElixirDB.Storage.AdapterCase
+      alias VialKeeper.Storage.AdapterCase
 
       test "bulk mutations are all-or-nothing", %{adapter: adapter} do
         assert {:ok, %{revision: first}} =
@@ -21,7 +21,7 @@ defmodule ElixirDB.Storage.Contracts.Mutations do
                    body: %{"value" => 1}
                  })
 
-        assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+        assert {:error, %VialKeeper.Error{code: :revision_conflict}} =
                  @adapter.apply_bulk_mutation(adapter, %{
                    operations: [
                      %{
@@ -42,7 +42,7 @@ defmodule ElixirDB.Storage.Contracts.Mutations do
         assert {:ok, %{body: %{"value" => 1}, revision: ^first}} =
                  @adapter.get_document(adapter, %{document_id: "doc"})
 
-        assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+        assert {:error, %VialKeeper.Error{code: :document_not_found}} =
                  @adapter.get_document(adapter, %{document_id: "other"})
 
         assert {:ok, %{current_sequence: 1}} = @adapter.identity(adapter)
@@ -80,7 +80,7 @@ defmodule ElixirDB.Storage.Contracts.Mutations do
                    body: %{"value" => 0}
                  })
 
-        assert {:error, %ElixirDB.Error{code: :revision_conflict}} =
+        assert {:error, %VialKeeper.Error{code: :revision_conflict}} =
                  @adapter.apply_bulk_mutation(adapter, %{
                    operations: [
                      %{
@@ -138,14 +138,14 @@ defmodule ElixirDB.Storage.Contracts.Mutations do
       end
 
       test "bulk mutations reject unknown operation types", %{adapter: adapter} do
-        assert {:error, %ElixirDB.Error{code: :invalid_request}} =
+        assert {:error, %VialKeeper.Error{code: :invalid_request}} =
                  @adapter.apply_bulk_mutation(adapter, %{
                    operations: [
                      %{operation: :upsert, document_id: "doc", body: %{"value" => 1}}
                    ]
                  })
 
-        assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+        assert {:error, %VialKeeper.Error{code: :document_not_found}} =
                  @adapter.get_document(adapter, %{document_id: "doc"})
       end
 
@@ -230,7 +230,7 @@ defmodule ElixirDB.Storage.Contracts.Mutations do
                  })
 
         assert {:error,
-                %ElixirDB.Error{
+                %VialKeeper.Error{
                   code: :revision_conflict,
                   details: %{operation_already_committed: true}
                 }} =
@@ -285,7 +285,7 @@ defmodule ElixirDB.Storage.Contracts.Mutations do
         assert rev3 != rev2
 
         assert {:error,
-                %ElixirDB.Error{
+                %VialKeeper.Error{
                   code: :revision_conflict,
                   details: %{operation_already_committed: true}
                 }} =
@@ -342,7 +342,7 @@ defmodule ElixirDB.Storage.Contracts.Mutations do
                  })
 
         assert {:error,
-                %ElixirDB.Error{
+                %VialKeeper.Error{
                   code: :revision_conflict,
                   details: %{operation_already_committed: true}
                 }} =
@@ -361,7 +361,7 @@ defmodule ElixirDB.Storage.Contracts.Mutations do
         assert {:ok, %{body: %{"value" => 3}, revision: ^rev3}} =
                  @adapter.get_document(adapter, %{document_id: "doc"})
 
-        assert {:error, %ElixirDB.Error{code: :document_not_found}} =
+        assert {:error, %VialKeeper.Error{code: :document_not_found}} =
                  @adapter.get_document(adapter, %{document_id: "fresh"})
       end
     end

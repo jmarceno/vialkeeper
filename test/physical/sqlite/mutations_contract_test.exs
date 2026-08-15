@@ -1,11 +1,11 @@
-defmodule ElixirDB.Storage.SQLite.MutationsContractTest do
-  use ElixirDB.Storage.Contracts.Mutations,
-    adapter: ElixirDB.Storage.SQLite.Adapter,
+defmodule VialKeeper.Storage.SQLite.MutationsContractTest do
+  use VialKeeper.Storage.Contracts.Mutations,
+    adapter: VialKeeper.Storage.SQLite.Adapter,
     physical: true
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.SQLite.Connection
+  alias VialKeeper.Storage.SQLite.Connection
 
   test "bulk-created documents remain queryable, indexed, and in changes", %{
     adapter: adapter
@@ -65,7 +65,7 @@ defmodule ElixirDB.Storage.SQLite.MutationsContractTest do
                [~s({"ok":false}), revision]
              )
 
-    assert {:error, %ElixirDB.Error{code: :integrity_violation}} =
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              @adapter.integrity_check(adapter, %{})
   end
 end

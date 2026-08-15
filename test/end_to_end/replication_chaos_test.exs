@@ -1,4 +1,4 @@
-defmodule ElixirDB.EndToEnd.ReplicationChaosTest do
+defmodule VialKeeper.EndToEnd.ReplicationChaosTest do
   @moduledoc """
   Seeded two-node replication convergence and multi-master echo scenarios.
   """
@@ -7,7 +7,7 @@ defmodule ElixirDB.EndToEnd.ReplicationChaosTest do
 
   @moduletag :integration
 
-  alias ElixirDB.ReplicationChaosHelpers, as: Chaos
+  alias VialKeeper.ReplicationChaosHelpers, as: Chaos
 
   @seeds Chaos.seeds!()
   @actions [:pass, :error, :delay, :duplicate, :reorder]

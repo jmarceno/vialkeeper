@@ -1,4 +1,4 @@
-defmodule ElixirDB.HTTP.AttachmentsTest do
+defmodule VialKeeper.HTTP.AttachmentsTest do
   @moduledoc """
   HTTP attachment upload/download contract and §23 owner non-blocking proofs.
   """
@@ -6,17 +6,17 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Attachments
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Runtime.{AttachmentCoordinator, DatabaseCatalog}
-  alias ElixirDB.TestServer
+  alias VialKeeper.Attachments
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Runtime.{AttachmentCoordinator, DatabaseCatalog}
+  alias VialKeeper.TestServer
 
   setup do
-    path = "attachments-http-#{System.unique_integer([:positive])}.elixirdb"
-    absolute = Path.join(ElixirDB.Config.database_root(), path)
-    ElixirDB.TempDatabase.cleanup(absolute)
+    path = "attachments-http-#{System.unique_integer([:positive])}.vialkeeper"
+    absolute = Path.join(VialKeeper.Config.database_root(), path)
+    VialKeeper.TempDatabase.cleanup(absolute)
 
     assert {:ok, identity} = DatabaseCatalog.create(path)
     uuid = identity.database_uuid
@@ -25,7 +25,7 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(absolute)
+      VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
     server = TestServer.start_supervised!()
@@ -85,7 +85,7 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
                {:command, :update_config, %{"attachments" => %{"max_attachment_bytes" => 8}}}
              )
 
-    assert {:error, %ElixirDB.Error{code: :payload_too_large}} =
+    assert {:error, %VialKeeper.Error{code: :payload_too_large}} =
              Attachments.upload_stream(uuid, ["12345678", "9"])
   end
 
@@ -173,8 +173,8 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
   test "document put rejects client-authoritative attachment length", %{uuid: uuid} do
     digest = String.duplicate("a", 64)
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request, message: message}} =
-             ElixirDB.Documents.put(uuid, %{
+    assert {:error, %VialKeeper.Error{code: :invalid_request, message: message}} =
+             VialKeeper.Documents.put(uuid, %{
                "id" => "doc",
                "body" => %{},
                "attachments" => %{
@@ -192,8 +192,8 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
   test "document put rejects unknown attachment reference fields", %{uuid: uuid} do
     digest = String.duplicate("b", 64)
 
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} =
-             ElixirDB.Documents.put(uuid, %{
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} =
+             VialKeeper.Documents.put(uuid, %{
                "id" => "doc",
                "body" => %{},
                "attachments" => %{
@@ -318,7 +318,7 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
     assert {:ok, %{blob: blob, length: 0}} = Attachments.upload_stream(uuid, [])
 
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(uuid, %{
+             VialKeeper.Documents.put(uuid, %{
                "id" => "empty-attachment",
                "body" => %{},
                "attachments" => %{
@@ -330,7 +330,7 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
              })
 
     assert {:ok, %{attachments: %{"empty.bin" => %{length: 0}}}} =
-             ElixirDB.Documents.get(uuid, %{id: "empty-attachment"})
+             VialKeeper.Documents.get(uuid, %{id: "empty-attachment"})
 
     assert {:ok, stream} =
              Attachments.open_stream(uuid, %{
@@ -348,7 +348,7 @@ defmodule ElixirDB.HTTP.AttachmentsTest do
     assert {:ok, %{blob: blob}} = Attachments.upload_stream(uuid, [payload])
 
     assert {:ok, put} =
-             ElixirDB.Documents.put(uuid, %{
+             VialKeeper.Documents.put(uuid, %{
                "id" => "dl-doc",
                "body" => %{},
                "attachments" => %{

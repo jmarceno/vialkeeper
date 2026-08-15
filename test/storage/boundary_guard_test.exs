@@ -1,10 +1,10 @@
-defmodule ElixirDB.Storage.BoundaryGuardTest do
+defmodule VialKeeper.Storage.BoundaryGuardTest do
   @moduledoc "Tests storage-boundary classification, composition, and leak scanning."
   use ExUnit.Case, async: true
 
   @moduletag :slow
 
-  alias ElixirDB.Storage.{
+  alias VialKeeper.Storage.{
     BackendContext,
     BoundaryGuard,
     PhysicalAllowlist,
@@ -33,31 +33,35 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
   end
 
   test "physical allowlist classifies sqlite implementation and physical tests" do
-    assert PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/sqlite/adapter.ex")
+    assert PhysicalAllowlist.allowed_path?("lib/vial_keeper/storage/sqlite/adapter.ex")
     assert PhysicalAllowlist.allowed_path?("priv/sqlite/schema_v1.sql")
-    assert PhysicalAllowlist.allowed_path?("lib/elixir_db/observability/instrumentation/sqlite.ex")
+
+    assert PhysicalAllowlist.allowed_path?(
+             "lib/vial_keeper/observability/instrumentation/sqlite.ex"
+           )
+
     assert PhysicalAllowlist.allowed_path?("test/physical/sqlite/portability_test.exs")
     assert PhysicalAllowlist.allowed_path?("test/support/storage/temp_database.ex")
-    refute PhysicalAllowlist.allowed_path?("lib/elixir_db/runtime/database_owner.ex")
-    refute PhysicalAllowlist.allowed_path?("lib/elixir_db/database_bundle.ex")
-    refute PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/registry.ex")
-    refute PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/sentinel/adapter.ex")
-    refute PhysicalAllowlist.allowed_path?("lib/elixir_db/storage/adapter.ex")
+    refute PhysicalAllowlist.allowed_path?("lib/vial_keeper/runtime/database_owner.ex")
+    refute PhysicalAllowlist.allowed_path?("lib/vial_keeper/database_bundle.ex")
+    refute PhysicalAllowlist.allowed_path?("lib/vial_keeper/storage/registry.ex")
+    refute PhysicalAllowlist.allowed_path?("lib/vial_keeper/storage/sentinel/adapter.ex")
+    refute PhysicalAllowlist.allowed_path?("lib/vial_keeper/storage/adapter.ex")
   end
 
   test "boundary guard reports no runtime/bundle leaks for cleared modules" do
     findings = BoundaryGuard.scan()
     leaking = BoundaryGuard.leaking_paths(findings)
 
-    refute "lib/elixir_db/database_bundle.ex" in leaking
-    refute "lib/elixir_db/runtime/database_owner.ex" in leaking
-    refute "lib/elixir_db/runtime/database_catalog.ex" in leaking
-    refute "lib/elixir_db/runtime/registration_manifest.ex" in leaking
-    refute "lib/elixir_db/diagnostics.ex" in leaking
-    refute "lib/elixir_db/application.ex" in leaking
-    refute "lib/elixir_db/storage/sqlite/adapter.ex" in leaking
-    refute "lib/elixir_db/storage/sentinel/adapter.ex" in leaking
-    refute "lib/elixir_db/storage/registry.ex" in leaking
+    refute "lib/vial_keeper/database_bundle.ex" in leaking
+    refute "lib/vial_keeper/runtime/database_owner.ex" in leaking
+    refute "lib/vial_keeper/runtime/database_catalog.ex" in leaking
+    refute "lib/vial_keeper/runtime/registration_manifest.ex" in leaking
+    refute "lib/vial_keeper/diagnostics.ex" in leaking
+    refute "lib/vial_keeper/application.ex" in leaking
+    refute "lib/vial_keeper/storage/sqlite/adapter.ex" in leaking
+    refute "lib/vial_keeper/storage/sentinel/adapter.ex" in leaking
+    refute "lib/vial_keeper/storage/registry.ex" in leaking
   end
 
   test "classified physical tests and support exist on disk and carry tags where required" do
@@ -76,7 +80,7 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
 
   test "sentinel backend create/open/close/identity without SQL types" do
     root =
-      Path.join(System.tmp_dir!(), "elixirdb-sentinel-#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "vialkeeper-sentinel-#{System.unique_integer([:positive])}")
 
     on_exit(fn -> File.rm_rf(root) end)
 
@@ -97,7 +101,7 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
     assert is_map(context.capabilities)
     refute Map.has_key?(context.capabilities, :sql)
 
-    source = File.read!("lib/elixir_db/storage/sentinel/adapter.ex")
+    source = File.read!("lib/vial_keeper/storage/sentinel/adapter.ex")
     refute source =~ "Exqlite"
     refute source =~ "PRAGMA"
     refute source =~ "SELECT "
@@ -105,17 +109,17 @@ defmodule ElixirDB.Storage.BoundaryGuardTest do
   end
 
   test "registry resolves configured backend modules" do
-    previous = Application.get_env(:elixir_db, :storage_backend)
+    previous = Application.get_env(:vial_keeper, :storage_backend)
 
     on_exit(fn ->
       if is_nil(previous) do
-        Application.delete_env(:elixir_db, :storage_backend)
+        Application.delete_env(:vial_keeper, :storage_backend)
       else
-        Application.put_env(:elixir_db, :storage_backend, previous)
+        Application.put_env(:vial_keeper, :storage_backend, previous)
       end
     end)
 
-    Application.put_env(:elixir_db, :storage_backend, Adapter)
+    Application.put_env(:vial_keeper, :storage_backend, Adapter)
     assert Registry.backend() == Adapter
     assert Registry.adapter_module?(Adapter)
   end

@@ -1,7 +1,7 @@
-defmodule ElixirDB.Query.PrefixBoundsTest do
+defmodule VialKeeper.Query.PrefixBoundsTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Query.PrefixBounds
+  alias VialKeeper.Query.PrefixBounds
 
   test "returns the next Unicode-scalar upper bound" do
     assert {:ok, %{lower: "ab", upper: "ac"}} = PrefixBounds.bounds("ab")
@@ -30,7 +30,7 @@ defmodule ElixirDB.Query.PrefixBoundsTest do
   end
 
   test "rejects empty and invalid UTF-8 prefixes" do
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} = PrefixBounds.bounds("")
-    assert {:error, %ElixirDB.Error{code: :invalid_request}} = PrefixBounds.bounds(<<255>>)
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} = PrefixBounds.bounds("")
+    assert {:error, %VialKeeper.Error{code: :invalid_request}} = PrefixBounds.bounds(<<255>>)
   end
 end

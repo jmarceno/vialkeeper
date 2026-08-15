@@ -1,15 +1,15 @@
-defmodule ElixirDB.HTTP.RouterTest do
+defmodule VialKeeper.HTTP.RouterTest do
   @moduledoc "Covers versioned HTTP routing, envelopes, and lifecycle responses."
 
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Runtime.DatabaseCatalog
   use ExUnit.Case, async: false
 
   @moduletag :integration
 
   test "database and document endpoints return versioned envelopes" do
-    path = "http-#{System.unique_integer([:positive])}.elixirdb"
+    path = "http-#{System.unique_integer([:positive])}.vialkeeper"
     body = IO.iodata_to_binary(JSON.encode_to_iodata!(%{"path" => path}))
 
     conn =
@@ -24,7 +24,7 @@ defmodule ElixirDB.HTTP.RouterTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     put = IO.iodata_to_binary(JSON.encode_to_iodata!(%{"id" => "doc", "body" => %{"ok" => true}}))

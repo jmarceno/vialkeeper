@@ -1,12 +1,12 @@
-defmodule ElixirDB.Replication.AuthTokenRedactionTest do
+defmodule VialKeeper.Replication.AuthTokenRedactionTest do
   @moduledoc """
   Guards that raw stored replication `auth_token` values never leak through the
-  public `ElixirDB.Replication.JobManager` read API, while round-trips and
+  public `VialKeeper.Replication.JobManager` read API, while round-trips and
   lifecycle paths keep operating with the real credential.
   """
 
-  alias ElixirDB.Replication.JobManager
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Replication.JobManager
+  alias VialKeeper.Runtime.DatabaseCatalog
   use ExUnit.Case, async: false
 
   @moduletag :integration
@@ -16,14 +16,14 @@ defmodule ElixirDB.Replication.AuthTokenRedactionTest do
 
   setup do
     prefix = "auth-token-%{System.unique_integer([:positive])}"
-    path = prefix <> ".elixirdb"
-    ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+    path = prefix <> ".vialkeeper"
+    VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     {:ok, identity} = DatabaseCatalog.create(path)
 
     on_exit(fn ->
       _ = DatabaseCatalog.close(identity.database_uuid)
       _ = DatabaseCatalog.unregister(identity.database_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     {:ok, uuid: identity.database_uuid}

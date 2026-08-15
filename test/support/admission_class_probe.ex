@@ -1,4 +1,4 @@
-defmodule ElixirDB.TestSupport.AdmissionClassProbe do
+defmodule VialKeeper.TestSupport.AdmissionClassProbe do
   @moduledoc "Test helper for observing the service class of admitted commands."
   import ExUnit.Assertions
 
@@ -13,15 +13,15 @@ defmodule ElixirDB.TestSupport.AdmissionClassProbe do
   @spec install(pid()) :: reference()
   def install(pid \\ self()) do
     ref = make_ref()
-    Application.put_env(:elixir_db, :admission_class_probe, {pid, ref})
-    Application.put_env(:elixir_db, :read_pool_probe, {pid, ref})
+    Application.put_env(:vial_keeper, :admission_class_probe, {pid, ref})
+    Application.put_env(:vial_keeper, :read_pool_probe, {pid, ref})
     ref
   end
 
   @spec uninstall() :: :ok
   def uninstall do
-    Application.delete_env(:elixir_db, :admission_class_probe)
-    Application.delete_env(:elixir_db, :read_pool_probe)
+    Application.delete_env(:vial_keeper, :admission_class_probe)
+    Application.delete_env(:vial_keeper, :read_pool_probe)
     :ok
   end
 

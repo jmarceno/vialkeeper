@@ -1,8 +1,8 @@
-defmodule ElixirDB.EndToEnd.ExtendedQueryScenarioTest do
+defmodule VialKeeper.EndToEnd.ExtendedQueryScenarioTest do
   @moduledoc """
   Extended-query integration scenario.
 
-  The test uses a real `.elixirdb` bundle and Bandit HTTP for the public
+  The test uses a real `.vialkeeper` bundle and Bandit HTTP for the public
   document, index, query, explain, attachment, integrity, and lifecycle paths.
   Replication is exercised through the local replication coordinator so the
   same attachment-bearing revisions are transferred to a second bundle.
@@ -15,18 +15,18 @@ defmodule ElixirDB.EndToEnd.ExtendedQueryScenarioTest do
 
   @moduletag :integration
 
-  alias ElixirDB.Query.BookmarkCodec
-  alias ElixirDB.Replication
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.TestServer
+  alias VialKeeper.Query.BookmarkCodec
+  alias VialKeeper.Replication
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TestServer
 
   @tag :slow
   test "extended query integration scenario" do
     server = TestServer.start_supervised!()
-    root = ElixirDB.Config.database_root()
+    root = VialKeeper.Config.database_root()
     prefix = "extended-query-#{System.unique_integer([:positive])}"
-    source_path = prefix <> "-source.elixirdb"
-    target_path = prefix <> "-target.elixirdb"
+    source_path = prefix <> "-source.vialkeeper"
+    target_path = prefix <> "-target.vialkeeper"
 
     source_uuid = create_database!(server, source_path)
     target_uuid = create_database!(server, target_path)
@@ -38,7 +38,7 @@ defmodule ElixirDB.EndToEnd.ExtendedQueryScenarioTest do
       end
 
       for path <- [source_path, target_path] do
-        ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+        VialKeeper.TempDatabase.cleanup(Path.join(root, path))
       end
     end)
 
@@ -188,12 +188,12 @@ defmodule ElixirDB.EndToEnd.ExtendedQueryScenarioTest do
 
     # §33.9 — use a separate real bundle to prove both sides of the 1000-row
     # full-scan boundary without polluting the scenario's later bounded scans.
-    threshold_uuid = create_database!(server, prefix <> "-threshold.elixirdb")
+    threshold_uuid = create_database!(server, prefix <> "-threshold.vialkeeper")
 
     on_exit(fn ->
       _ = DatabaseCatalog.close(threshold_uuid)
       _ = DatabaseCatalog.unregister(threshold_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, prefix <> "-threshold.elixirdb"))
+      VialKeeper.TempDatabase.cleanup(Path.join(root, prefix <> "-threshold.vialkeeper"))
     end)
 
     assert %{status: 201} =
@@ -210,7 +210,7 @@ defmodule ElixirDB.EndToEnd.ExtendedQueryScenarioTest do
 
     for number <- 1..999 do
       assert {:ok, _} =
-               ElixirDB.Documents.put(threshold_uuid, %{
+               VialKeeper.Documents.put(threshold_uuid, %{
                  id: "threshold-#{number}",
                  body: %{"unindexed" => number}
                })
@@ -226,7 +226,7 @@ defmodule ElixirDB.EndToEnd.ExtendedQueryScenarioTest do
              "bounded_scan"
 
     assert {:ok, _} =
-             ElixirDB.Documents.put(threshold_uuid, %{
+             VialKeeper.Documents.put(threshold_uuid, %{
                id: "threshold-1000",
                body: %{"unindexed" => 1000}
              })
@@ -440,7 +440,7 @@ defmodule ElixirDB.EndToEnd.ExtendedQueryScenarioTest do
     # §33.22 — replicate revisions and attachment bytes, then create only
     # target-local equivalent indexes.
     assert {:ok, %{status: :completed}} = Replication.one_shot(source_uuid, target_uuid)
-    assert {:ok, target_attachment} = ElixirDB.Documents.get(target_uuid, %{id: "attached"})
+    assert {:ok, target_attachment} = VialKeeper.Documents.get(target_uuid, %{id: "attached"})
     assert target_attachment.attachments["note.txt"].digest == blob
 
     assert %{status: 200, body: %{"data" => []}} =

@@ -1,4 +1,4 @@
-defmodule ElixirDB.Safety.InputContainmentTest do
+defmodule VialKeeper.Safety.InputContainmentTest do
   @moduledoc """
   Safety guarantee: no externally-supplied input — document body, ID, query,
   bookmark, config, replication payload, or path identifier — can ever crash a
@@ -7,7 +7,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
   must stay alive throughout.
 
   Each test drives a real request through the HTTP router (Plug.Test.conn →
-  ElixirDB.HTTP.Router.call/2) and asserts:
+  VialKeeper.HTTP.Router.call/2) and asserts:
     (a) a stable JSON error envelope is returned (never a bare process exit),
     (b) the DatabaseCatalog process is still alive afterward.
   """
@@ -16,12 +16,12 @@ defmodule ElixirDB.Safety.InputContainmentTest do
 
   @moduletag :integration
 
-  alias ElixirDB.HTTP.Router
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.HTTP.Router
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   setup do
-    path = "safety-#{System.unique_integer([:positive])}.elixirdb"
+    path = "safety-#{System.unique_integer([:positive])}.vialkeeper"
 
     conn =
       call(:post, "/v1/databases", %{"path" => path})
@@ -32,7 +32,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(ElixirDB.Config.database_root(), path))
+      VialKeeper.TempDatabase.cleanup(Path.join(VialKeeper.Config.database_root(), path))
     end)
 
     {:ok, uuid: uuid}
@@ -99,7 +99,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
     encoding = conn |> Plug.Conn.get_resp_header("content-encoding") |> List.first()
 
     if is_binary(encoding) and String.contains?(encoding, "zstd") do
-      ElixirDB.TestReplicationWire.decode_response(conn.resp_headers, conn.resp_body)
+      VialKeeper.TestReplicationWire.decode_response(conn.resp_headers, conn.resp_body)
     else
       conn.resp_body
     end
@@ -232,7 +232,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
     test "duplicate object keys are rejected by the strict decoder at the boundary" do
       # Duplicate keys are invalid JSON per the project's strict decoder.
       conn =
-        call_raw(:post, "/v1/registrations", ~s({"path":"dup.elixirdb","path":"dup2.elixirdb"}))
+        call_raw(:post, "/v1/registrations", ~s({"path":"dup.vialkeeper","path":"dup2.vialkeeper"}))
 
       assert conn.status == 400
       assert_catalog_alive()
@@ -359,14 +359,14 @@ defmodule ElixirDB.Safety.InputContainmentTest do
 
     test "path traversal returns a typed 400" do
       assert_typed_error(
-        call(:post, "/v1/databases", %{"path" => "../escape.elixirdb"}),
+        call(:post, "/v1/databases", %{"path" => "../escape.vialkeeper"}),
         400
       )
     end
 
     test "non-object config returns a typed 400" do
       assert_typed_error(
-        call(:post, "/v1/databases", %{"path" => "x.elixirdb", "config" => "nope"}),
+        call(:post, "/v1/databases", %{"path" => "x.vialkeeper", "config" => "nope"}),
         400
       )
     end
@@ -374,7 +374,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
     test "config with negative limit returns a typed 400" do
       assert_typed_error(
         call(:post, "/v1/databases", %{
-          "path" => "neg.elixirdb",
+          "path" => "neg.vialkeeper",
           "config" => %{"documents" => %{"max_document_bytes" => -1}}
         }),
         400
@@ -384,7 +384,7 @@ defmodule ElixirDB.Safety.InputContainmentTest do
     test "config with unknown field returns a typed 400" do
       assert_typed_error(
         call(:post, "/v1/databases", %{
-          "path" => "unk.elixirdb",
+          "path" => "unk.vialkeeper",
           "config" => %{"mystery" => 1}
         }),
         400
@@ -518,12 +518,12 @@ defmodule ElixirDB.Safety.InputContainmentTest do
       {:ok, entries} = DatabaseCatalog.list()
       %{path: rel_path} = Enum.find(entries, &(&1.database_uuid == uuid))
 
-      src = Path.join(ElixirDB.Config.database_root(), rel_path)
-      copy_path = "dup-uuid-#{System.unique_integer([:positive])}.elixirdb"
-      dst = Path.join(ElixirDB.Config.database_root(), copy_path)
+      src = Path.join(VialKeeper.Config.database_root(), rel_path)
+      copy_path = "dup-uuid-#{System.unique_integer([:positive])}.vialkeeper"
+      dst = Path.join(VialKeeper.Config.database_root(), copy_path)
       File.cp_r!(src, dst)
 
-      on_exit(fn -> ElixirDB.TempDatabase.cleanup(dst) end)
+      on_exit(fn -> VialKeeper.TempDatabase.cleanup(dst) end)
 
       error = assert_typed_error(call(:post, "/v1/registrations", %{"path" => copy_path}), 409)
       assert error["code"] == "duplicate_database_uuid"

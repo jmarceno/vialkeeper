@@ -1,4 +1,4 @@
-defmodule ElixirDB.Runtime.CatalogManifestResilienceTest do
+defmodule VialKeeper.Runtime.CatalogManifestResilienceTest do
   @moduledoc """
   A poisoned registration manifest must never crash the DatabaseCatalog.
 
@@ -10,22 +10,22 @@ defmodule ElixirDB.Runtime.CatalogManifestResilienceTest do
   """
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   setup do
-    previous = Application.get_env(:elixir_db, :registration_manifest)
+    previous = Application.get_env(:vial_keeper, :registration_manifest)
 
     dir =
       Path.join(
         System.tmp_dir!(),
-        "elixirdb-catalog-resilience-#{System.unique_integer([:positive])}"
+        "vialkeeper-catalog-resilience-#{System.unique_integer([:positive])}"
       )
 
     File.mkdir_p!(dir)
     manifest = Path.join(dir, "registrations.json")
 
     on_exit(fn ->
-      Application.put_env(:elixir_db, :registration_manifest, previous)
+      Application.put_env(:vial_keeper, :registration_manifest, previous)
       _ = File.rm_rf(dir)
     end)
 
@@ -36,7 +36,7 @@ defmodule ElixirDB.Runtime.CatalogManifestResilienceTest do
   # alive and degrades to an empty registration set instead of crashing.
   defp assert_catalog_survives(manifest, body) do
     File.write!(manifest, body)
-    Application.put_env(:elixir_db, :registration_manifest, manifest)
+    Application.put_env(:vial_keeper, :registration_manifest, manifest)
 
     assert {:ok, pid} = GenServer.start_link(DatabaseCatalog, [])
     assert Process.alive?(pid)
@@ -51,8 +51,8 @@ defmodule ElixirDB.Runtime.CatalogManifestResilienceTest do
     assert_catalog_survives(
       manifest,
       ~s|{"version":1,"databases":[| <>
-        ~s|{"path":"same.elixirdb","uuid":"11111111-1111-4111-8111-111111111111"},| <>
-        ~s|{"path":"same.elixirdb","uuid":"22222222-2222-4222-8222-222222222222"}]}|
+        ~s|{"path":"same.vialkeeper","uuid":"11111111-1111-4111-8111-111111111111"},| <>
+        ~s|{"path":"same.vialkeeper","uuid":"22222222-2222-4222-8222-222222222222"}]}|
     )
   end
 
@@ -62,8 +62,8 @@ defmodule ElixirDB.Runtime.CatalogManifestResilienceTest do
     assert_catalog_survives(
       manifest,
       ~s|{"version":1,"databases":[| <>
-        ~s|{"path":"a.elixirdb","uuid":"11111111-1111-4111-8111-111111111111"},| <>
-        ~s|{"path":"b.elixirdb","uuid":"11111111-1111-4111-8111-111111111111"}]}|
+        ~s|{"path":"a.vialkeeper","uuid":"11111111-1111-4111-8111-111111111111"},| <>
+        ~s|{"path":"b.vialkeeper","uuid":"11111111-1111-4111-8111-111111111111"}]}|
     )
   end
 
@@ -74,7 +74,7 @@ defmodule ElixirDB.Runtime.CatalogManifestResilienceTest do
   test "an entry missing its uuid degrades to an empty catalog instead of crashing", %{
     manifest: manifest
   } do
-    assert_catalog_survives(manifest, ~s|{"version":1,"databases":[{"path":"a.elixirdb"}]}|)
+    assert_catalog_survives(manifest, ~s|{"version":1,"databases":[{"path":"a.vialkeeper"}]}|)
   end
 
   test "an unsupported manifest version degrades to an empty catalog instead of crashing", %{

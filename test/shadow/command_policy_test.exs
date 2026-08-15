@@ -1,9 +1,9 @@
-defmodule ElixirDB.Shadow.CommandPolicyTest do
+defmodule VialKeeper.Shadow.CommandPolicyTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Commands
-  alias ElixirDB.Error
-  alias ElixirDB.Runtime.{CommandContext, DatabaseCommandPolicy}
+  alias VialKeeper.Commands
+  alias VialKeeper.Error
+  alias VialKeeper.Runtime.{CommandContext, DatabaseCommandPolicy}
 
   test "public routing has no authority on a shadow database" do
     assert {:error, %Error{code: :shadow_command_forbidden}} =

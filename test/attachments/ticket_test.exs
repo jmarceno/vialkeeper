@@ -1,12 +1,12 @@
-defmodule ElixirDB.Attachments.TicketTest do
+defmodule VialKeeper.Attachments.TicketTest do
   @moduledoc "Adversarial coverage for immutable attachment stream tickets."
 
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias ElixirDB.Attachments.Ticket
-  alias ElixirDB.Error
-  alias ElixirDB.TestSupport.GarbageGenerators
+  alias VialKeeper.Attachments.Ticket
+  alias VialKeeper.Error
+  alias VialKeeper.TestSupport.GarbageGenerators
 
   @digest String.duplicate("a", 64)
   @required_keys [
@@ -26,7 +26,7 @@ defmodule ElixirDB.Attachments.TicketTest do
       assert {:ok, %Ticket{} = ticket} = apply(Ticket, :build, args)
 
       assert ticket.database_uuid == "database-1"
-      assert ticket.bundle_path == Path.expand("tmp/../bundle.elixirdb")
+      assert ticket.bundle_path == Path.expand("tmp/../bundle.vialkeeper")
       assert ticket.blob_digest == @digest
       assert ticket.logical_size == 10
       assert ticket.content_type == "text/plain"
@@ -112,7 +112,7 @@ defmodule ElixirDB.Attachments.TicketTest do
   defp valid_args do
     [
       "database-1",
-      "tmp/../bundle.elixirdb",
+      "tmp/../bundle.vialkeeper",
       @digest,
       10,
       "text/plain",

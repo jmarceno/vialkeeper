@@ -1,11 +1,11 @@
-defmodule ElixirDB.Replication.TransferPipelineBlobsTest do
+defmodule VialKeeper.Replication.TransferPipelineBlobsTest do
   @moduledoc "Covers the replication blob transfer pipeline and missing-data handling."
 
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Error
-  alias ElixirDB.Replication.BlobRepresentationStream
-  alias ElixirDB.Replication.TransferPipeline
+  alias VialKeeper.Error
+  alias VialKeeper.Replication.BlobRepresentationStream
+  alias VialKeeper.Replication.TransferPipeline
 
   defmodule FakeEndpoint do
     defstruct [

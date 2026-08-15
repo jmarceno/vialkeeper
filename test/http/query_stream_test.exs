@@ -1,16 +1,16 @@
-defmodule ElixirDB.HTTP.QueryStreamTest do
+defmodule VialKeeper.HTTP.QueryStreamTest do
   @moduledoc "Covers HTTP query stream lifecycle events."
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   test "query stream emits snapshot, caught_up, upsert, and closed events" do
-    server = ElixirDB.TestServer.start_supervised!()
-    path = "query-stream-#{System.unique_integer([:positive])}.elixirdb"
+    server = VialKeeper.TestServer.start_supervised!()
+    path = "query-stream-#{System.unique_integer([:positive])}.vialkeeper"
 
     {:ok, create_resp} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -21,8 +21,8 @@ defmodule ElixirDB.HTTP.QueryStreamTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      root = ElixirDB.Config.database_root()
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      root = VialKeeper.Config.database_root()
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end)
 
     {:ok, put_resp} =
@@ -83,8 +83,8 @@ defmodule ElixirDB.HTTP.QueryStreamTest do
   end
 
   test "query stream rejects unknown fields and forbidden query keys" do
-    server = ElixirDB.TestServer.start_supervised!()
-    path = "query-stream-reject-#{System.unique_integer([:positive])}.elixirdb"
+    server = VialKeeper.TestServer.start_supervised!()
+    path = "query-stream-reject-#{System.unique_integer([:positive])}.vialkeeper"
 
     {:ok, create_resp} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -95,8 +95,8 @@ defmodule ElixirDB.HTTP.QueryStreamTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      root = ElixirDB.Config.database_root()
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      root = VialKeeper.Config.database_root()
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end)
 
     url = server.base_url <> "/v1/databases/#{uuid}/query/stream"

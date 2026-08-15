@@ -1,14 +1,14 @@
-defmodule ElixirDB.Shadow.RouteTableTest do
+defmodule VialKeeper.Shadow.RouteTableTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Shadow.RouteTable
+  alias VialKeeper.Shadow.RouteTable
 
   test "compare-delete matches generation identity and preserves a newer route" do
     name = unique_name(:shadow_routes)
     {:ok, pid} = RouteTable.start_link(name: name)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid, :normal) end)
 
-    source_uuid = ElixirDB.UUID.v4()
+    source_uuid = VialKeeper.UUID.v4()
     old = snapshot(source_uuid, 1)
     new = snapshot(source_uuid, 2)
     assert :ok = RouteTable.put(source_uuid, new, name)
@@ -23,7 +23,7 @@ defmodule ElixirDB.Shadow.RouteTableTest do
     {:ok, pid} = RouteTable.start_link(name: name)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid, :normal) end)
 
-    source_uuid = ElixirDB.UUID.v4()
+    source_uuid = VialKeeper.UUID.v4()
     current = snapshot(source_uuid, 2)
     older = snapshot(source_uuid, 1)
     assert :ok = RouteTable.put(source_uuid, current, name)
@@ -36,7 +36,7 @@ defmodule ElixirDB.Shadow.RouteTableTest do
     {:ok, pid} = RouteTable.start_link(name: name)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid, :normal) end)
 
-    source_uuid = ElixirDB.UUID.v4()
+    source_uuid = VialKeeper.UUID.v4()
     snapshot = snapshot(source_uuid, 1)
     assert :ok = RouteTable.put(source_uuid, snapshot, name)
     assert [{^source_uuid, ^snapshot}] = :ets.lookup(name, source_uuid)
@@ -46,9 +46,9 @@ defmodule ElixirDB.Shadow.RouteTableTest do
   defp snapshot(source_uuid, generation) do
     %{
       source_uuid: source_uuid,
-      shadow_uuid: ElixirDB.UUID.v4(),
+      shadow_uuid: VialKeeper.UUID.v4(),
       generation: generation,
-      operation_id: ElixirDB.UUID.v4()
+      operation_id: VialKeeper.UUID.v4()
     }
   end
 

@@ -1,20 +1,20 @@
-defmodule ElixirDB.Shadow.LocalLifecycleE2ETest do
+defmodule VialKeeper.Shadow.LocalLifecycleE2ETest do
   use ExUnit.Case, async: false
 
-  alias ElixirDB.Replication.{LocalEndpoint, Profile}
-  alias ElixirDB.Runtime.DatabaseCatalog
-  alias ElixirDB.Shadow.{ReadRouter, RouteTable, Worker}
-  alias ElixirDB.Storage.Results
+  alias VialKeeper.Replication.{LocalEndpoint, Profile}
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Shadow.{ReadRouter, RouteTable, Worker}
+  alias VialKeeper.Storage.Results
 
   @moduletag :integration
 
   test "a local worker generation can be provisioned, marked ready, and serve a routed read" do
     prefix = "shadow-local-life-#{System.unique_integer([:positive])}"
-    source_path = prefix <> "-source.elixirdb"
-    root = ElixirDB.Config.database_root()
-    source_uuid = ElixirDB.UUID.v4()
-    shadow_uuid = ElixirDB.UUID.v4()
-    operation_id = ElixirDB.UUID.v4()
+    source_path = prefix <> "-source.vialkeeper"
+    root = VialKeeper.Config.database_root()
+    source_uuid = VialKeeper.UUID.v4()
+    shadow_uuid = VialKeeper.UUID.v4()
+    operation_id = VialKeeper.UUID.v4()
     worker_root = Path.join(root, prefix <> "-worker")
     attachment_location = Path.join(root, Path.basename(source_path) <> "/blobs")
 
@@ -38,14 +38,14 @@ defmodule ElixirDB.Shadow.LocalLifecycleE2ETest do
       RouteTable.delete(source_uuid)
       _ = DatabaseCatalog.close(source_uuid)
       _ = DatabaseCatalog.unregister(source_uuid)
-      ElixirDB.TempDatabase.cleanup(Path.join(root, source_path))
-      ElixirDB.TempDatabase.cleanup(worker_root)
+      VialKeeper.TempDatabase.cleanup(Path.join(root, source_path))
+      VialKeeper.TempDatabase.cleanup(worker_root)
     end)
 
     assert {:ok, %{"state" => "bootstrapping"}} = Worker.provision(request, opts)
 
     assert {:ok, %{revision: revision}} =
-             ElixirDB.Documents.put(source.database_uuid, %{id: "doc", body: %{"n" => 1}})
+             VialKeeper.Documents.put(source.database_uuid, %{id: "doc", body: %{"n" => 1}})
 
     profile =
       Profile.shadow(
@@ -66,7 +66,7 @@ defmodule ElixirDB.Shadow.LocalLifecycleE2ETest do
       )
 
     assert {:ok, %{status: :completed, source_sequence: sequence}} =
-             ElixirDB.Replication.one_shot_endpoints(
+             VialKeeper.Replication.one_shot_endpoints(
                source_endpoint,
                shadow_endpoint,
                profile: profile,
@@ -81,7 +81,7 @@ defmodule ElixirDB.Shadow.LocalLifecycleE2ETest do
                opts
              )
 
-    {:ok, local} = ElixirDB.Shadow.LocalEndpoint.new(worker_options: opts)
+    {:ok, local} = VialKeeper.Shadow.LocalEndpoint.new(worker_options: opts)
 
     assert :ok =
              RouteTable.put(source_uuid, %{

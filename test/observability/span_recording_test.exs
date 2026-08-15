@@ -1,11 +1,11 @@
-defmodule ElixirDB.Observability.SpanRecordingTest do
+defmodule VialKeeper.Observability.SpanRecordingTest do
   @moduledoc "Covers direct span recording and exporter flushing in tests."
 
-  use ElixirDB.Observability.OtelCase, async: false
+  use VialKeeper.Observability.OtelCase, async: false
 
   @moduletag :integration
 
-  alias ElixirDB.Observability.{OtelCase, TestExporter}
+  alias VialKeeper.Observability.{OtelCase, TestExporter}
 
   test "a span created in the test process is recorded after flush" do
     require OpenTelemetry.Tracer

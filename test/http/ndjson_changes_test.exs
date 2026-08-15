@@ -1,4 +1,4 @@
-defmodule ElixirDB.HTTP.NdjsonChangesTest do
+defmodule VialKeeper.HTTP.NdjsonChangesTest do
   @moduledoc """
   CHANGE-008 NDJSON stream events over an ephemeral Bandit TestServer.
 
@@ -8,13 +8,13 @@ defmodule ElixirDB.HTTP.NdjsonChangesTest do
 
   @moduletag :integration
 
-  alias ElixirDB.JSON.StrictDecoder
-  alias ElixirDB.MapAccess
-  alias ElixirDB.Runtime.DatabaseCatalog
+  alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.MapAccess
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   test "changes stream emits change, caught_up, heartbeat, closed, and error events" do
-    server = ElixirDB.TestServer.start_supervised!()
-    path = "ndjson-#{System.unique_integer([:positive])}.elixirdb"
+    server = VialKeeper.TestServer.start_supervised!()
+    path = "ndjson-#{System.unique_integer([:positive])}.vialkeeper"
 
     {:ok, create_resp} =
       Req.post(server.base_url <> "/v1/databases", json: %{"path" => path})
@@ -25,8 +25,8 @@ defmodule ElixirDB.HTTP.NdjsonChangesTest do
     on_exit(fn ->
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
-      root = ElixirDB.Config.database_root()
-      ElixirDB.TempDatabase.cleanup(Path.join(root, path))
+      root = VialKeeper.Config.database_root()
+      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end)
 
     {:ok, put_resp} =
@@ -108,7 +108,7 @@ defmodule ElixirDB.HTTP.NdjsonChangesTest do
     assert is_integer(seq2) and seq2 >= 1
     assert_receive {:ndjson_event, %{"type" => "heartbeat"}}, 2_000
 
-    case Registry.lookup(ElixirDB.Runtime.DatabaseRegistry, {:notifier, uuid}) do
+    case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:notifier, uuid}) do
       [{pid, _}] -> Process.exit(pid, :kill)
       [] -> flunk("expected change notifier to be running")
     end

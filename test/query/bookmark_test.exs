@@ -1,8 +1,8 @@
-defmodule ElixirDB.Query.BookmarkTest do
+defmodule VialKeeper.Query.BookmarkTest do
   use ExUnit.Case, async: true
 
-  alias ElixirDB.Domain.Bookmark
-  alias ElixirDB.Query.BookmarkCodec
+  alias VialKeeper.Domain.Bookmark
+  alias VialKeeper.Query.BookmarkCodec
 
   @plan_digest String.duplicate("a", 64)
   @first_digest String.duplicate("b", 64)
@@ -40,7 +40,7 @@ defmodule ElixirDB.Query.BookmarkTest do
   test "rejects plan and binding shape violations" do
     assert {:ok, encoded} = BookmarkCodec.encode(Map.put(payload(), "plan_digest", "not-a-digest"))
 
-    assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} =
              BookmarkCodec.decode(encoded)
 
     assert {:ok, encoded} =
@@ -51,7 +51,7 @@ defmodule ElixirDB.Query.BookmarkTest do
                ])
              )
 
-    assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} =
              BookmarkCodec.decode(encoded)
   end
 
@@ -60,10 +60,10 @@ defmodule ElixirDB.Query.BookmarkTest do
 
     assert {:ok, encoded} = BookmarkCodec.encode(Map.put(payload(), "plan_digest", zero))
 
-    assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} =
              BookmarkCodec.decode(encoded)
 
-    assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} =
              Bookmark.new(%{
                version: 1,
                protocol_major: 1,
@@ -85,7 +85,7 @@ defmodule ElixirDB.Query.BookmarkTest do
                  put_in(payload(), ["index_bindings", Access.at(0), "definition_digest"], digest)
                )
 
-      assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} =
+      assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} =
                BookmarkCodec.decode(encoded)
     end
   end
@@ -96,9 +96,9 @@ defmodule ElixirDB.Query.BookmarkTest do
     replacement = if last == "A", do: "B", else: "A"
     tampered = String.slice(encoded, 0, byte_size(encoded) - 1) <> replacement
 
-    assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} = BookmarkCodec.decode(tampered)
+    assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} = BookmarkCodec.decode(tampered)
 
-    assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} =
              BookmarkCodec.decode(encoded, %{"query_fingerprint" => "other"})
 
     assert {:ok, legacy} =
@@ -110,7 +110,7 @@ defmodule ElixirDB.Query.BookmarkTest do
                "last_id" => "doc-1"
              })
 
-    assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} = BookmarkCodec.decode(legacy)
+    assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} = BookmarkCodec.decode(legacy)
   end
 
   test "supports bounded-scan bookmarks with empty bindings" do
@@ -138,7 +138,7 @@ defmodule ElixirDB.Query.BookmarkTest do
                Map.put(payload(), "ordering_key", Map.put(ordering_key, "rank", "invalid"))
              )
 
-    assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} =
              BookmarkCodec.decode(encoded)
   end
 
@@ -146,7 +146,7 @@ defmodule ElixirDB.Query.BookmarkTest do
     assert {:ok, encoded} =
              BookmarkCodec.encode(Map.put(payload(), "ordering_key", %{"unexpected" => true}))
 
-    assert {:error, %ElixirDB.Error{code: :invalid_bookmark}} =
+    assert {:error, %VialKeeper.Error{code: :invalid_bookmark}} =
              BookmarkCodec.decode(encoded)
   end
 

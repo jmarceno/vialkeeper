@@ -1,10 +1,10 @@
-defmodule ElixirDB.TestReplicationWire do
+defmodule VialKeeper.TestReplicationWire do
   @moduledoc """
   Test helpers for Zstandard JSON on `/v1/databases/:uuid/replication` routes.
   """
 
-  alias ElixirDB.HTTP.ReplicationWirePlug
-  alias ElixirDB.Replication.WireCompression
+  alias VialKeeper.HTTP.ReplicationWirePlug
+  alias VialKeeper.Replication.WireCompression
 
   @spec wire_path?(binary()) :: boolean()
   def wire_path?(path), do: ReplicationWirePlug.wire_path?(path)
@@ -27,7 +27,7 @@ defmodule ElixirDB.TestReplicationWire do
       {"accept-encoding", "zstd"},
       {"content-type", "application/json"},
       {"content-encoding", "zstd"},
-      {"x-elixirdb-uncompressed-length", Integer.to_string(encoded.uncompressed_length)},
+      {"x-vialkeeper-uncompressed-length", Integer.to_string(encoded.uncompressed_length)},
       {"content-length", Integer.to_string(encoded.compressed_length)}
     ]
   end
@@ -76,6 +76,6 @@ defmodule ElixirDB.TestReplicationWire do
   defp wrap_response(other), do: other
 
   defp decoded_limit do
-    ElixirDB.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
+    VialKeeper.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
   end
 end

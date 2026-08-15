@@ -1,9 +1,9 @@
-defmodule ElixirDB.Storage.SQLite.QueryContractTest do
-  use ElixirDB.Storage.Contracts.Query, adapter: ElixirDB.Storage.SQLite.Adapter
+defmodule VialKeeper.Storage.SQLite.QueryContractTest do
+  use VialKeeper.Storage.Contracts.Query, adapter: VialKeeper.Storage.SQLite.Adapter
 
   @moduletag :sqlite_physical
 
-  alias ElixirDB.Storage.Ports.Access
+  alias VialKeeper.Storage.Ports.Access
 
   test "explain omits SQL and physical names", %{adapter: adapter} do
     assert {:ok, _} =
