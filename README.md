@@ -249,29 +249,199 @@ await postJson(`/v1/databases/${uuid}/query/explain`, {
 await postJson(`/v1/databases/${uuid}/indexes`, {
   name: "by_status",
   type: "structured",
-  fields: ["/status", "/priority"],
+  fields: [
+    { path: "/status", type: "string", direction: "asc" },
+    { path: "/priority", type: "number", direction: "asc" },
+  ],
 });
+```
 
+List / delete / rebuild: `GET …/indexes`, `DELETE …/indexes/:index_id`,
+`POST …/indexes/:index_id/rebuild`. Structured fields are `{path, type,
+direction}` objects. Full-text fields are JSON Pointers.
+
+**Elixir:** `VialKeeper.Query.create_index/2`, `list_indexes/1`,
+`delete_index/2`, `rebuild_index/2`.
+
+### Full-text search
+
+Create a named `full_text` index over JSON Pointers into the document body.
+`search.index` is that **name**. Tokenization is `unicode_words_v1`
+(Unicode letters and digits, case-insensitive). `diacritics` is `preserve`
+(default) or `remove`. `search.text` is ordinary words — not an engine query
+language; punctuation is not syntax.
+
+```typescript
 await postJson(`/v1/databases/${uuid}/indexes`, {
   name: "body_fts",
   type: "full_text",
   fields: ["/title", "/body"],
   tokenization: { strategy: "unicode_words_v1", diacritics: "remove" },
 });
+```
 
-await postJson(`/v1/databases/${uuid}/query`, {
+| Mode | A document matches when |
+| ---- | ----------------------- |
+| `all` | every query token is a complete indexed token (default) |
+| `any` | at least one query token is a complete indexed token |
+| `phrase` | query tokens appear in order as consecutive indexed tokens |
+| `prefix` | every query token is a prefix of some indexed token, not an infix |
+
+`all`, `any`, and `phrase` need finished words. Combine `search` with a
+`selector` for structured filters. Project list fields with `fields`; open a
+hit with `documents/get`. The page includes `examined` (candidates considered)
+and `documents` (the limited hits). The same rows also appear as `results`.
+Indexes stay on the database that created them; they do not replicate. Live
+query subscriptions cannot include `search`.
+
+```typescript
+const page = await postJson<{
+  documents: Array<{ id: string; fields?: Record<string, unknown> }>;
+  examined: number;
+}>(`/v1/databases/${uuid}/query`, {
   selector: { "/status": "open" },
   search: { index: "body_fts", text: "hello world", mode: "phrase" },
+  fields: ["/title", "/body"],
   limit: 20,
 });
 ```
 
-FTS modes: `all`, `any`, `phrase`, `prefix`. List / delete / rebuild:
-`GET …/indexes`, `DELETE …/indexes/:index_id`,
-`POST …/indexes/:index_id/rebuild`.
+```elixir
+{:ok, %{"index_id" => _index_id}} =
+  VialKeeper.Query.create_index(uuid, %{
+    name: "body_fts",
+    type: "full_text",
+    fields: ["/title", "/body"],
+    tokenization: %{strategy: "unicode_words_v1", diacritics: "remove"}
+  })
 
-**Elixir:** `VialKeeper.Query.execute/2`, `explain/2`, `create_index/2`,
-`list_indexes/1`, `delete_index/2`, `rebuild_index/2`.
+{:ok, %{documents: hits, examined: examined}} =
+  VialKeeper.Query.execute(uuid, %{
+    selector: %{"/status" => "open"},
+    search: %{index: "body_fts", text: "hello world", mode: "phrase"},
+    fields: ["/title", "/body"],
+    limit: 20
+  })
+```
+
+### Search as you type
+
+Typeahead is a client recipe on the same `/query` contract. The server does
+not debounce. While the user is typing, send `mode: "prefix"` with a small
+`limit` (about 10). Wait until at least one token has three characters, and
+drop a trailing token shorter than three — that word is still being typed.
+Debounce about 200 ms and abort the in-flight request when a newer keystroke
+is ready. `examined` much larger than `documents.length` means the prefix is
+still too broad.
+
+When the user commits a finished phrase, switch to `all` or `phrase` and a
+larger limit (25–50). If list snippets must contain the hit, store smaller
+documents (for example one paragraph per document) and project that field.
+In-process callers skip `:skip` queries and ignore stale `Query.execute/2`
+replies the same way HTTP clients abort in-flight fetches.
+
+```typescript
+const minToken = 3;
+const debounceMs = 200;
+const typeaheadLimit = 10;
+
+function prefixQuery(input: string): string | null {
+  const tokens = Array.from(input.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu), (m) => m[0]);
+  const last = tokens.at(-1);
+  const ready = last && last.length >= minToken ? tokens : tokens.slice(0, -1);
+  const kept = ready.filter((token) => token.length >= minToken);
+  return kept.length === 0 ? null : kept.join(" ");
+}
+
+let debounceTimer = 0;
+let inFlight: AbortController | undefined;
+
+function onSearchInput(input: string) {
+  window.clearTimeout(debounceTimer);
+  inFlight?.abort();
+  debounceTimer = window.setTimeout(() => {
+    void runTypeahead(input);
+  }, debounceMs);
+}
+
+async function runTypeahead(input: string) {
+  const text = prefixQuery(input);
+  if (!text) return [];
+
+  inFlight = new AbortController();
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    "content-type": "application/json",
+  };
+  if (bearerToken) headers.authorization = `Bearer ${bearerToken}`;
+
+  const response = await fetch(`${baseUrl}/v1/databases/${uuid}/query`, {
+    method: "POST",
+    headers,
+    signal: inFlight.signal,
+    body: JSON.stringify({
+      search: { index: "body_fts", text, mode: "prefix" },
+      fields: ["/title", "/body"],
+      limit: typeaheadLimit,
+    }),
+  });
+  const envelope = (await response.json()) as Envelope<{
+    documents: Array<{ id: string; fields?: Record<string, unknown> }>;
+    examined: number;
+  }>;
+  if (!response.ok || envelope.error) {
+    throw new Error(envelope.error?.message ?? "search failed");
+  }
+  return envelope.data?.documents ?? [];
+}
+
+// After the user commits a finished query:
+await postJson(`/v1/databases/${uuid}/query`, {
+  search: { index: "body_fts", text: "hello world", mode: "phrase" },
+  fields: ["/title", "/body"],
+  limit: 50,
+});
+```
+
+```elixir
+prefix_query = fn input ->
+  tokens =
+    Regex.scan(~r/[\p{L}\p{N}]+/u, String.downcase(input))
+    |> List.flatten()
+
+  ready =
+    case List.last(tokens) do
+      token when is_binary(token) and String.length(token) >= 3 -> tokens
+      _ -> Enum.drop(tokens, -1)
+    end
+
+  case Enum.filter(ready, &(String.length(&1) >= 3)) do
+    [] -> :skip
+    kept -> {:ok, Enum.join(kept, " ")}
+  end
+end
+
+case prefix_query.(input) do
+  :skip ->
+    {:ok, []}
+
+  {:ok, text} ->
+    VialKeeper.Query.execute(uuid, %{
+      search: %{index: "body_fts", text: text, mode: "prefix"},
+      fields: ["/title", "/body"],
+      limit: 10
+    })
+end
+
+{:ok, %{documents: _hits}} =
+  VialKeeper.Query.execute(uuid, %{
+    search: %{index: "body_fts", text: "hello world", mode: "phrase"},
+    fields: ["/title", "/body"],
+    limit: 50
+  })
+```
+
+**Elixir:** `VialKeeper.Query.execute/2`, `explain/2`.
 
 ---
 
