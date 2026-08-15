@@ -3,7 +3,7 @@ defmodule VialKeeper.JSON.Canonical do
 
   @spec encode(term()) :: {:ok, binary()} | {:error, VialKeeper.Error.t()}
   def encode(value) do
-    {:ok, encode_value(value)}
+    {:ok, IO.iodata_to_binary(encode_value(value))}
   rescue
     ArgumentError -> {:error, VialKeeper.Error.invalid_request("value is not canonical JSON")}
     ArithmeticError -> {:error, VialKeeper.Error.invalid_request("value is not canonical JSON")}
@@ -27,29 +27,53 @@ defmodule VialKeeper.JSON.Canonical do
 
   defp encode_value(value) when is_float(value), do: encode_float(value)
 
-  defp encode_value(value) when is_binary(value),
-    do: JSON.encode_to_iodata!(value) |> IO.iodata_to_binary()
+  defp encode_value(value) when is_binary(value), do: JSON.encode_to_iodata!(value)
 
   defp encode_value(value) when is_list(value),
-    do: ["[", Enum.intersperse(Enum.map(value, &encode_value/1), ","), "]"] |> IO.iodata_to_binary()
+    do: [?[, Enum.map_intersperse(value, ?,, &encode_value/1), ?]]
 
   defp encode_value(value) when is_map(value) do
-    members =
-      value
-      |> Map.to_list()
-      |> Enum.map(fn
-        {key, member} when is_binary(key) -> {utf16_key(key), key, member}
-        {_key, _member} -> raise ArgumentError
-      end)
-      |> Enum.sort_by(fn {sort_key, _key, _member} -> sort_key end)
-      |> Enum.map(fn {_sort_key, key, member} ->
-        [JSON.encode_to_iodata!(key), ":", encode_value(member)]
-      end)
-
-    ["{", Enum.intersperse(members, ","), "}"] |> IO.iodata_to_binary()
+    [?{, encode_object_members(Map.to_list(value)), ?}]
   end
 
   defp encode_value(_), do: raise(ArgumentError)
+
+  defp encode_object_members(pairs) do
+    # RFC 8785 compares names as UTF-16 code units. ASCII names have the same
+    # order as their UTF-8 bytes, so those objects skip the UTF-16 copies.
+    if ascii_keys?(pairs) do
+      pairs
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.map_intersperse(?,, &encode_member/1)
+    else
+      pairs
+      |> Enum.map(&utf16_sort_pair/1)
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.map_intersperse(?,, fn {_sort_key, pair} -> encode_member(pair) end)
+    end
+  end
+
+  defp encode_member({key, member}) when is_binary(key),
+    do: [JSON.encode_to_iodata!(key), ?:, encode_value(member)]
+
+  defp encode_member(_pair), do: raise(ArgumentError)
+
+  defp utf16_sort_pair({key, member}) when is_binary(key),
+    do: {utf16_key(key), {key, member}}
+
+  defp utf16_sort_pair(_pair), do: raise(ArgumentError)
+
+  defp ascii_keys?([]), do: true
+
+  defp ascii_keys?([{key, _member} | rest]) when is_binary(key) do
+    ascii_string?(key) and ascii_keys?(rest)
+  end
+
+  defp ascii_keys?(_pairs), do: raise(ArgumentError)
+
+  defp ascii_string?(<<>>), do: true
+  defp ascii_string?(<<byte, rest::binary>>) when byte <= 127, do: ascii_string?(rest)
+  defp ascii_string?(_binary), do: false
 
   defp utf16_key(key), do: :unicode.characters_to_binary(key, :utf8, {:utf16, :big})
 
