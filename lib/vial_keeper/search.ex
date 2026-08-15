@@ -7,6 +7,7 @@ defmodule VialKeeper.Search do
   a disposable cache under the bundle `tmp/` directory.
   """
 
+  alias VialKeeper.Config
   alias VialKeeper.Domain.Revision
   alias VialKeeper.MapAccess
   alias VialKeeper.Search.{Owner, Supervisor}
@@ -108,7 +109,7 @@ defmodule VialKeeper.Search do
 
   defp call_existing(uuid, tmp_path, context, request) do
     case Owner.whereis(uuid) do
-      pid when is_pid(pid) -> GenServer.call(pid, request)
+      pid when is_pid(pid) -> GenServer.call(pid, request, call_timeout(request))
       :undefined -> call_if_persisted(tmp_path, context, request)
     end
   end
@@ -127,7 +128,17 @@ defmodule VialKeeper.Search do
   defp call(%BackendContext{} = context, request) do
     with {:ok, uuid, tmp_path} <- session(context),
          {:ok, pid} <- ensure_owner(uuid, tmp_path) do
-      GenServer.call(pid, request)
+      GenServer.call(pid, request, call_timeout(request))
+    end
+  end
+
+  defp call_timeout({:rebuild, _index_id, _definition, _documents}),
+    do: Config.search_rebuild_timeout_ms()
+
+  defp call_timeout(_request) do
+    case Config.host_limits()[:max_query_execution_ms] do
+      timeout when is_integer(timeout) and timeout > 0 -> timeout
+      _ -> 5_000
     end
   end
 

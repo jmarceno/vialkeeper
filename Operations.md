@@ -604,6 +604,8 @@ Important `[limits]` keys (see `priv/host.toml` for defaults):
 - Materialized-view ceilings
 - `max_request_bytes`, `max_document_bytes`, `max_document_id_bytes`
 - `max_bulk_operations`, `max_changes_batch`, `max_query_results`
+- `max_query_execution_ms` — ceiling for one query (default `5000`)
+- `max_search_rebuild_ms` — ceiling for one full-text index rebuild on `create_index` / `rebuild_index` (default `300000`, five minutes). Raise this for large corpora; it is independent of the query budget. Restart after editing `host.toml`.
 - `max_json_nesting_depth`
 - Attachment size and concurrency ceilings
 
@@ -717,6 +719,34 @@ OTLP collection is configured via `otlp_endpoint` only.
 [ ] Point otlp_endpoint only if a collector is ready
 [ ] Prefer Diagnostics.runtime/0 + integrity-check for support dumps
 ```
+
+## Dataset-backed benchmarks
+
+TREC-COVID FTS, PMC stress, and Open Images torture are opt-in Mix commands.
+They are not part of the release or the ExUnit gate. All source objects,
+generated manifests, work databases, caches, and reports stay under a
+mandatory external root. The standard location is
+`/mnt/other/downloads/vialkeeper/`. The repository, `/tmp`, `$HOME`, and the
+current working directory are rejected.
+
+First-use workflow:
+
+```sh
+mix bench.data configure --root /mnt/other/downloads/vialkeeper
+mix bench.data status
+mix bench.data prepare trec-covid
+mix bench.fts
+```
+
+`status` prints free space and each dataset's expected source size, local
+size, and estimated VialKeeper working space (source plus a second copy
+inside bundles, plus a 10 GiB / 15% reserve). PMC and Open Images standard
+profiles are tens of gigabytes; use `--profile smoke` for a tiny pinned
+subset of the same code path.
+
+Prepare and the runners do not accept `--root`. Cleanup is one named dataset
+at a time (`mix bench.data clean trec-covid`). Details, Git vs external
+files, and the other two suites: [bench/README.md](bench/README.md).
 
 ## Replacing the storage backend
 

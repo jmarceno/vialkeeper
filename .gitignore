@@ -13,6 +13,10 @@ erl_crash.dump
 /config/*.secret.exs
 .elixir_ls/
 
+# Repo-local pointer to the external benchmark data root. Dataset bytes,
+# generated manifests, and reports stay outside the checkout.
+.vialkeeper-bench-root
+
 # Local browser/test artifacts and agent state
 **/.playwright-cli/
 **/playwright/

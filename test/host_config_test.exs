@@ -204,10 +204,19 @@ defmodule VialKeeper.HostConfigTest do
     limits = Keyword.get(config, :host_limits) |> Map.new()
     assert limits[:max_open_databases] == 32
     assert limits[:admission_limit] == 128
+    assert limits[:max_search_rebuild_ms] == 300_000
 
     policy = Keyword.get(config, :admission_policy) |> Map.new()
     assert policy[:foreground_weight] == 8
     assert policy[:foreground_reserved_slots] == 1
+  end
+
+  test "max_search_rebuild_ms override is loaded into host_limits", %{dir: dir} do
+    write_config(dir, "[limits]\nmax_search_rebuild_ms = 60000\n")
+
+    assert {:ok, config} = HostConfig.load_from(dir)
+    limits = Keyword.get(config, :host_limits) |> Map.new()
+    assert limits[:max_search_rebuild_ms] == 60_000
   end
 
   test "auth enabled with empty tokens is rejected", %{dir: dir} do

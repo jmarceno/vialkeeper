@@ -76,6 +76,20 @@ defmodule VialKeeper.Config do
     end
   end
 
+  @doc """
+  Host ceiling for one full-text posting-list rebuild (`create_index` / `rebuild_index`).
+
+  Distinct from `max_query_execution_ms`: a rebuild walks every winning document.
+  Operators raise `[limits].max_search_rebuild_ms` in `host.toml` for large corpora.
+  """
+  @spec search_rebuild_timeout_ms() :: pos_integer()
+  def search_rebuild_timeout_ms do
+    case host_limits()[:max_search_rebuild_ms] do
+      timeout when is_integer(timeout) and timeout > 0 -> timeout
+      _ -> 300_000
+    end
+  end
+
   @spec database_root() :: binary()
   def database_root,
     do: Application.get_env(:vial_keeper, :database_root, Path.expand("data", File.cwd!()))

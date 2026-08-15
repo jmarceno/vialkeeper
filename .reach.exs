@@ -80,7 +80,8 @@
       "VialKeeper.Replication.BlobRepresentationStream",
       "VialKeeper.Replication.ZstdFrame"
     ],
-    observability: "VialKeeper.Observability.*"
+    observability: "VialKeeper.Observability.*",
+    bench: ["VialKeeper.Bench", "VialKeeper.Bench.*"]
   ],
   deps: [
     forbidden: [
@@ -88,13 +89,19 @@
       {:core, :runtime},
       {:core, :storage},
       {:core, :sqlite_backend},
+      {:core, :bench},
       {:storage, :transport},
       {:storage, :sqlite_backend},
+      {:storage, :bench},
       {:runtime, :transport},
       {:runtime, :sqlite_backend},
+      {:runtime, :bench},
       {:application, :sqlite_backend},
+      {:application, :bench},
       {:transport, :sqlite_backend},
-      {:observability, :sqlite_backend}
+      {:transport, :bench},
+      {:observability, :sqlite_backend},
+      {:observability, :bench}
     ]
   ],
   calls: [

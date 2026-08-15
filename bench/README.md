@@ -1,8 +1,113 @@
 # VialKeeper performance benchmarks
 
-Two opt-in runners live here. They are separate from the normal ExUnit gate:
+Opt-in runners live here. They are separate from the normal ExUnit gate:
 numbers are useful for trend detection, but they are not stable enough to make
 every developer test run fail.
+
+There are two families:
+
+- **Synthetic product and ExQLite controls** — small isolated databases under
+  a temporary root, JSON reports under `output/`. See the sections below.
+- **Dataset-backed suites** — TREC-COVID FTS, PMC stress, and Open Images
+  torture. Source data, generated manifests, work databases, caches, and
+  reports live only under a mandatory external root
+  (`/mnt/other/downloads/vialkeeper/` by default). Nothing from those suites is
+  committed to Git.
+
+## Dataset-backed suites
+
+These Mix aliases always run with `--no-start` in `MIX_ENV=test`:
+
+| Alias | Measures | Standard scale |
+| --- | --- | --- |
+| `mix bench.fts` | TREC-COVID / BEIR full-text ingest, index build, nDCG/recall/MAP, first-pass and warm latency (`any`/`all`/`prefix`, concurrency 1/4/16) | 171K documents, 50 official queries |
+| `mix bench.stress` | PMC catalog-path ingest, FTS, attachment reads, mixed load | 100K articles plus a 20 GiB attachment budget (10 GiB PDF / 5 GiB image / 5 GiB supplement) |
+| `mix bench.torture` | Open Images attachment ingest, concurrent read/write, dedup, delete/GC, mixed torture | 100K JPEGs |
+
+`--profile smoke` prepares a handful of pinned objects so the same code path
+can be checked without downloading the 100K corpora. Quality metrics are
+informational; they are not CI pass/fail thresholds.
+
+Dataset-backed Mix runners raise host limits for the process, including
+`max_search_rebuild_ms` (one hour) so a 171K-document `create_index` is not
+killed by the interactive query budget. Production operators set
+`[limits].max_search_rebuild_ms` in `host.toml` and restart.
+
+### Why the data root is mandatory
+
+A full PMC or Open Images fixture is tens of gigabytes of source objects plus
+a second copy inside VialKeeper bundles (SQLite, CAS blobs, FTS postings).
+Budget **source bytes + generated working space + max(10 GiB, 15%)** before
+`prepare`. There is no fallback to the repository, `bench/`, `output/`,
+`tmp/`, `/tmp`, `$HOME`, or the current working directory.
+
+The approved parent is `/mnt/other/downloads/`. The standard root is:
+
+```text
+/mnt/other/downloads/vialkeeper/
+  .vialkeeper-bench-root.json
+  datasets/     # prepared fixtures (trec-covid/v1, pmc/100k-v1, open-images/v7-100k-v1)
+  staging/      # incomplete downloads
+  work/         # per-run VialKeeper databases
+  cache/        # archive and inventory cache
+  reports/      # small JSON reports
+```
+
+The checkout only stores a gitignored pointer, `.vialkeeper-bench-root`, that
+must match the destination marker UUID.
+
+### Configure, status, prepare, run, clean
+
+```sh
+mix bench.data configure --root /mnt/other/downloads/vialkeeper
+# attaching a second checkout to an already-marked root:
+mix bench.data configure --root /mnt/other/downloads/vialkeeper --reuse-existing
+
+mix bench.data status
+
+mix bench.data prepare trec-covid
+mix bench.data prepare pmc                 # standard 100K; first use freezes an inventory snapshot
+mix bench.data prepare pmc --profile smoke
+mix bench.data prepare open-images
+mix bench.data prepare open-images --profile smoke
+
+mix bench.fts
+mix bench.stress --profile smoke
+mix bench.torture --profile smoke
+
+mix bench.data clean trec-covid
+mix bench.data clean pmc
+mix bench.data clean open-images
+```
+
+`configure` is the only command that accepts `--root`. Status, prepare, clean,
+and the runners read the pointer. Cleanup removes one named dataset directory
+under `datasets/`; there is no `clean all`, and the tools never `rm -rf` the
+benchmark root.
+
+Re-running `prepare` on a READY fixture is a no-op. Interrupted downloads stay
+as `.part` files in `staging/` or `cache/` until that object is completed.
+
+### What Git contains vs what is downloaded
+
+Committed:
+
+- `bench/support/*.ex` — root safety, downloader, registry, BEIR metrics, runners
+- `bench/datasets.exs`, `bench/fts_benchmark.exs`, `bench/pmc_stress_benchmark.exs`,
+  `bench/open_images_torture_benchmark.exs`
+- `test/bench/*_test.exs` — tiny local HTTP fixtures; no live dataset downloads
+
+Not committed (created under the external root on first use):
+
+- TREC-COVID zip, extracted corpus/queries/qrels, generated `manifest.json`
+- PMC inventory snapshot, metadata JSON, article text/PDF/media, generated manifest
+- Open Images image-info CSV, selected JPEG bytes, generated manifest
+- work databases, CAS blobs, caches, staging, reports
+
+The registry pins source URLs, checksums (TREC MD5
+`ce62140cb23feb9becf6270d0d1fe6d1`, 73876720 bytes), and selection algorithms
+(`SHA256("vialkeeper-open-images-v7-100k-v1:" <> image_id)` for Open Images).
+It does not embed corpus bytes or ID lists.
 
 ## Product storage benchmarks
 

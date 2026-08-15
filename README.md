@@ -765,7 +765,8 @@ Public errors use stable codes (`revision_conflict`, `database_overloaded`,
 Host ceilings live in `host.toml` `[limits]`. Per-database config
 (`GET`/`PUT /v1/databases/:uuid/config`) can only be **more** restrictive.
 Common caps: document size, query results, changes batch, attachment size,
-subscription membership, view counts. Open disk databases serve classified
+subscription membership, view counts, and full-text rebuild duration
+(`max_search_rebuild_ms` in `[limits]`). Open disk databases serve classified
 reads from a bounded snapshot pool (`read_pool_size` / `read_queue_limit`);
 writes stay on one owner connection.
 
@@ -833,3 +834,4 @@ selected-backend / protocol versions from the assembled BEAMs.
 
 Operator runbook: [Operations.md](Operations.md). SQLite backend layout and
 controls: [lib/vial_keeper/storage/sqlite/BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).
+Dataset-backed FTS, PMC, and Open Images benchmarks: [bench/README.md](bench/README.md).

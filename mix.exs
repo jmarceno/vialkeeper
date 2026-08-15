@@ -27,13 +27,18 @@ defmodule VialKeeper.MixProject do
     ]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(:test), do: ["lib", "test/support", "bench/support"]
+  defp elixirc_paths(:dev), do: ["lib", "bench/support"]
   defp elixirc_paths(_), do: ["lib"]
 
   def cli do
     [
       preferred_envs: [
         bench: :test,
+        "bench.data": :test,
+        "bench.fts": :test,
+        "bench.stress": :test,
+        "bench.torture": :test,
         "bench.overhead": :prod,
         "check.fast": :test,
         "check.integration": :test,
@@ -127,6 +132,10 @@ defmodule VialKeeper.MixProject do
         "dialyzer"
       ],
       bench: ["run --no-start bench/product_benchmark.exs"],
+      "bench.data": ["run --no-start bench/datasets.exs"],
+      "bench.fts": ["run --no-start bench/fts_benchmark.exs"],
+      "bench.stress": ["run --no-start bench/pmc_stress_benchmark.exs"],
+      "bench.torture": ["run --no-start bench/open_images_torture_benchmark.exs"],
       "bench.overhead": ["run --no-start bench/sqlite_exqlite_overhead_benchmark.exs"],
       "bench.replication": ["run --no-start bench/replication_wire_benchmark.exs"],
       "release.build": ["deps.get", "compile", "release --overwrite"]
