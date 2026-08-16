@@ -25,7 +25,7 @@ defmodule VialKeeper.HTTP.Schemas do
 
   @database_create ["path", "config"]
   @database_register ["path"]
-  @index_create ["name", "type", "fields", "tokenization"]
+  @index_create ["name", "type", "fields"]
 
   @query [
     "selector",

@@ -13,6 +13,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
   @behaviour VialKeeper.Storage.Ports.IndexCandidates
 
   alias VialKeeper.JSON.StrictCache
+  alias VialKeeper.Config
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.SQLite
   alias VialKeeper.Query.{Executor, Ordering, Plan}
@@ -120,6 +121,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
          :ok <- Executor.check_deadline(deadline),
          {:ok, hits} <- search_hits(context, metadata, text, to_string(mode)),
          hits <- page_hits(hits, request),
+         :ok <- enforce_full_text_candidate_bound(hits, request),
          :ok <- Executor.check_deadline(deadline),
          {:ok, rows} <- hydrate_hits(adapter, hits, deadline) do
       {:ok, Enum.map(rows, &public_candidate/1)}
@@ -476,6 +478,25 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
     else
       hits
     end
+  end
+
+  defp enforce_full_text_candidate_bound(hits, request) do
+    if full_text_requires_post_filter?(request) and
+         length(hits) > Config.search_candidate_limit() do
+      {:error,
+       VialKeeper.Error.resource_limit(
+         "full-text candidate set exceeds the configured bound",
+         %{candidate_limit: Config.search_candidate_limit()}
+       )}
+    else
+      :ok
+    end
+  end
+
+  defp full_text_requires_post_filter?(request) do
+    not blank_filter?(MapAccess.get(request, :selector)) or
+      not is_nil(MapAccess.get(request, :predicate)) or
+      MapAccess.get(request, :sort, []) not in [nil, []]
   end
 
   defp pageable_full_text?(sort, request, limit)

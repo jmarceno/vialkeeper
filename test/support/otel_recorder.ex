@@ -42,6 +42,8 @@ defmodule VialKeeper.Observability.TestExporter do
   @span_span_id 2
   @span_parent_span_id 4
   @span_name 6
+  @span_start_time 8
+  @span_end_time 9
   @span_attributes 10
   @span_status 13
 
@@ -139,6 +141,8 @@ defmodule VialKeeper.Observability.TestExporter do
         trace_id: record_field(span, @span_trace_id),
         span_id: record_field(span, @span_span_id),
         parent_span_id: record_field(span, @span_parent_span_id),
+        start_time: record_field(span, @span_start_time),
+        end_time: record_field(span, @span_end_time),
         attributes: record_field(span, @span_attributes),
         status: record_field(span, @span_status)
       }

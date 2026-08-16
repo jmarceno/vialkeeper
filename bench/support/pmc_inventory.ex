@@ -7,11 +7,13 @@ defmodule VialKeeper.Bench.PmcInventory do
   """
 
   alias VialKeeper.Bench.{Downloader, Pmc, Registry, Root}
+  alias VialKeeper.Runtime.AtomicWrite
 
   @list_url "https://pmc-oa-opendata.s3.amazonaws.com/?list-type=2&prefix=inventory-reports/pmc-oa-opendata/metadata/&delimiter=/"
   @https "https://pmc-oa-opendata.s3.amazonaws.com"
   @overscan 300_000
-  @fetch_concurrency 8
+  @fetch_concurrency 16
+  @metadata_batch_size 1_024
 
   @spec generate(Root.t(), map(), keyword()) :: {:ok, map()} | {:error, binary()}
   def generate(%Root{} = context, spec, opts) do
@@ -22,14 +24,61 @@ defmodule VialKeeper.Bench.PmcInventory do
          :ok <- File.mkdir_p(cache),
          {:ok, snapshot, files} <- freeze_snapshot(context, cache, opts),
          :ok <- download_inventory_files(context, cache, files, download, opts),
+         :ok <- Downloader.ensure_started(),
          keys <- collect_keys(cache, files),
-         selected <- Pmc.select_inventory_keys(keys, spec, min(@overscan, max(count * 3, count))),
-         {:ok, rows} <- fetch_metadata(context, cache, selected, download, opts),
+         {:ok, selected} <- selected_keys(context, cache, keys, spec, count),
+         {:ok, rows} <- fetch_metadata(context, cache, selected, spec, count, download, opts),
          :ok <- enough_rows(rows, count) do
       spec = Map.put(spec, "inventory_snapshot", snapshot)
       {:ok, Pmc.generate_manifest(rows, spec, count)}
     end
   end
+
+  defp selected_keys(context, cache, keys, spec, count) do
+    path = Path.join(cache, "selected-keys.json")
+
+    case read_selected_keys(path) do
+      {:ok, selected} ->
+        {:ok, selected}
+
+      :missing_or_invalid ->
+        selected = Pmc.select_inventory_keys(keys, spec, min(@overscan, max(count * 3, count)))
+        payload = JSON.encode!(selected) <> "\n"
+
+        if Root.descendant?(path, context.root) do
+          case AtomicWrite.write(path, payload) do
+            :ok -> {:ok, selected}
+            {:error, reason} -> {:error, "failed to cache selected PMC keys: #{inspect(reason)}"}
+          end
+        else
+          {:error, "selected PMC key cache escapes benchmark root"}
+        end
+    end
+  end
+
+  defp read_selected_keys(path) do
+    case File.read(path) do
+      {:ok, body} ->
+        case JSON.decode(body) do
+          {:ok, selected} when is_list(selected) ->
+            if Enum.all?(selected, &valid_selected_key?/1),
+              do: {:ok, selected},
+              else: :missing_or_invalid
+
+          _ ->
+            :missing_or_invalid
+        end
+
+      {:error, _reason} ->
+        :missing_or_invalid
+    end
+  end
+
+  defp valid_selected_key?(%{"key" => key, "pmcid" => pmcid, "version" => version})
+       when is_binary(key) and is_binary(pmcid) and is_integer(version),
+       do: true
+
+  defp valid_selected_key?(_), do: false
 
   defp enough_rows(rows, count) do
     if length(rows) < count do
@@ -156,32 +205,67 @@ defmodule VialKeeper.Bench.PmcInventory do
     |> Stream.flat_map(&Pmc.inventory_keys/1)
   end
 
-  defp fetch_metadata(context, cache, keys, download, opts) do
+  defp fetch_metadata(context, cache, keys, spec, count, download, opts) do
     meta_dir = Path.join(cache, "metadata")
     :ok = File.mkdir_p(meta_dir)
+    prefixes = spec["approved_license_prefixes"] || ["CC "]
 
     rows =
+      keys
+      |> Enum.chunk_every(@metadata_batch_size)
+      |> Enum.reduce_while({[], 0}, fn batch, {batches, eligible} ->
+        case fetch_metadata_batch(context, meta_dir, batch, download, opts) do
+          {:ok, batch_rows} ->
+            batch_eligible = Enum.count(batch_rows, &Pmc.selectable?(&1, prefixes))
+            next = {[batch_rows | batches], eligible + batch_eligible}
+
+            if eligible + batch_eligible >= count, do: {:halt, next}, else: {:cont, next}
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end)
+
+    case rows do
+      {:error, reason} -> {:error, reason}
+      {batches, _eligible} -> {:ok, batches |> Enum.reverse() |> List.flatten()}
+    end
+  end
+
+  defp fetch_metadata_batch(context, meta_dir, keys, download, opts) do
+    result =
       keys
       |> Task.async_stream(
         fn key -> fetch_one(context, meta_dir, key, download, opts) end,
         max_concurrency: @fetch_concurrency,
         timeout: :infinity,
-        ordered: true
+        ordered: false
       )
       |> Enum.reduce_while([], fn
-        {:ok, {:ok, row}}, acc -> {:cont, [row | acc]}
-        {:ok, :skip}, acc -> {:cont, acc}
-        {:ok, {:error, reason}}, _acc -> {:halt, {:error, reason}}
-        {:exit, reason}, _acc -> {:halt, {:error, "PMC metadata fetch crashed: #{inspect(reason)}"}}
+        {:ok, {:ok, row}}, acc ->
+          {:cont, [row | acc]}
+
+        {:ok, :skip}, acc ->
+          {:cont, acc}
+
+        {:ok, {:error, reason}}, _acc ->
+          {:halt, {:error, reason}}
+
+        {:exit, reason}, _acc ->
+          {:halt, {:error, "PMC metadata fetch crashed: #{inspect(reason)}"}}
       end)
 
-    case rows do
+    case result do
       {:error, reason} -> {:error, reason}
-      list -> {:ok, Enum.reverse(list)}
+      rows -> {:ok, rows}
     end
   end
 
   defp fetch_one(context, meta_dir, key, download, opts) do
+    fetch_one(context, meta_dir, key, download, opts, 0)
+  end
+
+  defp fetch_one(context, meta_dir, key, download, opts, attempt) do
     dest = Path.join(meta_dir, Path.basename(key["key"]))
 
     result =
@@ -192,8 +276,25 @@ defmodule VialKeeper.Bench.PmcInventory do
       end
 
     case result do
-      :ok -> decode_metadata_file(dest)
-      {:error, reason} -> {:error, reason}
+      :ok ->
+        decode_metadata_file(dest)
+
+      {:error, reason} ->
+        retry_or_skip_metadata(context, meta_dir, key, download, opts, attempt, reason)
+    end
+  end
+
+  defp retry_or_skip_metadata(context, meta_dir, key, download, opts, attempt, reason) do
+    cond do
+      is_binary(reason) and String.contains?(reason, "HTTP 404") ->
+        :skip
+
+      attempt < 4 ->
+        Process.sleep(250 * (attempt + 1))
+        fetch_one(context, meta_dir, key, download, opts, attempt + 1)
+
+      true ->
+        {:error, reason}
     end
   end
 

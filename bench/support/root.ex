@@ -14,6 +14,7 @@ defmodule VialKeeper.Bench.Root do
   alias VialKeeper.UUID
 
   @approved_parent "/mnt/other/downloads"
+  @default_root "/mnt/other/downloads/vialkeeper"
   @schema_version 1
   @project "vialkeeper"
   @pointer_basename ".vialkeeper-bench-root"
@@ -42,6 +43,10 @@ defmodule VialKeeper.Bench.Root do
   @doc "Hard-coded approved parent used by production commands."
   @spec approved_parent() :: binary()
   def approved_parent, do: @approved_parent
+
+  @doc "Fixed default root used by self-contained dataset benchmark runners."
+  @spec default_root() :: binary()
+  def default_root, do: @default_root
 
   @spec pointer_basename() :: binary()
   def pointer_basename, do: @pointer_basename
@@ -89,6 +94,21 @@ defmodule VialKeeper.Bench.Root do
          :ok <- verify_marker(context),
          :ok <- verify_free_space_query(canonical, opts) do
       {:ok, context}
+    end
+  end
+
+  @doc "Loads the configured root or initializes the fixed default benchmark root."
+  @spec load_or_configure(keyword()) :: {:ok, t()} | {:error, binary()}
+  def load_or_configure(opts \\ []) when is_list(opts) do
+    case load(opts) do
+      {:ok, _context} = ok ->
+        ok
+
+      {:error, "benchmark root is not configured; run mix bench.data configure --root PATH"} ->
+        configure(@default_root, Keyword.put(opts, :reuse_existing, true))
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

@@ -184,8 +184,7 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
              VialKeeper.Query.create_index(a_uuid, %{
                "name" => "body-text",
                "type" => "full_text",
-               "fields" => ["/side"],
-               "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+               "fields" => ["/side"]
              })
 
     assert {:ok, %{documents: [projected], selected_index: ^structured_id}} =

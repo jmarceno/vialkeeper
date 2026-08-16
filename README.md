@@ -35,7 +35,7 @@ Deploy, auth, TLS, copy/move, leases, and host limits: see
 | Conflicts | Branches are kept; resolve explicitly |
 | Changes feed | Poll or NDJSON stream from a sequence |
 | Structured query | Selector predicates, sort, projection, bookmarks |
-| Full-text search | Named `full_text` indexes (`unicode_words_v1`) |
+| Full-text search | Named `full_text` indexes backed by TantivyEx |
 | Live subscriptions | NDJSON stream of matching documents |
 | Attachments | Upload bytes, reference digests on documents |
 | Replication | One-shot or continuous push/pull between databases |
@@ -266,22 +266,23 @@ direction}` objects. Full-text fields are JSON Pointers.
 ### Full-text search
 
 Create a named `full_text` index over JSON Pointers into the document body.
-`search.index` is that **name**. Tokenization is `unicode_words_v1`
-(Unicode letters and digits, case-insensitive). `diacritics` is `preserve`
-(default) or `remove`. `search.text` is ordinary words — not an engine query
+`search.index` is that **name**. Tantivy's built-in default analyzer owns
+tokenization, Unicode handling, phrase positions, prefix expansion, and
+BM25-style ranking. `search.text` is ordinary text — not an engine query
 language; punctuation is not syntax.
 
-Matching uses rebuildable Elixir posting lists (`unicode_words_v1`), not a
-SQLite FTS table. The index is reconstructed from winning documents when the
-cache under the bundle `tmp/` directory is missing, and when a client calls
-index rebuild.
+Matching uses Tantivy's native inverted index, not a SQLite FTS table or an
+Elixir tokenization layer. A rebuild writes a fresh generation under the
+bundle `tmp/search/indexes/` directory and publishes it only after commit;
+the previous generation remains searchable while the rebuild is in progress.
+Winner changes are applied as bounded Tantivy writer updates and committed
+incrementally.
 
 ```typescript
 await postJson(`/v1/databases/${uuid}/indexes`, {
   name: "body_fts",
   type: "full_text",
   fields: ["/title", "/body"],
-  tokenization: { strategy: "unicode_words_v1", diacritics: "remove" },
 });
 ```
 
@@ -316,8 +317,7 @@ const page = await postJson<{
   VialKeeper.Query.create_index(uuid, %{
     name: "body_fts",
     type: "full_text",
-    fields: ["/title", "/body"],
-    tokenization: %{strategy: "unicode_words_v1", diacritics: "remove"}
+    fields: ["/title", "/body"]
   })
 
 {:ok, %{documents: hits, examined: examined}} =

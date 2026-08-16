@@ -124,11 +124,11 @@ defmodule VialKeeper.Storage.SQLite.Indexes do
       "physical_version" => @physical_version,
       "type" => type_string(definition),
       "fields" => MapAccess.get(definition, :fields, []),
-      "tokenization" => MapAccess.get(definition, :tokenization, %{})
+      "analyzer" => "tantivy_default"
     }
 
     base = if is_binary(name), do: Map.put(base, "physical_name", name), else: base
-    base = if type(definition) == :full_text, do: Map.put(base, "engine", "ets"), else: base
+    base = if type(definition) == :full_text, do: Map.put(base, "engine", "tantivy"), else: base
     {:ok, base}
   end
 

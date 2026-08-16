@@ -12,6 +12,7 @@ defmodule VialKeeper.Bench.Downloader do
 
   @max_retries 3
   @receive_timeout 300_000
+  @pool_size 16
 
   @type object :: %{
           required(:url) => binary(),
@@ -90,8 +91,8 @@ defmodule VialKeeper.Bench.Downloader do
 
   defp retry_download(object, part, max_retries, attempt) do
     case download_once(object, part) do
-      :ok ->
-        finalize(object, part)
+      {:ok, headers} ->
+        finalize(object, part, headers)
 
       {:error, _reason} when attempt + 1 < max_retries ->
         _ = File.rm(part)
@@ -112,7 +113,8 @@ defmodule VialKeeper.Bench.Downloader do
       offset: offset,
       part: part,
       io: nil,
-      error: nil
+      error: nil,
+      allow_html: is_binary(object[:md5]) or is_binary(object[:sha256])
     }
 
     result =
@@ -131,7 +133,7 @@ defmodule VialKeeper.Bench.Downloader do
         {:error, acc.error}
 
       acc.status in [200, 206] ->
-        :ok
+        {:ok, acc.headers}
 
       is_integer(acc.status) ->
         {:error, "download of #{object.url} returned HTTP #{acc.status}"}
@@ -180,7 +182,7 @@ defmodule VialKeeper.Bench.Downloader do
   end
 
   defp begin_body(%{status: 200} = acc, headers) do
-    with :ok <- reject_html_headers(headers),
+    with :ok <- reject_html_headers(headers, acc.allow_html),
          :ok <- reset_part(acc.part),
          {:ok, io} <- File.open(acc.part, [:write, :binary, :raw]) do
       {:ok, %{acc | io: io}}
@@ -201,11 +203,12 @@ defmodule VialKeeper.Bench.Downloader do
 
   defp close_io(acc), do: acc
 
-  defp finalize(object, part) do
+  defp finalize(object, part, headers) do
     with :ok <-
            Checksums.verify_file(part,
              md5: object[:md5],
-             expected_size: object[:expected_size]
+             expected_size: object[:expected_size],
+             etag: header(headers, "etag")
            ),
          :ok <- sync_file(part) do
       rename(part, object.dest)
@@ -245,7 +248,9 @@ defmodule VialKeeper.Bench.Downloader do
     end
   end
 
-  defp reject_html_headers(headers) do
+  defp reject_html_headers(_headers, true), do: :ok
+
+  defp reject_html_headers(headers, false) do
     case header(headers, "content-type") do
       value when is_binary(value) ->
         if String.contains?(String.downcase(value), "text/html") do
@@ -339,7 +344,7 @@ defmodule VialKeeper.Bench.Downloader do
   defp start_finch do
     case Finch.start_link(
            name: finch_name(),
-           pools: %{default: [protocols: [:http1], size: 8, count: 1]}
+           pools: %{default: [protocols: [:http1], size: @pool_size, count: 1]}
          ) do
       {:ok, _} -> :ok
       {:error, {:already_started, _}} -> :ok

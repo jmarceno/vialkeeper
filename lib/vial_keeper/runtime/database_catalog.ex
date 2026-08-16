@@ -31,8 +31,10 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   alias VialKeeper.View.Manager
   def start_link(_args), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
-  def create(relative_path, options \\ %{}),
-    do: GenServer.call(__MODULE__, {:create, relative_path, options})
+  @doc "Creates an ordinary database using the configured control-plane timeout."
+  @spec create(binary(), map(), timeout()) :: term()
+  def create(relative_path, options \\ %{}, timeout \\ VialKeeper.Config.request_timeout_ms()),
+    do: GenServer.call(__MODULE__, {:create, relative_path, options}, timeout)
 
   @doc "Creates a derived bundle through the trusted materialization boundary."
   def create_internal(relative_path, options \\ %{}),

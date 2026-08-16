@@ -20,6 +20,7 @@ defmodule VialKeeper.Benchmarks.Runner do
     :changes_read,
     :index_build,
     :indexed_query,
+    :fts_bulk_write,
     :fts_query,
     :fts_rebuild
   ]
@@ -37,14 +38,24 @@ defmodule VialKeeper.Benchmarks.Runner do
     "vial_keeper.changes.read",
     "vial_keeper.query.execute",
     "vial_keeper.index.build",
-    "vial_keeper.search.rebuild"
+    "vial_keeper.search.rebuild",
+    "vial_keeper.search.rebuild.batch",
+    "vial_keeper.search.refresh",
+    "vial_keeper.search.query",
+    "vial_keeper.sqlite.mutation.bulk.prepare",
+    "vial_keeper.sqlite.mutation.bulk.finalize",
+    "vial_keeper.sqlite.transaction.begin",
+    "vial_keeper.sqlite.transaction.commit"
   ]
   @metric_names [
     "vial_keeper.database.command.duration",
     "vial_keeper.changes.read.duration",
     "vial_keeper.query.execute.duration",
     "vial_keeper.index.build.duration",
-    "vial_keeper.search.rebuild.duration"
+    "vial_keeper.search.rebuild.duration",
+    "vial_keeper.search.rebuild.batch.duration",
+    "vial_keeper.search.refresh.duration",
+    "vial_keeper.search.query.duration"
   ]
 
   @default_iterations 15
@@ -53,6 +64,7 @@ defmodule VialKeeper.Benchmarks.Runner do
   @default_batch_size 100
   @default_read_count 100
   @default_max_regression_pct 20.0
+  @approved_benchmark_root "/mnt/other/downloads/vialkeeper"
 
   @doc false
   @spec main([binary()]) :: :ok
@@ -60,8 +72,10 @@ defmodule VialKeeper.Benchmarks.Runner do
     options = parse_options(argv)
     ensure_test_observability!()
 
-    with_isolated_runtime(fn ->
-      config = benchmark_config(options)
+    benchmark_root = benchmark_root!(options[:root])
+
+    with_isolated_runtime(benchmark_root, fn ->
+      config = benchmark_config(options, benchmark_root)
       started_at = DateTime.utc_now() |> DateTime.to_iso8601()
       modes = parse_modes(options[:mode])
       scenarios = parse_scenarios(options[:scenario])
@@ -82,7 +96,8 @@ defmodule VialKeeper.Benchmarks.Runner do
         "results" => results
       }
 
-      output = options[:output] || default_output_path()
+      output = options[:output] || default_output_path(benchmark_root)
+      ensure_output_path!(output)
       write_report(report, output)
       print_summary(report, output)
 
@@ -92,14 +107,17 @@ defmodule VialKeeper.Benchmarks.Runner do
     end)
   end
 
-  defp with_isolated_runtime(fun) do
-    root = Path.join(System.tmp_dir!(), "vialkeeper-product-benchmark-#{unique_suffix()}")
+  defp with_isolated_runtime(benchmark_root, fun) do
+    root = Path.join(benchmark_root, "work/product-runtime-#{unique_suffix()}")
     previous_root = Application.get_env(:vial_keeper, :database_root)
     previous_listener = Application.get_env(:vial_keeper, :listener)
+    previous_search_memory_root = Application.get_env(:vial_keeper, :search_memory_root)
+    search_memory_root = Path.join(root, "work/product-memory-search")
     ensure_application_stopped!()
     File.mkdir_p!(root)
     Application.put_env(:vial_keeper, :database_root, root)
     Application.put_env(:vial_keeper, :listener, ip: {127, 0, 0, 1}, port: 0)
+    Application.put_env(:vial_keeper, :search_memory_root, search_memory_root)
 
     try do
       {:ok, _started} = Application.ensure_all_started(:vial_keeper)
@@ -108,6 +126,7 @@ defmodule VialKeeper.Benchmarks.Runner do
       _ = Application.stop(:vial_keeper)
       restore_application_env(:database_root, previous_root)
       restore_application_env(:listener, previous_listener)
+      restore_application_env(:search_memory_root, previous_search_memory_root)
       _ = File.rm_rf(root)
     end
   end
@@ -135,6 +154,7 @@ defmodule VialKeeper.Benchmarks.Runner do
           batch: :integer,
           reads: :integer,
           output: :string,
+          root: :string,
           baseline: :string,
           max_regression: :float,
           help: :boolean
@@ -154,7 +174,7 @@ defmodule VialKeeper.Benchmarks.Runner do
     options
   end
 
-  defp benchmark_config(options) do
+  defp benchmark_config(options, benchmark_root) do
     iterations =
       positive_option(options, :iterations, "VIALKEEPER_BENCH_ITERATIONS", @default_iterations)
 
@@ -184,7 +204,8 @@ defmodule VialKeeper.Benchmarks.Runner do
       "dataset_size" => dataset_size,
       "batch_size" => batch_size,
       "read_count" => read_count,
-      "max_regression_pct" => max_regression_pct
+      "max_regression_pct" => max_regression_pct,
+      "benchmark_root" => benchmark_root
     }
   end
 
@@ -571,7 +592,10 @@ defmodule VialKeeper.Benchmarks.Runner do
 
   defp with_adapter(:disk, fun) do
     path =
-      Path.join(System.tmp_dir!(), "vialkeeper-benchmark-#{System.unique_integer([:positive])}.db")
+      Path.join(
+        Application.fetch_env!(:vial_keeper, :database_root),
+        "work/product-adapter-#{System.unique_integer([:positive])}/database.sqlite3"
+      )
 
     case Adapter.create(path, %{storage_mode: :disk}) do
       {:ok, adapter} ->
@@ -589,7 +613,7 @@ defmodule VialKeeper.Benchmarks.Runner do
   end
 
   defp setup_scenario(adapter, uuid, scenario, config)
-       when scenario in [:fts_query, :fts_rebuild] do
+       when scenario in [:fts_bulk_write, :fts_query, :fts_rebuild] do
     seed_documents(
       adapter,
       uuid,
@@ -640,6 +664,24 @@ defmodule VialKeeper.Benchmarks.Runner do
     end
 
     {batch_size, operation, &noop_cleanup/1, %{"batch_size" => batch_size}}
+  end
+
+  defp scenario_operation(adapter, uuid, :fts_bulk_write, config) do
+    batch_size = config["batch_size"]
+
+    operation = fn token ->
+      operations =
+        Enum.map(0..(batch_size - 1), fn offset ->
+          fts_put_operation("bench-#{phase_name(token)}-#{token_number(token)}-#{offset}", offset)
+        end)
+
+      observable_command(uuid, {:command, :bulk_write, %{operations: operations}}, fn ->
+        Adapter.apply_bulk_mutation(adapter, %{operations: operations})
+      end)
+    end
+
+    {batch_size, operation, &noop_cleanup/1,
+     %{"batch_size" => batch_size, "index" => @fts_index_name, "operation" => "bulk_write"}}
   end
 
   defp scenario_operation(adapter, uuid, :point_read, config) do
@@ -789,8 +831,7 @@ defmodule VialKeeper.Benchmarks.Runner do
     %{
       "name" => name,
       "type" => "full_text",
-      "fields" => ["/text"],
-      "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+      "fields" => ["/text"]
     }
   end
 
@@ -897,14 +938,24 @@ defmodule VialKeeper.Benchmarks.Runner do
   end
 
   defp reset_observability do
+    flush_traces()
     VialKeeper.Observability.TestExporter.reset()
     VialKeeper.Observability.TestMetricExporter.reset()
   end
 
   defp flush_metrics do
+    flush_traces()
     deadline = System.monotonic_time(:millisecond) + 1_000
 
     wait_for_metrics(deadline)
+  end
+
+  defp flush_traces do
+    if Code.ensure_loaded?(:otel_tracer_provider) do
+      _ = :otel_tracer_provider.force_flush()
+    end
+
+    Process.sleep(5)
   end
 
   defp wait_for_metrics(deadline) do
@@ -928,12 +979,43 @@ defmodule VialKeeper.Benchmarks.Runner do
         Map.new(@span_names, fn name ->
           {name, length(VialKeeper.Observability.TestExporter.spans_named(name))}
         end),
+      "span_summaries" =>
+        Map.new(@span_names, fn name ->
+          {name, span_summary(VialKeeper.Observability.TestExporter.spans_named(name))}
+        end),
       "metric_datapoint_counts" =>
         Map.new(@metric_names, fn name ->
           {name, length(VialKeeper.Observability.TestMetricExporter.datapoints(name))}
         end)
     }
   end
+
+  defp span_summary(spans) do
+    durations =
+      spans
+      |> Enum.map(&span_duration_us/1)
+      |> Enum.filter(&is_integer/1)
+
+    case durations do
+      [] ->
+        %{"count" => 0, "total_us" => 0, "max_us" => 0, "mean_us" => 0.0}
+
+      values ->
+        %{
+          "count" => length(values),
+          "total_us" => Enum.sum(values),
+          "max_us" => Enum.max(values),
+          "mean_us" => Float.round(Enum.sum(values) / length(values), 2)
+        }
+    end
+  end
+
+  defp span_duration_us(%{start_time: start_time, end_time: end_time})
+       when is_integer(start_time) and is_integer(end_time) and end_time >= start_time do
+    System.convert_time_unit(end_time - start_time, :native, :microsecond)
+  end
+
+  defp span_duration_us(_span), do: nil
 
   defp ensure_test_observability! do
     unless Code.ensure_loaded?(VialKeeper.Observability.TestExporter) and
@@ -1151,9 +1233,38 @@ defmodule VialKeeper.Benchmarks.Runner do
     end
   end
 
-  defp default_output_path do
+  defp default_output_path(benchmark_root) do
     timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%dT%H%M%SZ")
-    Path.join("output/benchmarks", "vialkeeper-#{timestamp}.json")
+    Path.join(benchmark_root, "reports/product-vialkeeper-#{timestamp}.json")
+  end
+
+  defp benchmark_root!(nil),
+    do: Path.join(@approved_benchmark_root, "work/product-benchmark-#{unique_suffix()}")
+
+  defp benchmark_root!(root) when is_binary(root) do
+    root = Path.expand(root)
+
+    if not Enum.any?(Path.split(root), &(&1 in [".", ".."])) and
+         VialKeeper.PathSafety.within_root?(root, @approved_benchmark_root) and
+         VialKeeper.PathSafety.no_symlink_components?(root) do
+      root
+    else
+      Mix.raise("benchmark root must be a non-symlink descendant of #{@approved_benchmark_root}")
+    end
+  end
+
+  defp ensure_output_path!(path) do
+    if path == "-", do: :ok, else: ensure_output_path_under_root!(path)
+  end
+
+  defp ensure_output_path_under_root!(path) do
+    path = Path.expand(path)
+
+    if VialKeeper.PathSafety.within_root?(path, @approved_benchmark_root) do
+      :ok
+    else
+      Mix.raise("benchmark output must be under #{@approved_benchmark_root}")
+    end
   end
 
   defp cleanup_database(path) do
@@ -1193,7 +1304,9 @@ defmodule VialKeeper.Benchmarks.Runner do
       --dataset N                     Seeded documents (default: 500)
       --batch N                       Bulk/changes batch size (default: 100, max: 500)
       --reads N                       Point reads per measured sample (default: 100)
-      --output PATH                   JSON report path (default: output/benchmarks/...json)
+      --root PATH                     External benchmark root under #{@approved_benchmark_root}
+                                      (default: a unique work directory there)
+      --output PATH                   JSON report path under the approved root
       --baseline PATH                 Compare median latency against a prior report
       --max-regression PCT            Allowed median regression (default: 20)
 

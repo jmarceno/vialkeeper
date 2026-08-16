@@ -27,7 +27,8 @@ defmodule VialKeeper.Observability.Attributes do
   and the bounded remote-wire dimensions `direction` (`:egress` | `:ingress`),
   `payload_kind` (`:json` | `:blob`), `endpoint_kind` (`:remote`), `encoding`
   and `blob_encoding` (`:zstd` | `:raw`), and `operation`
-  (`:compress` | `:decompress`).
+  (`:compress` | `:decompress`), `search_mode` (`all` | `any` | `phrase` |
+  `prefix`), and `backend` (`:tantivy`).
 
   ## Forbidden (enforced by absence)
 
@@ -95,6 +96,8 @@ defmodule VialKeeper.Observability.Attributes do
     encoding: :encoding,
     blob_encoding: :blob_encoding,
     operation: :operation,
+    search_mode: :search_mode,
+    backend: :backend,
     event_type: :event_type,
     admission_class: :"admission.class",
     queue_depth_at_enqueue: :queue_depth_at_enqueue,

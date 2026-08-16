@@ -27,6 +27,17 @@ defmodule VialKeeper.Storage.SQLite.Changes do
     end
   end
 
+  @doc "Returns the current committed mutation sequence."
+  @spec current_sequence(Connection.handle()) ::
+          {:ok, non_neg_integer()} | {:error, VialKeeper.Error.t()}
+  def current_sequence(conn) do
+    case Connection.query(conn, "SELECT current_sequence FROM db_meta WHERE id = 1") do
+      {:ok, [[sequence]]} when is_integer(sequence) and sequence >= 0 -> {:ok, sequence}
+      {:ok, _} -> {:error, VialKeeper.Error.integrity_violation("current sequence is invalid")}
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
   @doc "Allocates one contiguous sequence range for a bulk mutation."
   @spec allocate_sequences(Connection.handle(), non_neg_integer()) ::
           {:ok, [integer()]} | {:error, VialKeeper.Error.t()}

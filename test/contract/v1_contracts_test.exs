@@ -4,7 +4,6 @@ defmodule VialKeeper.Contract.V1ContractsTest do
   alias VialKeeper.Domain.ReplicationEndpoint
   alias VialKeeper.JSON.{Canonical, Pointer, StrictDecoder}
   alias VialKeeper.Query.{BookmarkCodec, Normalizer}
-  alias VialKeeper.Query.FullText
   alias VialKeeper.Replication.Id
 
   test "strict JSON enforces duplicate keys, UTF-8, depth, and binary64 integers" do
@@ -231,10 +230,5 @@ defmodule VialKeeper.Contract.V1ContractsTest do
              retryable: true,
              details: %{database_uuid: "db-uuid", history_epoch: "epoch"}
            } = VialKeeper.Error.public(error)
-  end
-
-  test "unicode_words_v1 tokenization is deterministic" do
-    assert FullText.tokens("École café 東京") == ["école", "cafe", "東京"]
-    assert FullText.tokens("École café", :remove) == ["ecole", "cafe"]
   end
 end

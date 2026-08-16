@@ -675,8 +675,7 @@ defmodule VialKeeper.EndToEnd.ExtendedQueryScenarioTest do
         json: %{
           "name" => "body-text",
           "type" => "full_text",
-          "fields" => ["/title", "/summary"],
-          "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+          "fields" => ["/title", "/summary"]
         }
       )
 

@@ -40,7 +40,6 @@ defmodule VialKeeper.WebUI.Routes.Queries do
     "name",
     "type",
     "fields",
-    "tokenization",
     "definition_digest",
     "lifecycle_state"
   ]

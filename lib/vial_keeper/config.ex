@@ -90,6 +90,35 @@ defmodule VialKeeper.Config do
     end
   end
 
+  @doc "Maximum number of documents sent to the Tantivy writer in one rebuild batch."
+  @spec search_rebuild_batch_size() :: pos_integer()
+  def search_rebuild_batch_size do
+    configured = host_limits()[:max_search_rebuild_batch_documents]
+
+    case configured || Application.get_env(:vial_keeper, :search_rebuild_batch_size, 500) do
+      size when is_integer(size) and size > 0 -> size
+      _ -> 500
+    end
+  end
+
+  @doc "Host ceiling for Tantivy's in-process writer memory budget."
+  @spec search_writer_memory_bytes() :: pos_integer()
+  def search_writer_memory_bytes do
+    case host_limits()[:max_search_writer_memory_bytes] do
+      bytes when is_integer(bytes) and bytes >= 15_000_000 -> bytes
+      _ -> 50_000_000
+    end
+  end
+
+  @doc "Host ceiling for full-text candidates retained before post-filtering."
+  @spec search_candidate_limit() :: pos_integer()
+  def search_candidate_limit do
+    case host_limits()[:max_search_candidates] do
+      limit when is_integer(limit) and limit > 0 -> limit
+      _ -> 10_000
+    end
+  end
+
   @spec database_root() :: binary()
   def database_root,
     do: Application.get_env(:vial_keeper, :database_root, Path.expand("data", File.cwd!()))

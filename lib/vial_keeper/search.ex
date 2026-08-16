@@ -1,10 +1,10 @@
 defmodule VialKeeper.Search do
   @moduledoc """
-  Storage-neutral full-text search over rebuildable posting lists.
+  Storage-neutral full-text search backed by Tantivy generations.
 
-  Logical index definitions stay in the document store catalog. Tokenization
-  and matching use `unicode_words_v1`. Physical posting lists live in ETS and
-  a disposable cache under the bundle `tmp/` directory.
+  Logical index definitions stay in the document store catalog. Tantivy owns
+  analysis, matching, ranking, positions, and segment persistence under the
+  bundle `tmp/search/indexes/` directory.
   """
 
   alias VialKeeper.Config
@@ -12,6 +12,7 @@ defmodule VialKeeper.Search do
   alias VialKeeper.MapAccess
   alias VialKeeper.Search.{Owner, Supervisor}
   alias VialKeeper.Storage.BackendContext
+  alias VialKeeper.Runtime.Deadline
 
   @pending_key :vial_keeper_search_pending
 
@@ -43,12 +44,106 @@ defmodule VialKeeper.Search do
     end
   end
 
-  @spec rebuild(BackendContext.t(), binary(), map(), [map()]) ::
+  @spec rebuild(BackendContext.t(), binary(), map(), Enumerable.t()) ::
           :ok | {:error, VialKeeper.Error.t()}
   def rebuild(%BackendContext{} = context, index_id, definition, documents)
-      when is_binary(index_id) and is_map(definition) and is_list(documents) do
-    call(context, {:rebuild, index_id, definition, documents})
+      when is_binary(index_id) and is_map(definition) do
+    case rebuild_stream(context, index_id, definition, documents) do
+      {:ok, _entries} -> :ok
+      {:error, _} = error -> error
+    end
   end
+
+  @spec rebuild_stream(BackendContext.t(), binary(), map(), Enumerable.t()) ::
+          {:ok, non_neg_integer()} | {:error, VialKeeper.Error.t()}
+  def rebuild_stream(%BackendContext{} = context, index_id, definition, documents)
+      when is_binary(index_id) and is_map(definition) do
+    deadline = rebuild_deadline()
+
+    result =
+      with :ok <- call_with_deadline(context, {:begin_rebuild, index_id, definition}, deadline),
+           {:ok, entries} <- stream_batches(context, index_id, documents, deadline),
+           :ok <- check_rebuild_deadline(deadline),
+           {:ok, final_entries} <-
+             call_with_deadline(context, {:finish_rebuild, index_id}, deadline) do
+        {:ok, final_entries || entries}
+      end
+
+    finish_rebuild_attempt(context, index_id, result)
+  end
+
+  @spec rebuild_pages(
+          BackendContext.t(),
+          binary(),
+          map(),
+          term(),
+          (term() -> {:ok, {[map()], term(), boolean()}} | {:error, VialKeeper.Error.t()})
+        ) :: {:ok, non_neg_integer()} | {:error, VialKeeper.Error.t()}
+  def rebuild_pages(%BackendContext{} = context, index_id, definition, cursor, page_fun)
+      when is_binary(index_id) and is_map(definition) and is_function(page_fun, 1) do
+    rebuild_pages(context, index_id, definition, cursor, page_fun, fn -> :ok end)
+  end
+
+  @spec rebuild_pages(
+          BackendContext.t(),
+          binary(),
+          map(),
+          term(),
+          (term() -> {:ok, {[map()], term(), boolean()}} | {:error, VialKeeper.Error.t()}),
+          (-> :ok | {:error, VialKeeper.Error.t()})
+          | (Deadline.t() -> :ok | {:error, VialKeeper.Error.t()})
+        ) :: {:ok, non_neg_integer()} | {:error, VialKeeper.Error.t()}
+  def rebuild_pages(
+        %BackendContext{} = context,
+        index_id,
+        definition,
+        cursor,
+        page_fun,
+        before_finish
+      )
+      when is_binary(index_id) and is_map(definition) and is_function(page_fun, 1) and
+             (is_function(before_finish, 0) or is_function(before_finish, 1)) do
+    deadline = rebuild_deadline()
+
+    result =
+      with :ok <- call_with_deadline(context, {:begin_rebuild, index_id, definition}, deadline),
+           {:ok, _count} <- consume_pages(context, index_id, cursor, page_fun, deadline),
+           :ok <- check_rebuild_deadline(deadline),
+           :ok <- run_before_finish(before_finish, deadline),
+           :ok <- check_rebuild_deadline(deadline),
+           {:ok, entries} <-
+             call_with_deadline(context, {:finish_rebuild, index_id}, deadline) do
+        {:ok, entries}
+      end
+
+    finish_rebuild_attempt(context, index_id, result)
+  end
+
+  @spec begin_rebuild(BackendContext.t(), binary(), map()) :: :ok | {:error, VialKeeper.Error.t()}
+  def begin_rebuild(%BackendContext{} = context, index_id, definition)
+      when is_binary(index_id) and is_map(definition),
+      do: call(context, {:begin_rebuild, index_id, definition})
+
+  @spec rebuild_batch(BackendContext.t(), binary(), [map()]) ::
+          {:ok, non_neg_integer()} | {:error, VialKeeper.Error.t()}
+  def rebuild_batch(%BackendContext{} = context, index_id, documents)
+      when is_binary(index_id) and is_list(documents),
+      do: call(context, {:rebuild_batch, index_id, documents})
+
+  @spec rebuild_batch(BackendContext.t(), binary(), [map()], Deadline.t()) ::
+          {:ok, non_neg_integer()} | {:error, VialKeeper.Error.t()}
+  def rebuild_batch(%BackendContext{} = context, index_id, documents, deadline)
+      when is_binary(index_id) and is_list(documents) and is_integer(deadline),
+      do: call_with_deadline(context, {:rebuild_batch, index_id, documents}, deadline)
+
+  @spec abort_rebuild(BackendContext.t(), binary()) :: :ok | {:error, VialKeeper.Error.t()}
+  def abort_rebuild(%BackendContext{} = context, index_id) when is_binary(index_id),
+    do: call(context, {:abort_rebuild, index_id})
+
+  @spec finish_rebuild(BackendContext.t(), binary()) ::
+          {:ok, non_neg_integer()} | {:error, VialKeeper.Error.t()}
+  def finish_rebuild(%BackendContext{} = context, index_id) when is_binary(index_id),
+    do: call(context, {:finish_rebuild, index_id})
 
   @spec search(BackendContext.t(), binary(), binary(), binary()) ::
           {:ok, [map()]} | {:error, VialKeeper.Error.t()}
@@ -132,10 +227,45 @@ defmodule VialKeeper.Search do
     end
   end
 
+  defp call_with_deadline(%BackendContext{} = context, request, deadline) do
+    with :ok <- check_rebuild_deadline(deadline),
+         {:ok, uuid, tmp_path} <- session(context),
+         {:ok, pid} <- ensure_owner(uuid, tmp_path) do
+      timeout = min(call_timeout(request), max(1, Deadline.remaining(deadline)))
+
+      try do
+        GenServer.call(pid, request, timeout)
+      catch
+        :exit, reason ->
+          if Deadline.exhausted?(deadline) or Deadline.genserver_call_timeout?(reason) do
+            {:error, rebuild_timeout_error()}
+          else
+            exit(reason)
+          end
+      end
+    end
+  end
+
   defp call_timeout({:rebuild, _index_id, _definition, _documents}),
     do: Config.search_rebuild_timeout_ms()
 
+  defp call_timeout(request) when request in [:has_indexes], do: query_timeout()
+
+  defp call_timeout({operation, _index_id, _definition})
+       when operation in [:begin_rebuild],
+       do: Config.search_rebuild_timeout_ms()
+
+  defp call_timeout({operation, _index_id, _documents})
+       when operation in [:rebuild_batch],
+       do: Config.search_rebuild_timeout_ms()
+
+  defp call_timeout({:finish_rebuild, _index_id}), do: Config.search_rebuild_timeout_ms()
+
   defp call_timeout(_request) do
+    query_timeout()
+  end
+
+  defp query_timeout do
     case Config.host_limits()[:max_query_execution_ms] do
       timeout when is_integer(timeout) and timeout > 0 -> timeout
       _ -> 5_000
@@ -168,9 +298,49 @@ defmodule VialKeeper.Search do
     end
   end
 
-  defp tmp_path(":memory:"), do: nil
+  defp tmp_path(":memory:"), do: Application.get_env(:vial_keeper, :search_memory_root)
   defp tmp_path(root) when is_binary(root), do: Path.join(root, "tmp")
   defp tmp_path(_root), do: nil
+
+  defp stream_batches(context, index_id, documents, deadline) do
+    batch_size = Config.search_rebuild_batch_size()
+
+    stream_batches_from_enum(context, index_id, documents, batch_size, deadline)
+  end
+
+  defp stream_batches_from_enum(context, index_id, documents, batch_size, deadline) do
+    documents
+    |> Stream.chunk_every(batch_size)
+    |> Enum.reduce_while({:ok, 0}, fn batch, {:ok, count} ->
+      case rebuild_batch(context, index_id, batch, deadline) do
+        {:ok, added} -> {:cont, {:ok, count + added}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp consume_pages(context, index_id, cursor, page_fun, deadline) do
+    case page_fun.(cursor) do
+      {:ok, {[], _next_cursor, _done}} ->
+        {:ok, 0}
+
+      {:ok, {page, next_cursor, done}} when is_list(page) and is_boolean(done) ->
+        with {:ok, added} <- rebuild_batch(context, index_id, page, deadline),
+             {:ok, remaining} <-
+               if(done,
+                 do: {:ok, 0},
+                 else: consume_pages(context, index_id, next_cursor, page_fun, deadline)
+               ) do
+          {:ok, added + remaining}
+        end
+
+      {:error, _} = error ->
+        error
+
+      _ ->
+        {:error, VialKeeper.Error.internal_error("full-text rebuild page is invalid")}
+    end
+  end
 
   defp winner_payload(%Revision{deleted: deleted, body: body}), do: {body || %{}, deleted}
 
@@ -178,5 +348,36 @@ defmodule VialKeeper.Search do
     deleted = MapAccess.get(winner, :deleted, false) == true
     body = MapAccess.get(winner, :body) || %{}
     {body, deleted}
+  end
+
+  defp rebuild_deadline,
+    do: Deadline.from_timeout(Config.search_rebuild_timeout_ms())
+
+  defp check_rebuild_deadline(deadline) do
+    if Deadline.exhausted?(deadline) do
+      {:error, rebuild_timeout_error()}
+    else
+      :ok
+    end
+  end
+
+  defp run_before_finish(before_finish, _deadline) when is_function(before_finish, 0),
+    do: before_finish.()
+
+  defp run_before_finish(before_finish, deadline) when is_function(before_finish, 1),
+    do: before_finish.(deadline)
+
+  defp finish_rebuild_attempt(context, index_id, {:error, _} = error) do
+    _ = abort_rebuild(context, index_id)
+    error
+  end
+
+  defp finish_rebuild_attempt(_context, _index_id, result), do: result
+
+  defp rebuild_timeout_error do
+    VialKeeper.Error.resource_limit(
+      "full-text rebuild exceeded the configured timeout",
+      %{timeout_ms: Config.search_rebuild_timeout_ms()}
+    )
   end
 end

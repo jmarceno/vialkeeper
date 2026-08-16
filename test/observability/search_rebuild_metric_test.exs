@@ -21,8 +21,7 @@ defmodule VialKeeper.Observability.SearchRebuildMetricTest do
   @fts_definition %{
     "name" => "titles",
     "type" => "full_text",
-    "fields" => ["/title"],
-    "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+    "fields" => ["/title"]
   }
 
   setup do
@@ -72,8 +71,9 @@ defmodule VialKeeper.Observability.SearchRebuildMetricTest do
 
       context = Adapter.to_context(adapter)
       assert :ok = Search.stop(context)
-      persist = Path.join(context.bundle_root, "tmp/search-index.etf")
-      _ = File.rm(persist)
+      manifest = search_manifest(context.bundle_root)
+      assert is_binary(manifest)
+      _ = File.rm(manifest)
 
       TestExporter.reset()
       TestMetricExporter.reset()
@@ -134,5 +134,12 @@ defmodule VialKeeper.Observability.SearchRebuildMetricTest do
       timeout: 2_000,
       message: "search.rebuild.duration missing for #{trigger}"
     )
+  end
+
+  defp search_manifest(bundle_root) do
+    bundle_root
+    |> Path.join("tmp/search/indexes/*/manifest.json")
+    |> Path.wildcard()
+    |> List.first()
   end
 end

@@ -6,10 +6,13 @@ every developer test run fail.
 
 There are two families:
 
-- **Synthetic product and ExQLite controls** — small isolated databases under
-  a temporary root, JSON reports under `output/`. See the sections below.
-- **Dataset-backed suites** — TREC-COVID FTS, PMC stress, and Open Images
-  torture. Source data, generated manifests, work databases, caches, and
+- **Synthetic product controls** — small isolated databases, Tantivy
+  generations, and JSON reports under `/mnt/other/downloads/vialkeeper/`.
+  See the sections below.
+- **ExQLite controls** — direct SQLite diagnostics with their own temporary
+  runtime and report conventions.
+- **Dataset-backed suites** — TREC-COVID FTS, Simple Wikipedia stress, and Open
+  Images torture. Source data, generated manifests, work databases, caches, and
   reports live only under a mandatory external root
   (`/mnt/other/downloads/vialkeeper/` by default). Nothing from those suites is
   committed to Git.
@@ -21,7 +24,7 @@ These Mix aliases always run with `--no-start` in `MIX_ENV=test`:
 | Alias | Measures | Standard scale |
 | --- | --- | --- |
 | `mix bench.fts` | TREC-COVID / BEIR full-text ingest, index build, nDCG/recall/MAP, first-pass and warm latency (`any`/`all`/`prefix`, concurrency 1/4/16) | 171K documents, 50 official queries |
-| `mix bench.stress` | PMC catalog-path ingest, FTS, attachment reads, mixed load | 100K articles plus a 20 GiB attachment budget (10 GiB PDF / 5 GiB image / 5 GiB supplement) |
+| `mix bench.stress` | Simple Wikipedia catalog-path ingest, FTS, attachment reads, mixed load | 100K articles plus 800 locally generated deterministic attachments (~800 MiB) |
 | `mix bench.torture` | Open Images attachment ingest, concurrent read/write, dedup, delete/GC, mixed torture | 100K JPEGs |
 
 `--profile smoke` prepares a handful of pinned objects so the same code path
@@ -33,10 +36,16 @@ Dataset-backed Mix runners raise host limits for the process, including
 killed by the interactive query budget. Production operators set
 `[limits].max_search_rebuild_ms` in `host.toml` and restart.
 
+Full-text post-filter candidates are bounded by `[limits].max_search_candidates`;
+the benchmark reports a resource-limit failure rather than accepting silently
+truncated candidates.
+
 ### Why the data root is mandatory
 
-A full PMC or Open Images fixture is tens of gigabytes of source objects plus
-a second copy inside VialKeeper bundles (SQLite, CAS blobs, FTS postings).
+A full Simple Wikipedia or Open Images fixture can be large: Simple Wikipedia
+uses one archive plus generated text and attachment objects, while Open Images
+has tens of gigabytes of source objects and a second copy inside VialKeeper
+bundles (SQLite, CAS blobs, FTS postings).
 Budget **source bytes + generated working space + max(10 GiB, 15%)** before
 `prepare`. There is no fallback to the repository, `bench/`, `output/`,
 `tmp/`, `/tmp`, `$HOME`, or the current working directory.
@@ -46,7 +55,7 @@ The approved parent is `/mnt/other/downloads/`. The standard root is:
 ```text
 /mnt/other/downloads/vialkeeper/
   .vialkeeper-bench-root.json
-  datasets/     # prepared fixtures (trec-covid/v1, pmc/100k-v1, open-images/v7-100k-v1)
+  datasets/     # prepared fixtures (trec-covid/v1, simplewiki/v1, open-images/v7-100k-v1)
   staging/      # incomplete downloads
   work/         # per-run VialKeeper databases
   cache/        # archive and inventory cache
@@ -65,18 +74,23 @@ mix bench.data configure --root /mnt/other/downloads/vialkeeper --reuse-existing
 
 mix bench.data status
 
-mix bench.data prepare trec-covid
+mix bench.data prepare trec-covid     # optional: prepare separately
 mix bench.data prepare pmc                 # standard 100K; first use freezes an inventory snapshot
 mix bench.data prepare pmc --profile smoke
+mix bench.data prepare simplewiki          # one archive + local 100K fixture generation
+mix bench.data prepare simplewiki --profile smoke
 mix bench.data prepare open-images
 mix bench.data prepare open-images --profile smoke
 
-mix bench.fts
+mix bench.fts                         # initializes root, downloads/prepares, then runs all 171K docs
+mix bench.stress                         # initializes root, downloads/prepares, then runs standard 100K Simple Wikipedia
+mix bench.stress --max-concurrency 16    # same workload with faster bounded fixture preparation
 mix bench.stress --profile smoke
 mix bench.torture --profile smoke
 
 mix bench.data clean trec-covid
 mix bench.data clean pmc
+mix bench.data clean simplewiki
 mix bench.data clean open-images
 ```
 
@@ -100,6 +114,7 @@ Committed:
 Not committed (created under the external root on first use):
 
 - TREC-COVID zip, extracted corpus/queries/qrels, generated `manifest.json`
+- Simple Wikipedia bzip2 archive, generated article text/attachments, manifest
 - PMC inventory snapshot, metadata JSON, article text/PDF/media, generated manifest
 - Open Images image-info CSV, selected JPEG bytes, generated manifest
 - work databases, CAS blobs, caches, staging, reports
@@ -125,17 +140,19 @@ MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
   --dataset 500 \
   --batch 100 \
   --reads 100 \
-  --output output/benchmarks/baseline.json
+  --root /mnt/other/downloads/vialkeeper/work/product-benchmark-baseline \
+  --output /mnt/other/downloads/vialkeeper/reports/product-baseline.json
 ```
 
-The command writes JSON under the ignored `output/` directory and prints a
-short summary. A later run can compare the median latency for every
+The command writes JSON under the approved external root and prints a short
+summary. A later run can compare the median latency for every
 storage-mode/scenario pair:
 
 ```sh
 MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
   --mode both \
-  --baseline output/benchmarks/baseline.json \
+  --root /mnt/other/downloads/vialkeeper/work/product-benchmark-baseline \
+  --baseline /mnt/other/downloads/vialkeeper/reports/product-baseline.json \
   --max-regression 20
 ```
 
@@ -149,28 +166,30 @@ dataset. They are trend evidence, not portable hardware-independent promises.
 - `bulk_write`: seed a database, then measure new bulk writes. Each measured
   batch uses new document IDs, so the database grows across the run. This is
   the closest analogue to CouchDB's checked-in bulk-load benchmark.
+- `fts_bulk_write`: seed and build a Tantivy full-text index outside the timed
+  region, then measure new bulk writes with incremental delete/add refreshes
+  and one bounded Tantivy commit per batch. Use this to isolate indexed-ingest
+  cost from the storage-only `bulk_write` control.
 - `point_read`: measure a batch of individual document reads against a seeded
   working set.
 - `changes_read`: measure bounded changes-feed reads.
 - `index_build`: measure structured-index creation while deleting the index
   outside the timed region.
 - `indexed_query`: measure a query using an existing structured index.
-- `fts_query`: measure a full-text query using an existing `unicode_words_v1`
+- `fts_query`: measure a full-text query using an existing Tantivy
   index. Setup seeds ~2 KiB ASCII bodies and indexes `/text`; the timed region
   is one `all`-mode search that matches about a quarter of the dataset and
   returns a 50-hit page. This is part of `--scenario all` so a default
   `mix bench` run includes FTS alongside the other sequential metrics.
   Default `--dataset 500` is a smoke size. The design horizon is about 50k
   winning documents; measure that with `--dataset 50000 --scenario fts_query`.
-- `fts_rebuild`: measure reconstructing the Elixir posting-list cache from
-  winning documents. Setup seeds the same ~2 KiB ASCII bodies and creates the
-  `unicode_words_v1` index outside the timed region; each sample calls
-  `rebuild_index` on that index (scan winners, retokenize, persist
-  `tmp/search-index.etf`). This is part of `--scenario all`. Measure the 50k
-  horizon with `--dataset 50000 --scenario fts_rebuild`. A local three-run
-  smoke of `--dataset 500 --iterations 5 --warmup 2` measured disk median
-  781 ms and memory median 1.25 s; those figures are trend evidence for that
-  machine, not a portable SLO.
+- `fts_rebuild`: measure reconstructing a Tantivy generation from winning
+  documents. Setup seeds the same ~2 KiB ASCII bodies and creates the Tantivy
+  index outside the timed region; each sample calls `rebuild_index` on that
+  index (stream winners into bounded batches and publish after commit). This is part of `--scenario all`. Measure the 50k
+  horizon with `--dataset 50000 --scenario fts_rebuild`. The current recorded
+  500-document baseline is a 2.34 s Disk median and a 2.11 s Memory median;
+  those figures are trend evidence for that machine, not a portable SLO.
 - `concurrent_point_read`: **opt-in** catalog-path point reads (not part of
   `--scenario all`). Disk only. Measures 1/2/4/8 concurrent readers, each with
   and without a steady writer, through `DatabaseCatalog` so the snapshot read
@@ -189,34 +208,41 @@ dataset. They are trend evidence, not portable hardware-independent promises.
 MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
   --mode disk \
   --scenario concurrent_point_read \
-  --output output/benchmarks/concurrent-point-read.json
+  --root /mnt/other/downloads/vialkeeper/work/product-benchmark-concurrent \
+  --output /mnt/other/downloads/vialkeeper/reports/concurrent-point-read.json
 ```
 
 ```sh
 MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
   --mode disk \
   --scenario multi_writer \
-  --output output/benchmarks/multi-writer.json
+  --root /mnt/other/downloads/vialkeeper/work/product-benchmark-multi-writer \
+  --output /mnt/other/downloads/vialkeeper/reports/multi-writer.json
 ```
 
 Use `--scenario bulk_write,indexed_query` to select a sequential subset. `--mode disk`
-uses a unique temporary durable artifact and cleans up companion recovery
-files. `--mode memory` uses a fresh in-memory backend connection for each
-case. The memory numbers are an I/O-independent lower bound for adapter work;
-they do not represent durable writes or reopen/recovery behavior.
+uses a unique durable artifact below the approved benchmark root and cleans up
+companion recovery files. `--mode memory` uses a fresh in-memory SQLite
+connection plus an ephemeral Tantivy root below the same approved root for
+each case. The memory numbers are an I/O-independent lower bound for adapter
+work; they do not represent durable writes or reopen/recovery behavior.
 
 Warmups are excluded from the report. Each sample times only the operation,
 not database creation, seeding, index setup, or cleanup. The report includes
 sample values, median/p95/p99, per-operation latency, throughput, VM memory
 before/after, backend pragmas where available, runtime metadata, scheduler
 and dirty-scheduler counts, `msacc` samples for the measured region, and
-observability signals.
+observability signals. With `MIX_ENV=test`, the JSON also includes low-cardinality
+OTel span summaries (count, total, mean, and maximum duration) for the bulk
+mutation phases, SQLite transaction boundaries, and Tantivy refresh/query
+operations.
 
-Both runners require `--no-start` (the Mix aliases include it), then start the
-application themselves with an ephemeral listener and an isolated temporary
-database root. This prevents registered databases, materializers, and host
-configuration from contaminating measurements. The temporary root is removed
-after the report is written.
+The product runner requires `--no-start`, then starts the application itself
+with an ephemeral listener and an isolated database root below the approved
+benchmark root. This prevents registered databases, materializers, and host
+configuration from contaminating measurements. The isolated runtime is
+removed after the report is written; the small report remains under
+`/mnt/other/downloads/vialkeeper/reports/`.
 
 ## ExQLite overhead control (SQLite backend diagnostic)
 

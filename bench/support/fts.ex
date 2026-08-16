@@ -3,7 +3,18 @@ defmodule VialKeeper.Bench.FTS do
   TREC-COVID full-text benchmark over the SQLite adapter seam.
   """
 
-  alias VialKeeper.Bench.{Beir, Marker, Metrics, Registry, Reports, Root, Runtime, Statistics}
+  alias VialKeeper.Bench.{
+    Beir,
+    Marker,
+    Metrics,
+    Prepare,
+    Registry,
+    Reports,
+    Root,
+    Runtime,
+    Statistics
+  }
+
   alias VialKeeper.Storage.SQLite.Adapter
 
   @index_name "trec-covid-text"
@@ -15,8 +26,9 @@ defmodule VialKeeper.Bench.FTS do
 
   @spec run(keyword()) :: {:ok, map()} | {:error, binary()}
   def run(opts \\ []) do
-    with {:ok, context} <- Root.load(opts),
+    with {:ok, context} <- Root.load_or_configure(opts),
          {:ok, spec} <- Registry.fetch("trec-covid"),
+         {:ok, _prepared} <- Prepare.prepare("trec-covid", opts),
          {:ok, dataset} <- require_ready(context, spec),
          {:ok, report} <-
            Runtime.with_isolated(context, fn -> measure(context, spec, dataset, opts) end) do
@@ -158,8 +170,7 @@ defmodule VialKeeper.Bench.FTS do
       Adapter.create_index(adapter, %{
         "name" => @index_name,
         "type" => "full_text",
-        "fields" => @fts_fields,
-        "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+        "fields" => @fts_fields
       })
 
     elapsed = System.monotonic_time(:microsecond) - started

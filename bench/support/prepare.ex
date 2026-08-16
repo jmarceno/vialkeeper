@@ -17,6 +17,7 @@ defmodule VialKeeper.Bench.Prepare do
     PmcInventory,
     Registry,
     Root,
+    SimpleWiki,
     Statistics,
     Zip
   }
@@ -65,10 +66,23 @@ defmodule VialKeeper.Bench.Prepare do
 
   defp prepare_dataset(context, spec, profile, opts) do
     with {:ok, dest} <- Root.dataset_path(context, spec["name"], spec["version"]) do
-      if Marker.present?(dest) do
-        {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
-      else
-        do_prepare_dataset(context, spec, profile, opts)
+      expected_profile = Atom.to_string(profile)
+
+      case Marker.read(dest) do
+        {:ok, %{"profile" => ready_profile}}
+        when ready_profile == expected_profile ->
+          {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
+
+        {:ok, _marker} ->
+          with :ok <- Root.remove_dataset!(context, spec["name"], spec["version"]) do
+            do_prepare_dataset(context, spec, profile, opts)
+          end
+
+        {:error, :missing} ->
+          do_prepare_dataset(context, spec, profile, opts)
+
+        {:error, _reason} ->
+          do_prepare_dataset(context, spec, profile, opts)
       end
     end
   end
@@ -79,6 +93,10 @@ defmodule VialKeeper.Bench.Prepare do
 
   defp do_prepare_dataset(context, %{"name" => "pmc"} = spec, profile, opts) do
     prepare_object_dataset(context, spec, profile, opts)
+  end
+
+  defp do_prepare_dataset(context, %{"name" => "simplewiki"} = spec, profile, opts) do
+    prepare_simplewiki(context, spec, profile, opts)
   end
 
   defp do_prepare_dataset(context, %{"name" => "open-images"} = spec, profile, opts) do
@@ -106,6 +124,56 @@ defmodule VialKeeper.Bench.Prepare do
            }),
          :ok <- Downloader.promote_dir(context, staging, dest) do
       {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
+    end
+  end
+
+  defp prepare_simplewiki(context, spec, profile, opts) do
+    unique = unique_id()
+
+    with {:ok, staging} <- Root.staging_path(context, spec["name"], unique),
+         {:ok, dest} <- Root.dataset_path(context, spec["name"], spec["version"]),
+         {:ok, cache} <- Root.cache_path(context, spec["name"], spec["version"]),
+         :ok <- File.mkdir_p(Path.join(staging, "objects")),
+         :ok <- File.mkdir_p(cache),
+         archive = Path.join(cache, spec["archive_name"]),
+         :ok <- ensure_simplewiki_archive(context, spec, archive, staging, opts),
+         {:ok, manifest} <-
+           SimpleWiki.generate_fixture(
+             archive,
+             spec,
+             profile,
+             staging,
+             article_count: Registry.selection_count("simplewiki", profile)
+           ),
+         :ok <- write_external_manifest(context, staging, manifest),
+         :ok <-
+           Marker.write(context, staging, %{
+             "dataset" => spec["name"],
+             "version" => spec["version"],
+             "profile" => Atom.to_string(profile)
+           }),
+         :ok <- Downloader.promote_dir(context, staging, dest) do
+      {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
+    end
+  end
+
+  defp ensure_simplewiki_archive(context, spec, archive, staging, opts) do
+    download = Keyword.get(opts, :download, &Downloader.download/3)
+
+    if File.regular?(archive) do
+      :ok
+    else
+      staging_archive = Path.join(staging, spec["archive_name"])
+
+      with :ok <-
+             download.(
+               context,
+               %{url: spec["source_url"], dest: staging_archive},
+               opts
+             ),
+           :ok <- copy_inside(context, staging_archive, archive) do
+        :ok
+      end
     end
   end
 

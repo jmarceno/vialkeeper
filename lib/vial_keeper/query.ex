@@ -62,14 +62,12 @@ defmodule VialKeeper.Query do
          {:ok, name} <- required_string(definition, :name, "index name"),
          {:ok, type} <- normalize_index_type(get(definition, :type)),
          {:ok, fields} <- normalize_index_fields(get(definition, :fields), type),
-         {:ok, tokenization} <- normalize_tokenization(get(definition, :tokenization), type),
          logical <-
            %{
              "name" => name,
              "type" => type,
              "fields" => fields
-           }
-           |> maybe_put_tokenization(tokenization),
+           },
          {:ok, json} <- Canonical.encode(logical) do
       {:ok,
        Map.put(
@@ -84,7 +82,7 @@ defmodule VialKeeper.Query do
     do: {:error, VialKeeper.Error.invalid_request("index definition must be an object")}
 
   defp known_index_fields(definition) do
-    allowed = [:name, :type, :fields, :tokenization, "name", "type", "fields", "tokenization"]
+    allowed = [:name, :type, :fields, "name", "type", "fields"]
 
     case Enum.all?(Map.keys(definition), &(&1 in allowed)) do
       true -> :ok
@@ -237,45 +235,6 @@ defmodule VialKeeper.Query do
 
   defp normalize_direction(_),
     do: {:error, VialKeeper.Error.invalid_request("index direction must be asc or desc")}
-
-  defp normalize_tokenization(nil, "structured"), do: {:ok, nil}
-
-  defp normalize_tokenization(_, "structured"),
-    do: {:error, VialKeeper.Error.invalid_request("structured indexes do not accept tokenization")}
-
-  defp normalize_tokenization(tokenization, "full_text")
-       when is_nil(tokenization) or is_map(tokenization) do
-    tokenization = value_or_default(tokenization, %{})
-    strategy = value_or_default(get(tokenization, :strategy), "unicode_words_v1")
-    diacritics = value_or_default(get(tokenization, :diacritics), "preserve")
-
-    case valid_tokenization?(tokenization, strategy, diacritics) do
-      :valid ->
-        {:ok, %{"strategy" => strategy, "diacritics" => diacritics}}
-
-      :invalid ->
-        {:error, VialKeeper.Error.invalid_request("unsupported full-text tokenization")}
-    end
-  end
-
-  defp normalize_tokenization(_, "full_text"),
-    do: {:error, VialKeeper.Error.invalid_request("full-text tokenization must be an object")}
-
-  defp valid_tokenization?(tokenization, strategy, diacritics) do
-    case {
-      Map.keys(tokenization) -- [:strategy, :diacritics, "strategy", "diacritics"],
-      strategy,
-      diacritics
-    } do
-      {[], "unicode_words_v1", diacritics} when diacritics in ["preserve", "remove"] -> :valid
-      _ -> :invalid
-    end
-  end
-
-  defp maybe_put_tokenization(definition, nil), do: definition
-
-  defp maybe_put_tokenization(definition, tokenization),
-    do: Map.put(definition, "tokenization", tokenization)
 
   defp validate_query(request) do
     limit = value_or_default(get(request, :limit), 50)

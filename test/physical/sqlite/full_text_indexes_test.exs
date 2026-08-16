@@ -8,8 +8,7 @@ defmodule VialKeeper.StorageAdapter.FullTextIndexesTest do
   @fts_definition %{
     "name" => "titles",
     "type" => "full_text",
-    "fields" => ["/title"],
-    "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+    "fields" => ["/title"]
   }
 
   test "create, delete, and rebuild full-text indexes", %{adapter: adapter} do
@@ -159,6 +158,32 @@ defmodule VialKeeper.StorageAdapter.FullTextIndexesTest do
              })
   end
 
+  test "full-text post-filters fail instead of silently truncating candidates", %{adapter: adapter} do
+    previous_limits = Application.get_env(:vial_keeper, :host_limits, [])
+    limits = Keyword.put(previous_limits, :max_search_candidates, 2)
+    Application.put_env(:vial_keeper, :host_limits, limits)
+
+    on_exit(fn -> Application.put_env(:vial_keeper, :host_limits, previous_limits) end)
+
+    for document_id <- ~w(open-a open-b closed) do
+      assert {:ok, _} =
+               @adapter.apply_local_mutation(adapter, %{
+                 operation: :put,
+                 document_id: document_id,
+                 body: %{"title" => "replication checkpoint", "status" => "open"}
+               })
+    end
+
+    assert {:ok, _} = @adapter.create_index(adapter, @fts_definition)
+
+    assert {:error, %VialKeeper.Error{code: :resource_limit}} =
+             @adapter.execute_query(adapter, %{
+               search: %{index: "titles", text: "replication", mode: "all"},
+               selector: %{"/status" => "open"},
+               limit: 10
+             })
+  end
+
   test "full-text candidate processing enforces the query deadline", %{adapter: adapter} do
     for n <- 1..128 do
       assert {:ok, _} =
@@ -279,8 +304,9 @@ defmodule VialKeeper.StorageAdapter.FullTextIndexesTest do
     context = @adapter.to_context(adapter)
     assert :ok = VialKeeper.Search.stop(context)
 
-    persist = Path.join(context.bundle_root, "tmp/search-index.etf")
-    _ = File.rm(persist)
+    manifest = search_manifest(context.bundle_root)
+    assert is_binary(manifest)
+    _ = File.rm(manifest)
 
     assert {:ok, %{results: [%{id: "doc"}]}} =
              @adapter.execute_query(adapter, %{
@@ -293,5 +319,47 @@ defmodule VialKeeper.StorageAdapter.FullTextIndexesTest do
                search: %{index: "titles", text: "secret", mode: "all"},
                limit: 10
              })
+  end
+
+  test "persisted search cache restores phrase matches without a rebuild", %{adapter: adapter} do
+    assert {:ok, _} =
+             @adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "ordered",
+               body: %{"title" => "alpha beta gamma"}
+             })
+
+    assert {:ok, _} =
+             @adapter.apply_local_mutation(adapter, %{
+               operation: :put,
+               document_id: "reversed",
+               body: %{"title" => "beta alpha"}
+             })
+
+    assert {:ok, %{"index_id" => _index_id}} = @adapter.create_index(adapter, @fts_definition)
+
+    context = @adapter.to_context(adapter)
+    manifest = search_manifest(context.bundle_root)
+    assert is_binary(manifest)
+
+    assert {:ok, %{"generation" => generation, "definition" => %{"type" => "full_text"}}} =
+             Jason.decode(File.read!(manifest))
+
+    assert is_integer(generation)
+
+    assert :ok = VialKeeper.Search.stop(context)
+
+    assert {:ok, %{results: [%{id: "ordered"}]}} =
+             @adapter.execute_query(adapter, %{
+               search: %{index: "titles", text: "alpha beta", mode: "phrase"},
+               limit: 10
+             })
+  end
+
+  defp search_manifest(bundle_root) do
+    bundle_root
+    |> Path.join("tmp/search/indexes/*/manifest.json")
+    |> Path.wildcard()
+    |> List.first()
   end
 end

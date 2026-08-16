@@ -82,6 +82,8 @@ defmodule VialKeeper.Bench.PmcTest do
     assert Enum.map(first["articles"], & &1["pmcid"]) == Enum.map(second["articles"], & &1["pmcid"])
     assert match?([_, _], first["articles"])
 
+    assert Enum.any?(Pmc.objects_for(first), fn object -> is_nil(object.expected_size) end)
+
     article = Enum.find(first["articles"], &(&1["pmcid"] == "PMC1")) || hd(first["articles"])
     body = Pmc.document_body(article, "text")
     assert body["pmcid"]

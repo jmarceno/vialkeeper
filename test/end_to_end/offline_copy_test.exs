@@ -49,8 +49,7 @@ defmodule VialKeeper.EndToEnd.OfflineCopyTest do
              VialKeeper.Query.create_index(source_uuid, %{
                "name" => "kind-text",
                "type" => "full_text",
-               "fields" => ["/kind"],
-               "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+               "fields" => ["/kind"]
              })
 
     assert {:ok, %{documents: pre_docs, selected_index: ^structured_id}} =

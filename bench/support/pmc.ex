@@ -333,7 +333,8 @@ defmodule VialKeeper.Bench.Pmc do
     text + meta + Enum.reduce(attachments, 0, &((&1["expected_size"] || 0) + &2))
   end
 
-  defp selectable?(row, prefixes) do
+  @spec selectable?(map(), [binary()]) :: boolean()
+  def selectable?(row, prefixes) when is_map(row) and is_list(prefixes) do
     row["is_pmc_openaccess"] == true and row["is_retracted"] != true and
       is_binary(row["text_url"] || row["xml_url"]) and
       approved_license?(row["license_code"], prefixes)
@@ -378,7 +379,7 @@ defmodule VialKeeper.Bench.Pmc do
         url: obj["url"],
         dest_name: dest_name(article, obj),
         md5: obj["md5"],
-        expected_size: obj["expected_size"]
+        expected_size: if(obj["size_estimated?"], do: nil, else: obj["expected_size"])
       }
     end)
   end

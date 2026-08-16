@@ -3,6 +3,8 @@ defmodule VialKeeper.Bench.CLI do
 
   alias VialKeeper.Bench.{FTS, Prepare, Root, Stress, Torture}
 
+  @benchmark_options [:profile, :output, :warmup, :iterations]
+
   @spec run_data([binary()]) :: :ok
   def run_data(argv) do
     argv = strip_dashes(argv)
@@ -19,13 +21,14 @@ defmodule VialKeeper.Bench.CLI do
   end
 
   @spec run_fts([binary()]) :: :ok
-  def run_fts(argv), do: run_benchmark(&FTS.run/1, argv, "fts")
+  def run_fts(argv), do: run_benchmark(&FTS.run/1, argv, "fts", @benchmark_options)
 
   @spec run_stress([binary()]) :: :ok
-  def run_stress(argv), do: run_benchmark(&Stress.run/1, argv, "stress")
+  def run_stress(argv),
+    do: run_benchmark(&Stress.run/1, argv, "stress", @benchmark_options ++ [:max_concurrency])
 
   @spec run_torture([binary()]) :: :ok
-  def run_torture(argv), do: run_benchmark(&Torture.run/1, argv, "torture")
+  def run_torture(argv), do: run_benchmark(&Torture.run/1, argv, "torture", @benchmark_options)
 
   defp configure(argv) do
     {opts, positional, invalid} =
@@ -109,8 +112,8 @@ defmodule VialKeeper.Bench.CLI do
     end
   end
 
-  defp run_benchmark(fun, argv, name) do
-    case parse_common!(argv, [:profile, :output, :warmup, :iterations]) do
+  defp run_benchmark(fun, argv, name, extra) do
+    case parse_common!(argv, extra) do
       :help ->
         success(data_usage())
 
@@ -158,6 +161,7 @@ defmodule VialKeeper.Bench.CLI do
       :output, acc -> Keyword.put(acc, :output, :string)
       :warmup, acc -> Keyword.put(acc, :warmup, :integer)
       :iterations, acc -> Keyword.put(acc, :iterations, :integer)
+      :max_concurrency, acc -> Keyword.put(acc, :max_concurrency, :integer)
       _, acc -> acc
     end)
   end
@@ -203,8 +207,8 @@ defmodule VialKeeper.Bench.CLI do
     """
     mix bench.data configure --root /mnt/other/downloads/vialkeeper [--reuse-existing]
     mix bench.data status
-    mix bench.data prepare trec-covid|pmc|open-images [--profile standard|smoke]
-    mix bench.data clean trec-covid|pmc|open-images
+    mix bench.data prepare trec-covid|pmc|simplewiki|open-images [--profile standard|smoke]
+    mix bench.data clean trec-covid|pmc|simplewiki|open-images
     """
   end
 

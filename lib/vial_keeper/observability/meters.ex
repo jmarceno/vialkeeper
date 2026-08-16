@@ -29,6 +29,12 @@ defmodule VialKeeper.Observability.Meters do
   | `vial_keeper.index.build.duration` | histogram |
   | `vial_keeper.search.rebuild.count` | counter |
   | `vial_keeper.search.rebuild.duration` | histogram |
+  | `vial_keeper.search.rebuild.batch.count` | counter |
+  | `vial_keeper.search.rebuild.batch.duration` | histogram |
+  | `vial_keeper.search.refresh.count` | counter |
+  | `vial_keeper.search.refresh.duration` | histogram |
+  | `vial_keeper.search.query.count` | counter |
+  | `vial_keeper.search.query.duration` | histogram |
   | `vial_keeper.replication.batch.duration` | histogram |
   | `vial_keeper.replication.transfer.count` | counter |
   | `vial_keeper.replication.transfer.duration` | histogram |
@@ -72,6 +78,12 @@ defmodule VialKeeper.Observability.Meters do
     {:"vial_keeper.index.build.duration", :histogram},
     {:"vial_keeper.search.rebuild.count", :counter},
     {:"vial_keeper.search.rebuild.duration", :histogram},
+    {:"vial_keeper.search.rebuild.batch.count", :counter},
+    {:"vial_keeper.search.rebuild.batch.duration", :histogram},
+    {:"vial_keeper.search.refresh.count", :counter},
+    {:"vial_keeper.search.refresh.duration", :histogram},
+    {:"vial_keeper.search.query.count", :counter},
+    {:"vial_keeper.search.query.duration", :histogram},
     {:"vial_keeper.replication.batch.duration", :histogram},
     {:"vial_keeper.replication.transfer.count", :counter},
     {:"vial_keeper.replication.transfer.duration", :histogram},

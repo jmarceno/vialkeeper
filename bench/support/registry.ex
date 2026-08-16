@@ -7,13 +7,15 @@ defmodule VialKeeper.Bench.Registry do
   ID lists.
   """
 
-  @names ["trec-covid", "pmc", "open-images"]
+  @names ["trec-covid", "pmc", "simplewiki", "open-images"]
 
   @trec_url "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/trec-covid.zip"
   @trec_size 73_876_720
   @trec_md5 "ce62140cb23feb9becf6270d0d1fe6d1"
 
   @pmc_https "https://pmc-oa-opendata.s3.amazonaws.com"
+  @simplewiki_url "https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pages-articles-multistream.xml.bz2"
+
   @open_images_info_url "https://storage.googleapis.com/openimages/2018_04/train/train-images-with-rotation.csv"
   @open_images_labels_url "https://storage.googleapis.com/openimages/v7/oidv7-train-annotations-human-imagelabels.csv"
   @open_images_classes_url "https://storage.googleapis.com/openimages/v7/oidv7-class-descriptions-boxable.csv"
@@ -54,6 +56,8 @@ defmodule VialKeeper.Bench.Registry do
   @spec selection_count(binary(), atom()) :: pos_integer()
   def selection_count("pmc", :standard), do: 100_000
   def selection_count("pmc", :smoke), do: 3
+  def selection_count("simplewiki", :standard), do: 100_000
+  def selection_count("simplewiki", :smoke), do: 3
   def selection_count("open-images", :standard), do: 100_000
   def selection_count("open-images", :smoke), do: 1
   def selection_count("trec-covid", _), do: 171_332
@@ -93,6 +97,23 @@ defmodule VialKeeper.Bench.Registry do
       "estimated_working_bytes" => 80 * gib(),
       "source_bytes_estimated?" => true,
       "smoke_articles" => pmc_smoke_articles()
+    }
+  end
+
+  defp definition("simplewiki") do
+    %{
+      "name" => "simplewiki",
+      "version" => "v1",
+      "title" => "Simple English Wikipedia catalog stress",
+      "source_url" => @simplewiki_url,
+      "archive_name" => "simplewiki-pages-articles-multistream.xml.bz2",
+      "selection_algorithm" => "first-current-main-v1",
+      "selection_seed" => "vialkeeper-simplewiki-v1",
+      "attachment_count" => 800,
+      "attachment_bytes" => 640 * 64 * 1024 + 120 * 1024 * 1024 + 40 * 16 * 1024 * 1024,
+      "estimated_source_bytes" => 2 * gib(),
+      "estimated_working_bytes" => 4 * gib(),
+      "source_bytes_estimated?" => true
     }
   end
 

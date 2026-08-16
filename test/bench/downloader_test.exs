@@ -92,6 +92,39 @@ defmodule VialKeeper.Bench.DownloaderTest do
     assert message =~ "HTML"
   end
 
+  test "accepts checksum-authenticated HTML objects", %{context: ctx} do
+    body = "<html><body>valid supplement</body></html>"
+    md5 = Checksums.md5_iodata(body)
+    {url, _} = start_server(%{"/supplement.html" => %{body: body, content_type: "text/html"}})
+
+    {:ok, dest} = Root.resolve(ctx, ["staging", "supplement.html"])
+
+    assert :ok =
+             Downloader.download(ctx, %{
+               url: url <> "/supplement.html",
+               dest: dest,
+               md5: md5
+             })
+
+    assert File.read!(dest) == body
+  end
+
+  test "accepts a current S3 ETag when a manifest MD5 is stale", %{context: ctx} do
+    body = "current-source-body"
+    md5 = Checksums.md5_iodata(body)
+    {url, _} = start_server(%{"/file.bin" => %{body: body, etag: ~s("#{md5}")}})
+    {:ok, dest} = Root.resolve(ctx, ["staging", "etag.bin"])
+
+    assert :ok =
+             Downloader.download(ctx, %{
+               url: url <> "/file.bin",
+               dest: dest,
+               md5: "00000000000000000000000000000000"
+             })
+
+    assert File.read!(dest) == body
+  end
+
   test "refuses destinations outside the benchmark root", %{context: ctx} do
     {url, _} = start_server(%{"/file.bin" => %{body: "x"}})
     outside = Path.join(System.tmp_dir!(), "vk-escape-#{System.unique_integer([:positive])}")

@@ -1,20 +1,33 @@
 defmodule VialKeeper.Bench.Stress do
-  @moduledoc "PMC catalog-path stress benchmark."
+  @moduledoc "Simple English Wikipedia catalog-path stress benchmark."
 
   alias VialKeeper.Attachments
-  alias VialKeeper.Bench.{IO, Marker, Pmc, Registry, Reports, Root, Runtime, Statistics}
+
+  alias VialKeeper.Bench.{
+    IO,
+    Marker,
+    Prepare,
+    Registry,
+    Reports,
+    Root,
+    Runtime,
+    SimpleWiki,
+    Statistics
+  }
+
   alias VialKeeper.Documents
   alias VialKeeper.Query
 
-  @index_name "pmc-text"
+  @index_name "simplewiki-text"
   @search_concurrencies [1, 4, 16]
   @mixed_concurrencies [4, 16, 32]
-  @query_algorithm "pmc-query-v1"
+  @query_algorithm "simplewiki-query-v1"
 
   @spec run(keyword()) :: {:ok, map()} | {:error, binary()}
   def run(opts \\ []) do
-    with {:ok, context} <- Root.load(opts),
-         {:ok, spec} <- Registry.fetch("pmc"),
+    with {:ok, context} <- Root.load_or_configure(opts),
+         {:ok, spec} <- Registry.fetch("simplewiki"),
+         {:ok, _prepared} <- Prepare.prepare("simplewiki", opts),
          {:ok, dataset} <- require_ready(context, spec),
          {:ok, manifest} <- read_manifest(dataset) do
       Runtime.with_isolated(context, fn ->
@@ -27,7 +40,7 @@ defmodule VialKeeper.Bench.Stress do
     with {:ok, path} <- Root.dataset_path(context, spec["name"], spec["version"]) do
       if Marker.present?(path),
         do: {:ok, path},
-        else: {:error, "dataset pmc is not ready; run mix bench.data prepare pmc"}
+        else: {:error, "dataset simplewiki is not ready; run mix bench.data prepare simplewiki"}
     end
   end
 
@@ -38,19 +51,19 @@ defmodule VialKeeper.Bench.Stress do
       {:ok, body} ->
         case JSON.decode(body) do
           {:ok, manifest} when is_map(manifest) -> {:ok, manifest}
-          _ -> {:error, "PMC manifest is invalid"}
+          _ -> {:error, "SimpleWiki manifest is invalid"}
         end
 
       {:error, reason} ->
-        {:error, "cannot read PMC manifest: #{inspect(reason)}"}
+        {:error, "cannot read SimpleWiki manifest: #{inspect(reason)}"}
     end
   end
 
   defp measure(context, spec, dataset, manifest, opts) do
     run_id = Integer.to_string(System.unique_integer([:positive]))
 
-    with {:ok, work} <- Root.work_run_path(context, "pmc", run_id),
-         {:ok, uuid, relative} <- Runtime.create_work_database(context, "pmc", run_id) do
+    with {:ok, work} <- Root.work_run_path(context, "simplewiki", run_id),
+         {:ok, uuid, relative} <- Runtime.create_work_database(context, "simplewiki", run_id) do
       try do
         ingest = bulk_ingest(uuid, dataset, manifest)
         fts = fts_build(uuid)
@@ -81,7 +94,7 @@ defmodule VialKeeper.Bench.Stress do
             }
           )
 
-        Reports.write(context, "pmc-stress.json", report, opts)
+        Reports.write(context, "simplewiki-stress.json", report, opts)
       after
         Runtime.close_work_database(context, uuid, relative)
       end
@@ -116,35 +129,34 @@ defmodule VialKeeper.Bench.Stress do
     %{
       "stats" => stats,
       "attachment_index" => acc.attachments,
-      "document_ids" => Enum.map(articles, & &1["pmcid"])
+      "document_ids" => Enum.map(articles, &article_id/1)
     }
   end
 
   defp ingest_article(uuid, dataset, article, acc) do
-    prefix = article["pmcid"] <> "." <> to_string(article["version"])
-    text_name = get_in(article, ["text", "name"]) || prefix <> ".txt"
-    text_path = Path.join([dataset, "objects", prefix, text_name])
+    id = article_id(article)
+    text_path = article_text_path(dataset, article)
     text = File.read!(text_path)
-    refs = upload_attachments(uuid, dataset, prefix, article["attachments"] || [])
+    refs = upload_attachments(uuid, dataset, article, article["attachments"] || [])
 
-    body = Pmc.document_body(article, text)
+    body = SimpleWiki.document_body(article, text)
 
     {:ok, _} =
       Documents.put(uuid, %{
-        "id" => article["pmcid"],
+        "id" => id,
         "body" => body,
         "attachments" => refs
       })
 
     attach_bytes =
       Enum.reduce(article["attachments"] || [], 0, fn obj, sum ->
-        sum + Statistics.file_size(Path.join([dataset, "objects", prefix, obj["name"]]))
+        sum + Statistics.file_size(Path.join([Path.dirname(text_path), obj["name"]]))
       end)
 
     attachments =
       acc.attachments ++
         Enum.map(Map.keys(refs), fn name ->
-          %{id: article["pmcid"], name: name, category: Pmc.classify_name(name)}
+          %{id: id, name: name, category: SimpleWiki.classify_name(name)}
         end)
 
     %{
@@ -156,10 +168,12 @@ defmodule VialKeeper.Bench.Stress do
     }
   end
 
-  defp upload_attachments(uuid, dataset, prefix, attachments) do
+  defp upload_attachments(uuid, dataset, article, attachments) do
+    directory = Path.dirname(article_text_path(dataset, article))
+
     Enum.reduce(attachments, %{}, fn obj, acc ->
-      path = Path.join([dataset, "objects", prefix, obj["name"]])
-      content_type = content_type(obj["name"])
+      path = Path.join(directory, obj["name"])
+      content_type = SimpleWiki.content_type(obj["name"])
 
       {:ok, %{blob: digest}} = Attachments.upload_stream(uuid, IO.file_chunks(path))
 
@@ -175,8 +189,7 @@ defmodule VialKeeper.Bench.Stress do
       Query.create_index(uuid, %{
         "name" => @index_name,
         "type" => "full_text",
-        "fields" => ["/title", "/text"],
-        "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+        "fields" => ["/title", "/text"]
       })
 
     elapsed = System.monotonic_time(:microsecond) - started
@@ -377,9 +390,7 @@ defmodule VialKeeper.Bench.Stress do
   end
 
   defp article_text(dataset, article) do
-    prefix = article["pmcid"] <> "." <> to_string(article["version"])
-    name = get_in(article, ["text", "name"]) || prefix <> ".txt"
-    path = Path.join([dataset, "objects", prefix, name])
+    path = article_text_path(dataset, article)
 
     case File.read(path) do
       {:ok, text} -> text
@@ -387,18 +398,18 @@ defmodule VialKeeper.Bench.Stress do
     end
   end
 
+  defp article_text_path(dataset, article) do
+    prefix = article_id(article) <> "." <> to_string(article["version"])
+    name = get_in(article, ["text", "name"]) || prefix <> ".txt"
+    Path.join([dataset, "objects", prefix, name])
+  end
+
+  defp article_id(article), do: article["id"]
+
   defp tokenize(text) do
     text
     |> String.downcase()
     |> String.split(~r/[^a-z0-9]+/u, trim: true)
     |> Enum.filter(&(String.length(&1) > 3))
-  end
-
-  defp content_type(name) do
-    case Pmc.classify_name(name) do
-      "pdf" -> "application/pdf"
-      "image" -> "image/jpeg"
-      _ -> "application/octet-stream"
-    end
   end
 end

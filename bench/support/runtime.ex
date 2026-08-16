@@ -107,6 +107,7 @@ defmodule VialKeeper.Bench.Runtime do
     Keyword.merge(limits,
       max_document_bytes: 67_108_864,
       max_request_bytes: 134_217_728,
+      max_wait_ms: 300_000,
       max_query_execution_ms: 300_000,
       max_search_rebuild_ms: 3_600_000,
       max_full_scan_documents: 200_000,

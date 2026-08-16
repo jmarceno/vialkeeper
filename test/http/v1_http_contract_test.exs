@@ -194,8 +194,7 @@ defmodule VialKeeper.HTTP.V1HTTPContractTest do
       request(:post, "/v1/databases/#{uuid}/indexes", %{
         "name" => "titles",
         "type" => "full_text",
-        "fields" => ["/title"],
-        "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+        "fields" => ["/title"]
       })
 
     assert full_text.status == 201

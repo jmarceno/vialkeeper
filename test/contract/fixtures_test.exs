@@ -7,7 +7,6 @@ defmodule VialKeeper.Contract.FixturesTest do
 
   alias VialKeeper.Domain.Checkpoint
   alias VialKeeper.JSON.Canonical
-  alias VialKeeper.Query.FullText
   alias VialKeeper.Replication.{CheckpointReconciler, Id}
   alias VialKeeper.Revisions.Id, as: RevisionId
   alias VialKeeper.Storage.SQLite.Adapter
@@ -103,50 +102,6 @@ defmodule VialKeeper.Contract.FixturesTest do
           assert canonical == fixture["canonical_payload"],
                  "canonical payload mismatch for #{fixture["id"]}"
       end
-    end
-  end
-
-  test "unicode_words_v1 tokenization fixtures match VialKeeper.Query.FullText (QUERY-015)" do
-    fixtures = load_json!("tokenization/unicode_words_v1.json")
-    assert [_ | _] = fixtures
-
-    for fixture <- fixtures do
-      diacritics =
-        case fixture["diacritics"] do
-          "remove" -> :remove
-          _ -> :preserve
-        end
-
-      actual = FullText.tokens(fixture["input"], diacritics)
-
-      assert actual == fixture["expected"],
-             "tokenization mismatch for #{fixture["id"]}: #{inspect(actual)} != #{inspect(fixture["expected"])}"
-    end
-  end
-
-  test "FTS5 unicode61 token multisets match FullText.tokens/2 for marked fixtures" do
-    fixtures =
-      "tokenization/unicode_words_v1.json"
-      |> load_json!()
-      |> Enum.filter(&(&1["check_fts5"] == true))
-
-    assert [_ | _] = fixtures
-
-    for fixture <- fixtures do
-      diacritics = fixture["diacritics"] || "preserve"
-      remove = if diacritics == "remove", do: "2", else: "0"
-      expected = fixture["expected"]
-
-      actual_elixir =
-        FullText.tokens(fixture["input"], if(diacritics == "remove", do: :remove, else: :preserve))
-
-      assert actual_elixir == expected
-
-      fts_counts = fts5_token_counts(fixture["input"], remove)
-      elixir_counts = Enum.frequencies(expected)
-
-      assert fts_counts == elixir_counts,
-             "FTS5 unicode61 mismatch for #{fixture["id"]}: fts=#{inspect(fts_counts)} elixir=#{inspect(elixir_counts)}"
     end
   end
 
@@ -298,54 +253,6 @@ defmodule VialKeeper.Contract.FixturesTest do
       end
     after
       _ = Adapter.close(adapter)
-      VialKeeper.TempDatabase.cleanup(bundle_path)
-    end
-  end
-
-  defp fts5_token_counts(input, remove_diacritics) do
-    {:ok, bundle_path} =
-      VialKeeper.TempDatabase.create(
-        prefix: "vialkeeper-fts5-#{System.unique_integer([:positive])}"
-      )
-
-    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
-    {:ok, conn} = Exqlite.Sqlite3.open(path)
-
-    try do
-      ddl =
-        "CREATE VIRTUAL TABLE docs USING fts5(content, tokenize = 'unicode61 remove_diacritics #{remove_diacritics}')"
-
-      :ok = Exqlite.Sqlite3.execute(conn, ddl)
-      {:ok, insert} = Exqlite.Sqlite3.prepare(conn, "INSERT INTO docs(content) VALUES (?)")
-      :ok = Exqlite.Sqlite3.bind(insert, [input])
-      :done = Exqlite.Sqlite3.step(conn, insert)
-      :ok = Exqlite.Sqlite3.release(conn, insert)
-
-      :ok =
-        Exqlite.Sqlite3.execute(
-          conn,
-          "CREATE VIRTUAL TABLE docs_vocab USING fts5vocab(docs, 'row')"
-        )
-
-      {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, "SELECT term, cnt FROM docs_vocab")
-
-      rows =
-        Stream.resource(
-          fn -> stmt end,
-          fn s ->
-            case Exqlite.Sqlite3.step(conn, s) do
-              {:row, [term, cnt]} -> {[{term, cnt}], s}
-              :done -> {:halt, s}
-              _ -> {:halt, s}
-            end
-          end,
-          fn s -> Exqlite.Sqlite3.release(conn, s) end
-        )
-        |> Map.new()
-
-      rows
-    after
-      Exqlite.Sqlite3.close(conn)
       VialKeeper.TempDatabase.cleanup(bundle_path)
     end
   end

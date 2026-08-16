@@ -173,7 +173,7 @@ paths that must not escape the root (`..`, symlinks).
 notes.vialkeeper/
 ├── <backend data>     # metadata, revisions, indexes, views, jobs, …
 ├── blobs/             # attachment representations (<prefix>/<digest>.blob)
-└── tmp/               # incomplete uploads and rebuildable search-index.etf (not authoritative)
+└── tmp/               # incomplete uploads and Tantivy search generations (not authoritative)
 ```
 
 `registrations.json` is routing only:
@@ -606,6 +606,9 @@ Important `[limits]` keys (see `priv/host.toml` for defaults):
 - `max_bulk_operations`, `max_changes_batch`, `max_query_results`
 - `max_query_execution_ms` — ceiling for one query (default `5000`)
 - `max_search_rebuild_ms` — ceiling for one full-text index rebuild on `create_index` / `rebuild_index` (default `300000`, five minutes). Raise this for large corpora; it is independent of the query budget. Restart after editing `host.toml`.
+- `max_search_rebuild_batch_documents` — maximum winning documents submitted to Tantivy in one rebuild batch (default `500`). Lower this to reduce per-call memory and latency; raise it only when the writer budget allows it.
+- `max_search_writer_memory_bytes` — Tantivy writer memory budget (default `50000000`, with Tantivy's 15 MB minimum). This bounds the native indexing writer; it is independent of the rebuild timeout.
+- `max_search_candidates` — maximum full-text candidates retained before selector, predicate, or sort post-filtering (default `10000`). Queries that exceed this bound fail with `resource_limit` instead of silently truncating results.
 - `max_json_nesting_depth`
 - Attachment size and concurrency ceilings
 
@@ -665,6 +668,7 @@ not block the hot path.
 | Query execute | `vial_keeper.query.execute` | `….duration` |
 | Index build | `vial_keeper.index.build` | `….duration` |
 | Search cache rebuild | `vial_keeper.search.rebuild` | `….count` + `….duration` |
+| Search rebuild batch / refresh / query | `vial_keeper.search.rebuild.batch`, `….refresh`, `….query` | matching count + duration |
 | Replication batch / transfer / checkpoint | matching `vial_keeper.replication.*` | matching |
 | Replication remote wire | — | `vial_keeper.replication.wire.bytes` + `….wire.codec.duration` |
 | Subscription update / open / overload | `….subscription.update` | matching counters |
@@ -722,7 +726,7 @@ OTLP collection is configured via `otlp_endpoint` only.
 
 ## Dataset-backed benchmarks
 
-TREC-COVID FTS, PMC stress, and Open Images torture are opt-in Mix commands.
+TREC-COVID FTS, Simple Wikipedia stress, PMC, and Open Images torture are opt-in Mix commands.
 They are not part of the release or the ExUnit gate. All source objects,
 generated manifests, work databases, caches, and reports stay under a
 mandatory external root. The standard location is
@@ -740,9 +744,10 @@ mix bench.fts
 
 `status` prints free space and each dataset's expected source size, local
 size, and estimated VialKeeper working space (source plus a second copy
-inside bundles, plus a 10 GiB / 15% reserve). PMC and Open Images standard
-profiles are tens of gigabytes; use `--profile smoke` for a tiny pinned
-subset of the same code path.
+inside bundles, plus a 10 GiB / 15% reserve). Simple Wikipedia prepares one
+Wikimedia archive and generates 800 deterministic attachment objects locally;
+PMC and Open Images standard profiles still use many tens of gigabytes. Use `--profile
+smoke` for a tiny subset of the same code path.
 
 Prepare and the runners do not accept `--root`. Cleanup is one named dataset
 at a time (`mix bench.data clean trec-covid`). Details, Git vs external

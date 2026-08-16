@@ -15,7 +15,7 @@ Inside an `.vialkeeper` directory the SQLite backend stores:
 notes.vialkeeper/
 ├── database.sqlite3   # revisions, indexes, views, jobs, metadata
 ├── blobs/             # attachment bytes (product path; not SQL)
-└── tmp/               # incomplete uploads and rebuildable search-index.etf
+└── tmp/               # incomplete uploads and Tantivy search generations
 ```
 
 The artifact filename and SQL schema are owned by this backend. Generic
@@ -66,9 +66,9 @@ owns the artifact.
 
 Product integrity rules run over normalized domain facts. The SQLite backend
 additionally reports engine probes (foreign keys, required tables). Failures
-surface as `integrity_violation`. Full-text indexes are Elixir posting lists
-outside SQLite; integrity records them as external rather than comparing FTS
-rows.
+surface as `integrity_violation`. Full-text indexes are Tantivy generations
+outside SQLite under the bundle `tmp/search/indexes/` directory; integrity
+records them as external rather than comparing FTS rows.
 
 ## Diagnostics
 

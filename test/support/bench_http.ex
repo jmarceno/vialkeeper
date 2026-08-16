@@ -24,10 +24,12 @@ defmodule VialKeeper.Bench.TestHTTP do
     body = Map.get(route, :body, "")
     status = Map.get(route, :status, 200)
     content_type = Map.get(route, :content_type, "application/octet-stream")
+    etag = Map.get(route, :etag)
     support_range = Map.get(route, :support_range, false)
     drop_after = Map.get(route, :drop_after)
 
     conn = Plug.Conn.put_resp_header(conn, "content-type", content_type)
+    conn = if is_binary(etag), do: Plug.Conn.put_resp_header(conn, "etag", etag), else: conn
 
     case Plug.Conn.get_req_header(conn, "range") do
       ["bytes=" <> range] when support_range ->

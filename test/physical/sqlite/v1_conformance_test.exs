@@ -113,8 +113,7 @@ defmodule VialKeeper.StorageAdapter.V1ConformanceTest do
              @adapter.create_index(adapter, %{
                "name" => "titles",
                "type" => "full_text",
-               "fields" => ["/title"],
-               "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+               "fields" => ["/title"]
              })
 
     assert {:ok, %{results: [%{id: "a"}], selected_index: ^structured_id}} =
@@ -143,7 +142,7 @@ defmodule VialKeeper.StorageAdapter.V1ConformanceTest do
     {:ok, indexes} = @adapter.list_indexes(adapter)
     full_text = Enum.find(indexes, &(&1["type"] == "full_text"))
     refute get_in(full_text, ["_metadata", "physical_name"])
-    assert get_in(full_text, ["_metadata", "engine"]) == "ets"
+    assert get_in(full_text, ["_metadata", "engine"]) == "tantivy"
 
     assert {:ok, %{rebuilt: true}} = @adapter.rebuild_index(adapter, full_text_id)
     assert {:ok, %{ok: true}} = @adapter.integrity_check(adapter, %{})
@@ -169,8 +168,7 @@ defmodule VialKeeper.StorageAdapter.V1ConformanceTest do
              @adapter.create_index(adapter, %{
                "name" => "titles",
                "type" => "full_text",
-               "fields" => ["/title"],
-               "tokenization" => %{"strategy" => "unicode_words_v1", "diacritics" => "preserve"}
+               "fields" => ["/title"]
              })
 
     assert {:ok, %{results: []}} =

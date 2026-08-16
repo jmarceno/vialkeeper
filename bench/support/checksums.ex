@@ -34,8 +34,9 @@ defmodule VialKeeper.Bench.Checksums do
   def verify_file(path, opts) when is_binary(path) and is_list(opts) do
     with {:ok, stat} <- stat(path),
          :ok <- verify_size(stat.size, opts[:expected_size]),
-         :ok <- verify_not_html(path, stat.size) do
-      verify_hash(path, opts)
+         :ok <- verify_hash(path, opts),
+         :ok <- verify_not_html(path, stat.size, opts) do
+      :ok
     end
   end
 
@@ -90,7 +91,7 @@ defmodule VialKeeper.Bench.Checksums do
   defp verify_hash(path, opts) do
     cond do
       is_binary(opts[:md5]) ->
-        compare_hash(path, :md5, opts[:md5], "MD5")
+        compare_md5(path, opts[:md5], opts[:etag])
 
       is_binary(opts[:sha256]) ->
         compare_hash(path, :sha256, opts[:sha256], "SHA-256")
@@ -114,17 +115,49 @@ defmodule VialKeeper.Bench.Checksums do
   defp canonicalize_if_md5(:md5, expected), do: canonicalize_md5(expected)
   defp canonicalize_if_md5(_algorithm, expected), do: {:ok, String.downcase(expected)}
 
-  defp verify_not_html(_path, size) when size > 1_048_576, do: :ok
+  defp compare_md5(path, expected, etag) do
+    with {:ok, expected} <- canonicalize_md5(expected),
+         {:ok, actual} <- hash_file(path, :md5) do
+      cond do
+        actual == expected ->
+          :ok
 
-  defp verify_not_html(path, _size) do
-    case File.open(path, [:read, :binary, :raw]) do
-      {:ok, io} ->
-        prefix = IO.binread(io, 256)
-        File.close(io)
-        reject_html_prefix(prefix)
+        etag_md5(etag) == actual ->
+          :ok
 
-      {:error, reason} ->
-        {:error, "cannot read #{path}: #{inspect(reason)}"}
+        true ->
+          {:error, "MD5 mismatch for #{path}"}
+      end
+    end
+  end
+
+  defp etag_md5(value) when is_binary(value) do
+    case Regex.run(~r/^\s*(?:W\/)?"([0-9a-f]{32})"\s*$/i, value) do
+      [_, md5] -> String.downcase(md5)
+      _ -> nil
+    end
+  end
+
+  defp etag_md5(_value), do: nil
+
+  defp verify_not_html(path, size, opts) do
+    cond do
+      is_binary(opts[:md5]) or is_binary(opts[:sha256]) ->
+        :ok
+
+      size > 1_048_576 ->
+        :ok
+
+      true ->
+        case File.open(path, [:read, :binary, :raw]) do
+          {:ok, io} ->
+            prefix = IO.binread(io, 256)
+            File.close(io)
+            reject_html_prefix(prefix)
+
+          {:error, reason} ->
+            {:error, "cannot read #{path}: #{inspect(reason)}"}
+        end
     end
   end
 

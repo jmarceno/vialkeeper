@@ -1,16 +1,22 @@
 defmodule VialKeeper.Search.Owner do
   @moduledoc """
-  Owns rebuildable ETS posting lists for one database.
+  Owns Tantivy generations for one database.
 
-  The inverted index is not authoritative document state. It is reconstructed
-  from winning documents when the on-disk cache is missing.
+  A rebuild writes a new generation while the current committed generation keeps
+  serving searches. Only the owner publishes a completed generation or applies
+  incremental winner updates, so a failed or interrupted build is invisible to
+  readers.
   """
   use GenServer
 
-  alias VialKeeper.Search.Engine
+  alias VialKeeper.Runtime.AtomicWrite
+  alias VialKeeper.Observability.Instrumentation.Search, as: SearchInstrumentation
+  alias VialKeeper.Search.Tantivy
 
   @registry VialKeeper.Search.Registry
-  @persist_file "search-index.etf"
+  @search_root "search/indexes"
+  @manifest "manifest.json"
+  @backend "tantivy_ex"
 
   @type args :: {binary(), binary() | nil}
 
@@ -41,103 +47,471 @@ defmodule VialKeeper.Search.Owner do
 
   @spec persist_path(binary() | nil) :: binary() | nil
   def persist_path(tmp_path) when is_binary(tmp_path) and tmp_path not in [":memory:", ""],
-    do: Path.join(tmp_path, @persist_file)
+    do: Path.join(tmp_path, @search_root)
 
   def persist_path(_tmp_path), do: nil
 
   @impl true
   def init({uuid, tmp_path}) do
-    tables = Engine.new_tables()
-    path = persist_path(tmp_path)
-    :ok = maybe_load(tables, path)
-    {:ok, %{uuid: uuid, tmp_path: tmp_path, tables: tables, persist_path: path}}
+    state = %{uuid: uuid, tmp_path: tmp_path, indexes: %{}, rebuilds: %{}}
+    {:ok, load_existing(state)}
   end
 
   @impl true
   def handle_call({:put_index, definition}, _from, state) do
-    :ok = Engine.put_index(state.tables, definition)
-    {:reply, persist(state), state}
+    index_id = Map.get(definition, "index_id", Map.get(definition, :index_id))
+
+    if is_binary(index_id) do
+      entry =
+        Map.get(state.indexes, index_id, %{definition: definition, generation: nil, handle: nil})
+
+      entry = %{entry | definition: definition}
+      new_state = %{state | indexes: Map.put(state.indexes, index_id, entry)}
+      {:reply, persist_manifest(new_state, index_id, entry), new_state}
+    else
+      {:reply, {:error, VialKeeper.Error.invalid_request("full-text index id is required")}, state}
+    end
   end
 
   def handle_call({:drop_index, index_id}, _from, state) do
-    :ok = Engine.drop_index(state.tables, index_id)
-    {:reply, persist(state), state}
+    state = abort_rebuild_state(state, index_id)
+
+    new_state = %{
+      state
+      | indexes: Map.delete(state.indexes, index_id),
+        rebuilds: Map.delete(state.rebuilds, index_id)
+    }
+
+    _ = remove_index_files(state.tmp_path, index_id)
+    {:reply, :ok, new_state}
   end
 
-  def handle_call({:rebuild, index_id, definition, documents}, _from, state) do
-    :ok = Engine.drop_index(state.tables, index_id)
-    :ok = Engine.put_index(state.tables, Map.put(definition, "index_id", index_id))
+  def handle_call({:begin_rebuild, index_id, definition}, _from, state) do
+    state = abort_rebuild_state(state, index_id)
 
-    Enum.each(documents, fn document ->
-      refresh_document(state.tables, document)
-    end)
+    with {:ok, index_root} <- index_root(state.tmp_path, index_id),
+         generation <- next_generation(state, index_id),
+         generation_path = Path.join(index_root, "generation-#{generation}"),
+         {:ok, handle} <- Tantivy.create(generation_path, definition) do
+      rebuild = %{handle: handle, generation: generation, definition: definition, entries: 0}
+      {:reply, :ok, %{state | rebuilds: Map.put(state.rebuilds, index_id, rebuild)}}
+    else
+      {:error, _} = error -> {:reply, error, state}
+    end
+  end
 
-    {:reply, persist(state), state}
+  def handle_call({:rebuild_batch, index_id, documents}, _from, state)
+      when is_list(documents) do
+    case Map.fetch(state.rebuilds, index_id) do
+      {:ok, rebuild} ->
+        result =
+          SearchInstrumentation.rebuild_batch(state.uuid, index_id, length(documents), fn ->
+            add_documents(rebuild.handle, documents)
+          end)
+
+        case result do
+          {:ok, handle, count} ->
+            updated = %{rebuild | handle: handle, entries: rebuild.entries + count}
+            {:reply, {:ok, count}, put_in(state.rebuilds[index_id], updated)}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, abort_rebuild_state(state, index_id)}
+        end
+
+      :error ->
+        {:reply, {:error, VialKeeper.Error.index_not_found("full-text rebuild is not active")},
+         state}
+    end
+  end
+
+  def handle_call({:abort_rebuild, index_id}, _from, state) do
+    {:reply, :ok, abort_rebuild_state(state, index_id)}
+  end
+
+  def handle_call({:finish_rebuild, index_id}, _from, state) do
+    case fetch_rebuild(state, index_id) do
+      {:ok, rebuild} ->
+        finish_rebuild(state, index_id, rebuild)
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({:rebuild, index_id, definition, documents}, _from, state)
+      when is_list(documents) do
+    with {:ok, state} <- begin_rebuild_state(state, index_id, definition),
+         {:ok, state, entries} <- rebuild_documents(state, index_id, documents),
+         {:ok, state} <- finish_rebuild_state(state, index_id) do
+      {:reply, {:ok, entries}, state}
+    else
+      {:error, _} = error -> {:reply, error, state}
+    end
   end
 
   def handle_call({:refresh, document_id, body, deleted}, _from, state) do
-    :ok = Engine.refresh(state.tables, document_id, body, deleted)
-    {:reply, persist(state), state}
+    {reply, new_state} =
+      SearchInstrumentation.refresh(state.uuid, 1, fn ->
+        refresh_indexes(state, [{document_id, body, deleted}])
+      end)
+
+    {:reply, reply, new_state}
   end
 
-  def handle_call({:refresh_many, updates}, _from, state) do
-    Enum.each(updates, fn {document_id, body, deleted} ->
-      :ok = Engine.refresh(state.tables, document_id, body, deleted)
-    end)
+  def handle_call({:refresh_many, updates}, _from, state) when is_list(updates) do
+    {reply, new_state} =
+      SearchInstrumentation.refresh(state.uuid, length(updates), fn ->
+        refresh_indexes(state, updates)
+      end)
 
-    {:reply, persist(state), state}
+    {:reply, reply, new_state}
   end
 
   def handle_call({:search, index_id, text, mode}, _from, state) do
-    {:reply, Engine.search(state.tables, index_id, text, mode), state}
+    reply =
+      SearchInstrumentation.query(state.uuid, mode, fn ->
+        case Map.get(state.indexes, index_id) do
+          %{handle: %{searcher: searcher} = handle} when not is_nil(searcher) ->
+            Tantivy.search(handle, text, mode)
+
+          %{handle: nil} ->
+            {:error, VialKeeper.Error.index_not_found("full-text index is not built")}
+
+          nil ->
+            {:error, VialKeeper.Error.index_not_found("full-text index not found")}
+        end
+      end)
+
+    {:reply, reply, state}
   end
 
-  def handle_call(:has_indexes, _from, state) do
-    {:reply, :ets.info(state.tables.meta, :size) > 0, state}
-  end
+  def handle_call(:has_indexes, _from, state),
+    do: {:reply, map_size(state.indexes) > 0, state}
 
   @impl true
-  def terminate(_reason, state), do: persist(state)
+  def terminate(_reason, _state), do: :ok
 
-  defp refresh_document(tables, %{id: id, body: body}) when is_binary(id),
-    do: Engine.refresh(tables, id, body || %{}, false)
+  defp load_existing(state) do
+    case persist_path(state.tmp_path) do
+      nil -> state
+      root -> load_manifests(state, Path.wildcard(Path.join(root, "*/#{@manifest}")))
+    end
+  end
 
-  defp refresh_document(tables, %{document_id: id, body: body, deleted: deleted})
+  defp load_manifests(state, []), do: state
+
+  defp load_manifests(state, [manifest_path | rest]) do
+    state =
+      case File.read(manifest_path) do
+        {:ok, binary} -> load_manifest(state, manifest_path, binary)
+        {:error, _} -> state
+      end
+
+    load_manifests(state, rest)
+  end
+
+  defp load_manifest(state, _manifest_path, binary) do
+    with {:ok,
+          %{
+            "backend" => @backend,
+            "backend_version" => backend_version,
+            "schema_fingerprint" => schema_fingerprint,
+            "index_id" => index_id,
+            "generation" => generation,
+            "definition" => definition
+          }} <- Jason.decode(binary),
+         true <- backend_version == Tantivy.backend_version(),
+         true <- schema_fingerprint == Tantivy.schema_fingerprint(),
+         true <- is_binary(index_id) and is_integer(generation) and is_map(definition),
+         {:ok, root} <- index_root(state.tmp_path, index_id),
+         generation_path = Path.join(root, "generation-#{generation}"),
+         {:ok, handle} <- Tantivy.open(generation_path, definition) do
+      entry = %{definition: definition, generation: generation, handle: handle}
+      %{state | indexes: Map.put(state.indexes, index_id, entry)}
+    else
+      _ -> state
+    end
+  end
+
+  defp begin_rebuild_state(state, index_id, definition) do
+    case handle_call({:begin_rebuild, index_id, definition}, self(), state) do
+      {:reply, :ok, new_state} -> {:ok, new_state}
+      {:reply, {:error, _} = error, _state} -> error
+    end
+  end
+
+  defp rebuild_documents(state, index_id, documents) do
+    case Enum.reduce_while(documents, {:ok, state, 0}, fn document, {:ok, acc, entries} ->
+           case add_documents(Map.fetch!(acc.rebuilds, index_id).handle, [document]) do
+             {:ok, handle, count} ->
+               rebuild = %{
+                 Map.fetch!(acc.rebuilds, index_id)
+                 | handle: handle,
+                   entries: entries + count
+               }
+
+               {:cont, {:ok, put_in(acc.rebuilds[index_id], rebuild), entries + count}}
+
+             {:error, reason} ->
+               {:halt, {:error, reason}}
+           end
+         end) do
+      {:ok, state, entries} -> {:ok, state, entries}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp finish_rebuild_state(state, index_id) do
+    case handle_call({:finish_rebuild, index_id}, self(), state) do
+      {:reply, {:ok, _entries}, new_state} -> {:ok, new_state}
+      {:reply, {:error, _} = error, _state} -> error
+    end
+  end
+
+  defp add_documents(handle, documents) do
+    Enum.reduce_while(documents, {:ok, handle, 0}, fn document, {:ok, handle, count} ->
+      case document_values(document) do
+        {:ok, {id, body, deleted}} ->
+          result = if(deleted, do: :ok, else: Tantivy.add(handle, id, body))
+
+          case result do
+            :ok -> {:cont, {:ok, handle, count + 1}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+
+        :skip ->
+          {:cont, {:ok, handle, count}}
+      end
+    end)
+    |> case do
+      {:ok, handle, count} ->
+        case Tantivy.commit(handle) do
+          {:ok, committed} -> {:ok, committed, count}
+          {:error, _} = error -> error
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp document_values(%{id: id, body: body, deleted: deleted})
        when is_binary(id) and is_boolean(deleted),
-       do: Engine.refresh(tables, id, body, deleted)
+       do: {:ok, {id, body || %{}, deleted}}
 
-  defp refresh_document(_tables, _document), do: :ok
+  defp document_values(%{id: id, body: body}) when is_binary(id),
+    do: {:ok, {id, body || %{}, false}}
 
-  defp persist(%{persist_path: nil}), do: :ok
+  defp document_values(%{document_id: id, body: body, deleted: deleted})
+       when is_binary(id) and is_boolean(deleted), do: {:ok, {id, body || %{}, deleted}}
 
-  defp persist(%{tables: tables, persist_path: path}) do
-    binary = :erlang.term_to_binary({:v1, Engine.dump(tables)})
+  defp document_values(%{"id" => id, "body" => body}) when is_binary(id),
+    do: {:ok, {id, body || %{}, false}}
 
-    with :ok <- File.mkdir_p(Path.dirname(path)),
-         :ok <- File.write(path, binary, [:binary]) do
+  defp document_values(%{"document_id" => id, "body" => body, "deleted" => deleted})
+       when is_binary(id) and is_boolean(deleted), do: {:ok, {id, body || %{}, deleted}}
+
+  defp document_values(_), do: :skip
+
+  defp refresh_indexes(state, updates) do
+    results =
+      state.indexes
+      |> Enum.reduce_while({:ok, state}, fn {index_id, entry}, {:ok, acc} ->
+        case entry.handle do
+          nil -> {:cont, {:ok, acc}}
+          handle -> refresh_one(acc, index_id, entry, handle, updates)
+        end
+      end)
+
+    case results do
+      {:ok, new_state} -> {:ok, new_state}
+      {:error, _} = error -> {error, state}
+    end
+  end
+
+  defp refresh_one(state, index_id, entry, handle, updates) do
+    case apply_updates(handle, updates) do
+      {:ok, updated} ->
+        case Tantivy.commit(updated) do
+          {:ok, committed} ->
+            {:cont, {:ok, put_in(state.indexes[index_id], %{entry | handle: committed})}}
+
+          {:error, reason} ->
+            _ = Tantivy.rollback(updated)
+            {:halt, {:error, reason}}
+        end
+
+      {:error, reason} ->
+        _ = Tantivy.rollback(handle)
+        {:halt, {:error, reason}}
+    end
+  end
+
+  defp apply_updates(handle, updates) do
+    updates
+    |> deduplicate_updates()
+    |> Enum.reduce_while({:ok, handle}, fn {document_id, body, deleted}, {:ok, acc} ->
+      case Tantivy.replace(acc, document_id, body, deleted) do
+        :ok -> {:cont, {:ok, acc}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp deduplicate_updates(updates),
+    do: updates |> Enum.reverse() |> Enum.uniq_by(&elem(&1, 0)) |> Enum.reverse()
+
+  defp publish(state, index_id, entry),
+    do: %{
+      state
+      | indexes: Map.put(state.indexes, index_id, entry),
+        rebuilds: Map.delete(state.rebuilds, index_id)
+    }
+
+  defp abort_rebuild_state(state, index_id) do
+    case Map.pop(state.rebuilds, index_id) do
+      {nil, _rebuilds} ->
+        state
+
+      {rebuild, rebuilds} ->
+        _ = Tantivy.rollback(rebuild.handle)
+        _ = remove_generation(state.tmp_path, index_id, rebuild.generation)
+        %{state | rebuilds: rebuilds}
+    end
+  end
+
+  defp finish_rebuild(state, index_id, rebuild) do
+    case Tantivy.commit(rebuild.handle) do
+      {:ok, handle} ->
+        entry = %{definition: rebuild.definition, generation: rebuild.generation, handle: handle}
+        new_state = publish(state, index_id, entry)
+
+        case persist_manifest(new_state, index_id, entry) do
+          :ok ->
+            {:reply, {:ok, rebuild.entries},
+             cleanup_generations(new_state, index_id, rebuild.generation)}
+
+          {:error, _} = error ->
+            _ = remove_generation(state.tmp_path, index_id, rebuild.generation)
+            {:reply, error, abort_rebuild_state(state, index_id)}
+        end
+
+      {:error, _} = error ->
+        {:reply, error, abort_rebuild_state(state, index_id)}
+    end
+  end
+
+  defp fetch_rebuild(state, index_id) do
+    case Map.fetch(state.rebuilds, index_id) do
+      {:ok, rebuild} -> {:ok, rebuild}
+      :error -> {:error, VialKeeper.Error.index_not_found("full-text rebuild is not active")}
+    end
+  end
+
+  defp next_generation(state, index_id) do
+    current = state.indexes[index_id]
+    rebuilding = state.rebuilds[index_id]
+    disk = disk_generation(state.tmp_path, index_id)
+    max(current_generation(current), max(current_generation(rebuilding), disk)) + 1
+  end
+
+  defp current_generation(%{generation: generation}) when is_integer(generation), do: generation
+  defp current_generation(_), do: 0
+
+  defp disk_generation(nil, _index_id), do: 0
+
+  defp disk_generation(tmp_path, index_id) do
+    with {:ok, root} <- index_root(tmp_path, index_id), {:ok, entries} <- File.ls(root) do
+      entries
+      |> Enum.map(&generation_number/1)
+      |> Enum.max(fn -> 0 end)
+    else
+      _ -> 0
+    end
+  end
+
+  defp generation_number("generation-" <> suffix) do
+    case Integer.parse(suffix) do
+      {generation, ""} -> generation
+      _ -> 0
+    end
+  end
+
+  defp generation_number(_), do: 0
+
+  defp index_root(nil, _index_id),
+    do: {:error, VialKeeper.Error.internal_error("persistent search path is unavailable")}
+
+  defp index_root(tmp_path, index_id) when is_binary(tmp_path) and is_binary(index_id) do
+    encoded = Base.url_encode64(index_id, padding: false)
+    {:ok, Path.join(persist_path(tmp_path), encoded)}
+  end
+
+  defp persist_manifest(%{tmp_path: nil}, _index_id, _entry), do: :ok
+
+  defp persist_manifest(state, index_id, %{generation: nil}),
+    do: persist_marker(state.tmp_path, index_id)
+
+  defp persist_manifest(state, index_id, entry) do
+    with {:ok, root} <- index_root(state.tmp_path, index_id),
+         :ok <- File.mkdir_p(root),
+         {:ok, binary} <-
+           Jason.encode(%{
+             "backend" => @backend,
+             "backend_version" => Tantivy.backend_version(),
+             "schema_fingerprint" => Tantivy.schema_fingerprint(),
+             "index_id" => index_id,
+             "generation" => entry.generation,
+             "definition" => entry.definition
+           }),
+         :ok <- AtomicWrite.write(Path.join(root, @manifest), binary) do
       :ok
     else
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.internal_error("search index persist failed", %{reason: inspect(reason)})}
+         VialKeeper.Error.internal_error("search manifest persist failed", %{cause: inspect(reason)})}
     end
   end
 
-  defp maybe_load(_tables, nil), do: :ok
+  defp cleanup_generations(state, index_id, current_generation) do
+    case index_root(state.tmp_path, index_id) do
+      {:ok, root} ->
+        case File.ls(root) do
+          {:ok, entries} ->
+            Enum.each(entries, fn entry ->
+              if generation_number(entry) not in [0, current_generation] do
+                _ = File.rm_rf(Path.join(root, entry))
+              end
+            end)
 
-  defp maybe_load(tables, path) do
-    case File.read(path) do
-      {:ok, binary} ->
-        case :erlang.binary_to_term(binary, [:safe]) do
-          {:v1, dump} -> Engine.load(tables, dump)
-          _ -> :ok
+          {:error, _reason} ->
+            :ok
         end
-
-      {:error, :enoent} ->
-        :ok
 
       {:error, _reason} ->
         :ok
     end
+
+    state
+  end
+
+  defp remove_generation(nil, _index_id, _generation), do: :ok
+
+  defp remove_generation(tmp_path, index_id, generation) do
+    {:ok, root} = index_root(tmp_path, index_id)
+    File.rm_rf(Path.join(root, "generation-#{generation}"))
+  end
+
+  defp persist_marker(tmp_path, index_id) do
+    with {:ok, root} <- index_root(tmp_path, index_id), :ok <- File.mkdir_p(root) do
+      :ok
+    end
+  end
+
+  defp remove_index_files(nil, _index_id), do: :ok
+
+  defp remove_index_files(tmp_path, index_id) do
+    {:ok, root} = index_root(tmp_path, index_id)
+    File.rm_rf(root)
   end
 end
