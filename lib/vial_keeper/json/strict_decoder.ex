@@ -12,9 +12,10 @@ defmodule VialKeeper.JSON.StrictDecoder do
   @rusty_max_depth 128
   @safe_integer_max 9_007_199_254_740_991
 
+  alias VialKeeper.Error
   alias VialKeeper.JSON.StrictDecoder.Legacy
 
-  @spec decode(binary(), keyword()) :: {:ok, term()} | {:error, VialKeeper.Error.t()}
+  @spec decode(binary(), keyword()) :: {:ok, term()} | {:error, Error.t()}
   def decode(input, opts \\ [])
 
   def decode(input, opts) when is_binary(input) do
@@ -23,16 +24,16 @@ defmodule VialKeeper.JSON.StrictDecoder do
 
     cond do
       not is_integer(max_bytes) or max_bytes < 0 ->
-        {:error, VialKeeper.Error.invalid_request("JSON byte limit must be a non-negative integer")}
+        {:error, Error.invalid_request("JSON byte limit must be a non-negative integer")}
 
       byte_size(input) > max_bytes ->
-        {:error, VialKeeper.Error.payload_too_large("JSON body exceeds the configured limit")}
+        {:error, Error.payload_too_large("JSON body exceeds the configured limit")}
 
       not String.valid?(input) ->
-        {:error, VialKeeper.Error.invalid_request("JSON must be valid UTF-8")}
+        {:error, Error.invalid_request("JSON must be valid UTF-8")}
 
       not is_integer(max_depth) ->
-        {:error, VialKeeper.Error.invalid_request("JSON depth limit must be an integer")}
+        {:error, Error.invalid_request("JSON depth limit must be an integer")}
 
       max_depth > @rusty_max_depth ->
         Legacy.decode(input, opts)
@@ -42,7 +43,7 @@ defmodule VialKeeper.JSON.StrictDecoder do
     end
   end
 
-  def decode(_, _), do: {:error, VialKeeper.Error.invalid_request("JSON body must be UTF-8 text")}
+  def decode(_, _), do: {:error, Error.invalid_request("JSON body must be UTF-8 text")}
 
   @doc "Decodes JSON and returns nil for malformed or invalid input."
   @spec decode_or_nil(binary()) :: term() | nil
@@ -71,7 +72,7 @@ defmodule VialKeeper.JSON.StrictDecoder do
     end
   rescue
     _error in [ArgumentError, ErlangError] ->
-      {:error, VialKeeper.Error.invalid_request("malformed JSON")}
+      {:error, Error.invalid_request("malformed JSON")}
   end
 
   defp normalize(value, depth, max_depth) do
@@ -162,29 +163,29 @@ defmodule VialKeeper.JSON.StrictDecoder do
   defp validate_depth(depth, max_depth) when depth <= max_depth, do: :ok
 
   defp validate_depth(_depth, _max_depth),
-    do: {:error, VialKeeper.Error.resource_limit("JSON nesting exceeds the configured limit")}
+    do: {:error, Error.resource_limit("JSON nesting exceeds the configured limit")}
 
   defp rusty_error(%RustyJson.DecodeError{message: message}) do
     cond do
       String.contains?(message, "Nesting depth") ->
-        VialKeeper.Error.resource_limit("JSON nesting exceeds the configured limit")
+        Error.resource_limit("JSON nesting exceeds the configured limit")
 
       String.contains?(message, "Duplicate key") ->
-        VialKeeper.Error.invalid_request("duplicate JSON object key")
+        Error.invalid_request("duplicate JSON object key")
 
       String.contains?(message, "Invalid UTF-8") ->
-        VialKeeper.Error.invalid_request("invalid Unicode string")
+        Error.invalid_request("invalid Unicode string")
 
       String.contains?(message, "Invalid number") ->
-        VialKeeper.Error.invalid_request("invalid JSON number")
+        Error.invalid_request("invalid JSON number")
 
       String.contains?(message, "Unexpected character") ->
-        VialKeeper.Error.invalid_request("invalid JSON value")
+        Error.invalid_request("invalid JSON value")
 
       true ->
-        VialKeeper.Error.invalid_request("malformed JSON")
+        Error.invalid_request("malformed JSON")
     end
   end
 
-  defp invalid_json(message), do: {:error, VialKeeper.Error.invalid_request(message)}
+  defp invalid_json(message), do: {:error, Error.invalid_request(message)}
 end

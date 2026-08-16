@@ -1,5 +1,6 @@
 defmodule VialKeeper.Domain.Bookmark do
   @moduledoc "Validated bookmark state for paginated queries."
+  alias VialKeeper.Error
 
   @digest_pattern ~r/^[0-9a-f]{64}$/
   @enforce_keys [
@@ -68,19 +69,19 @@ defmodule VialKeeper.Domain.Bookmark do
     "checksum"
   ]
 
-  @spec new(map()) :: {:ok, t()} | {:error, VialKeeper.Error.t()}
+  @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
   def new(attrs) when is_map(attrs) do
     if Enum.any?(Map.keys(attrs), &(&1 not in @known)),
-      do: {:error, VialKeeper.Error.invalid_request("unknown bookmark field")},
+      do: {:error, Error.invalid_request("unknown bookmark field")},
       else: build(attrs)
   end
 
-  def new(_), do: {:error, VialKeeper.Error.invalid_request("bookmark must be an object")}
+  def new(_), do: {:error, Error.invalid_request("bookmark must be an object")}
 
-  @spec from_wire(map()) :: {:ok, t()} | {:error, VialKeeper.Error.t()}
+  @spec from_wire(map()) :: {:ok, t()} | {:error, Error.t()}
   def from_wire(attrs) when is_map(attrs) do
     if Enum.any?(Map.keys(attrs), &(&1 not in @wire_keys)) do
-      {:error, VialKeeper.Error.invalid_request("unknown bookmark field")}
+      {:error, Error.invalid_request("unknown bookmark field")}
     else
       new(%{
         version: attrs["version"],
@@ -97,14 +98,14 @@ defmodule VialKeeper.Domain.Bookmark do
     end
   end
 
-  def from_wire(_), do: {:error, VialKeeper.Error.invalid_request("bookmark must be an object")}
+  def from_wire(_), do: {:error, Error.invalid_request("bookmark must be an object")}
 
   defp build(attrs) do
     with {:ok, attrs} <- normalize_attrs(attrs),
          nil <- bookmark_validation_error(attrs) do
       {:ok, struct(__MODULE__, attrs)}
     else
-      error when is_struct(error, VialKeeper.Error) -> {:error, error}
+      error when is_struct(error, Error) -> {:error, error}
       {:error, _} = error -> error
     end
   end
@@ -130,45 +131,45 @@ defmodule VialKeeper.Domain.Bookmark do
   end
 
   defp validate_version(%{version: 1}), do: nil
-  defp validate_version(_), do: VialKeeper.Error.invalid_bookmark("unsupported bookmark version")
+  defp validate_version(_), do: Error.invalid_bookmark("unsupported bookmark version")
 
   defp validate_protocol_major(%{protocol_major: value}) when is_integer(value) and value >= 1,
     do: nil
 
   defp validate_protocol_major(_),
-    do: VialKeeper.Error.invalid_bookmark("bookmark protocol_major is invalid")
+    do: Error.invalid_bookmark("bookmark protocol_major is invalid")
 
   defp validate_query_fingerprint(%{query_fingerprint: value}) when is_binary(value), do: nil
 
   defp validate_query_fingerprint(_),
-    do: VialKeeper.Error.invalid_bookmark("bookmark query_fingerprint is required")
+    do: Error.invalid_bookmark("bookmark query_fingerprint is required")
 
   defp validate_plan_digest(%{plan_digest: value}) when is_binary(value) do
     if valid_digest?(value),
       do: nil,
-      else: VialKeeper.Error.invalid_bookmark("bookmark plan_digest is invalid")
+      else: Error.invalid_bookmark("bookmark plan_digest is invalid")
   end
 
   defp validate_plan_digest(_),
-    do: VialKeeper.Error.invalid_bookmark("bookmark plan_digest is required")
+    do: Error.invalid_bookmark("bookmark plan_digest is required")
 
   defp validate_index_bindings(%{index_bindings: value}) when is_list(value), do: nil
 
   defp validate_index_bindings(_),
-    do: VialKeeper.Error.invalid_bookmark("bookmark index_bindings must be an array")
+    do: Error.invalid_bookmark("bookmark index_bindings must be an array")
 
   defp validate_sequence(%{sequence: value}) when is_integer(value) and value >= 0, do: nil
 
   defp validate_sequence(_),
-    do: VialKeeper.Error.invalid_bookmark("bookmark sequence must be non-negative")
+    do: Error.invalid_bookmark("bookmark sequence must be non-negative")
 
   defp validate_last_id(%{last_id: value}) when is_binary(value), do: nil
-  defp validate_last_id(_), do: VialKeeper.Error.invalid_bookmark("bookmark last_id is required")
+  defp validate_last_id(_), do: Error.invalid_bookmark("bookmark last_id is required")
 
   defp validate_ordering_key(%{ordering_key: value}) when is_list(value) do
     if valid_cursor_value?(value),
       do: nil,
-      else: VialKeeper.Error.invalid_bookmark("bookmark ordering_key is invalid")
+      else: Error.invalid_bookmark("bookmark ordering_key is invalid")
   end
 
   defp validate_ordering_key(%{ordering_key: value})
@@ -181,24 +182,24 @@ defmodule VialKeeper.Domain.Bookmark do
       when is_list(sort) and is_binary(id) and map_size(cursor) in [2, 3] ->
         if valid_cursor_value?(sort) and valid_rank?(cursor),
           do: nil,
-          else: VialKeeper.Error.invalid_bookmark("bookmark ordering_key is invalid")
+          else: Error.invalid_bookmark("bookmark ordering_key is invalid")
 
       _ ->
-        VialKeeper.Error.invalid_bookmark("bookmark ordering_key is invalid")
+        Error.invalid_bookmark("bookmark ordering_key is invalid")
     end
   end
 
   defp validate_ordering_key(_),
-    do: VialKeeper.Error.invalid_bookmark("bookmark ordering_key is required")
+    do: Error.invalid_bookmark("bookmark ordering_key is required")
 
   defp validate_checksum(%{checksum: value}) when is_binary(value), do: nil
-  defp validate_checksum(_), do: VialKeeper.Error.invalid_bookmark("bookmark checksum is required")
+  defp validate_checksum(_), do: Error.invalid_bookmark("bookmark checksum is required")
 
   defp validate_sort_direction(%{sort_direction: value})
        when is_nil(value) or value in ["asc", "desc"], do: nil
 
   defp validate_sort_direction(_),
-    do: VialKeeper.Error.invalid_bookmark("bookmark sort_direction is invalid")
+    do: Error.invalid_bookmark("bookmark sort_direction is invalid")
 
   defp normalize_bindings(bindings) when is_list(bindings) do
     Enum.reduce_while(bindings, {:ok, [], MapSet.new()}, fn binding, {:ok, acc, ids} ->
@@ -208,8 +209,7 @@ defmodule VialKeeper.Domain.Bookmark do
       else
         true ->
           {:halt,
-           {:error,
-            VialKeeper.Error.invalid_bookmark("bookmark index_bindings must be ordered and unique")}}
+           {:error, Error.invalid_bookmark("bookmark index_bindings must be ordered and unique")}}
 
         {:error, _} = error ->
           {:halt, error}
@@ -222,7 +222,7 @@ defmodule VialKeeper.Domain.Bookmark do
   end
 
   defp normalize_bindings(_),
-    do: {:error, VialKeeper.Error.invalid_bookmark("bookmark index_bindings must be an array")}
+    do: {:error, Error.invalid_bookmark("bookmark index_bindings must be an array")}
 
   defp normalize_binding(binding) when is_map(binding) do
     keys = Map.keys(binding)
@@ -231,17 +231,16 @@ defmodule VialKeeper.Domain.Bookmark do
 
     cond do
       key_collision?(keys) ->
-        {:error, VialKeeper.Error.invalid_bookmark("bookmark index binding keys must be unique")}
+        {:error, Error.invalid_bookmark("bookmark index binding keys must be unique")}
 
       Enum.any?(keys, &(&1 not in [:index_id, :definition_digest, "index_id", "definition_digest"])) ->
-        {:error,
-         VialKeeper.Error.invalid_bookmark("bookmark index binding contains an unknown field")}
+        {:error, Error.invalid_bookmark("bookmark index binding contains an unknown field")}
 
       not is_binary(index_id) or index_id == "" ->
-        {:error, VialKeeper.Error.invalid_bookmark("bookmark index_id is invalid")}
+        {:error, Error.invalid_bookmark("bookmark index_id is invalid")}
 
       not valid_digest?(definition_digest) ->
-        {:error, VialKeeper.Error.invalid_bookmark("bookmark definition_digest is invalid")}
+        {:error, Error.invalid_bookmark("bookmark definition_digest is invalid")}
 
       true ->
         {:ok, %{"index_id" => index_id, "definition_digest" => definition_digest}}
@@ -249,7 +248,7 @@ defmodule VialKeeper.Domain.Bookmark do
   end
 
   defp normalize_binding(_),
-    do: {:error, VialKeeper.Error.invalid_bookmark("bookmark index binding must be an object")}
+    do: {:error, Error.invalid_bookmark("bookmark index binding must be an object")}
 
   defp key_collision?(keys) do
     keys

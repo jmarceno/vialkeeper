@@ -202,6 +202,8 @@ defmodule VialKeeper.Shadow.Worker do
           mark_ready: true,
           worker_options: [server: self()]
         )
+
+      :ok
     end
 
     :ok
@@ -330,12 +332,6 @@ defmodule VialKeeper.Shadow.Worker do
 
       {:error, %Error{} = error} ->
         {:error, error}
-
-      {:error, reason} ->
-        {:error,
-         Error.database_unavailable("shadow bundle could not be created", %{
-           cause: Kernel.inspect(reason)
-         })}
     end
   end
 

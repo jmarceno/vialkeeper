@@ -4,32 +4,48 @@ defmodule VialKeeper.Runtime.AttachmentCoordinator do
 
   alias VialKeeper.Runtime.DatabaseAdmission
 
+  @spec start_link(binary() | {binary(), atom()}) :: GenServer.on_start()
   def start_link({uuid, mode}), do: GenServer.start_link(__MODULE__, {uuid, mode}, name: via(uuid))
   def start_link(uuid) when is_binary(uuid), do: start_link({uuid, :normal})
 
+  @spec via(binary()) :: {:via, module(), term()}
   def via(uuid),
     do: {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:attachment_coordinator, uuid}}}
 
+  @spec acquire_read(binary()) :: {:ok, reference()} | {:error, VialKeeper.Error.t()}
+  @spec acquire_read(binary(), pid()) :: {:ok, reference()} | {:error, VialKeeper.Error.t()}
   def acquire_read(uuid, caller_pid \\ self()) do
     call(uuid, {:acquire_read, caller_pid})
   end
 
+  @spec acquire_write(binary()) ::
+          {:ok, reference(), non_neg_integer()} | {:error, VialKeeper.Error.t()}
+  @spec acquire_write(binary(), pid()) ::
+          {:ok, reference(), non_neg_integer()} | {:error, VialKeeper.Error.t()}
   def acquire_write(uuid, caller_pid \\ self()) do
     call(uuid, {:acquire_write, caller_pid})
   end
 
+  @spec acquire_reference(binary()) :: {:ok, reference()} | {:error, VialKeeper.Error.t()}
+  @spec acquire_reference(binary(), pid()) :: {:ok, reference()} | {:error, VialKeeper.Error.t()}
   def acquire_reference(uuid, caller_pid \\ self()) do
     call(uuid, {:acquire_reference, caller_pid})
   end
 
+  @spec release(binary(), reference()) :: :ok | {:error, VialKeeper.Error.t()}
   def release(uuid, guard_token) do
     call(uuid, {:release, guard_token})
   end
 
+  @spec begin_gc(binary()) ::
+          {:ok, reference()} | {:ok, :coalesced} | {:error, VialKeeper.Error.t()}
+  @spec begin_gc(binary(), pid()) ::
+          {:ok, reference()} | {:ok, :coalesced} | {:error, VialKeeper.Error.t()}
   def begin_gc(uuid, caller_pid \\ self()) do
     call(uuid, {:begin_gc, caller_pid}, :infinity)
   end
 
+  @spec end_gc(binary(), reference()) :: :ok | {:error, VialKeeper.Error.t()}
   def end_gc(uuid, gc_token) do
     call(uuid, {:end_gc, gc_token})
   end
@@ -41,18 +57,22 @@ defmodule VialKeeper.Runtime.AttachmentCoordinator do
   between schedule and Task start. The Task monitor clears the count on exit
   (normal or kill).
   """
+  @spec schedule_gc(binary(), module()) :: :ok | {:error, VialKeeper.Error.t()}
   def schedule_gc(uuid, module) when is_atom(module) do
     call(uuid, {:schedule_gc, module})
   end
 
+  @spec begin_close(binary()) :: :ok | {:error, VialKeeper.Error.t()}
   def begin_close(uuid) do
     call(uuid, :begin_close, :infinity)
   end
 
+  @spec update_limits(binary(), map()) :: :ok | {:error, VialKeeper.Error.t()}
   def update_limits(uuid, attachments_config) when is_map(attachments_config) do
     call(uuid, {:update_limits, attachments_config})
   end
 
+  @spec status(binary()) :: map() | {:error, VialKeeper.Error.t()}
   def status(uuid) do
     call(uuid, :status)
   end

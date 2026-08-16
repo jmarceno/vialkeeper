@@ -29,12 +29,14 @@ defmodule VialKeeper.Runtime.ReadWorker do
 
   @type args :: {binary(), pos_integer()}
 
+  @spec child_spec(args()) :: map()
   def child_spec({uuid, index} = arg) when is_binary(uuid) and is_integer(index) and index > 0 do
     {:read_worker, uuid, index}
     |> ChildSpec.worker({__MODULE__, :start_link, [arg]}, :permanent)
     |> Map.put(:shutdown, VialKeeper.Config.shutdown_timeout())
   end
 
+  @spec start_link(args()) :: GenServer.on_start() | :ignore
   def start_link({uuid, index}) when is_binary(uuid) and is_integer(index) and index > 0 do
     case reader_source(uuid) do
       {:ok, %BackendContext{} = writer} ->
@@ -45,6 +47,7 @@ defmodule VialKeeper.Runtime.ReadWorker do
     end
   end
 
+  @spec via(binary(), pos_integer()) :: {:via, module(), term()}
   def via(uuid, index),
     do: {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:read_worker, uuid, index}}}
 

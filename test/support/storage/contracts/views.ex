@@ -5,6 +5,7 @@ defmodule VialKeeper.Storage.Contracts.Views do
 
   defmacro __using__(opts) do
     # The contract tests must be injected into each adapter module.
+    # quality:reason contract tests are injected via quote into each adapter module
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
     quote do
       use VialKeeper.Storage.AdapterCase, unquote(opts)

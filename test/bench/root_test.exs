@@ -101,7 +101,9 @@ defmodule VialKeeper.Bench.RootTest do
     assert {:error, message} = Root.configure(root, env(parent, other_repo))
     assert message =~ "reuse-existing"
 
-    {:ok, reused} = Root.configure(root, env(parent, other_repo) ++ [reuse_existing: true])
+    {:ok, reused} =
+      Root.configure(root, Keyword.put(env(parent, other_repo), :reuse_existing, true))
+
     assert reused.root_id == first.root_id
   end
 
@@ -157,7 +159,9 @@ defmodule VialKeeper.Bench.RootTest do
     assert {:error, message} =
              Root.configure(
                root,
-               env(parent, repo) ++ [available_bytes_fun: fn _ -> {:error, :unavailable} end]
+               Keyword.put(env(parent, repo), :available_bytes_fun, fn _ ->
+                 {:error, :unavailable}
+               end)
              )
 
     assert message =~ "free space"

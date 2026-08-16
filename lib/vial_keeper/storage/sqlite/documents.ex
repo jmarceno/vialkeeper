@@ -28,8 +28,10 @@ defmodule VialKeeper.Storage.SQLite.Documents do
   WHERE d.document_id = ?
   """
   @doc false
+  @spec get(map(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def get(adapter, request), do: Adapter.get_document(adapter, request)
 
+  @spec put(map(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def put(adapter, request),
     do:
       Adapter.apply_local_mutation(
@@ -37,6 +39,7 @@ defmodule VialKeeper.Storage.SQLite.Documents do
         Map.put(request, :operation, :put)
       )
 
+  @spec delete(map(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def delete(adapter, request),
     do:
       Adapter.apply_local_mutation(

@@ -213,7 +213,11 @@ defmodule VialKeeper.Storage.Services.DerivedViews do
            source_database_uuid: source_uuid,
            generation: generation,
            removed: length(stale_ids),
-           next_after_document_id: List.last(stale_ids),
+           next_after_document_id:
+             case stale_ids do
+               [] -> nil
+               _ -> hd(Enum.reverse(stale_ids))
+             end,
            has_more: length(stale_ids) == limit,
            last_sequence: effect.last_sequence
          }}

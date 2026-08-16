@@ -11,11 +11,14 @@ defmodule VialKeeper.Storage.SQLite.ReplicationJobs do
   alias VialKeeper.Storage.SQLite.Adapter
   alias VialKeeper.Storage.SQLite.Connection
   @doc false
+  @spec list(map()) :: {:ok, [map()]} | {:error, VialKeeper.Error.t()}
   def list(adapter), do: Adapter.list_replication_jobs(adapter)
 
+  @spec put(map(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def put(adapter, request),
     do: Adapter.put_replication_job(adapter, request)
 
+  @spec delete(map(), binary()) :: :ok | {:error, VialKeeper.Error.t()}
   def delete(adapter, id), do: Adapter.delete_replication_job(adapter, id)
 
   @doc """

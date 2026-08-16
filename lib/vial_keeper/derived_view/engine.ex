@@ -293,7 +293,7 @@ defmodule VialKeeper.DerivedView.Engine do
 
       _ ->
         {min_value, min_sort, _min_source, _min_doc} = hd(numeric)
-        {max_value, max_sort, _max_source, _max_doc} = List.last(numeric)
+        {max_value, max_sort, _max_source, _max_doc} = hd(Enum.reverse(numeric))
 
         with {:ok, min_float} <- numeric_value(min_value),
              {:ok, max_float} <- numeric_value(max_value),

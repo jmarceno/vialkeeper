@@ -9,6 +9,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
 
   alias VialKeeper.Attachments.Manifest
   alias VialKeeper.Domain.Revision
+  alias VialKeeper.Error
   alias VialKeeper.JSON.Canonical
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Mutation
@@ -21,12 +22,11 @@ defmodule VialKeeper.Storage.Services.Mutations do
   @doc """
   Applies one local put/delete mutation inside an open transaction.
   """
-  @spec apply_local_tx(BackendContext.t(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
+  @spec apply_local_tx(BackendContext.t(), map()) :: {:ok, map()} | {:error, Error.t()}
   def apply_local_tx(%BackendContext{} = context, request) do
     operation = MapAccess.get(request, :operation, :put)
     document_id = MapAccess.get(request, :document_id)
     if_revision = MapAccess.get(request, :if_revision)
-    history_id = MapAccess.get(request, :history_id)
     deleted = operation in [:delete, "delete"]
     body = if deleted, do: nil, else: MapAccess.get(request, :body)
     body_json = if deleted, do: nil, else: MapAccess.get(request, :body_json)
@@ -36,16 +36,11 @@ defmodule VialKeeper.Storage.Services.Mutations do
          {:ok, {doc, current}} <-
            Mutation.phase(:fact_reads, fn -> load_document_state(context, document_id) end),
          {:ok, candidate} <-
-           candidate_revision(context, doc, %{
-             document_id: document_id,
-             if_revision: if_revision,
-             current: current,
-             deleted: deleted,
-             body: body,
-             body_json: body_json,
-             history_id: history_id,
-             request: request
-           }) do
+           candidate_revision(
+             context,
+             doc,
+             candidate_input(request, current, deleted, body, body_json)
+           ) do
       # TX-006: insert_local_revision owns the single unified replay/winner check. An
       # identical existing revision replays only when it is still the winner; a
       # superseded retry surfaces revision_conflict with operation_already_committed: true.
@@ -56,7 +51,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
   @doc """
   Applies a bulk mutation/resolve batch inside an open transaction.
   """
-  @spec bulk_tx(BackendContext.t(), [map()]) :: {:ok, [map()]} | {:error, VialKeeper.Error.t()}
+  @spec bulk_tx(BackendContext.t(), [map()]) :: {:ok, [map()]} | {:error, Error.t()}
   def bulk_tx(%BackendContext{} = context, operations) when is_list(operations) do
     materialize_pending? = not independent_bulk_operations?(operations)
     config = Map.get(adapter_identity(context), :config, VialKeeper.Config.defaults())
@@ -117,7 +112,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
   Resolves a document conflict inside an open transaction.
   """
   @spec resolve_conflict_tx(BackendContext.t(), map()) ::
-          {:ok, map()} | {:error, VialKeeper.Error.t()}
+          {:ok, map()} | {:error, Error.t()}
   def resolve_conflict_tx(%BackendContext{} = context, request) do
     document_id = MapAccess.get(request, :document_id)
     expected = MapAccess.get(request, :expected_live_revisions, [])
@@ -148,7 +143,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
       resolve_conflict_status(context, doc, document_id, revisions, status)
     else
       {:ok, nil} ->
-        {:error, VialKeeper.Error.document_not_found("document does not exist")}
+        {:error, Error.document_not_found("document does not exist")}
 
       {:error, error} ->
         {:error, error}
@@ -174,26 +169,26 @@ defmodule VialKeeper.Storage.Services.Mutations do
   @doc """
   Validates a bulk operation list against host limits.
   """
-  @spec validate_operation_batch(term()) :: :ok | {:error, VialKeeper.Error.t()}
+  @spec validate_operation_batch(term()) :: :ok | {:error, Error.t()}
   def validate_operation_batch(operations) when is_list(operations) do
     max = VialKeeper.Config.host_limits()[:max_bulk_operations] || 500
 
     cond do
       operations == [] ->
-        {:error, VialKeeper.Error.invalid_request("bulk operation list must not be empty")}
+        {:error, Error.invalid_request("bulk operation list must not be empty")}
 
       length(operations) > max ->
-        {:error, VialKeeper.Error.resource_limit("bulk operation count exceeds the host limit")}
+        {:error, Error.resource_limit("bulk operation count exceeds the host limit")}
 
       true ->
         if Enum.all?(operations, &is_map/1),
           do: :ok,
-          else: {:error, VialKeeper.Error.invalid_request("bulk operations must be objects")}
+          else: {:error, Error.invalid_request("bulk operations must be objects")}
     end
   end
 
   def validate_operation_batch(_),
-    do: {:error, VialKeeper.Error.invalid_request("bulk operations must be an array")}
+    do: {:error, Error.invalid_request("bulk operations must be an array")}
 
   defp validate_document_input(context, document_id, deleted, body) do
     config = Map.get(adapter_identity(context), :config, VialKeeper.Config.defaults())
@@ -231,25 +226,25 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp validate_document_id(_), do: invalid_document_id()
 
   defp invalid_document_id,
-    do: VialKeeper.Error.invalid_request("document id must be a non-empty UTF-8 string")
+    do: Error.invalid_request("document id must be a non-empty UTF-8 string")
 
   defp validate_document_id_size(value, max) when is_binary(value) and byte_size(value) <= max,
     do: nil
 
   defp validate_document_id_size(_value, _max),
-    do: VialKeeper.Error.resource_limit("document id exceeds the configured limit")
+    do: Error.resource_limit("document id exceeds the configured limit")
 
   defp validate_document_id_characters(value) do
     if String.contains?(value, <<0>>) or String.starts_with?(value, "_system/") or
          Enum.any?(String.to_charlist(value), &(&1 < 0x20)),
-       do: VialKeeper.Error.invalid_request("document id contains a reserved character"),
+       do: Error.invalid_request("document id contains a reserved character"),
        else: nil
   end
 
   defp validate_deleted_body(true, nil), do: nil
 
   defp validate_deleted_body(true, _body),
-    do: VialKeeper.Error.invalid_request("deleted revisions must not contain a body")
+    do: Error.invalid_request("deleted revisions must not contain a body")
 
   defp validate_deleted_body(false, _body), do: nil
 
@@ -257,7 +252,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp validate_live_body(true, _body), do: nil
 
   defp validate_live_body(false, _body),
-    do: VialKeeper.Error.invalid_request("document body must be an object")
+    do: Error.invalid_request("document body must be an object")
 
   defp validate_body_size(true, _body, _body_json, _max), do: nil
 
@@ -269,7 +264,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp body_size_error(_body, body_json, max) when is_binary(body_json) do
     if byte_size(body_json) <= max,
       do: nil,
-      else: VialKeeper.Error.resource_limit("document body exceeds the configured limit")
+      else: Error.resource_limit("document body exceeds the configured limit")
   end
 
   defp body_size_error(body, _body_json, max) do
@@ -278,10 +273,10 @@ defmodule VialKeeper.Storage.Services.Mutations do
         nil
 
       {:ok, _json} ->
-        VialKeeper.Error.resource_limit("document body exceeds the configured limit")
+        Error.resource_limit("document body exceeds the configured limit")
 
       {:error, _error} ->
-        VialKeeper.Error.invalid_request("document body must contain canonical JSON values")
+        Error.invalid_request("document body must contain canonical JSON values")
     end
   end
 
@@ -298,7 +293,30 @@ defmodule VialKeeper.Storage.Services.Mutations do
     end
   end
 
+  defp candidate_input(request, current, deleted, body, body_json) do
+    %{
+      document_id: MapAccess.get(request, :document_id),
+      if_revision: MapAccess.get(request, :if_revision),
+      current: current,
+      deleted: deleted,
+      body: body,
+      body_json: body_json,
+      history_id: MapAccess.get(request, :history_id),
+      request: request
+    }
+  end
+
   defp candidate_revision(context, doc, attrs) do
+    %{if_revision: if_revision, current: current} = attrs
+
+    if is_nil(current) and not is_nil(if_revision) do
+      {:error, Error.revision_conflict("document does not have the expected parent")}
+    else
+      build_candidate_revision(context, doc, attrs)
+    end
+  end
+
+  defp build_candidate_revision(context, doc, attrs) do
     %{
       document_id: document_id,
       if_revision: if_revision,
@@ -310,45 +328,41 @@ defmodule VialKeeper.Storage.Services.Mutations do
       request: request
     } = attrs
 
-    if is_nil(current) and not is_nil(if_revision) do
-      {:error, VialKeeper.Error.revision_conflict("document does not have the expected parent")}
-    else
-      with {:ok, {parent, resolved_history_id}} <-
-             revision_parent_and_history(
+    with {:ok, {parent, resolved_history_id}} <-
+           revision_parent_and_history(
+             context,
+             doc,
+             document_id,
+             current,
+             if_revision,
+             deleted,
+             history_id
+           ),
+         {:ok, attachments} <-
+           Mutation.phase(:attachment_manifest, fn ->
+             resolve_mutation_attachments(
                context,
                doc,
-               document_id,
-               current,
-               if_revision,
+               request,
                deleted,
-               history_id
-             ),
-           {:ok, attachments} <-
-             Mutation.phase(:attachment_manifest, fn ->
-               resolve_mutation_attachments(
-                 context,
-                 doc,
-                 request,
-                 deleted,
-                 parent,
-                 current,
-                 :mutation
-               )
-             end),
-           {:ok, revision} <-
-             Mutation.phase(:revision_hash, fn ->
-               build_revision(
-                 document_id,
-                 resolved_history_id,
-                 parent,
-                 deleted,
-                 body,
-                 attachments,
-                 body_json
-               )
-             end) do
-        candidate_from_revision(context, doc, if_revision, current, revision)
-      end
+               parent,
+               current,
+               :mutation
+             )
+           end),
+         {:ok, revision} <-
+           Mutation.phase(:revision_hash, fn ->
+             build_revision(
+               document_id,
+               resolved_history_id,
+               parent,
+               deleted,
+               body,
+               attachments,
+               body_json
+             )
+           end) do
+      candidate_from_revision(context, doc, if_revision, current, revision)
     end
   end
 
@@ -363,7 +377,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
       {:ok, existing} ->
         replay_candidate(existing, revision, if_revision, current)
 
-      {:error, %VialKeeper.Error{code: :revision_not_found}} ->
+      {:error, %Error{code: :revision_not_found}} ->
         stale_revision_error(if_revision, current, revision)
 
       {:error, error} ->
@@ -379,7 +393,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
 
   defp stale_revision_error(if_revision, current, revision) do
     {:error,
-     VialKeeper.Error.revision_conflict("revision is stale", %{
+     Error.revision_conflict("revision is stale", %{
        expected_revision: if_revision,
        observed_revision: current.revision_id,
        candidate_revision: revision.revision_id,
@@ -417,38 +431,42 @@ defmodule VialKeeper.Storage.Services.Mutations do
       {:ok, existing} ->
         existing_local_revision_result(existing, doc, candidate)
 
-      {:error, %VialKeeper.Error{code: :revision_not_found}} ->
-        with :ok <-
-               Mutation.phase(:fact_reads, fn ->
-                 Facts.ensure_parent(context, doc.document_id, candidate.parent_revision)
-               end),
-             :ok <-
-               Mutation.phase(:revision_writes, fn ->
-                 Facts.insert_revision_with_body(
-                   context,
-                   doc.document_id,
-                   candidate,
-                   revision_body_json(candidate)
-                 )
-               end),
-             :ok <-
-               Mutation.phase(:attachment_metadata, fn ->
-                 Facts.clear_pending_for_manifest(context, candidate.attachments)
-               end),
-             {:ok, result} <-
-               finalize_document(context, candidate.document_id, candidate) do
-          {:ok, Map.put(result, :replayed, false)}
-        end
+      {:error, %Error{code: :revision_not_found}} ->
+        insert_missing_local_revision(context, doc, candidate)
 
       {:error, error} ->
         {:error, error}
     end
   end
 
+  defp insert_missing_local_revision(context, doc, candidate) do
+    with :ok <-
+           Mutation.phase(:fact_reads, fn ->
+             Facts.ensure_parent(context, doc.document_id, candidate.parent_revision)
+           end),
+         :ok <-
+           Mutation.phase(:revision_writes, fn ->
+             Facts.insert_revision_with_body(
+               context,
+               doc.document_id,
+               candidate,
+               revision_body_json(candidate)
+             )
+           end),
+         :ok <-
+           Mutation.phase(:attachment_metadata, fn ->
+             Facts.clear_pending_for_manifest(context, candidate.attachments)
+           end),
+         {:ok, result} <-
+           finalize_document(context, candidate.document_id, candidate) do
+      {:ok, Map.put(result, :replayed, false)}
+    end
+  end
+
   defp existing_local_revision_result(existing, doc, candidate) do
     if Facts.same_revision?(existing, candidate),
       do: local_replay_result(doc, candidate),
-      else: {:error, VialKeeper.Error.integrity_violation("revision id has different content")}
+      else: {:error, Error.integrity_violation("revision id has different content")}
   end
 
   defp local_replay_result(doc, candidate) when doc.winning_revision == candidate.revision_id,
@@ -457,7 +475,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp local_replay_result(_doc, candidate),
     do:
       {:error,
-       VialKeeper.Error.revision_conflict("operation was already committed", %{
+       Error.revision_conflict("operation was already committed", %{
          operation_already_committed: true,
          revision: candidate.revision_id
        })}
@@ -652,7 +670,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
         )
 
       _ ->
-        {:error, VialKeeper.Error.invalid_request("bulk operation type is invalid")}
+        {:error, Error.invalid_request("bulk operation type is invalid")}
     end
   end
 
@@ -666,8 +684,6 @@ defmodule VialKeeper.Storage.Services.Mutations do
        ) do
     operation = MapAccess.get(request, :operation, :put)
     document_id = MapAccess.get(request, :document_id)
-    if_revision = MapAccess.get(request, :if_revision)
-    history_id = MapAccess.get(request, :history_id)
     deleted = operation in [:delete, "delete"]
     body = if(deleted, do: nil, else: MapAccess.get(request, :body))
     body_json = if deleted, do: nil, else: MapAccess.get(request, :body_json)
@@ -677,16 +693,11 @@ defmodule VialKeeper.Storage.Services.Mutations do
          {:ok, doc} <- bulk_document(context, document_cache, document_id),
          {:ok, current} <- current_winner(context, doc),
          {:ok, candidate_state} <-
-           candidate_revision(context, doc, %{
-             document_id: document_id,
-             if_revision: if_revision,
-             current: current,
-             deleted: deleted,
-             body: body,
-             body_json: body_json,
-             history_id: history_id,
-             request: request
-           }) do
+           candidate_revision(
+             context,
+             doc,
+             candidate_input(request, current, deleted, body, body_json)
+           ) do
       prepare_bulk_document(
         context,
         doc,
@@ -749,7 +760,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
       {:ok, existing} ->
         existing_bulk_revision(existing, doc, candidate, document_id)
 
-      {:error, %VialKeeper.Error{code: :revision_not_found}} ->
+      {:error, %Error{code: :revision_not_found}} ->
         with :ok <- Facts.ensure_parent(context, doc.document_id, candidate.parent_revision),
              :ok <-
                Facts.insert_revision_with_body(
@@ -784,7 +795,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp existing_bulk_revision(existing, doc, candidate, document_id) do
     if Facts.same_revision?(existing, candidate),
       do: bulk_replay_revision(doc, candidate, document_id),
-      else: {:error, VialKeeper.Error.integrity_violation("revision id has different content")}
+      else: {:error, Error.integrity_violation("revision id has different content")}
   end
 
   defp bulk_replay_revision(doc, candidate, document_id)
@@ -801,7 +812,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp bulk_replay_revision(_doc, candidate, _document_id),
     do:
       {:error,
-       VialKeeper.Error.revision_conflict("operation was already committed", %{
+       Error.revision_conflict("operation was already committed", %{
          operation_already_committed: true,
          revision: candidate.revision_id
        })}
@@ -847,11 +858,10 @@ defmodule VialKeeper.Storage.Services.Mutations do
       )
     else
       {:ok, nil} ->
-        {:error, VialKeeper.Error.document_not_found("document does not exist")}
+        {:error, Error.document_not_found("document does not exist")}
 
       false ->
-        {:error,
-         VialKeeper.Error.invalid_request("bulk conflict resolution requires a revision array")}
+        {:error, Error.invalid_request("bulk conflict resolution requires a revision array")}
 
       {:error, error} ->
         {:error, error}
@@ -1131,7 +1141,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
       {:ok, existing} ->
         if(Facts.same_revision?(existing, revision), do: :existing, else: :different)
 
-      {:error, %VialKeeper.Error{code: :revision_not_found}} ->
+      {:error, %Error{code: :revision_not_found}} ->
         :missing
 
       {:error, _} ->
@@ -1149,15 +1159,13 @@ defmodule VialKeeper.Storage.Services.Mutations do
 
     cond do
       has_different ->
-        {:error,
-         VialKeeper.Error.integrity_violation("resolution revision id has different content")}
+        {:error, Error.integrity_violation("resolution revision id has different content")}
 
       has_existing and not has_missing ->
         {:ok, :replayed}
 
       has_existing ->
-        {:error,
-         VialKeeper.Error.revision_conflict("conflict resolution replay is only partially present")}
+        {:error, Error.revision_conflict("conflict resolution replay is only partially present")}
 
       true ->
         {:ok, :new}
@@ -1179,7 +1187,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
 
     cond do
       live == [] ->
-        {:error, VialKeeper.Error.revision_conflict("document has no current live leaves")}
+        {:error, Error.revision_conflict("document has no current live leaves")}
 
       delete_all ->
         Enum.map(live, fn leaf ->
@@ -1211,7 +1219,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
           {:ok, [survivor | tombstones]}
         else
           false ->
-            {:error, VialKeeper.Error.revision_conflict("chosen parent is not a current live leaf")}
+            {:error, Error.revision_conflict("chosen parent is not a current live leaf")}
 
           {:error, error} ->
             {:error, error}
@@ -1235,7 +1243,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
         end
 
       _ ->
-        {:error, VialKeeper.Error.invalid_request("attachments must be an object")}
+        {:error, Error.invalid_request("attachments must be an object")}
     end
   end
 
@@ -1315,7 +1323,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
         Manifest.normalize(coerced)
       end
     else
-      {:error, VialKeeper.Error.invalid_request("attachments must be an object")}
+      {:error, Error.invalid_request("attachments must be an object")}
     end
   end
 
@@ -1342,7 +1350,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
   end
 
   defp coerce_attachment_entry(_),
-    do: {:error, VialKeeper.Error.invalid_request("attachment entry must be an object")}
+    do: {:error, Error.invalid_request("attachment entry must be an object")}
 
   defp remove_pending_for_revisions(context, revisions) do
     Enum.reduce_while(revisions, :ok, fn revision, :ok ->
@@ -1401,8 +1409,8 @@ defmodule VialKeeper.Storage.Services.Mutations do
       {:ok, parent} ->
         {:ok, {if_revision, parent.history_id}}
 
-      {:error, %VialKeeper.Error{code: :revision_not_found}} ->
-        {:error, VialKeeper.Error.revision_conflict("document does not have the expected parent")}
+      {:error, %Error{code: :revision_not_found}} ->
+        {:error, Error.revision_conflict("document does not have the expected parent")}
 
       {:error, error} ->
         {:error, error}
@@ -1418,35 +1426,24 @@ defmodule VialKeeper.Storage.Services.Mutations do
          _deleted,
          _history_id
        ),
-       do:
-         {:error, VialKeeper.Error.revision_conflict("document does not have the expected parent")}
+       do: {:error, Error.revision_conflict("document does not have the expected parent")}
 
   defp root_history_id(history_id) when is_binary(history_id) and history_id != "", do: history_id
   defp root_history_id(_), do: fresh_history_id()
 
   # Domain.Revision construction for calculated ids (shared shape for ExDNA).
-  defp revision_struct(
-         document_id,
-         history_id,
-         revision_id,
-         generation,
-         parent,
-         deleted,
-         body,
-         body_json,
-         attachments
-       ) do
+  defp revision_struct(attrs) do
     Revision.assemble(
-      document_id: document_id,
-      history_id: history_id,
-      revision_id: revision_id,
-      generation: generation,
-      parent_revision: parent,
-      digest: digest(revision_id),
-      deleted: deleted,
-      body: body,
-      body_json: body_json,
-      attachments: attachments
+      document_id: attrs.document_id,
+      history_id: attrs.history_id,
+      revision_id: attrs.revision_id,
+      generation: attrs.generation,
+      parent_revision: attrs.parent,
+      digest: digest(attrs.revision_id),
+      deleted: attrs.deleted,
+      body: attrs.body,
+      body_json: attrs.body_json,
+      attachments: attrs.attachments
     )
   end
 
@@ -1458,17 +1455,17 @@ defmodule VialKeeper.Storage.Services.Mutations do
          {:ok, generation} <- Id.generation(id),
          {:ok, normalized_attachments} <- normalize_attachments(attachments, deleted) do
       {:ok,
-       revision_struct(
-         document_id,
-         history_id,
-         id,
-         generation,
-         parent,
-         deleted,
-         body,
-         body_json,
-         normalized_attachments
-       )}
+       revision_struct(%{
+         document_id: document_id,
+         history_id: history_id,
+         revision_id: id,
+         generation: generation,
+         parent: parent,
+         deleted: deleted,
+         body: body,
+         body_json: body_json,
+         attachments: normalized_attachments
+       })}
     end
   end
 
@@ -1508,7 +1505,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
     do: :ok
 
   defp validate_mutation_operation(_),
-    do: {:error, VialKeeper.Error.invalid_request("mutation operation type is invalid")}
+    do: {:error, Error.invalid_request("mutation operation type is invalid")}
 
   defp digest(id), do: id |> String.split("-", parts: 2) |> List.last()
 end

@@ -70,6 +70,8 @@ defmodule VialKeeper.Error do
     internal_error: {500, :depends}
   }
 
+  @spec new(atom(), String.t()) :: t()
+  @spec new(atom(), String.t(), map()) :: t()
   @spec new(atom(), String.t(), map(), keyword()) :: t()
   def new(code, message, details \\ %{}, opts \\ [])
       when is_atom(code) and is_binary(message) and is_map(details) do
@@ -102,6 +104,9 @@ defmodule VialKeeper.Error do
   end
 
   for {name, _} <- @registry do
+    @spec unquote(name)() :: t()
+    @spec unquote(name)(binary() | nil) :: t()
+    @spec unquote(name)(binary() | nil, map()) :: t()
     def unquote(name)(message \\ nil, details \\ %{}) do
       new(unquote(name), message || unquote(to_string(name)), details)
     end

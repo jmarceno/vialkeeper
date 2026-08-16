@@ -55,7 +55,10 @@ defmodule VialKeeper.Storage.Results do
           }
   end
 
+  @spec ok(term()) :: {:ok, term()}
   def ok(value), do: {:ok, value}
+
+  @spec error(VialKeeper.Error.t()) :: {:error, VialKeeper.Error.t()}
   def error(%VialKeeper.Error{} = error), do: {:error, error}
 
   @doc "Builds the shared logical document result map from document and revision facts."
@@ -79,6 +82,7 @@ defmodule VialKeeper.Storage.Results do
   @doc """
   Builds a GetDocument result from a shaped document map (adapter `to_result`).
   """
+  @spec get_document(map()) :: GetDocument.t()
   def get_document(map) when is_map(map) do
     %GetDocument{
       id: MapAccess.get(map, :id),
@@ -94,6 +98,7 @@ defmodule VialKeeper.Storage.Results do
   @doc """
   Builds a PutDocument result from a mutation reply map.
   """
+  @spec put_document(map()) :: PutDocument.t()
   def put_document(map) when is_map(map) do
     %PutDocument{
       id: MapAccess.get(map, :id),
@@ -109,6 +114,7 @@ defmodule VialKeeper.Storage.Results do
   @doc """
   Builds a ReadChanges result from an adapter changes batch.
   """
+  @spec read_changes(map()) :: ReadChanges.t()
   def read_changes(map) when is_map(map) do
     %ReadChanges{
       results: MapAccess.get(map, :results, []),
@@ -120,6 +126,7 @@ defmodule VialKeeper.Storage.Results do
   @doc """
   Converts result structs (and nested maps/lists) into JSON-friendly plain maps.
   """
+  @spec to_public(term()) :: term()
   def to_public(%GetDocument{} = result) do
     base = %{
       "id" => result.id,

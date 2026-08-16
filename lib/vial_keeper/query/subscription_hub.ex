@@ -3,6 +3,7 @@ defmodule VialKeeper.Query.SubscriptionHub do
   use GenServer
 
   alias VialKeeper.Changes.Page
+  alias VialKeeper.Error
   alias VialKeeper.MapAccess
   alias VialKeeper.Runtime.{ChangeNotifier, ChildSpec, DatabaseCatalog}
 
@@ -16,28 +17,47 @@ defmodule VialKeeper.Query.SubscriptionHub do
     "changes entry references a missing document"
   ]
 
+  @spec child_spec(binary()) :: map()
   def child_spec(uuid),
     do: ChildSpec.worker({__MODULE__, uuid}, {__MODULE__, :start_link, [uuid]}, :permanent)
 
+  @spec start_link(binary()) :: GenServer.on_start()
   def start_link(uuid), do: GenServer.start_link(__MODULE__, uuid, name: via(uuid))
 
+  @spec via(binary()) :: {:via, module(), term()}
   def via(uuid),
     do: {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid}}}
 
+  @spec begin_subscription(binary(), pid(), pos_integer()) ::
+          {:ok, non_neg_integer()} | {:error, Error.t()}
+  @spec begin_subscription(binary(), pid(), pos_integer(), pos_integer() | nil) ::
+          {:ok, non_neg_integer()} | {:error, Error.t()}
   def begin_subscription(uuid, pid, max_buffered_events, max_active \\ nil),
     do: call(uuid, {:begin_subscription, pid, max_buffered_events, max_active})
 
+  @spec snapshot_ready(binary(), pid(), non_neg_integer()) ::
+          :ok | {:error, Error.t()}
   def snapshot_ready(uuid, pid, sequence), do: call(uuid, {:snapshot_ready, pid, sequence})
+
+  @spec activate(binary(), pid(), non_neg_integer()) :: :ok | {:error, Error.t()}
   def activate(uuid, pid, sequence), do: call(uuid, {:activate, pid, sequence})
+
+  @spec return_credit(binary(), pid()) :: :ok
   def return_credit(uuid, pid), do: cast(uuid, {:return_credit, pid})
+
+  @spec unregister(binary(), pid()) :: :ok
   def unregister(uuid, pid), do: cast(uuid, {:unregister, pid})
+
+  @spec count(binary()) :: non_neg_integer() | {:error, Error.t()}
   def count(uuid), do: call(uuid, :count)
+
+  @spec close(binary()) :: :ok | {:error, Error.t()}
   def close(uuid), do: call(uuid, :close)
 
   defp call(uuid, message) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_hub, uuid}) do
-      [{pid, _}] -> GenServer.call(pid, message)
-      [] -> {:error, VialKeeper.Error.database_closed("subscription hub is not running")}
+      [{pid, _}] -> GenServer.call(pid, message, VialKeeper.Config.request_timeout_ms())
+      [] -> {:error, Error.database_closed("subscription hub is not running")}
     end
   end
 
@@ -69,8 +89,7 @@ defmodule VialKeeper.Query.SubscriptionHub do
   @impl true
   def handle_call({:begin_subscription, pid, max_buffered_events, max_active}, _from, state) do
     if is_integer(max_active) and map_size(state.subscriptions) >= max_active do
-      {:reply,
-       {:error, VialKeeper.Error.subscription_overloaded("maximum active subscriptions reached")},
+      {:reply, {:error, Error.subscription_overloaded("maximum active subscriptions reached")},
        state}
     else
       admit_subscription(state, pid, max_buffered_events)
@@ -84,18 +103,14 @@ defmodule VialKeeper.Query.SubscriptionHub do
         {:reply, :ok, deliver_pending(state, pid, sequence)}
 
       nil ->
-        {:reply, {:error, VialKeeper.Error.invalid_request("subscription is not registered")},
-         state}
+        {:reply, {:error, Error.invalid_request("subscription is not registered")}, state}
 
       %{mode: :pending_snapshot} ->
-        {:reply,
-         {:error,
-          VialKeeper.Error.history_truncated("subscription was reset before activation", %{})},
+        {:reply, {:error, Error.history_truncated("subscription was reset before activation", %{})},
          state}
 
       %{mode: mode} ->
-        {:reply,
-         {:error, VialKeeper.Error.invalid_request("subscription cannot activate from #{mode}")},
+        {:reply, {:error, Error.invalid_request("subscription cannot activate from #{mode}")},
          state}
     end
   end
@@ -141,13 +156,10 @@ defmodule VialKeeper.Query.SubscriptionHub do
         {:reply, :ok, state}
 
       nil ->
-        {:reply, {:error, VialKeeper.Error.invalid_request("subscription is not registered")},
-         state}
+        {:reply, {:error, Error.invalid_request("subscription is not registered")}, state}
 
       %{mode: mode} ->
-        {:reply,
-         {:error,
-          VialKeeper.Error.invalid_request("subscription cannot snapshot_ready from #{mode}")},
+        {:reply, {:error, Error.invalid_request("subscription cannot snapshot_ready from #{mode}")},
          state}
     end
   end
@@ -184,7 +196,7 @@ defmodule VialKeeper.Query.SubscriptionHub do
 
       _ ->
         error =
-          VialKeeper.Error.internal_error("subscription changes read failed", %{
+          Error.internal_error("subscription changes read failed", %{
             cause: inspect(reason)
           })
 
@@ -205,7 +217,7 @@ defmodule VialKeeper.Query.SubscriptionHub do
   def handle_info({:database_maintenance, uuid, %{new_floor: floor}}, %{uuid: uuid} = state)
       when is_integer(floor) and floor > state.cursor_sequence do
     error =
-      VialKeeper.Error.history_truncated(
+      Error.history_truncated(
         "subscription hub cursor is below the retention floor",
         %{retention_floor: floor}
       )
@@ -263,18 +275,18 @@ defmodule VialKeeper.Query.SubscriptionHub do
       state = if current > sequence, do: schedule_read(state), else: state
       {:ok, state}
     else
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         {:error, error}
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.database_unavailable("subscription notifier subscribe failed", %{
+         Error.database_unavailable("subscription notifier subscribe failed", %{
            cause: inspect(reason)
          })}
 
       other ->
         {:error,
-         VialKeeper.Error.database_unavailable("subscription notifier subscribe failed", %{
+         Error.database_unavailable("subscription notifier subscribe failed", %{
            cause: inspect(other)
          })}
     end
@@ -352,8 +364,8 @@ defmodule VialKeeper.Query.SubscriptionHub do
 
   defp subscription_hub_read_error(uuid) when is_binary(uuid) do
     case Application.get_env(:vial_keeper, :subscription_hub_fail_reads) do
-      {^uuid, %VialKeeper.Error{} = error} -> error
-      {true, %VialKeeper.Error{} = error} -> error
+      {^uuid, %Error{} = error} -> error
+      {true, %Error{} = error} -> error
       _ -> nil
     end
   end
@@ -464,11 +476,11 @@ defmodule VialKeeper.Query.SubscriptionHub do
     if has_more, do: schedule_read(state), else: finish_read(state)
   end
 
-  defp apply_read_result(state, {:error, %VialKeeper.Error{code: :history_truncated} = error}) do
+  defp apply_read_result(state, {:error, %Error{code: :history_truncated} = error}) do
     finish_read(begin_history_reset(state, error))
   end
 
-  defp apply_read_result(state, {:error, %VialKeeper.Error{code: :integrity_violation} = error}) do
+  defp apply_read_result(state, {:error, %Error{code: :integrity_violation} = error}) do
     if batch_pruned_by_retention?(error) do
       finish_read(begin_history_reset(state, error))
     else
@@ -476,7 +488,7 @@ defmodule VialKeeper.Query.SubscriptionHub do
     end
   end
 
-  defp apply_read_result(state, {:error, %VialKeeper.Error{retryable: true} = error}) do
+  defp apply_read_result(state, {:error, %Error{retryable: true} = error}) do
     retry_read(state, error)
   end
 
@@ -560,29 +572,31 @@ defmodule VialKeeper.Query.SubscriptionHub do
 
   defp advance_cursor_after_snapshot(state, _sequence), do: state
 
-  defp batch_pruned_by_retention?(%VialKeeper.Error{message: message}),
+  defp batch_pruned_by_retention?(%Error{message: message}),
     do: message in @batch_pruned_messages
 
-  defp retention_floor(%VialKeeper.Error{details: details}) when is_map(details) do
+  defp retention_floor(%Error{details: details}) when is_map(details) do
     MapAccess.get(details, :retention_floor)
   end
 
   defp retention_floor(_), do: nil
 
-  defp validate_envelopes(results, envelopes) when length(results) != length(envelopes) do
-    {:error,
-     VialKeeper.Error.integrity_violation("revision batch size does not match changes batch size")}
+  defp validate_envelopes(results, envelopes) do
+    if length(results) != length(envelopes) do
+      {:error, Error.integrity_violation("revision batch size does not match changes batch size")}
+    else
+      match_envelopes(results, envelopes)
+    end
   end
 
-  defp validate_envelopes(results, envelopes) do
+  defp match_envelopes(results, envelopes) do
     Enum.zip(results, envelopes)
     |> Enum.reduce_while(:ok, fn {result, envelope}, :ok ->
       if envelope_matches?(result, envelope) do
         {:cont, :ok}
       else
         {:halt,
-         {:error,
-          VialKeeper.Error.integrity_violation("revision batch entry does not match changes entry")}}
+         {:error, Error.integrity_violation("revision batch entry does not match changes entry")}}
       end
     end)
   end
@@ -634,7 +648,7 @@ defmodule VialKeeper.Query.SubscriptionHub do
     send(
       pid,
       {:subscription_overloaded,
-       VialKeeper.Error.subscription_overloaded("subscription delivery buffer is full")}
+       Error.subscription_overloaded("subscription delivery buffer is full")}
     )
 
     drop_subscription(state, pid)
@@ -649,7 +663,7 @@ defmodule VialKeeper.Query.SubscriptionHub do
           send(
             pid,
             {:subscription_overloaded,
-             VialKeeper.Error.subscription_overloaded("subscription delivery buffer is full")}
+             Error.subscription_overloaded("subscription delivery buffer is full")}
           )
 
           drop_subscription(state, pid)
@@ -693,7 +707,7 @@ defmodule VialKeeper.Query.SubscriptionHub do
         send(
           pid,
           {:subscription_overloaded,
-           VialKeeper.Error.subscription_overloaded("subscription delivery buffer is full")}
+           Error.subscription_overloaded("subscription delivery buffer is full")}
         )
 
         {:halt, drop_subscription(state, pid)}

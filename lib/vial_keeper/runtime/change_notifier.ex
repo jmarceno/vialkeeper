@@ -3,20 +3,30 @@ defmodule VialKeeper.Runtime.ChangeNotifier do
   use GenServer
   alias VialKeeper.Runtime.ChildSpec
 
+  @spec child_spec(binary()) :: map()
   def child_spec(uuid) do
     ChildSpec.worker({__MODULE__, uuid}, {__MODULE__, :start_link, [uuid]}, :temporary)
   end
 
+  @spec start_link(binary()) :: GenServer.on_start()
   def start_link(uuid), do: GenServer.start_link(__MODULE__, uuid, name: via(uuid))
+
+  @spec via(binary()) :: {:via, module(), term()}
   def via(uuid), do: {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:notifier, uuid}}}
 
+  @spec subscribe(binary(), non_neg_integer()) ::
+          {:ok, reference(), non_neg_integer()} | {:error, VialKeeper.Error.t()}
   def subscribe(uuid, since) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:notifier, uuid}) do
-      [{pid, _}] -> GenServer.call(pid, {:subscribe, self(), since})
-      [] -> {:error, VialKeeper.Error.database_closed("database notifier is not running")}
+      [{pid, _}] ->
+        GenServer.call(pid, {:subscribe, self(), since}, VialKeeper.Config.request_timeout_ms())
+
+      [] ->
+        {:error, VialKeeper.Error.database_closed("database notifier is not running")}
     end
   end
 
+  @spec publish(binary(), non_neg_integer()) :: :ok
   def publish(uuid, sequence) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:notifier, uuid}) do
       [{pid, _}] -> GenServer.cast(pid, {:publish, sequence})
@@ -24,6 +34,7 @@ defmodule VialKeeper.Runtime.ChangeNotifier do
     end
   end
 
+  @spec publish_maintenance(binary(), map()) :: :ok
   def publish_maintenance(uuid, %{new_floor: new_floor} = event) when is_integer(new_floor) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:notifier, uuid}) do
       [{pid, _}] -> GenServer.cast(pid, {:publish_maintenance, event})
@@ -31,6 +42,7 @@ defmodule VialKeeper.Runtime.ChangeNotifier do
     end
   end
 
+  @spec unsubscribe(binary(), reference()) :: :ok
   def unsubscribe(uuid, ref) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:notifier, uuid}) do
       [{pid, _}] -> GenServer.cast(pid, {:unsubscribe, ref})
@@ -38,18 +50,20 @@ defmodule VialKeeper.Runtime.ChangeNotifier do
     end
   end
 
+  @spec subscriber_count(binary()) :: non_neg_integer() | {:error, VialKeeper.Error.t()}
   def subscriber_count(uuid) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:notifier, uuid}) do
-      [{pid, _}] -> GenServer.call(pid, :subscriber_count)
+      [{pid, _}] -> GenServer.call(pid, :subscriber_count, VialKeeper.Config.request_timeout_ms())
       [] -> {:error, VialKeeper.Error.database_closed("database notifier is not running")}
     end
   end
 
+  @spec close(binary()) :: :ok
   def close(uuid) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:notifier, uuid}) do
       [{pid, _}] ->
         try do
-          GenServer.call(pid, :close)
+          GenServer.call(pid, :close, VialKeeper.Config.shutdown_timeout())
         catch
           :exit, _ -> :ok
         end

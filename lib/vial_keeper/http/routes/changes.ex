@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.Routes.Changes do
   @moduledoc "HTTP routes for change paging and change streaming."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
   alias VialKeeper.Changes.Request, as: ChangesRequest
   alias VialKeeper.HTTP.{Request, Response}
   alias VialKeeper.HTTP.Schemas
@@ -114,8 +115,10 @@ defmodule VialKeeper.HTTP.Routes.Changes do
 
   defp stream_events(conn, changes) do
     events =
-      Enum.map(changes.results, &%{"type" => "change", "change" => &1}) ++
+      Enum.concat(
+        Enum.map(changes.results, &%{"type" => "change", "change" => &1}),
         [%{"type" => "caught_up", "sequence" => changes.last_sequence}]
+      )
 
     Enum.reduce_while(events, {:ok, conn}, fn event, {:ok, conn} ->
       case Plug.Conn.chunk(conn, [JSON.encode_to_iodata!(event), "\n"]) do

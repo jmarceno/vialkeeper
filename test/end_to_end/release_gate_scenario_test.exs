@@ -26,14 +26,7 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
       VialKeeper.TempDatabase.cleanup(Path.join(root, path))
     end
 
-    # Step 1 — create and register two databases through the Version 1 HTTP API.
-    a_created = http(:post, "/v1/databases", %{"path" => a_path})
-    assert a_created.status == 201
-    {:ok, %{"data" => %{"database_uuid" => a_uuid}}} = decode(a_created)
-
-    b_created = http(:post, "/v1/databases", %{"path" => b_path})
-    assert b_created.status == 201
-    {:ok, %{"data" => %{"database_uuid" => b_uuid}}} = decode(b_created)
+    {a_uuid, b_uuid} = create_release_gate_databases(a_path, b_path)
 
     on_exit(fn ->
       for {uuid, path} <- [{a_uuid, a_path}, {b_uuid, b_path}] do
@@ -43,7 +36,6 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
       end
     end)
 
-    # Step 2 — write independently and retry a mutation after losing its response.
     assert {:ok, %{revision: a_root, replayed: false}} =
              VialKeeper.Documents.put(a_uuid, %{id: "alpha", body: %{"side" => "a", "n" => 1}})
 
@@ -58,7 +50,6 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
 
     assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
-    # Step 3 — create divergent revisions through replication + local writes.
     assert {:ok, %{revision: left}} =
              VialKeeper.Documents.put(a_uuid, %{
                id: "shared",
@@ -75,7 +66,6 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
 
     assert left != right
 
-    # Step 4 — replicate both directions and verify active conflicts.
     assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
     assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(b_uuid, a_uuid)
 
@@ -117,7 +107,6 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
     assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
     assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(b_uuid, a_uuid)
 
-    # Step 5 — resolve one conflict to a surviving body and another by deleting all.
     live = Enum.sort([left, right])
 
     assert {:ok, %{revision: resolved, replayed: false}} =
@@ -145,7 +134,6 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
     assert {:ok, %{revision: ^deleted, deleted: true}} =
              VialKeeper.Documents.get(b_uuid, %{id: "doomed", revision: deleted})
 
-    # Step 6 — verify changes entries contain the final physical leaf sets.
     assert {:ok, %{results: changes}} = VialKeeper.Changes.read(a_uuid, %{since: 0, limit: 100})
 
     shared_change =
@@ -172,7 +160,6 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
                MapAccess.get(leaf, :deleted) == true
            end)
 
-    # Step 7 — structured + full-text indexes and pointer-keyed projections.
     assert {:ok, %{"index_id" => structured_id}} =
              VialKeeper.Query.create_index(a_uuid, %{
                "name" => "by-side",
@@ -204,7 +191,6 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
                "limit" => 10
              })
 
-    # Step 8 — paginated queries; mutate; old bookmark becomes stale.
     assert {:ok, _} =
              VialKeeper.Documents.put(a_uuid, %{id: "gamma", body: %{"side" => "a", "n" => 2}})
 
@@ -240,7 +226,6 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
                "bookmark" => page1.bookmark
              })
 
-    # Steps 9–11 — checkpointed replication, verify local-only state, clean stop.
     assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
     assert {:ok, replication_id} =
@@ -266,7 +251,6 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
     assert :ok = DatabaseCatalog.close(a_uuid)
     assert :ok = DatabaseCatalog.close(b_uuid)
 
-    # Steps 12–16 — OS copy, re-register, rebuild indexes, verify integrity.
     a_copy = prefix <> "-a-copy.vialkeeper"
     b_copy = prefix <> "-b-copy.vialkeeper"
     File.cp_r!(Path.join(root, a_path), Path.join(root, a_copy))
@@ -409,6 +393,18 @@ defmodule VialKeeper.EndToEnd.ReleaseGateScenarioTest do
     a_leaves_before = document_leaf_set(a_uuid, document_id)
     assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(b_uuid, a_uuid)
     assert document_leaf_set(a_uuid, document_id) == a_leaves_before
+  end
+
+  defp create_release_gate_databases(a_path, b_path) do
+    a_created = http(:post, "/v1/databases", %{"path" => a_path})
+    assert a_created.status == 201
+    {:ok, %{"data" => %{"database_uuid" => a_uuid}}} = decode(a_created)
+
+    b_created = http(:post, "/v1/databases", %{"path" => b_path})
+    assert b_created.status == 201
+    {:ok, %{"data" => %{"database_uuid" => b_uuid}}} = decode(b_created)
+
+    {a_uuid, b_uuid}
   end
 
   defp document_leaf_set(uuid, document_id) do

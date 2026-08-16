@@ -228,7 +228,11 @@ defmodule VialKeeper.Shadow.Reconciler do
   defp continue(state), do: {:noreply, state}
 
   defp schedule_retry(state) do
-    if state.definition.enabled, do: Process.send_after(self(), :reconcile, @retry_ms)
+    if state.definition.enabled do
+      _ = Process.send_after(self(), :reconcile, @retry_ms)
+      :ok
+    end
+
     continue(state)
   end
 
@@ -376,6 +380,8 @@ defmodule VialKeeper.Shadow.Reconciler do
         Definition.token(definition),
         observation
       )
+
+    :ok
   end
 
   defp observe_error(definition, %VialKeeper.Error{} = error) do
@@ -391,6 +397,8 @@ defmodule VialKeeper.Shadow.Reconciler do
         Definition.token(definition),
         observation
       )
+
+    :ok
   end
 
   defp observe_error(definition, _error),
@@ -403,14 +411,18 @@ defmodule VialKeeper.Shadow.Reconciler do
   defmodule EndpointCapabilities do
     @moduledoc "Dispatches the small callback set without making the reconciler depend on a transport."
 
+    @spec capabilities(struct(), timeout()) :: {:ok, map()} | {:error, term()}
     def capabilities(endpoint, timeout), do: endpoint.__struct__.capabilities(endpoint, timeout)
 
+    @spec provision(struct(), map(), timeout()) :: {:ok, map()} | {:error, term()}
     def provision(endpoint, request, timeout),
       do: endpoint.__struct__.provision(endpoint, request, timeout)
 
+    @spec inspect(struct(), map(), timeout()) :: {:ok, map()} | {:error, term()}
     def inspect(endpoint, request, timeout),
       do: endpoint.__struct__.inspect(endpoint, request, timeout)
 
+    @spec destroy(struct(), map(), timeout()) :: :ok | {:ok, map()} | {:error, term()}
     def destroy(endpoint, request, timeout),
       do: endpoint.__struct__.destroy(endpoint, request, timeout)
   end

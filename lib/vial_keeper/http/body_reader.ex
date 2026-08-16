@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.BodyReader do
   @moduledoc "Reads and validates bounded JSON request bodies at the HTTP boundary."
 
+  alias VialKeeper.Error
   alias VialKeeper.HTTP.ReplicationWirePlug
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.Observability.Instrumentation.Replication, as: ReplicationInstr
@@ -17,6 +18,10 @@ defmodule VialKeeper.HTTP.BodyReader do
   Paths under `/v1/databases/<segment>/replication` use the bounded Zstandard
   JSON codec. Public routes remain uncompressed JSON.
   """
+  @spec read(Plug.Conn.t()) ::
+          {:ok, map(), Plug.Conn.t()} | {:error, Error.t()}
+  @spec read(Plug.Conn.t(), keyword()) ::
+          {:ok, map(), Plug.Conn.t()} | {:error, Error.t()}
   def read(conn, opts \\ []) do
     if ReplicationWirePlug.wire_path?(conn.request_path) do
       read_replication(conn, opts)
@@ -29,14 +34,14 @@ defmodule VialKeeper.HTTP.BodyReader do
   Rejects a non-empty body on bodyless GET/DELETE replication requests.
   """
   @spec reject_bodyless_payload(Plug.Conn.t()) ::
-          {:ok, Plug.Conn.t()} | {:error, VialKeeper.Error.t()}
+          {:ok, Plug.Conn.t()} | {:error, Error.t()}
   def reject_bodyless_payload(conn) do
     cond do
       content_length_positive?(conn) ->
-        {:error, VialKeeper.Error.invalid_request("request body is not allowed")}
+        {:error, Error.invalid_request("request body is not allowed")}
 
       transfer_encoded?(conn) ->
-        {:error, VialKeeper.Error.invalid_request("request body is not allowed")}
+        {:error, Error.invalid_request("request body is not allowed")}
 
       true ->
         case Plug.Conn.read_body(conn, length: 1, read_length: 1) do
@@ -44,14 +49,14 @@ defmodule VialKeeper.HTTP.BodyReader do
             {:ok, conn}
 
           {:ok, _body, _conn} ->
-            {:error, VialKeeper.Error.invalid_request("request body is not allowed")}
+            {:error, Error.invalid_request("request body is not allowed")}
 
           {:more, _body, _conn} ->
-            {:error, VialKeeper.Error.invalid_request("request body is not allowed")}
+            {:error, Error.invalid_request("request body is not allowed")}
 
           {:error, reason} ->
             {:error,
-             VialKeeper.Error.invalid_request("request body could not be read", %{
+             Error.invalid_request("request body could not be read", %{
                cause: inspect(reason)
              })}
         end
@@ -64,10 +69,12 @@ defmodule VialKeeper.HTTP.BodyReader do
   Non-maps are always rejected when an allow-list is enforced, matching the
   previous per-route `unknown_fields?/2` behavior.
   """
+  @spec reject_unknown_fields(term(), [binary()], binary()) ::
+          :ok | {:error, Error.t()}
   def reject_unknown_fields(body, allowed, message)
       when is_list(allowed) and is_binary(message) do
     if unknown_fields?(body, allowed) do
-      {:error, VialKeeper.Error.invalid_request(message)}
+      {:error, Error.invalid_request(message)}
     else
       :ok
     end
@@ -82,7 +89,7 @@ defmodule VialKeeper.HTTP.BodyReader do
         {:ok, %{}, conn}
 
       is_nil(content_type) or not String.starts_with?(content_type, "application/json") ->
-        {:error, VialKeeper.Error.invalid_request("request content type must be application/json")}
+        {:error, Error.invalid_request("request content type must be application/json")}
 
       true ->
         with {:ok, body, conn} <- read_chunks(conn, max, []),
@@ -154,14 +161,12 @@ defmodule VialKeeper.HTTP.BodyReader do
         size = Enum.reduce(chunks, byte_size(body), &(byte_size(&1) + &2))
 
         if size > max,
-          do:
-            {:error,
-             VialKeeper.Error.payload_too_large("request body exceeds the configured limit")},
+          do: {:error, Error.payload_too_large("request body exceeds the configured limit")},
           else: read_chunks_raw(conn, max, [body | chunks])
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.invalid_request("request body could not be read", %{
+         Error.invalid_request("request body could not be read", %{
            cause: inspect(reason)
          })}
     end
@@ -171,7 +176,7 @@ defmodule VialKeeper.HTTP.BodyReader do
     body = IO.iodata_to_binary(chunks)
 
     if byte_size(body) > max do
-      {:error, VialKeeper.Error.payload_too_large("request body exceeds the configured limit")}
+      {:error, Error.payload_too_large("request body exceeds the configured limit")}
     else
       {:ok, body, conn}
     end
@@ -183,7 +188,7 @@ defmodule VialKeeper.HTTP.BodyReader do
         {:ok, value, conn}
 
       {:ok, _} ->
-        {:error, VialKeeper.Error.invalid_request("request body must be an object or array")}
+        {:error, Error.invalid_request("request body must be an object or array")}
 
       {:error, error} ->
         {:error, error}

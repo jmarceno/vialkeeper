@@ -98,15 +98,21 @@ defmodule VialKeeper.Bench.SimpleWiki do
           ensure_manifest_query_version(dataset)
 
         {:error, _reason} ->
-          with {:ok, manifest} <- read_manifest(dataset),
-               counts <- count_fixture_tokens(dataset, manifest["articles"] || []),
-               :ok <- write_query_workload(dataset, query_workload(counts)),
-               :ok <- write_manifest_query_version(dataset, manifest) do
-            :ok
-          end
+          build_query_workload(dataset)
       end
     else
       {:error, "SimpleWiki fixture path escapes the benchmark root"}
+    end
+  end
+
+  defp build_query_workload(dataset) do
+    with {:ok, manifest} <- read_manifest(dataset) do
+      counts = count_fixture_tokens(dataset, manifest["articles"] || [])
+
+      case write_query_workload(dataset, query_workload(counts)) do
+        :ok -> write_manifest_query_version(dataset, manifest)
+        error -> error
+      end
     end
   end
 
@@ -437,8 +443,7 @@ defmodule VialKeeper.Bench.SimpleWiki do
 
     medium =
       tokens
-      |> Enum.drop(div(length(tokens), 3))
-      |> Enum.take(5)
+      |> Enum.slice(div(length(tokens), 3), 5)
       |> Enum.map(&elem(&1, 0))
 
     rare = tokens |> Enum.reverse() |> Enum.take(5) |> Enum.map(&elem(&1, 0))
@@ -520,14 +525,17 @@ defmodule VialKeeper.Bench.SimpleWiki do
 
   defp count_fixture_tokens(dataset, articles) do
     Enum.reduce(articles, %{}, fn article, counts ->
-      prefix = article["id"] <> "." <> to_string(article["version"])
-      text_name = get_in(article, ["text", "name"]) || prefix <> ".txt"
-
-      case File.read(Path.join([dataset, "objects", prefix, text_name])) do
+      case File.read(fixture_text_path(dataset, article)) do
         {:ok, text} -> count_tokens(text, counts)
         {:error, _reason} -> counts
       end
     end)
+  end
+
+  defp fixture_text_path(dataset, article) do
+    prefix = IO.iodata_to_binary([to_string(article["id"]), ".", to_string(article["version"])])
+    text_name = get_in(article, ["text", "name"]) || IO.iodata_to_binary([prefix, ".txt"])
+    Path.join([dataset, "objects", prefix, text_name])
   end
 
   defp count_tokens(text, counts) do

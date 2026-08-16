@@ -10,6 +10,8 @@ defmodule VialKeeper.Observability.AttachmentSignalTest do
   alias VialKeeper.Attachments
   alias VialKeeper.Documents
   alias VialKeeper.Eventual
+  alias VialKeeper.Observability.Instrumentation.AttachmentStore
+  alias VialKeeper.Observability.Instrumentation.AttachmentUpload
   alias VialKeeper.Observability.{TestExporter, TestMetricExporter}
   alias VialKeeper.Runtime.DatabaseCatalog
 
@@ -96,7 +98,7 @@ defmodule VialKeeper.Observability.AttachmentSignalTest do
 
     assert Enum.all?(
              store_phases,
-             &(&1 in VialKeeper.Observability.Instrumentation.AttachmentStore.phases())
+             &(&1 in AttachmentStore.phases())
            )
 
     upload_phases =
@@ -112,7 +114,7 @@ defmodule VialKeeper.Observability.AttachmentSignalTest do
 
     assert Enum.all?(
              upload_phases,
-             &(&1 in VialKeeper.Observability.Instrumentation.AttachmentUpload.phases())
+             &(&1 in AttachmentUpload.phases())
            )
 
     Eventual.eventually(

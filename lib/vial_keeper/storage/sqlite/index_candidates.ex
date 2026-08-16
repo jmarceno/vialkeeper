@@ -256,7 +256,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
       Connection.query(
         adapter.conn,
         "SELECT document_id, winning_revision, winning_body_term FROM documents WHERE #{where} ORDER BY document_id LIMIT ?",
-        params ++ [threshold + 1]
+        params |> Enum.concat([threshold + 1])
       )
     end
   end
@@ -335,7 +335,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
            Connection.query(
              adapter.conn,
              "SELECT document_id, winning_revision, winning_body_term, (SELECT count(*) FROM documents AS candidate_count WHERE #{where}) FROM documents WHERE #{where} ORDER BY document_id LIMIT ?",
-             params ++ params ++ [limit + 1]
+             params |> Enum.concat(params) |> Enum.concat([limit + 1])
            ),
          :ok <- maybe_check_deadline(deadline),
          {:ok, page_rows, examined} <- page_rows(rows),
@@ -347,7 +347,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
   defp page_rows([]), do: {:ok, [], 0}
 
   defp page_rows(rows) do
-    case List.last(rows) do
+    case hd(Enum.reverse(rows)) do
       [_id, _revision, _body_term, examined] when is_integer(examined) ->
         {:ok, Enum.map(rows, fn [id, revision, body_term, _] -> [id, revision, body_term] end),
          examined}

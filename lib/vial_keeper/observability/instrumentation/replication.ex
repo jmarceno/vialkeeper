@@ -51,20 +51,25 @@ defmodule VialKeeper.Observability.Instrumentation.Replication do
 
         case result do
           {:ok, _} ->
-            Meters.add(:"vial_keeper.replication.checkpoint.count",
-              replication_id: replication_id,
-              endpoint: endpoint
-            )
+            _ =
+              Meters.add(:"vial_keeper.replication.checkpoint.count",
+                replication_id: replication_id,
+                endpoint: endpoint
+              )
+
+            :ok
 
           {:error, %VialKeeper.Error{} = error} ->
-            Meters.add(:"vial_keeper.replication.checkpoint.count",
-              replication_id: replication_id,
-              endpoint: endpoint,
-              error_code: error.code
-            )
+            _ =
+              Meters.add(:"vial_keeper.replication.checkpoint.count",
+                replication_id: replication_id,
+                endpoint: endpoint,
+                error_code: error.code
+              )
 
             _ = Tracer.record_error(error)
             _ = Tracer.apply_error_status(error)
+            :ok
         end
 
         result

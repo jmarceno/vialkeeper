@@ -24,6 +24,7 @@ defmodule VialKeeper.Bench.Stress do
 
   alias VialKeeper.Documents
   alias VialKeeper.Query
+  alias VialKeeper.Runtime.DatabaseCatalog
 
   @index_name "simplewiki-text"
   @search_concurrencies [1, 4, 16]
@@ -121,7 +122,7 @@ defmodule VialKeeper.Bench.Stress do
 
         bulk = bulk_document_ingest(uuid, dataset, manifest, bulk_progress, opts)
         results = Map.put(results, "bulk_document_ingest", bulk.stats)
-        completed = completed ++ ["bulk_document_ingest"]
+        completed = Enum.concat(completed, ["bulk_document_ingest"])
         write_completed!(context, base, results, completed, opts)
 
         attachment_progress =
@@ -138,7 +139,7 @@ defmodule VialKeeper.Bench.Stress do
           attachment_physical_ingest(uuid, bulk.attachments, attachment_progress, opts)
 
         results = Map.put(results, "attachment_physical_ingest", physical.stats)
-        completed = completed ++ ["attachment_physical_ingest"]
+        completed = Enum.concat(completed, ["attachment_physical_ingest"])
         write_completed!(context, base, results, completed, opts)
 
         reference_progress =
@@ -161,7 +162,7 @@ defmodule VialKeeper.Bench.Stress do
           )
 
         results = Map.put(results, "attachment_reference_mutation", reference)
-        completed = completed ++ ["attachment_reference_mutation"]
+        completed = Enum.concat(completed, ["attachment_reference_mutation"])
         write_completed!(context, base, results, completed, opts)
 
         fts_progress =
@@ -169,7 +170,7 @@ defmodule VialKeeper.Bench.Stress do
 
         fts = fts_build(uuid, length(manifest["articles"] || []), fts_progress)
         results = Map.put(results, "fts_build", fts)
-        completed = completed ++ ["fts_build"]
+        completed = Enum.concat(completed, ["fts_build"])
         write_completed!(context, base, results, completed, opts)
 
         queries = query_workload["queries"]
@@ -180,7 +181,7 @@ defmodule VialKeeper.Bench.Stress do
           end)
 
         results = Map.put(results, "fts_search", search)
-        completed = completed ++ ["fts_search"]
+        completed = Enum.concat(completed, ["fts_search"])
         write_completed!(context, base, results, completed, opts)
 
         reads =
@@ -189,7 +190,7 @@ defmodule VialKeeper.Bench.Stress do
           end)
 
         results = Map.put(results, "attachment_read", reads)
-        completed = completed ++ ["attachment_read"]
+        completed = Enum.concat(completed, ["attachment_read"])
         write_completed!(context, base, results, completed, opts)
 
         mixed =
@@ -198,9 +199,10 @@ defmodule VialKeeper.Bench.Stress do
           end)
 
         results = Map.put(results, "mixed", mixed)
-        completed = completed ++ ["mixed"]
+        completed = Enum.concat(completed, ["mixed"])
 
-        write_state!(context, base, results, completed, "complete", nil, nil, opts)
+        :ok = write_state!(context, base, results, completed, "complete", nil, nil, opts)
+        Root.report_path(context, "simplewiki-stress.json")
       after
         Runtime.close_work_database(context, uuid, relative)
       end
@@ -223,7 +225,14 @@ defmodule VialKeeper.Bench.Stress do
   end
 
   defp single_document_ingest(context, run_id, dataset, manifest, progress, opts) do
-    articles = Enum.take(manifest["articles"] || [], @single_document_count)
+    articles =
+      Enum.map(Enum.take(manifest["articles"] || [], @single_document_count), fn article ->
+        %{
+          article: article,
+          id: "single-" <> article_id(article)
+        }
+      end)
+
     total = length(articles)
 
     case Runtime.create_work_database(context, "simplewiki-single", run_id) do
@@ -236,12 +245,12 @@ defmodule VialKeeper.Bench.Stress do
             |> Enum.chunk_every(100)
             |> Enum.reduce({[], 0, 0}, fn batch, {samples, text_bytes, elapsed} ->
               {batch_samples, batch_bytes} =
-                Enum.map_reduce(batch, 0, fn article, bytes ->
-                  text = File.read!(article_text_path(dataset, article))
+                Enum.map_reduce(batch, 0, fn item, bytes ->
+                  text = File.read!(article_text_path(dataset, item.article))
 
                   request = %{
-                    "id" => "single-" <> article_id(article),
-                    "body" => SimpleWiki.document_body(article, text)
+                    "id" => item.id,
+                    "body" => SimpleWiki.document_body(item.article, text)
                   }
 
                   sample = timed_result!(fn -> Documents.put(uuid, request) end)
@@ -344,7 +353,7 @@ defmodule VialKeeper.Bench.Stress do
     next = %{
       acc
       | processed: processed,
-        text_bytes: acc.text_bytes + Enum.sum(Enum.map(prepared, & &1.text_bytes)),
+        text_bytes: acc.text_bytes + Enum.sum_by(prepared, & &1.text_bytes),
         elapsed: total_elapsed,
         transactions: acc.transactions + 1,
         batch_samples: [elapsed | acc.batch_samples],
@@ -408,25 +417,36 @@ defmodule VialKeeper.Bench.Stress do
   end
 
   defp scaling_rows(rows) do
-    rows
-    |> Enum.with_index()
-    |> Enum.map(fn {row, index} ->
-      per_document = row.elapsed_us / max(row.documents, 1)
-      previous = if index > 0, do: Enum.at(rows, index - 1), else: nil
-      previous_cost = if previous, do: previous.elapsed_us / max(previous.documents, 1), else: nil
-      next = Enum.at(rows, index + 1)
+    indexed = Enum.with_index(rows)
+    by_index = Map.new(indexed, fn {row, index} -> {index, row} end)
 
-      %{
-        "documents" => row.documents,
-        "elapsed_us" => row.elapsed_us,
-        "time_per_document_us" => Float.round(per_document, 2),
-        "throughput_docs_per_sec" => Statistics.per_sec(row.documents, row.elapsed_us),
-        "cost_growth_ratio" =>
-          if(previous_cost, do: Float.round(per_document / max(previous_cost, 0.001), 3), else: nil),
-        "projected_next_elapsed_us" => if(next, do: round(per_document * next.documents), else: nil)
-      }
+    Enum.map(indexed, fn {row, index} ->
+      scaling_row(row, Map.get(by_index, index - 1), Map.get(by_index, index + 1))
     end)
   end
+
+  defp scaling_row(row, previous, next_row) do
+    per_document = row.elapsed_us / max(row.documents, 1)
+
+    %{
+      "documents" => row.documents,
+      "elapsed_us" => row.elapsed_us,
+      "time_per_document_us" => Float.round(per_document, 2),
+      "throughput_docs_per_sec" => Statistics.per_sec(row.documents, row.elapsed_us),
+      "cost_growth_ratio" => cost_growth_ratio(per_document, previous),
+      "projected_next_elapsed_us" => projected_next_elapsed(per_document, next_row)
+    }
+  end
+
+  defp cost_growth_ratio(_per_document, nil), do: nil
+
+  defp cost_growth_ratio(per_document, previous) do
+    previous_cost = previous.elapsed_us / max(previous.documents, 1)
+    Float.round(per_document / max(previous_cost, 0.001), 3)
+  end
+
+  defp projected_next_elapsed(_per_document, nil), do: nil
+  defp projected_next_elapsed(per_document, next_row), do: round(per_document * next_row.documents)
 
   defp attachment_physical_ingest(_uuid, [], _progress, _opts) do
     %{
@@ -438,7 +458,7 @@ defmodule VialKeeper.Bench.Stress do
 
   defp attachment_physical_ingest(uuid, sources, progress, opts) do
     total = length(sources)
-    before_bytes = Statistics.cas_bytes(uuid)
+    before_bytes = sample_cas_occupancy(uuid, :before)
     started_at = timestamp()
     concurrency = Keyword.get(opts, :max_concurrency, Attachments.default_batch_concurrency())
     configure_attachment_concurrency!(uuid, concurrency)
@@ -465,7 +485,8 @@ defmodule VialKeeper.Bench.Stress do
         end)
       end)
 
-    physical_bytes = max(Statistics.cas_bytes(uuid) - before_bytes, 0)
+    occupancy_after = sample_cas_occupancy(uuid, :after)
+    physical_bytes = max(occupancy_after - before_bytes, 0)
 
     category_stats =
       Map.new(acc.categories, fn {category, state} ->
@@ -514,7 +535,8 @@ defmodule VialKeeper.Bench.Stress do
         Attachments.upload_batch(uuid, upload_sources, max_concurrency: concurrency)
       end)
 
-    per_file_latency = div(elapsed, max(length(batch), 1))
+    batch_count = length(batch)
+    per_file_latency = div(elapsed, max(batch_count, 1))
 
     {references, attachment_index, deduplicated} =
       Enum.zip(batch, uploaded)
@@ -545,29 +567,29 @@ defmodule VialKeeper.Bench.Stress do
       )
 
     category = hd(batch).category
-    logical_bytes = Enum.sum(Enum.map(batch, & &1.logical_bytes))
+    logical_bytes = Enum.sum_by(batch, & &1.logical_bytes)
 
     categories =
       Map.update(
         acc.categories,
         category,
         %{
-          files: length(batch),
+          files: batch_count,
           logical_bytes: logical_bytes,
           elapsed: elapsed,
-          latencies: List.duplicate(per_file_latency, length(batch))
+          latencies: List.duplicate(per_file_latency, batch_count)
         },
         fn state ->
           %{
-            files: state.files + length(batch),
+            files: state.files + batch_count,
             logical_bytes: state.logical_bytes + logical_bytes,
             elapsed: state.elapsed + elapsed,
-            latencies: prepend_copies(per_file_latency, length(batch), state.latencies)
+            latencies: prepend_copies(per_file_latency, batch_count, state.latencies)
           }
         end
       )
 
-    processed = acc.processed + length(batch)
+    processed = acc.processed + batch_count
     total_elapsed = acc.elapsed + elapsed
     progress.(processed, total, total_elapsed)
 
@@ -624,7 +646,7 @@ defmodule VialKeeper.Bench.Stress do
       "ended_at" => timestamp(),
       "documents" => processed,
       "attachment_references" =>
-        Enum.sum(Enum.map(references, fn {_id, entry} -> map_size(entry.refs) end)),
+        Enum.sum_by(references, fn {_id, entry} -> map_size(entry.refs) end),
       "batch_size" => @bulk_batch_size,
       "transaction_count" => transactions,
       "elapsed_us" => elapsed,
@@ -846,14 +868,14 @@ defmodule VialKeeper.Bench.Stress do
   end
 
   defp mixed_ops(queries, ids, attachments, seed) do
-    :rand.seed(:exsss, {seed, 7, 99})
+    _ = :rand.seed(:exsss, {seed, 7, 99})
 
     Enum.map(1..100, fn _ ->
       roll = :rand.uniform(100)
 
       cond do
-        roll <= 60 -> {:search, Enum.random(queries ++ ["the"])}
-        roll <= 80 -> {:get, Enum.random(ids ++ ["missing"])}
+        roll <= 60 -> {:search, Enum.random(["the" | queries])}
+        roll <= 80 -> {:get, Enum.random(["missing" | ids])}
         roll <= 95 and attachments != [] -> {:attach, Enum.random(attachments)}
         true -> {:update, Enum.random(ids)}
       end
@@ -958,7 +980,7 @@ defmodule VialKeeper.Bench.Stress do
       |> maybe_put_finished_at(status)
 
     case Reports.write(context, "simplewiki-stress.json", report, opts) do
-      {:ok, path} -> {:ok, path}
+      {:ok, _path} -> :ok
       {:error, message} -> Mix.raise(message)
     end
   end
@@ -991,7 +1013,7 @@ defmodule VialKeeper.Bench.Stress do
   end
 
   defp configure_attachment_concurrency!(uuid, concurrency) do
-    case VialKeeper.Runtime.DatabaseCatalog.command(
+    case DatabaseCatalog.command(
            uuid,
            {:command, :update_config,
             %{"attachments" => %{"max_concurrent_attachment_writes" => concurrency}}}
@@ -1018,6 +1040,8 @@ defmodule VialKeeper.Bench.Stress do
         :erlang.memory(:total)
     end
   end
+
+  defp sample_cas_occupancy(uuid, _sample_point), do: Statistics.cas_bytes(uuid)
 
   defp timestamp, do: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 

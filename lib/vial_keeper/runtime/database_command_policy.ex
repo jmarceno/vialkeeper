@@ -117,7 +117,7 @@ defmodule VialKeeper.Runtime.DatabaseCommandPolicy do
 
   defp valid_shadow_state_read?(_), do: false
 
-  defp policy_set(:shadow_read), do: @shadow_read ++ [Commands.GetLocalRecord]
+  defp policy_set(:shadow_read), do: Enum.concat(@shadow_read, [Commands.GetLocalRecord])
   defp policy_set(:shadow_replication), do: @shadow_replication
   defp policy_set(:shadow_control), do: @shadow_control
 

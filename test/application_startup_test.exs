@@ -6,6 +6,7 @@ defmodule VialKeeper.ApplicationStartupTest do
   """
   use ExUnit.Case, async: false
 
+  alias Elixir.Application, as: OTPApplication
   alias VialKeeper.Application
 
   @loopback [ip: {127, 0, 0, 1}, port: 4000]
@@ -13,29 +14,29 @@ defmodule VialKeeper.ApplicationStartupTest do
   @remote [ip: {10, 0, 0, 5}, port: 4000]
 
   setup do
-    previous_auth = Elixir.Application.get_env(:vial_keeper, :auth)
-    previous_tls = Elixir.Application.get_env(:vial_keeper, :tls)
-    previous_security = Elixir.Application.get_env(:vial_keeper, :security)
+    previous_auth = OTPApplication.get_env(:vial_keeper, :auth)
+    previous_tls = OTPApplication.get_env(:vial_keeper, :tls)
+    previous_security = OTPApplication.get_env(:vial_keeper, :security)
 
     on_exit(fn ->
-      Elixir.Application.put_env(:vial_keeper, :auth, previous_auth)
-      Elixir.Application.put_env(:vial_keeper, :tls, previous_tls)
-      Elixir.Application.put_env(:vial_keeper, :security, previous_security)
+      OTPApplication.put_env(:vial_keeper, :auth, previous_auth)
+      OTPApplication.put_env(:vial_keeper, :tls, previous_tls)
+      OTPApplication.put_env(:vial_keeper, :security, previous_security)
     end)
 
     :ok
   end
 
   defp configure(opts) do
-    Elixir.Application.put_env(
+    OTPApplication.put_env(
       :vial_keeper,
       :auth,
       Keyword.get(opts, :auth, enabled: false, token_digests: [])
     )
 
-    Elixir.Application.put_env(:vial_keeper, :tls, Keyword.get(opts, :tls, enabled: false))
+    OTPApplication.put_env(:vial_keeper, :tls, Keyword.get(opts, :tls, enabled: false))
 
-    Elixir.Application.put_env(
+    OTPApplication.put_env(
       :vial_keeper,
       :security,
       Keyword.get(opts, :security, allow_insecure_remote: false)

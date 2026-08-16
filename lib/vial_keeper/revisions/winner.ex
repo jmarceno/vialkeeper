@@ -14,8 +14,10 @@ defmodule VialKeeper.Revisions.Winner do
      end)}
   end
 
+  @spec live_leaves([Revision.t()]) :: [Revision.t()]
   def live_leaves(leaves), do: Enum.reject(leaves, & &1.deleted)
 
+  @spec conflicts([Revision.t()], Revision.t()) :: [binary()]
   def conflicts(leaves, winner) do
     leaves
     |> live_leaves()

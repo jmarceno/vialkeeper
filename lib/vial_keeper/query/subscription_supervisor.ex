@@ -5,6 +5,7 @@ defmodule VialKeeper.Query.SubscriptionSupervisor do
   alias VialKeeper.Query.SubscriptionHub
   alias VialKeeper.Runtime.ChildSpec
 
+  @spec child_spec(binary()) :: map()
   def child_spec(uuid),
     do:
       ChildSpec.supervisor(
@@ -13,13 +14,16 @@ defmodule VialKeeper.Query.SubscriptionSupervisor do
         :transient
       )
 
+  @spec start_link(binary()) :: Supervisor.on_start()
   def start_link(uuid), do: Supervisor.start_link(__MODULE__, uuid, name: via(uuid))
 
+  @spec via(binary()) :: {:via, module(), term()}
   def via(uuid),
     do:
       {:via, Registry,
        {VialKeeper.Runtime.DatabaseRegistry, {:query_subscription_supervisor, uuid}}}
 
+  @spec dynamic_supervisor(binary()) :: {:ok, pid()} | {:error, VialKeeper.Error.t()}
   def dynamic_supervisor(uuid) do
     case Registry.lookup(
            VialKeeper.Runtime.DatabaseRegistry,

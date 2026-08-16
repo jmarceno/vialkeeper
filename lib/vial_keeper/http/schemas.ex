@@ -6,6 +6,8 @@ defmodule VialKeeper.HTTP.Schemas do
   fields are rejected at a single HTTP boundary.
   """
 
+  @type schema :: atom()
+
   @document_get ["id", "revision", "include_conflicts"]
   @document_put ["id", "if_revision", "body", "attachments"]
   @document_delete ["id", "if_revision"]
@@ -123,6 +125,7 @@ defmodule VialKeeper.HTTP.Schemas do
   ]
   @materialized_view_action []
 
+  @spec allowed(schema()) :: [binary()]
   def allowed(:document_get), do: @document_get
   def allowed(:document_put), do: @document_put
   def allowed(:document_delete), do: @document_delete
@@ -154,6 +157,7 @@ defmodule VialKeeper.HTTP.Schemas do
   def allowed(:materialized_view_create), do: @materialized_view_create
   def allowed(:materialized_view_action), do: @materialized_view_action
 
+  @spec opts(schema(), binary()) :: keyword()
   def opts(schema, message) when is_atom(schema) and is_binary(message) do
     [allowed_fields: allowed(schema), unknown_message: message]
   end

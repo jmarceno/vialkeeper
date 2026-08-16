@@ -8,6 +8,7 @@ defmodule VialKeeper.HTTP.Routes.QueryStream do
   alias VialKeeper.Query.Subscriptions
 
   @doc "Handles `POST /v1/databases/:uuid/query/stream`."
+  @spec stream(Plug.Conn.t()) :: Plug.Conn.t()
   def stream(conn) do
     Request.call(
       conn,

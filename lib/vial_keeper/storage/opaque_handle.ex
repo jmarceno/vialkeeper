@@ -18,7 +18,7 @@ defmodule VialKeeper.Storage.OpaqueHandle do
 
   alias VialKeeper.Storage.OpaqueHandle.Server
 
-  @doc false
+  @doc "Creates the private ETS table used to store opaque handle payloads."
   @spec ensure_table!() :: :ok
   def ensure_table! do
     case Process.whereis(Server) do
@@ -37,7 +37,7 @@ defmodule VialKeeper.Storage.OpaqueHandle do
     Server.wrap(term)
   end
 
-  @doc false
+  @doc "Returns the payload for an opaque handle after checking the caller stack."
   @spec unwrap(t()) :: term()
   def unwrap(%__MODULE__{} = handle) do
     ensure_table!()
@@ -54,7 +54,7 @@ defmodule VialKeeper.Storage.OpaqueHandle do
     end
   end
 
-  @doc false
+  @doc "Returns the payload for an opaque handle from a backend Context module."
   @spec backend_unwrap(t()) :: term()
   def backend_unwrap(%__MODULE__{} = handle) do
     ensure_table!()
@@ -65,7 +65,7 @@ defmodule VialKeeper.Storage.OpaqueHandle do
     end
   end
 
-  @doc false
+  @doc "Replaces the payload stored for an opaque handle."
   @spec replace(t(), term()) :: t()
   def replace(%__MODULE__{} = handle, term) do
     ensure_table!()
@@ -82,7 +82,7 @@ defmodule VialKeeper.Storage.OpaqueHandle do
     end
   end
 
-  @doc false
+  @doc "Drops an opaque handle and its stored payload."
   @spec drop(t()) :: :ok
   def drop(%__MODULE__{} = handle) do
     ensure_table!()

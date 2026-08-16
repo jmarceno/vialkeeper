@@ -22,7 +22,10 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
     TermBlob
   }
 
+  alias VialKeeper.Error
+
   @doc false
+  @spec check(map()) :: {:ok, map()} | {:error, Error.t()}
   def check(adapter), do: Adapter.integrity_check(adapter, %{})
 
   @doc """
@@ -32,7 +35,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
   pending protection are counted as `reclaimable_blobs` (garbage, not corruption).
   """
   @spec run(Connection.handle(), [map()], binary() | nil) ::
-          {:ok, map()} | {:error, VialKeeper.Error.t()}
+          {:ok, map()} | {:error, Error.t()}
   def run(conn, indexes, bundle_root \\ nil) when is_list(indexes) do
     with {:ok, snapshot} <- load_integrity_snapshot(conn),
          :ok <- Rules.validate(snapshot) do
@@ -47,7 +50,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
   filesystem probes are not included.
   """
   @spec load_integrity_snapshot(Connection.handle()) ::
-          {:ok, map()} | {:error, VialKeeper.Error.t()}
+          {:ok, map()} | {:error, Error.t()}
   def load_integrity_snapshot(conn) do
     with {:ok, meta} <- Meta.load(conn),
          {:ok, boundaries} <-
@@ -74,7 +77,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
          revision_attachments: revision_attachments
        }}
     else
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         {:error, error}
 
       {:error, reason} ->
@@ -86,7 +89,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
   Runs SQLite-owned physical integrity probes and returns backend details.
   """
   @spec physical_integrity_check(Connection.handle(), [map()], binary() | nil) ::
-          {:ok, map()} | {:error, VialKeeper.Error.t()}
+          {:ok, map()} | {:error, Error.t()}
   def physical_integrity_check(conn, indexes, bundle_root \\ nil) when is_list(indexes) do
     with {:ok, [["ok"]]} <- Connection.pragma(conn, "integrity_check"),
          {:ok, []} <- Connection.pragma(conn, "foreign_key_check"),
@@ -107,10 +110,9 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
        })}
     else
       {:ok, rows} when is_list(rows) ->
-        {:error,
-         VialKeeper.Error.integrity_violation("SQLite integrity check failed", %{results: rows})}
+        {:error, Error.integrity_violation("SQLite integrity check failed", %{results: rows})}
 
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         {:error, error}
 
       {:error, reason} ->
@@ -131,7 +133,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
 
       if Enum.all?(required, &MapSet.member?(present, &1)),
         do: :ok,
-        else: {:error, VialKeeper.Error.integrity_violation("required SQLite tables are missing")}
+        else: {:error, Error.integrity_violation("required SQLite tables are missing")}
     end
   end
 
@@ -268,12 +270,12 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
        when is_binary(body_json) and is_binary(body_term) do
     case TermBlob.decode(body_term, body_json) do
       {:ok, _} -> :ok
-      _ -> {:error, VialKeeper.Error.integrity_violation("materialized winner is inconsistent")}
+      _ -> {:error, Error.integrity_violation("materialized winner is inconsistent")}
     end
   end
 
   defp validate_document_term(_body_json, _body_term, 1),
-    do: {:error, VialKeeper.Error.integrity_violation("materialized winner is inconsistent")}
+    do: {:error, Error.integrity_violation("materialized winner is inconsistent")}
 
   defp validate_document_term(_body_json, _body_term, _deleted), do: :ok
 
@@ -319,7 +321,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
        }}
     else
       {:fallback, _} ->
-        {:error, VialKeeper.Error.integrity_violation("change JSON and term differ")}
+        {:error, Error.integrity_violation("change JSON and term differ")}
 
       {:error, error} ->
         {:error, error}
@@ -329,7 +331,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
   defp validate_change_terms(leaves, leaves) when is_list(leaves), do: :ok
 
   defp validate_change_terms(_leaves, _term_leaves),
-    do: {:error, VialKeeper.Error.integrity_violation("change JSON and term differ")}
+    do: {:error, Error.integrity_violation("change JSON and term differ")}
 
   defp load_pending_blobs(conn), do: Attachments.list_pending_blobs(conn)
 
@@ -346,7 +348,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
 
   defp validate_revision_term(body_json, body_term, 1, _body)
        when not is_nil(body_json) or not is_nil(body_term),
-       do: {:error, VialKeeper.Error.integrity_violation("deleted revision has a body term")}
+       do: {:error, Error.integrity_violation("deleted revision has a body term")}
 
   defp validate_revision_term(body_json, body_term, _deleted, body) do
     case {StrictDecoder.decode(body_json), TermBlob.decode(body_term, body_json)} do
@@ -354,7 +356,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
         :ok
 
       _ ->
-        {:error, VialKeeper.Error.integrity_violation("revision JSON and body term differ")}
+        {:error, Error.integrity_violation("revision JSON and body term differ")}
     end
   end
 
@@ -411,10 +413,10 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
       :ok ->
         {:cont, :ok}
 
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         {:halt,
          {:error,
-          VialKeeper.Error.integrity_violation(
+          Error.integrity_violation(
             "referenced attachment blob failed physical verification",
             %{digest: digest, cause: error.message}
           )}}
@@ -455,7 +457,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.integrity_violation("attachment blobs directory is unreadable", %{
+         Error.integrity_violation("attachment blobs directory is unreadable", %{
            reason: inspect(reason)
          })}
     end
@@ -466,23 +468,19 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
 
     case File.lstat(path) do
       {:ok, %File.Stat{type: :symlink}} ->
-        {:halt,
-         {:error, VialKeeper.Error.integrity_violation("attachment blob path contains a symlink")}}
+        {:halt, {:error, Error.integrity_violation("attachment blob path contains a symlink")}}
 
       {:ok, %File.Stat{type: :directory}} ->
         inventory_directory_prefix(path, entry, digests)
 
       {:ok, %File.Stat{type: :regular}} ->
         {:halt,
-         {:error,
-          VialKeeper.Error.integrity_violation(
-            "attachment blobs root contains a non-directory entry"
-          )}}
+         {:error, Error.integrity_violation("attachment blobs root contains a non-directory entry")}}
 
       {:error, reason} ->
         {:halt,
          {:error,
-          VialKeeper.Error.integrity_violation("attachment blob path is unreadable", %{
+          Error.integrity_violation("attachment blob path is unreadable", %{
             reason: inspect(reason)
           })}}
     end
@@ -492,9 +490,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
     if Regex.match?(~r/^[0-9a-f]{2}$/, entry) do
       continue_inventory(inventory_blob_files(path, entry, digests))
     else
-      {:halt,
-       {:error,
-        VialKeeper.Error.integrity_violation("attachment blob prefix directory is malformed")}}
+      {:halt, {:error, Error.integrity_violation("attachment blob prefix directory is malformed")}}
     end
   end
 
@@ -508,7 +504,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.integrity_violation("attachment blob prefix is unreadable", %{
+         Error.integrity_violation("attachment blob prefix is unreadable", %{
            reason: inspect(reason)
          })}
     end
@@ -526,18 +522,17 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
 
     case File.lstat(path) do
       {:ok, %File.Stat{type: :symlink}} ->
-        {:error,
-         VialKeeper.Error.integrity_violation("attachment blob representation is a symlink")}
+        {:error, Error.integrity_violation("attachment blob representation is a symlink")}
 
       {:ok, %File.Stat{type: :regular}} ->
         accept_blob_filename(prefix, file, digests)
 
       {:ok, _} ->
-        {:error, VialKeeper.Error.integrity_violation("attachment blob entry has an invalid type")}
+        {:error, Error.integrity_violation("attachment blob entry has an invalid type")}
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.integrity_violation("attachment blob entry is unreadable", %{
+         Error.integrity_violation("attachment blob entry is unreadable", %{
            reason: inspect(reason)
          })}
     end
@@ -549,14 +544,13 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
         record_physical_digest(digests, digest)
 
       :error ->
-        {:error, VialKeeper.Error.integrity_violation("attachment blob filename is malformed")}
+        {:error, Error.integrity_violation("attachment blob filename is malformed")}
     end
   end
 
   defp record_physical_digest(digests, digest) do
     if MapSet.member?(digests, digest) do
-      {:error,
-       VialKeeper.Error.integrity_violation("attachment has multiple physical representations")}
+      {:error, Error.integrity_violation("attachment has multiple physical representations")}
     else
       {:ok, MapSet.put(digests, digest)}
     end
@@ -621,8 +615,8 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
     end
   end
 
-  defp normalize_error(%VialKeeper.Error{} = error), do: error
+  defp normalize_error(%Error{} = error), do: error
 
   defp normalize_error(reason),
-    do: VialKeeper.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
+    do: Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
 end

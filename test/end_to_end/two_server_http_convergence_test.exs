@@ -18,6 +18,7 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
   alias VialKeeper.Replication.Id
   alias VialKeeper.Replication.JobManager
   alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.TempDatabase
   alias VialKeeper.TestReplicationWire
   alias VialKeeper.TestServer
 
@@ -38,7 +39,7 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
     b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
+      TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a = TestServer.start_supervised!()
@@ -56,8 +57,8 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
-      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
+      TempDatabase.cleanup(Path.join(root, a_path))
+      TempDatabase.cleanup(Path.join(root, b_path))
     end)
 
     assert {:ok, %{"revision" => first_rev}} =
@@ -235,7 +236,7 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
     b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
+      TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a = TestServer.start_supervised!()
@@ -258,8 +259,8 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
-      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
+      TempDatabase.cleanup(Path.join(root, a_path))
+      TempDatabase.cleanup(Path.join(root, b_path))
     end)
 
     assert {:ok, %{"job_id" => job_id}} =
@@ -332,7 +333,7 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
     b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
+      TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a = TestServer.start_supervised!()
@@ -348,8 +349,8 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
-      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
+      TempDatabase.cleanup(Path.join(root, a_path))
+      TempDatabase.cleanup(Path.join(root, b_path))
     end)
 
     assert {:ok, %{"job_id" => job_id}} =
@@ -480,7 +481,7 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
     blob_payload = String.duplicate("W", 64)
 
     for path <- [a_path, b_path] do
-      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
+      TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a =
@@ -500,8 +501,8 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
-      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
+      TempDatabase.cleanup(Path.join(root, a_path))
+      TempDatabase.cleanup(Path.join(root, b_path))
 
       if Process.alive?(barrier) do
         Agent.stop(barrier)
@@ -1013,7 +1014,7 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
     b_path = prefix <> "-b.vialkeeper"
 
     for path <- [a_path, b_path] do
-      VialKeeper.TempDatabase.cleanup(Path.join(root, path))
+      TempDatabase.cleanup(Path.join(root, path))
     end
 
     server_a = TestServer.start_supervised!()
@@ -1029,8 +1030,8 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
       _ = DatabaseCatalog.close(b_uuid)
       _ = DatabaseCatalog.unregister(a_uuid)
       _ = DatabaseCatalog.unregister(b_uuid)
-      VialKeeper.TempDatabase.cleanup(Path.join(root, a_path))
-      VialKeeper.TempDatabase.cleanup(Path.join(root, b_path))
+      TempDatabase.cleanup(Path.join(root, a_path))
+      TempDatabase.cleanup(Path.join(root, b_path))
     end)
 
     {server_a, server_b, a_uuid, b_uuid}
@@ -1346,9 +1347,10 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
         end)
 
     def hook(agent, conn) do
-      case Process.alive?(agent) do
-        false -> conn
-        true -> hook_alive(agent, conn)
+      if Process.alive?(agent) do
+        hook_alive(agent, conn)
+      else
+        conn
       end
     catch
       :exit, {:noproc, _} -> conn
@@ -1574,7 +1576,7 @@ defmodule VialKeeper.EndToEnd.TwoServerHttpConvergenceTest do
         total_key = :"#{kind}_total"
         seen = Map.get(state, total_key, 0) + 1
         active = Map.get(state, kind, 0) + 1
-        waiters = Map.get(state, :"#{kind}_waiters", []) ++ [caller]
+        waiters = Enum.concat(Map.get(state, :"#{kind}_waiters", []), [caller])
 
         state
         |> Map.put(total_key, seen)

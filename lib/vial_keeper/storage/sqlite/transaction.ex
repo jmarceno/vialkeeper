@@ -8,11 +8,14 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
   """
   @behaviour VialKeeper.Storage.Ports.Transaction
 
-  alias VialKeeper.Observability.Instrumentation.SQLite
   alias VialKeeper.Observability.Instrumentation.Mutation
+  alias VialKeeper.Observability.Instrumentation.SQLite
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Ports.Errors
   alias VialKeeper.Storage.SQLite.{Adapter, Connection, Context}
+
+  # quality:reason rollback then reraise is the only control flow after a failed write
+  @dialyzer {:nowarn_function, rollback_and_reraise: 3}
 
   @snapshot_key :vial_keeper_sqlite_snapshot
 

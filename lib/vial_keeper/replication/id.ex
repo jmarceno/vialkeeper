@@ -3,6 +3,10 @@ defmodule VialKeeper.Replication.Id do
 
   alias VialKeeper.JSON.Canonical
 
+  @spec calculate(binary(), binary(), term(), term()) ::
+          {:ok, binary()} | {:error, VialKeeper.Error.t()}
+  @spec calculate(binary(), binary(), term(), term(), term()) ::
+          {:ok, binary()} | {:error, VialKeeper.Error.t()}
   def calculate(source_uuid, target_uuid, direction, mode, filter \\ nil) do
     with {:ok, json} <-
            Canonical.encode(%{

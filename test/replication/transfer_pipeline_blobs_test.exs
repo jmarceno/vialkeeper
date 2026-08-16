@@ -246,7 +246,7 @@ defmodule VialKeeper.Replication.TransferPipelineBlobsTest do
     opened = Map.new([receive_blob_opened(), receive_blob_opened()])
     assert MapSet.new(Map.keys(opened)) == MapSet.new(digests)
     failed_pid = Map.fetch!(opened, failed_digest)
-    sibling_pid = Map.fetch!(opened, List.last(digests))
+    sibling_pid = Map.fetch!(opened, hd(Enum.reverse(digests)))
     assert_receive {:blob_put, ^failed_digest, ^failed_pid}, 1_000
     assert_receive {:result, {:error, %Error{code: :internal_error}}}, 1_000
     refute Process.alive?(failed_pid)

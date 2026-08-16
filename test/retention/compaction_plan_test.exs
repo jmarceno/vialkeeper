@@ -6,7 +6,7 @@ defmodule VialKeeper.Retention.CompactionPlanTest do
 
   test "zero history depth retains only the winning revision" do
     revisions = linear_chain("doc", 4)
-    winner = List.last(revisions)
+    winner = hd(Enum.reverse(revisions))
 
     plan =
       plan!(%{
@@ -31,7 +31,7 @@ defmodule VialKeeper.Retention.CompactionPlanTest do
 
   test "history depth retains configured ancestor generations" do
     revisions = linear_chain("doc", 5)
-    winner = List.last(revisions)
+    winner = hd(Enum.reverse(revisions))
 
     plan =
       plan!(%{
@@ -82,20 +82,20 @@ defmodule VialKeeper.Retention.CompactionPlanTest do
         candidate_floor: 10,
         history_depth: 1,
         documents: [
-          document("doc", 3, List.last(revisions).revision_id, revisions)
+          document("doc", 3, hd(Enum.reverse(revisions)).revision_id, revisions)
         ]
       })
 
     assert [%{retired: true, retired_branch_roots: [root]}] = plan.boundaries_to_upsert
     root_revision = Enum.find(revisions, &is_nil(&1.parent_revision))
     assert root == root_revision.revision_id
-    assert List.last(revisions).revision_id in Map.get(plan.removals, "doc", [])
+    assert hd(Enum.reverse(revisions)).revision_id in Map.get(plan.removals, "doc", [])
     assert "doc" in plan.documents_to_empty
   end
 
   test "documents above the floor are untouched" do
     revisions = linear_chain("doc", 3)
-    winner = List.last(revisions)
+    winner = hd(Enum.reverse(revisions))
 
     plan =
       plan!(%{
@@ -113,7 +113,7 @@ defmodule VialKeeper.Retention.CompactionPlanTest do
 
   test "compaction plan ignores opaque attachment fields in revision bodies" do
     revisions = linear_chain("doc", 3)
-    winner = List.last(revisions)
+    winner = hd(Enum.reverse(revisions))
 
     with_attachments =
       Enum.map(revisions, fn revision ->

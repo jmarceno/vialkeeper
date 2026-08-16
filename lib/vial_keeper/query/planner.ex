@@ -406,14 +406,14 @@ defmodule VialKeeper.Query.Planner do
     end
   end
 
-  @doc false
+  @doc "Sort key used to pick among candidate indexes for a query."
   @spec selection_key(map(), map()) :: {integer(), integer(), integer(), binary()}
   def selection_key(index, request) do
     {eq, range, sort} = score_components(index, request)
     {-eq, -range, -sort, index["index_id"] || ""}
   end
 
-  @doc false
+  @doc "Equality, range, and sort scores used to rank a structured or full-text index."
   @spec score_components(map(), map()) :: {non_neg_integer(), 0 | 1, non_neg_integer()}
   def score_components(%{"type" => "full_text"}, request) do
     if is_nil(get(request, :search)), do: {0, 0, 0}, else: {1_000_000, 0, 0}

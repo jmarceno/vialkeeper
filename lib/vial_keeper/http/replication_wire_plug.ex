@@ -24,9 +24,11 @@ defmodule VialKeeper.HTTP.ReplicationWirePlug do
   @uncompressed_length_header "x-vialkeeper-uncompressed-length"
   @compress_private :vial_keeper_replication_wire_compress
 
+  @spec init(Plug.opts()) :: Plug.opts()
   @impl true
   def init(opts), do: opts
 
+  @spec call(Plug.Conn.t(), Plug.opts()) :: Plug.Conn.t()
   @impl true
   def call(conn, _opts) do
     if wire_path?(conn.request_path) do

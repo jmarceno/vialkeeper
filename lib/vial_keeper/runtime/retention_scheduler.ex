@@ -5,8 +5,10 @@ defmodule VialKeeper.Runtime.RetentionScheduler do
   alias VialKeeper.Observability.Instrumentation.Compact
   alias VialKeeper.Runtime.{DatabaseAdmission, DatabaseCatalog}
 
+  @spec start_link(binary()) :: GenServer.on_start()
   def start_link(uuid), do: GenServer.start_link(__MODULE__, uuid, name: via(uuid))
 
+  @spec via(binary()) :: {:via, module(), term()}
   def via(uuid),
     do: {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:retention_scheduler, uuid}}}
 

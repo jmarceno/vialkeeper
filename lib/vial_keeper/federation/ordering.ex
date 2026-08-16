@@ -10,7 +10,9 @@ defmodule VialKeeper.Federation.Ordering do
   @spec ordering_key(map(), list()) :: [term()]
   def ordering_key(document, sort) when is_map(document) and is_list(sort) do
     key = QueryOrdering.ordering_key(document, sort)
-    Map.get(key, "sort", []) ++ [MapAccess.get(document, :id)]
+
+    Map.get(key, "sort", [])
+    |> Enum.concat([MapAccess.get(document, :id)])
   end
 
   @doc "Compares two source-qualified documents using deterministic global ordering."

@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.Routes.Shadows do
   @moduledoc "Source-side shadow desired-state and redacted status API."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
 
   alias VialKeeper.HTTP.{Request, Response}
   alias VialKeeper.Runtime.DatabaseCatalog

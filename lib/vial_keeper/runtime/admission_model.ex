@@ -136,7 +136,7 @@ defmodule VialKeeper.Runtime.AdmissionModel do
   end
 
   defp enqueue_queue(queues, class, request_id) do
-    Map.update!(queues, class, fn queue -> queue ++ [request_id] end)
+    Map.update!(queues, class, &Enum.concat(&1, [request_id]))
   end
 
   defp dequeue(queues, class) do

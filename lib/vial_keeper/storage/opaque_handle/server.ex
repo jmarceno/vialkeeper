@@ -22,29 +22,30 @@ defmodule VialKeeper.Storage.OpaqueHandle.Server do
   end
 
   @spec wrap(term()) :: VialKeeper.Storage.OpaqueHandle.t()
-  def wrap(term), do: GenServer.call(__MODULE__, {:wrap, term})
+  def wrap(term),
+    do: GenServer.call(__MODULE__, {:wrap, term}, VialKeeper.Config.request_timeout_ms())
 
   @spec unwrap(VialKeeper.Storage.OpaqueHandle.t()) ::
           {:ok, term()} | {:error, :missing | :forbidden}
   def unwrap(%VialKeeper.Storage.OpaqueHandle{} = handle) do
-    GenServer.call(__MODULE__, {:unwrap, handle})
+    GenServer.call(__MODULE__, {:unwrap, handle}, VialKeeper.Config.request_timeout_ms())
   end
 
   @doc false
   @spec backend_unwrap(VialKeeper.Storage.OpaqueHandle.t()) :: {:ok, term()} | {:error, :missing}
   def backend_unwrap(%VialKeeper.Storage.OpaqueHandle{} = handle) do
-    GenServer.call(__MODULE__, {:backend_unwrap, handle})
+    GenServer.call(__MODULE__, {:backend_unwrap, handle}, VialKeeper.Config.request_timeout_ms())
   end
 
   @spec replace(VialKeeper.Storage.OpaqueHandle.t(), term()) ::
           {:ok, VialKeeper.Storage.OpaqueHandle.t()} | {:error, :missing | :forbidden}
   def replace(%VialKeeper.Storage.OpaqueHandle{} = handle, term) do
-    GenServer.call(__MODULE__, {:replace, handle, term})
+    GenServer.call(__MODULE__, {:replace, handle, term}, VialKeeper.Config.request_timeout_ms())
   end
 
   @spec drop(VialKeeper.Storage.OpaqueHandle.t()) :: :ok | {:error, :forbidden}
   def drop(%VialKeeper.Storage.OpaqueHandle{} = handle) do
-    GenServer.call(__MODULE__, {:drop, handle})
+    GenServer.call(__MODULE__, {:drop, handle}, VialKeeper.Config.request_timeout_ms())
   end
 
   @impl true

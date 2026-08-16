@@ -135,6 +135,7 @@ defmodule VialKeeper.Observability.Attributes do
   end
 
   @doc "Returns the OTel attribute key for an allow-listed local key."
+  @spec otel_key(atom()) :: atom()
   def otel_key(key) when key in @allowed_keys, do: Keyword.fetch!(@allowed, key)
 
   defp otel_key!(key), do: Keyword.fetch!(@allowed, key)

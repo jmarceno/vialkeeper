@@ -12,7 +12,8 @@ defmodule VialKeeper.Observability.TestExporter.Owner do
   @impl true
   def init(table) do
     if :ets.whereis(table) == :undefined do
-      :ets.new(table, [:named_table, :public, :bag])
+      _ = :ets.new(table, [:named_table, :public, :bag])
+      :ok
     end
 
     {:ok, table}

@@ -8,6 +8,7 @@ defmodule VialKeeper.Query.Subscription do
 
   @type status :: :awaiting_snapshot | :draining_snapshot | :active | :closed | :failed
 
+  @spec child_spec(keyword()) :: map()
   def child_spec(options) do
     ChildSpec.worker(
       {:query_subscription, Keyword.fetch!(options, :uuid), Keyword.fetch!(options, :client_pid)},
@@ -16,9 +17,15 @@ defmodule VialKeeper.Query.Subscription do
     )
   end
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
 
+  @spec next(pid()) :: {:ok | :closed | :error, Events.t()} | {:error, VialKeeper.Error.t()}
+  @spec next(pid(), timeout()) ::
+          {:ok | :closed | :error, Events.t()} | {:error, VialKeeper.Error.t()}
   def next(pid, timeout \\ 30_000), do: GenServer.call(pid, :next, timeout)
+
+  @spec close(pid()) :: :ok
   def close(pid), do: GenServer.stop(pid, :normal)
 
   @impl true
@@ -404,16 +411,6 @@ defmodule VialKeeper.Query.Subscription do
   defp normalize_hub_result({:ok, value}), do: {:ok, value}
 
   defp normalize_hub_result({:error, %VialKeeper.Error{} = error}), do: {:error, error}
-
-  defp normalize_hub_result({:error, reason}),
-    do:
-      {:error,
-       VialKeeper.Error.database_unavailable("subscription hub failed", %{cause: inspect(reason)})}
-
-  defp normalize_hub_result(other),
-    do:
-      {:error,
-       VialKeeper.Error.database_unavailable("subscription hub failed", %{cause: inspect(other)})}
 
   defp sync_execute_snapshot(uuid) when is_binary(uuid) do
     case Application.get_env(:vial_keeper, :subscription_execute_snapshot_sync) do

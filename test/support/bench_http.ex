@@ -5,6 +5,8 @@ defmodule VialKeeper.Bench.TestHTTP do
   Never used by production commands. Routes are injected per test.
   """
 
+  alias Plug.Conn
+
   def init(opts), do: opts
 
   def call(conn, opts) do
@@ -13,7 +15,7 @@ defmodule VialKeeper.Bench.TestHTTP do
 
     case Map.get(routes, key) do
       nil ->
-        Plug.Conn.send_resp(conn, 404, "missing")
+        Conn.send_resp(conn, 404, "missing")
 
       route ->
         serve(conn, route)
@@ -28,19 +30,19 @@ defmodule VialKeeper.Bench.TestHTTP do
     support_range = Map.get(route, :support_range, false)
     drop_after = Map.get(route, :drop_after)
 
-    conn = Plug.Conn.put_resp_header(conn, "content-type", content_type)
-    conn = if is_binary(etag), do: Plug.Conn.put_resp_header(conn, "etag", etag), else: conn
+    conn = Conn.put_resp_header(conn, "content-type", content_type)
+    conn = if is_binary(etag), do: Conn.put_resp_header(conn, "etag", etag), else: conn
 
-    case Plug.Conn.get_req_header(conn, "range") do
+    case Conn.get_req_header(conn, "range") do
       ["bytes=" <> range] when support_range ->
         serve_range(conn, body, range)
 
       _ when is_integer(drop_after) ->
         partial = binary_part(body, 0, min(drop_after, byte_size(body)))
-        Plug.Conn.send_resp(conn, status, partial)
+        Conn.send_resp(conn, status, partial)
 
       _ ->
-        Plug.Conn.send_resp(conn, status, body)
+        Conn.send_resp(conn, status, body)
     end
   end
 
@@ -50,14 +52,14 @@ defmodule VialKeeper.Bench.TestHTTP do
         slice = binary_part(body, start_at, stop_at - start_at + 1)
 
         conn
-        |> Plug.Conn.put_resp_header(
+        |> Conn.put_resp_header(
           "content-range",
           "bytes #{start_at}-#{stop_at}/#{byte_size(body)}"
         )
-        |> Plug.Conn.send_resp(206, slice)
+        |> Conn.send_resp(206, slice)
 
       :error ->
-        Plug.Conn.send_resp(conn, 416, "")
+        Conn.send_resp(conn, 416, "")
     end
   end
 

@@ -10,11 +10,14 @@ defmodule VialKeeper.View.Manager do
   alias VialKeeper.Runtime.{ChildSpec, DatabaseCatalog}
   alias VialKeeper.View.BuilderSupervisor
 
+  @spec child_spec(binary()) :: map()
   def child_spec(uuid),
     do: ChildSpec.worker({:view_manager, uuid}, {__MODULE__, :start_link, [uuid]}, :permanent)
 
+  @spec start_link(binary()) :: GenServer.on_start()
   def start_link(uuid), do: GenServer.start_link(__MODULE__, uuid, name: via(uuid))
 
+  @spec via(binary()) :: {:via, module(), term()}
   def via(uuid),
     do: {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:view_manager, uuid}}}
 
@@ -62,7 +65,7 @@ defmodule VialKeeper.View.Manager do
 
   defp call(uuid, message) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:view_manager, uuid}) do
-      [{pid, _}] -> GenServer.call(pid, message)
+      [{pid, _}] -> GenServer.call(pid, message, VialKeeper.Config.request_timeout_ms())
       [] -> {:error, VialKeeper.Error.database_closed("view manager is not running")}
     end
   end

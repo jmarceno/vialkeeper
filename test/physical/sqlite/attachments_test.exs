@@ -3,8 +3,9 @@ defmodule VialKeeper.StorageAdapter.AttachmentsTest do
 
   @moduletag :sqlite_physical
 
-  alias VialKeeper.Storage.SQLite.Connection
   alias VialKeeper.Observability.Instrumentation.SQLite
+  alias VialKeeper.Storage.Services
+  alias VialKeeper.Storage.SQLite.Connection
   alias VialKeeper.Storage.SQLite.Revisions
 
   @digest String.duplicate("a", 64)
@@ -15,7 +16,7 @@ defmodule VialKeeper.StorageAdapter.AttachmentsTest do
     SQLite.start_phase_timings()
 
     assert {:ok, %{count: 3}} =
-             VialKeeper.Storage.Services.protect_pending_blobs(@adapter.to_context(adapter), %{
+             Services.protect_pending_blobs(@adapter.to_context(adapter), %{
                blobs: [
                  %{digest: @digest, logical_size: 1},
                  %{digest: @other, logical_size: 2},
@@ -108,7 +109,7 @@ defmodule VialKeeper.StorageAdapter.AttachmentsTest do
              @adapter.list_live_attachment_digests(adapter, %{limit: 2})
 
     assert match?([_, _], first_page)
-    assert cursor == List.last(first_page)
+    assert cursor == hd(Enum.reverse(first_page))
 
     assert {:ok, %{digests: rest, next_after_digest: nil}} =
              @adapter.list_live_attachment_digests(adapter, %{

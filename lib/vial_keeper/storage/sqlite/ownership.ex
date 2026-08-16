@@ -11,6 +11,7 @@ defmodule VialKeeper.Storage.SQLite.Ownership do
   alias VialKeeper.Storage.SQLite.Connection
 
   @doc "Starts ownership for the SQLite data artifact at `database_path`."
+  @spec start_link(binary()) :: GenServer.on_start()
   def start_link(database_path), do: GenServer.start_link(__MODULE__, database_path)
 
   @impl true

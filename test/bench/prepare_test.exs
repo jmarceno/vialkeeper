@@ -27,7 +27,7 @@ defmodule VialKeeper.Bench.PrepareTest do
       Downloader.download(context, spec_override.(object), opts)
     end
 
-    assert {:ok, result} = Prepare.prepare("trec-covid", env ++ [download: download])
+    assert {:ok, result} = Prepare.prepare("trec-covid", Keyword.put(env, :download, download))
     assert result["state"] == "ready"
     assert Marker.present?(result["path"])
     assert Root.descendant?(result["path"], ctx.root)
@@ -69,8 +69,9 @@ defmodule VialKeeper.Bench.PrepareTest do
     assert {:error, message} =
              Prepare.prepare(
                "trec-covid",
-               Keyword.put(env_opts(parent, repo), :available_bytes_fun, fn _ -> {:ok, 1} end) ++
-                 [download: download]
+               env_opts(parent, repo)
+               |> Keyword.put(:available_bytes_fun, fn _ -> {:ok, 1} end)
+               |> Keyword.put(:download, download)
              )
 
     assert message =~ "insufficient free space"

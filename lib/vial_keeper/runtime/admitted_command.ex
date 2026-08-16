@@ -27,6 +27,7 @@ defmodule VialKeeper.Runtime.AdmittedCommand do
     DynamicSupervisor.start_child(supervisor, spec)
   end
 
+  @spec start_link(args()) :: GenServer.on_start()
   def start_link(args), do: GenServer.start_link(__MODULE__, args)
 
   @impl true

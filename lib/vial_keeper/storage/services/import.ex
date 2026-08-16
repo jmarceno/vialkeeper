@@ -8,6 +8,7 @@ defmodule VialKeeper.Storage.Services.Import do
 
   alias VialKeeper.Attachments.Manifest
   alias VialKeeper.Domain.{RetentionBoundary, Revision}
+  alias VialKeeper.Error
   alias VialKeeper.JSON.Canonical
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Import, as: ImportInstrumentation
@@ -20,16 +21,16 @@ defmodule VialKeeper.Storage.Services.Import do
   @doc """
   Validates host limits for a replication chain batch.
   """
-  @spec validate_chain_batch(term()) :: :ok | {:error, VialKeeper.Error.t()}
+  @spec validate_chain_batch(term()) :: :ok | {:error, Error.t()}
   def validate_chain_batch(chains) when is_list(chains) do
     max = VialKeeper.Config.host_limits()[:max_bulk_operations] || 500
 
     cond do
       length(chains) > max ->
-        {:error, VialKeeper.Error.resource_limit("replication chain count exceeds the host limit")}
+        {:error, Error.resource_limit("replication chain count exceeds the host limit")}
 
       not Enum.all?(chains, &is_map/1) ->
-        {:error, VialKeeper.Error.invalid_request("replication chains must be objects")}
+        {:error, Error.invalid_request("replication chains must be objects")}
 
       not Enum.all?(chains, fn chain ->
         Enum.all?(
@@ -50,7 +51,7 @@ defmodule VialKeeper.Storage.Services.Import do
             ])
         )
       end) ->
-        {:error, VialKeeper.Error.invalid_request("replication chains contain an unknown field")}
+        {:error, Error.invalid_request("replication chains contain an unknown field")}
 
       true ->
         :ok
@@ -58,29 +59,28 @@ defmodule VialKeeper.Storage.Services.Import do
   end
 
   def validate_chain_batch(_),
-    do: {:error, VialKeeper.Error.invalid_request("replication chains must be an array")}
+    do: {:error, Error.invalid_request("replication chains must be an array")}
 
   @doc "Validates the bounded retired-history manifest carried by bootstrap pages."
-  @spec validate_purged_boundaries(term()) :: :ok | {:error, VialKeeper.Error.t()}
+  @spec validate_purged_boundaries(term()) :: :ok | {:error, Error.t()}
   def validate_purged_boundaries(boundaries), do: validate_purged_boundaries(boundaries, nil)
 
-  @spec validate_purged_boundaries(term(), binary() | nil) :: :ok | {:error, VialKeeper.Error.t()}
+  @spec validate_purged_boundaries(term(), binary() | nil) :: :ok | {:error, Error.t()}
   def validate_purged_boundaries(boundaries, source_database_uuid) when is_list(boundaries) do
     max = VialKeeper.Config.host_limits()[:max_bulk_operations] || 500
 
     cond do
       length(boundaries) > max ->
-        {:error, VialKeeper.Error.resource_limit("purged boundary count exceeds the host limit")}
+        {:error, Error.resource_limit("purged boundary count exceeds the host limit")}
 
       not Enum.all?(boundaries, &is_map/1) ->
-        {:error, VialKeeper.Error.invalid_request("purged boundaries must be objects")}
+        {:error, Error.invalid_request("purged boundaries must be objects")}
 
       boundaries != [] and not is_binary(source_database_uuid) ->
-        {:error,
-         VialKeeper.Error.invalid_request("purged boundaries require a source database UUID")}
+        {:error, Error.invalid_request("purged boundaries require a source database UUID")}
 
       not Enum.all?(boundaries, &valid_purged_boundary?(&1, source_database_uuid)) ->
-        {:error, VialKeeper.Error.invalid_request("purged boundary contains an unknown field")}
+        {:error, Error.invalid_request("purged boundary contains an unknown field")}
 
       true ->
         :ok
@@ -88,25 +88,25 @@ defmodule VialKeeper.Storage.Services.Import do
   end
 
   def validate_purged_boundaries(_, _),
-    do: {:error, VialKeeper.Error.invalid_request("purged boundaries must be an array")}
+    do: {:error, Error.invalid_request("purged boundaries must be an array")}
 
   @doc """
   Ensures every attachment digest referenced by import chains is physically present.
 
   Runs before the import mutation transaction. Memory adapters skip the check.
   """
-  @spec ensure_physical_blobs(BackendContext.t(), term()) :: :ok | {:error, VialKeeper.Error.t()}
+  @spec ensure_physical_blobs(BackendContext.t(), term()) :: :ok | {:error, Error.t()}
   def ensure_physical_blobs(%BackendContext{} = context, chains) when is_list(chains) do
     Facts.verify_physical_digests(context, collect_import_digests(chains))
   end
 
   def ensure_physical_blobs(_context, _chains),
-    do: {:error, VialKeeper.Error.invalid_request("replication chains must be an array")}
+    do: {:error, Error.invalid_request("replication chains must be an array")}
 
   @doc """
   Imports revision chains inside an open transaction.
   """
-  @spec import_tx(BackendContext.t(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
+  @spec import_tx(BackendContext.t(), map()) :: {:ok, map()} | {:error, Error.t()}
   def import_tx(%BackendContext{} = context, request) do
     chains = MapAccess.get(request, :chains, [])
     purged_boundaries = MapAccess.get(request, :purged_boundaries, [])
@@ -114,7 +114,7 @@ defmodule VialKeeper.Storage.Services.Import do
 
     case request_profile(request) do
       :invalid ->
-        {:error, VialKeeper.Error.invalid_request("replication profile is invalid")}
+        {:error, Error.invalid_request("replication profile is invalid")}
 
       profile ->
         import_tx_with_profile(
@@ -200,7 +200,7 @@ defmodule VialKeeper.Storage.Services.Import do
         :ok
 
       {:ok, true} ->
-        {:error, VialKeeper.Error.rebase_required("bootstrap cannot purge local history")}
+        {:error, Error.rebase_required("bootstrap cannot purge local history")}
 
       {:error, error} ->
         {:error, error}
@@ -227,13 +227,12 @@ defmodule VialKeeper.Storage.Services.Import do
       append_validated_chain(document_id, leaf_revision, revisions, truncated, acc)
     else
       {:halt,
-       {:error,
-        VialKeeper.Error.invalid_request("revision chain requires document, leaf, and revisions")}}
+       {:error, Error.invalid_request("revision chain requires document, leaf, and revisions")}}
     end
   end
 
   defp validate_chain_entry(_chain, _acc),
-    do: {:halt, {:error, VialKeeper.Error.invalid_request("revision chains must be objects")}}
+    do: {:halt, {:error, Error.invalid_request("revision chains must be objects")}}
 
   defp append_validated_chain(document_id, leaf_revision, revisions, truncated, acc) do
     case validate_chain_revisions(document_id, revisions, truncated) do
@@ -247,9 +246,7 @@ defmodule VialKeeper.Storage.Services.Import do
         {:cont, {:ok, acc ++ entries}}
 
       {:ok, _parent, _built} ->
-        {:halt,
-         {:error,
-          VialKeeper.Error.integrity_violation("revision chain leaf does not match payload")}}
+        {:halt, {:error, Error.integrity_violation("revision chain leaf does not match payload")}}
 
       {:error, error} ->
         {:halt, {:error, error}}
@@ -292,8 +289,7 @@ defmodule VialKeeper.Storage.Services.Import do
       {:cont, {:ok, revision.revision_id, [revision | built]}}
     else
       false ->
-        {:halt,
-         {:error, VialKeeper.Error.integrity_violation("revision chain is not parent ordered")}}
+        {:halt, {:error, Error.integrity_violation("revision chain is not parent ordered")}}
 
       {:error, error} ->
         {:halt, {:error, error}}
@@ -301,7 +297,7 @@ defmodule VialKeeper.Storage.Services.Import do
   end
 
   defp imported_revision(_document_id, raw) when not is_map(raw),
-    do: {:error, VialKeeper.Error.invalid_request("revision chain entries must be objects")}
+    do: {:error, Error.invalid_request("revision chain entries must be objects")}
 
   defp imported_revision(document_id, raw) do
     allowed_keys = [
@@ -361,11 +357,11 @@ defmodule VialKeeper.Storage.Services.Import do
            attachments: attachments
          )}
       else
-        false -> {:error, VialKeeper.Error.integrity_violation("revision chain validation failed")}
+        false -> {:error, Error.integrity_violation("revision chain validation failed")}
         {:error, error} -> {:error, error}
       end
     else
-      {:error, VialKeeper.Error.invalid_request("revision chain entry contains an unknown field")}
+      {:error, Error.invalid_request("revision chain entry contains an unknown field")}
     end
   end
 
@@ -374,7 +370,7 @@ defmodule VialKeeper.Storage.Services.Import do
        do: :ok
 
   defp validate_import_history_id(_),
-    do: {:error, VialKeeper.Error.invalid_request("revision chain history_id is required")}
+    do: {:error, Error.invalid_request("revision chain history_id is required")}
 
   defp body_size_within_limit?(body) do
     case Canonical.encode(body) do
@@ -514,7 +510,7 @@ defmodule VialKeeper.Storage.Services.Import do
           fenced
         )
 
-      {:error, %VialKeeper.Error{code: :document_not_found}} ->
+      {:error, %Error{code: :document_not_found}} ->
         insert_new_revision(
           context,
           revision,
@@ -582,7 +578,7 @@ defmodule VialKeeper.Storage.Services.Import do
       {:ok, existing} ->
         existing_revision_result(existing, revision, affected, inserted, stale, fenced)
 
-      {:error, %VialKeeper.Error{code: :revision_not_found}} ->
+      {:error, %Error{code: :revision_not_found}} ->
         with :ok <-
                ensure_import_parent(
                  context,
@@ -612,8 +608,7 @@ defmodule VialKeeper.Storage.Services.Import do
       {:cont, {:ok, affected, inserted, stale, fenced}}
     else
       {:halt,
-       {:error,
-        VialKeeper.Error.integrity_violation("existing revision differs from imported revision")}}
+       {:error, Error.integrity_violation("existing revision differs from imported revision")}}
     end
   end
 
@@ -633,7 +628,7 @@ defmodule VialKeeper.Storage.Services.Import do
   defp parent_present_or_allowed(context, document_id, parent) do
     case Facts.find_revision(context, document_id, parent) do
       {:ok, _} -> :ok
-      {:error, %VialKeeper.Error{code: :revision_not_found}} -> :ok
+      {:error, %Error{code: :revision_not_found}} -> :ok
       {:error, error} -> {:error, error}
     end
   end
@@ -817,8 +812,7 @@ defmodule VialKeeper.Storage.Services.Import do
             {:ok, sequence}
 
           {:ok, nil} ->
-            {:error,
-             VialKeeper.Error.integrity_violation("shadow document has no durable source origin")}
+            {:error, Error.integrity_violation("shadow document has no durable source origin")}
 
           {:error, error} ->
             {:error, error}
@@ -842,8 +836,7 @@ defmodule VialKeeper.Storage.Services.Import do
             :ok
 
           {:ok, nil} ->
-            {:error,
-             VialKeeper.Error.integrity_violation("shadow deleted document has no source origin")}
+            {:error, Error.integrity_violation("shadow deleted document has no source origin")}
 
           {:error, error} ->
             {:error, error}
@@ -878,8 +871,7 @@ defmodule VialKeeper.Storage.Services.Import do
   defp validate_profile_request(_context, request, %Profile{kind: :peer}) do
     if is_nil(MapAccess.get(request, :shadow_database_uuid)),
       do: :ok,
-      else:
-        {:error, VialKeeper.Error.invalid_request("peer import cannot target a shadow database")}
+      else: {:error, Error.invalid_request("peer import cannot target a shadow database")}
   end
 
   defp validate_profile_request(context, request, %Profile{kind: :shadow} = profile) do
@@ -896,8 +888,7 @@ defmodule VialKeeper.Storage.Services.Import do
       :ok
     else
       false ->
-        {:error,
-         VialKeeper.Error.shadow_incompatible("shadow import binding does not match target")}
+        {:error, Error.shadow_incompatible("shadow import binding does not match target")}
 
       {:error, error} ->
         {:error, error}
@@ -913,12 +904,11 @@ defmodule VialKeeper.Storage.Services.Import do
              metadata_field(metadata, :operation_id) == profile.operation_id do
           :ok
         else
-          {:error,
-           VialKeeper.Error.shadow_identity_conflict("shadow metadata binding does not match")}
+          {:error, Error.shadow_identity_conflict("shadow metadata binding does not match")}
         end
 
       {:ok, nil} ->
-        {:error, VialKeeper.Error.shadow_identity_conflict("shadow metadata is missing")}
+        {:error, Error.shadow_identity_conflict("shadow metadata is missing")}
 
       {:error, error} ->
         {:error, error}
@@ -929,7 +919,7 @@ defmodule VialKeeper.Storage.Services.Import do
     case MapAccess.get(request, :source_watermark) do
       value when is_integer(value) and value >= 0 -> :ok
       nil -> :ok
-      _ -> {:error, VialKeeper.Error.invalid_request("shadow source watermark is invalid")}
+      _ -> {:error, Error.invalid_request("shadow source watermark is invalid")}
     end
   end
 
@@ -942,26 +932,24 @@ defmodule VialKeeper.Storage.Services.Import do
 
       cond do
         not is_binary(document_id) or document_id == "" ->
-          {:halt, {:error, VialKeeper.Error.invalid_request("shadow chain document_id is invalid")}}
+          {:halt, {:error, Error.invalid_request("shadow chain document_id is invalid")}}
 
         not is_integer(sequence) or sequence < 0 ->
           {:halt,
-           {:error,
-            VialKeeper.Error.invalid_request("shadow chain source_update_sequence is required")}}
+           {:error, Error.invalid_request("shadow chain source_update_sequence is required")}}
 
         Map.get(origins, document_id) in [nil, sequence] ->
           {:cont, {:ok, Map.put(origins, document_id, sequence)}}
 
         true ->
           {:halt,
-           {:error,
-            VialKeeper.Error.integrity_violation("shadow chains disagree on source_update_sequence")}}
+           {:error, Error.integrity_violation("shadow chains disagree on source_update_sequence")}}
       end
     end)
   end
 
   defp source_origins(_chains, true),
-    do: {:error, VialKeeper.Error.invalid_request("shadow chains must be an array")}
+    do: {:error, Error.invalid_request("shadow chains must be an array")}
 
   defp put_shadow_origins(_context, _origins, false), do: :ok
 
@@ -998,7 +986,7 @@ defmodule VialKeeper.Storage.Services.Import do
   defp normalize_import_attachments(raw, _deleted) do
     case MapAccess.get(raw, :attachments) || MapAccess.get(raw, "attachments") || %{} do
       attachments when is_map(attachments) -> Manifest.normalize(attachments)
-      _ -> {:error, VialKeeper.Error.invalid_request("attachments must be an object")}
+      _ -> {:error, Error.invalid_request("attachments must be an object")}
     end
   end
 

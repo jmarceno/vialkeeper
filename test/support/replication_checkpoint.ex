@@ -6,18 +6,16 @@ defmodule VialKeeper.TestReplicationCheckpoint do
 
   @spec seed_matching_checkpoints!(binary(), binary(), binary()) :: :ok
   def seed_matching_checkpoints!(source_uuid, target_uuid, replication_id) do
-    for uuid <- [source_uuid, target_uuid] do
+    Enum.each([source_uuid, target_uuid], fn uuid ->
       case fetch_checkpoint(uuid, replication_id) do
         {:ok, _} ->
           :ok
 
-        :missing ->
-          seed_checkpoint!(uuid, replication_id, source_uuid)
-
         _ ->
-          seed_checkpoint!(uuid, replication_id, source_uuid)
+          _ = seed_checkpoint!(uuid, replication_id, source_uuid)
+          :ok
       end
-    end
+    end)
 
     :ok
   end

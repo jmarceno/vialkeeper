@@ -34,8 +34,8 @@ defmodule VialKeeper.Observability.Dashboard do
     {:ok, []}
   end
 
-  @doc false
-  @spec export(:metrics, list(), term(), term()) :: :ok
+  @doc "OpenTelemetry metric exporter callback that aggregates local dashboard views."
+  @spec export(atom(), list(), term(), term()) :: :ok
   def export(:metrics, metrics, _resource, _config) do
     current = state()
 
@@ -75,13 +75,14 @@ defmodule VialKeeper.Observability.Dashboard do
       :ok
   end
 
-  @doc false
   def export(_signal, _metrics, _resource, _config), do: :ok
 
-  @doc false
+  @doc "OpenTelemetry exporter callback; the in-process dashboard has nothing to flush."
+  @spec force_flush() :: :ok
   def force_flush, do: :ok
 
-  @doc false
+  @doc "OpenTelemetry exporter callback; the in-process dashboard has nothing to shut down."
+  @spec shutdown(term()) :: :ok
   def shutdown(_config), do: :ok
 
   @doc "Clears the local dashboard view. Primarily useful for isolated tests."
@@ -127,7 +128,7 @@ defmodule VialKeeper.Observability.Dashboard do
     }
   end
 
-  @doc false
+  @doc "Returns the aggregated metric views currently held by the local dashboard."
   @spec metrics() :: map()
   def metrics, do: state().metrics
 

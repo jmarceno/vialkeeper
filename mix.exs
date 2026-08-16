@@ -13,6 +13,10 @@ defmodule VialKeeper.MixProject do
       deps: deps(),
       aliases: aliases(),
       dialyzer: [
+        flags: [
+          :unmatched_returns,
+          :error_handling
+        ],
         plt_add_apps: [
           :ex_unit,
           :mix,
@@ -27,8 +31,8 @@ defmodule VialKeeper.MixProject do
     ]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support", "bench/support"]
-  defp elixirc_paths(:dev), do: ["lib", "bench/support"]
+  defp elixirc_paths(:test), do: ["lib", "test/support", "bench/support", "quality"]
+  defp elixirc_paths(:dev), do: ["lib", "bench/support", "quality"]
   defp elixirc_paths(_), do: ["lib"]
 
   def cli do
@@ -89,6 +93,7 @@ defmodule VialKeeper.MixProject do
       # Reach 2.8 currently requires the 0.12 ExAST API line.
       {:ex_ast, "0.12.10", only: [:dev, :test], runtime: false},
       {:reach, "2.8.2", only: [:dev, :test], runtime: false},
+      {:doctor, "0.23.0", only: [:dev, :test], runtime: false},
       # Streaming Zstandard for attachment physical encoding.
       {:ezstd, "~> 1.1"}
     ]
@@ -125,12 +130,14 @@ defmodule VialKeeper.MixProject do
       "check.integration": ["test --warnings-as-errors --only integration"],
       "check.full": [
         "format --check-formatted",
-        "compile --warnings-as-errors",
+        "compile --force --warnings-as-errors",
         "xref graph --format cycles --label compile-connected --fail-above 0",
         "credo --strict",
         "ex_dna --max-clones 0",
+        "doctor",
         "storage.boundary_check",
         "reach.check --arch --smells --strict",
+        "reach.check --dead-code",
         "test --warnings-as-errors",
         "dialyzer"
       ],

@@ -14,7 +14,7 @@ defmodule VialKeeper.ReplicationHarness.FrankensteinCorpusTest do
     assert Enum.map(documents, & &1.id) == expected_ids()
 
     first = hd(documents)
-    last = List.last(documents)
+    last = hd(Enum.reverse(documents))
 
     assert first.body["title"] == "Letter 1"
     assert first.body["part"] == "letter"

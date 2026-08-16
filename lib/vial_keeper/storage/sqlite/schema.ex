@@ -1,6 +1,7 @@
 defmodule VialKeeper.Storage.SQLite.Schema do
   @moduledoc "Creates and validates the fixed Version 1 SQLite schema and metadata."
   alias VialKeeper.DerivedView.Engine
+  alias VialKeeper.Error
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.Shadow.Metadata
   alias VialKeeper.Storage.SQLite.Connection
@@ -41,25 +42,25 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   end
 
   @spec read_database_uuid(Connection.handle()) ::
-          {:ok, binary()} | {:error, VialKeeper.Error.t()}
+          {:ok, binary()} | {:error, Error.t()}
   def read_database_uuid(conn) do
     case Connection.query(conn, "SELECT database_uuid FROM db_meta WHERE id = 1") do
       {:ok, [[uuid]]} when is_binary(uuid) ->
         {:ok, uuid}
 
       {:ok, _} ->
-        {:error, VialKeeper.Error.unsupported_format("SQLite file has no VialKeeper metadata")}
+        {:error, Error.unsupported_format("SQLite file has no VialKeeper metadata")}
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.unsupported_format("SQLite schema validation failed", %{
+         Error.unsupported_format("SQLite schema validation failed", %{
            cause: inspect(reason)
          })}
     end
   end
 
   @spec create(Connection.handle(), binary(), binary(), keyword()) ::
-          :ok | {:error, VialKeeper.Error.t()}
+          :ok | {:error, Error.t()}
   def create(conn, database_uuid, config_json, opts \\ []) do
     schema =
       File.read!(Path.join([Application.app_dir(:vial_keeper), "priv", "sqlite", "schema_v1.sql"]))
@@ -78,13 +79,13 @@ defmodule VialKeeper.Storage.SQLite.Schema do
         _ = rollback_initialization(conn)
 
         {:error,
-         VialKeeper.Error.internal_error("could not initialize SQLite schema", %{
+         Error.internal_error("could not initialize SQLite schema", %{
            cause: inspect(reason)
          })}
     end
   end
 
-  @spec validate(Connection.handle(), keyword()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
+  @spec validate(Connection.handle(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def validate(conn, opts \\ []) do
     storage_mode = Keyword.get(opts, :storage_mode, :disk)
 
@@ -115,11 +116,11 @@ defmodule VialKeeper.Storage.SQLite.Schema do
       end
     else
       {:ok, []} ->
-        {:error, VialKeeper.Error.unsupported_format("SQLite file has no VialKeeper metadata")}
+        {:error, Error.unsupported_format("SQLite file has no VialKeeper metadata")}
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.unsupported_format("SQLite schema validation failed", %{
+         Error.unsupported_format("SQLite schema validation failed", %{
            cause: inspect(reason)
          })}
     end
@@ -138,8 +139,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
     if valid_storage_pragmas?(storage_mode, journal_mode, synchronous, locking_mode, trusted_schema) do
       validate_metadata_row(meta)
     else
-      {:error,
-       VialKeeper.Error.unsupported_format("SQLite file is not a Version 1 VialKeeper database")}
+      {:error, Error.unsupported_format("SQLite file is not a Version 1 VialKeeper database")}
     end
   end
 
@@ -153,9 +153,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
          _meta,
          _storage_mode
        ),
-       do:
-         {:error,
-          VialKeeper.Error.unsupported_format("SQLite file is not a Version 1 VialKeeper database")}
+       do: {:error, Error.unsupported_format("SQLite file is not a Version 1 VialKeeper database")}
 
   defp validate_metadata_row(row) do
     case row do
@@ -180,7 +178,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
         end
 
       _ ->
-        {:error, VialKeeper.Error.unsupported_format("SQLite database metadata is invalid")}
+        {:error, Error.unsupported_format("SQLite database metadata is invalid")}
     end
   end
 
@@ -253,7 +251,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   end
 
   defp metadata_invalid_error,
-    do: {:error, VialKeeper.Error.unsupported_format("SQLite database metadata is invalid")}
+    do: {:error, Error.unsupported_format("SQLite database metadata is invalid")}
 
   defp metadata_identity([
          uuid,
@@ -292,7 +290,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   defp validate_config_json(config_json, identity) do
     case StrictDecoder.decode(config_json) do
       {:ok, config} when is_map(config) -> validate_database_config(config, identity)
-      _ -> {:error, VialKeeper.Error.unsupported_format("SQLite database configuration is invalid")}
+      _ -> {:error, Error.unsupported_format("SQLite database configuration is invalid")}
     end
   end
 
@@ -303,7 +301,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
       {:error, error} ->
         {:error,
-         VialKeeper.Error.unsupported_format("SQLite database configuration is invalid", %{
+         Error.unsupported_format("SQLite database configuration is invalid", %{
            cause: error.code
          })}
     end
@@ -315,12 +313,11 @@ defmodule VialKeeper.Storage.SQLite.Schema do
         :ok
 
       {:ok, [[count]]} when is_integer(count) ->
-        {:error,
-         VialKeeper.Error.integrity_violation("ordinary database contains derived metadata")}
+        {:error, Error.integrity_violation("ordinary database contains derived metadata")}
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.unsupported_format("SQLite derived metadata validation failed", %{
+         Error.unsupported_format("SQLite derived metadata validation failed", %{
            cause: inspect(reason)
          })}
     end
@@ -333,17 +330,17 @@ defmodule VialKeeper.Storage.SQLite.Schema do
       :ok
     else
       false ->
-        {:error, VialKeeper.Error.unsupported_format("derived database has no source metadata")}
+        {:error, Error.unsupported_format("derived database has no source metadata")}
 
       {:ok, [[count]]} ->
         {:error,
-         VialKeeper.Error.unsupported_format("derived database metadata is incomplete", %{
+         Error.unsupported_format("derived database metadata is incomplete", %{
            count: count
          })}
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.unsupported_format("SQLite derived metadata validation failed", %{
+         Error.unsupported_format("SQLite derived metadata validation failed", %{
            cause: inspect(reason)
          })}
     end
@@ -358,11 +355,11 @@ defmodule VialKeeper.Storage.SQLite.Schema do
         validate_shadow_record(row, database_uuid)
 
       {:ok, []} ->
-        {:error, VialKeeper.Error.unsupported_format("shadow database metadata is incomplete")}
+        {:error, Error.unsupported_format("shadow database metadata is incomplete")}
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.unsupported_format("SQLite shadow metadata validation failed", %{
+         Error.unsupported_format("SQLite shadow metadata validation failed", %{
            cause: inspect(reason)
          })}
     end
@@ -407,12 +404,10 @@ defmodule VialKeeper.Storage.SQLite.Schema do
     else
       false ->
         {:error,
-         VialKeeper.Error.shadow_identity_conflict(
-           "shadow metadata UUID does not match database identity"
-         )}
+         Error.shadow_identity_conflict("shadow metadata UUID does not match database identity")}
 
       {:error, _} ->
-        {:error, VialKeeper.Error.unsupported_format("shadow database metadata is invalid")}
+        {:error, Error.unsupported_format("shadow database metadata is invalid")}
     end
   end
 
@@ -439,9 +434,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   defp initialize_derived(_conn, :ordinary, nil), do: :ok
 
   defp initialize_derived(_conn, :ordinary, _initial),
-    do:
-      {:error,
-       VialKeeper.Error.invalid_request("ordinary database cannot include derived metadata")}
+    do: {:error, Error.invalid_request("ordinary database cannot include derived metadata")}
 
   defp initialize_derived(conn, :derived, initial) when is_map(initial) do
     with {:ok, name} <- fetch_binary(initial, :name),
@@ -468,36 +461,33 @@ defmodule VialKeeper.Storage.SQLite.Schema do
       :ok
     else
       nil ->
-        {:error, VialKeeper.Error.invalid_request("derived source metadata is required")}
+        {:error, Error.invalid_request("derived source metadata is required")}
 
       {:error, _} = error ->
         error
 
       _ ->
-        {:error, VialKeeper.Error.invalid_request("derived metadata is invalid")}
+        {:error, Error.invalid_request("derived metadata is invalid")}
     end
   end
 
   defp initialize_derived(_conn, :derived, _),
-    do: {:error, VialKeeper.Error.invalid_request("derived metadata is required")}
+    do: {:error, Error.invalid_request("derived metadata is required")}
 
   defp initialize_derived(_conn, :shadow, nil), do: :ok
 
   defp initialize_derived(_conn, :shadow, _initial),
-    do:
-      {:error, VialKeeper.Error.invalid_request("shadow database cannot include derived metadata")}
+    do: {:error, Error.invalid_request("shadow database cannot include derived metadata")}
 
   defp initialize_shadow(_conn, :ordinary, nil), do: :ok
 
   defp initialize_shadow(_conn, :ordinary, _metadata),
-    do:
-      {:error, VialKeeper.Error.invalid_request("ordinary database cannot include shadow metadata")}
+    do: {:error, Error.invalid_request("ordinary database cannot include shadow metadata")}
 
   defp initialize_shadow(_conn, :derived, nil), do: :ok
 
   defp initialize_shadow(_conn, :derived, _metadata),
-    do:
-      {:error, VialKeeper.Error.invalid_request("derived database cannot include shadow metadata")}
+    do: {:error, Error.invalid_request("derived database cannot include shadow metadata")}
 
   defp initialize_shadow(conn, :shadow, metadata) when is_map(metadata) do
     with {:ok, source_uuid} <- fetch_shadow_uuid(metadata, :source_database_uuid),
@@ -527,14 +517,14 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   end
 
   defp initialize_shadow(_conn, :shadow, _metadata),
-    do: {:error, VialKeeper.Error.invalid_request("shadow database metadata is required")}
+    do: {:error, Error.invalid_request("shadow database metadata is required")}
 
   defp fetch_shadow_uuid(metadata, key) do
     value = Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
 
     if is_binary(value) and valid_uuid?(value),
       do: {:ok, value},
-      else: {:error, VialKeeper.Error.invalid_request("shadow metadata UUID is invalid")}
+      else: {:error, Error.invalid_request("shadow metadata UUID is invalid")}
   end
 
   defp fetch_shadow_generation(metadata) do
@@ -542,7 +532,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
     if is_integer(value) and value > 0,
       do: {:ok, value},
-      else: {:error, VialKeeper.Error.invalid_request("shadow metadata generation is invalid")}
+      else: {:error, Error.invalid_request("shadow metadata generation is invalid")}
   end
 
   defp fetch_shadow_path(metadata) do
@@ -550,8 +540,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
     if is_binary(value) and Path.type(value) == :absolute and value != "",
       do: {:ok, value},
-      else:
-        {:error, VialKeeper.Error.invalid_request("shadow attachment location must be absolute")}
+      else: {:error, Error.invalid_request("shadow attachment location must be absolute")}
   end
 
   defp fetch_shadow_store_type(metadata) do
@@ -559,7 +548,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
     if value == "external_cas",
       do: {:ok, value},
-      else: {:error, VialKeeper.Error.invalid_request("shadow attachment store type is invalid")}
+      else: {:error, Error.invalid_request("shadow attachment store type is invalid")}
   end
 
   defp fetch_shadow_digest(metadata) do
@@ -567,7 +556,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
     if is_binary(value) and value != "",
       do: {:ok, value},
-      else: {:error, VialKeeper.Error.invalid_request("shadow specification digest is invalid")}
+      else: {:error, Error.invalid_request("shadow specification digest is invalid")}
   end
 
   defp fetch_shadow_created_at(metadata) do
@@ -575,14 +564,13 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
     case DateTime.from_iso8601(value || "") do
       {:ok, _datetime, 0} -> {:ok, value}
-      _ -> {:error, VialKeeper.Error.invalid_request("shadow creation time is invalid")}
+      _ -> {:error, Error.invalid_request("shadow creation time is invalid")}
     end
   end
 
   defp validate_shadow_identity(source_uuid, shadow_uuid) do
     if source_uuid == shadow_uuid,
-      do:
-        {:error, VialKeeper.Error.shadow_identity_conflict("shadow and source UUIDs must differ")},
+      do: {:error, Error.shadow_identity_conflict("shadow and source UUIDs must differ")},
       else: :ok
   end
 
@@ -632,7 +620,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
         )
 
       _ ->
-        {:error, VialKeeper.Error.invalid_request("derived source metadata is invalid")}
+        {:error, Error.invalid_request("derived source metadata is invalid")}
     end
   end
 
@@ -642,7 +630,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
     if is_binary(value) and value != "" do
       {:ok, value}
     else
-      {:error, VialKeeper.Error.invalid_request("derived metadata field is invalid")}
+      {:error, Error.invalid_request("derived metadata field is invalid")}
     end
   end
 
@@ -652,7 +640,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
     if is_boolean(value) do
       {:ok, value}
     else
-      {:error, VialKeeper.Error.invalid_request("derived metadata enabled flag is invalid")}
+      {:error, Error.invalid_request("derived metadata enabled flag is invalid")}
     end
   end
 

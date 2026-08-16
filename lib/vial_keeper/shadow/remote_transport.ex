@@ -36,6 +36,9 @@ defmodule VialKeeper.Shadow.RemoteTransport do
   end
 
   @doc "Opens a physical attachment response from a POST control request."
+  @spec open_stream(binary(), binary(), map(), binary() | nil, binary() | nil, timeout()) ::
+          {:ok, map(), Enumerable.t(), non_neg_integer(), binary() | nil}
+          | {:error, Error.t()}
   def open_stream(base_url, path, body, digest, auth_token, timeout) do
     with {:ok, descriptor, body, headers} <-
            ReplicationTransport.open_post_stream(base_url, path, body, digest, auth_token, timeout),

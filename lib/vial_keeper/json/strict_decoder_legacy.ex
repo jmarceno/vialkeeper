@@ -1,11 +1,12 @@
 defmodule VialKeeper.JSON.StrictDecoder.Legacy do
   @moduledoc "Compatibility JSON decoder for callers that provide explicit limits."
 
+  alias VialKeeper.Error
   alias VialKeeper.JSON.StrictDecoder
 
   @default_max_depth 100
 
-  @spec decode(binary(), keyword()) :: {:ok, term()} | {:error, VialKeeper.Error.t()}
+  @spec decode(binary(), keyword()) :: {:ok, term()} | {:error, Error.t()}
   def decode(input, opts \\ [])
 
   def decode(input, opts) when is_binary(input) do
@@ -14,30 +15,30 @@ defmodule VialKeeper.JSON.StrictDecoder.Legacy do
 
     cond do
       byte_size(input) > max_bytes ->
-        {:error, VialKeeper.Error.payload_too_large("JSON body exceeds the configured limit")}
+        {:error, Error.payload_too_large("JSON body exceeds the configured limit")}
 
       not String.valid?(input) ->
-        {:error, VialKeeper.Error.invalid_request("JSON must be valid UTF-8")}
+        {:error, Error.invalid_request("JSON must be valid UTF-8")}
 
       true ->
         with {:ok, value, rest} <- parse_value(skip_ws(input), 0, max_depth),
              <<>> <- skip_ws(rest) do
           {:ok, value}
         else
-          {:error, %VialKeeper.Error{} = error} -> {:error, error}
-          _ -> {:error, VialKeeper.Error.invalid_request("malformed JSON")}
+          {:error, %Error{} = error} -> {:error, error}
+          _ -> {:error, Error.invalid_request("malformed JSON")}
         end
     end
   end
 
-  def decode(_, _), do: {:error, VialKeeper.Error.invalid_request("JSON body must be UTF-8 text")}
+  def decode(_, _), do: {:error, Error.invalid_request("JSON body must be UTF-8 text")}
 
   defp configured_max_depth do
     VialKeeper.Config.host_limits()[:max_json_nesting_depth] || @default_max_depth
   end
 
   defp parse_value(_input, depth, max_depth) when depth > max_depth,
-    do: {:error, VialKeeper.Error.resource_limit("JSON nesting exceeds the configured limit")}
+    do: {:error, Error.resource_limit("JSON nesting exceeds the configured limit")}
 
   defp parse_value(<<"null", rest::binary>>, _depth, _max), do: {:ok, nil, rest}
   defp parse_value(<<"true", rest::binary>>, _depth, _max), do: {:ok, true, rest}
@@ -54,7 +55,7 @@ defmodule VialKeeper.JSON.StrictDecoder.Legacy do
          {:ok, value} <- decode_string(raw) do
       validate_string_value(value, tail)
     else
-      {:error, %VialKeeper.Error{} = error} -> {:error, error}
+      {:error, %Error{} = error} -> {:error, error}
     end
   end
 
@@ -72,18 +73,18 @@ defmodule VialKeeper.JSON.StrictDecoder.Legacy do
            decoding_integer_digit_limit: 16
          ) do
       {:ok, value} when is_binary(value) -> {:ok, value}
-      {:ok, _value} -> {:error, VialKeeper.Error.invalid_request("invalid JSON string")}
-      {:error, _error} -> {:error, VialKeeper.Error.invalid_request("invalid JSON string")}
+      {:ok, _value} -> {:error, Error.invalid_request("invalid JSON string")}
+      {:error, _error} -> {:error, Error.invalid_request("invalid JSON string")}
     end
   rescue
     _error in [ArgumentError, ErlangError] ->
-      {:error, VialKeeper.Error.invalid_request("invalid JSON string")}
+      {:error, Error.invalid_request("invalid JSON string")}
   end
 
   defp validate_string_value(value, tail) when is_binary(value) do
     if String.valid?(value),
       do: {:ok, value, tail},
-      else: {:error, VialKeeper.Error.invalid_request("invalid Unicode string")}
+      else: {:error, Error.invalid_request("invalid Unicode string")}
   end
 
   defp parse_object(<<"}", rest::binary>>, object, _depth, _max), do: {:ok, object, rest}
@@ -96,14 +97,14 @@ defmodule VialKeeper.JSON.StrictDecoder.Legacy do
          {:ok, value, after_value} <- parse_value(skip_ws(after_colon), depth, max) do
       put_object_value(object, key, value, after_value, depth, max)
     else
-      {:error, %VialKeeper.Error{} = error} -> {:error, error}
-      _ -> {:error, VialKeeper.Error.invalid_request("malformed JSON object")}
+      {:error, %Error{} = error} -> {:error, error}
+      _ -> {:error, Error.invalid_request("malformed JSON object")}
     end
   end
 
   defp put_object_value(object, key, _value, _after_value, _depth, _max)
        when is_map_key(object, key),
-       do: {:error, VialKeeper.Error.invalid_request("duplicate JSON object key")}
+       do: {:error, Error.invalid_request("duplicate JSON object key")}
 
   defp put_object_value(object, key, value, after_value, depth, max) do
     next = skip_ws(after_value)
@@ -112,7 +113,7 @@ defmodule VialKeeper.JSON.StrictDecoder.Legacy do
     case next do
       <<?}, tail::binary>> -> {:ok, next_object, tail}
       <<?,, tail::binary>> -> parse_object(skip_ws(tail), next_object, depth, max)
-      _ -> {:error, VialKeeper.Error.invalid_request("malformed JSON object")}
+      _ -> {:error, Error.invalid_request("malformed JSON object")}
     end
   end
 
@@ -125,16 +126,16 @@ defmodule VialKeeper.JSON.StrictDecoder.Legacy do
         case skip_ws(rest) do
           <<?], tail::binary>> -> {:ok, Enum.reverse([value | values]), tail}
           <<?,, tail::binary>> -> parse_array(skip_ws(tail), [value | values], depth, max)
-          _ -> {:error, VialKeeper.Error.invalid_request("malformed JSON array")}
+          _ -> {:error, Error.invalid_request("malformed JSON array")}
         end
 
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         {:error, error}
     end
   end
 
   defp consume_string(<<>>, _acc),
-    do: {:error, VialKeeper.Error.invalid_request("unterminated JSON string")}
+    do: {:error, Error.invalid_request("unterminated JSON string")}
 
   defp consume_string(<<?\", rest::binary>>, acc), do: {:ok, Enum.reverse(acc), rest}
 
@@ -145,11 +146,11 @@ defmodule VialKeeper.JSON.StrictDecoder.Legacy do
   defp consume_string(<<?\\, ?u, a, b, c, d, rest::binary>>, acc) do
     if Enum.all?([a, b, c, d], &(&1 in ?0..?9 or &1 in ?a..?f or &1 in ?A..?F)),
       do: consume_string(rest, [<<?\\, ?u, a, b, c, d>> | acc]),
-      else: {:error, VialKeeper.Error.invalid_request("invalid Unicode escape")}
+      else: {:error, Error.invalid_request("invalid Unicode escape")}
   end
 
   defp consume_string(<<byte, _rest::binary>>, _acc) when byte < 0x20,
-    do: {:error, VialKeeper.Error.invalid_request("unescaped control character in JSON string")}
+    do: {:error, Error.invalid_request("unescaped control character in JSON string")}
 
   defp consume_string(<<byte, rest::binary>>, acc), do: consume_string(rest, [<<byte>> | acc])
 
@@ -161,9 +162,9 @@ defmodule VialKeeper.JSON.StrictDecoder.Legacy do
         {:ok, value, rest}
 
       {:ok, _value} ->
-        {:error, VialKeeper.Error.invalid_request("invalid JSON number")}
+        {:error, Error.invalid_request("invalid JSON number")}
 
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         {:error, error}
     end
   end

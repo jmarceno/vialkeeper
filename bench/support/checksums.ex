@@ -147,7 +147,7 @@ defmodule VialKeeper.Bench.Checksums do
         case File.open(path, [:read, :binary, :raw]) do
           {:ok, io} ->
             prefix = IO.binread(io, 256)
-            File.close(io)
+            _ = File.close(io)
             reject_html_prefix(prefix)
 
           {:error, reason} ->

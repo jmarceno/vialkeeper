@@ -62,12 +62,7 @@ defmodule VialKeeper.Storage.Services.Attachments do
 
     with true <- is_list(blobs) and blobs != [],
          {:ok, rows} <- pending_rows(blobs) do
-      Transaction.run(context, fn tx ->
-        case Access.port(tx, :attachment_metadata).put_pending_blobs(tx, rows) do
-          {:ok, protected} -> {:ok, %{protected: protected, count: length(protected)}}
-          {:error, _} = error -> error
-        end
-      end)
+      put_pending_blob_rows(context, rows)
     else
       false ->
         {:error, VialKeeper.Error.invalid_request("pending blob batch must be a non-empty list")}
@@ -79,6 +74,17 @@ defmodule VialKeeper.Storage.Services.Attachments do
 
   def protect_pending_blobs(_context, _request),
     do: {:error, VialKeeper.Error.invalid_request("pending blob batch must be an object")}
+
+  defp put_pending_blob_rows(context, rows) do
+    Transaction.run(context, &persist_pending_blob_rows(&1, rows))
+  end
+
+  defp persist_pending_blob_rows(tx, rows) do
+    case Access.port(tx, :attachment_metadata).put_pending_blobs(tx, rows) do
+      {:ok, protected} -> {:ok, %{protected: protected, count: length(protected)}}
+      {:error, _} = error -> error
+    end
+  end
 
   @doc "Removes pending protection for one digest or a digest list."
   @spec remove_pending_blob_protection(BackendContext.t(), map()) ::

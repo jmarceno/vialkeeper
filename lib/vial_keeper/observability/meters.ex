@@ -144,7 +144,8 @@ defmodule VialKeeper.Observability.Meters do
 
         instrument ->
           ctx = OpenTelemetry.Ctx.get_current()
-          :otel_counter.add(ctx, instrument, 1, Attributes.build(attrs))
+          _ = :otel_counter.add(ctx, instrument, 1, Attributes.build(attrs))
+          :ok
       end
     else
       :ok
@@ -164,7 +165,8 @@ defmodule VialKeeper.Observability.Meters do
 
         instrument ->
           ctx = OpenTelemetry.Ctx.get_current()
-          :otel_histogram.record(ctx, instrument, value, Attributes.build(attrs))
+          _ = :otel_histogram.record(ctx, instrument, value, Attributes.build(attrs))
+          :ok
       end
     else
       :ok
@@ -184,7 +186,8 @@ defmodule VialKeeper.Observability.Meters do
 
         instrument ->
           ctx = OpenTelemetry.Ctx.get_current()
-          :otel_updown_counter.add(ctx, instrument, value, Attributes.build(attrs))
+          _ = :otel_updown_counter.add(ctx, instrument, value, Attributes.build(attrs))
+          :ok
       end
     else
       :ok

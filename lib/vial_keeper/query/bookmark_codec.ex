@@ -3,6 +3,7 @@ defmodule VialKeeper.Query.BookmarkCodec do
   alias VialKeeper.Domain.Bookmark
   alias VialKeeper.JSON.{Canonical, SignedPayload, StrictDecoder}
 
+  @spec encode(Bookmark.t() | map()) :: {:ok, binary()} | {:error, VialKeeper.Error.t()}
   def encode(%Bookmark{} = bookmark) do
     encode(%{
       "query_fingerprint" => bookmark.query_fingerprint,
@@ -22,6 +23,8 @@ defmodule VialKeeper.Query.BookmarkCodec do
     |> SignedPayload.encode()
   end
 
+  @spec decode(term()) :: {:ok, Bookmark.t()} | {:error, VialKeeper.Error.t()}
+  @spec decode(term(), map()) :: {:ok, Bookmark.t()} | {:error, VialKeeper.Error.t()}
   def decode(bookmark, expected \\ %{})
 
   def decode(bookmark, expected) when is_binary(bookmark) do

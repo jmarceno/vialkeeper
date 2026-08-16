@@ -2,6 +2,8 @@ defmodule VialKeeper.Shadow.WorkerSupervisor do
   @moduledoc "Supervision boundary for worker-side shadow services."
   use DynamicSupervisor
 
+  @spec start_link() :: Supervisor.on_start()
+  @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []), do: DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
 
   @spec start_worker(keyword()) :: DynamicSupervisor.on_start_child()

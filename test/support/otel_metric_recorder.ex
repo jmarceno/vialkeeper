@@ -89,7 +89,7 @@ defmodule VialKeeper.Observability.TestMetricExporter do
   @doc false
   def init(_opts), do: {:ok, []}
 
-  @doc false
+  @doc "OpenTelemetry metric exporter callback used by tests to capture metric views."
   def export(:metrics, metrics, _resource, _config) do
     ensure_table()
 
@@ -102,10 +102,10 @@ defmodule VialKeeper.Observability.TestMetricExporter do
 
   def export(_signal, _data, _resource, _config), do: :ok
 
-  @doc false
+  @doc "OpenTelemetry exporter callback; the test recorder has nothing to flush."
   def force_flush, do: :ok
 
-  @doc false
+  @doc "OpenTelemetry exporter callback; the test recorder has nothing to shut down."
   def shutdown(_config), do: :ok
 
   # #metric{name, scope, description, unit, data}
@@ -147,7 +147,8 @@ defmodule VialKeeper.Observability.TestMetricExporter do
   defp ensure_table do
     if :ets.whereis(@table) == :undefined do
       try do
-        :ets.new(@table, [:named_table, :public, :duplicate_bag])
+        _ = :ets.new(@table, [:named_table, :public, :duplicate_bag])
+        :ok
       rescue
         # Already exists (named table): fine.
         ArgumentError -> :ok

@@ -243,7 +243,7 @@ defmodule VialKeeper.Runtime.ReplicationTest do
       mode: "one_shot",
       direction: "push",
       phase_hook: fn phase, _context ->
-        Agent.update(agent, &(&1 ++ [phase]))
+        Agent.update(agent, &Enum.concat(&1, [phase]))
         send(parent, {:phase, phase})
         :ok
       end

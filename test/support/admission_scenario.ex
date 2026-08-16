@@ -424,7 +424,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         Enum.reduce(ServiceClass.classes(), acc, fn class, inner ->
           spawn_real_path_request!(uuid, class)
           assert_receive {^hook_ref, :enqueued, request_ref, ^class, _op, _caller}, 5_000
-          Map.update!(inner, class, &(&1 ++ [request_ref]))
+          Map.update!(inner, class, &Enum.concat(&1, [request_ref]))
         end)
       end)
 
@@ -520,34 +520,37 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
   end
 
   defp collect_real_path_grants_loop(
-         _uuid,
-         _hook_ref,
-         _gate_ref,
+         uuid,
+         hook_ref,
+         gate_ref,
          grant_target,
          enqueue_order,
          grants,
-         _remaining
-       )
-       when length(grants) >= grant_target do
-    {Enum.take(grants, grant_target), enqueue_order}
-  end
-
-  defp collect_real_path_grants_loop(
-         _uuid,
-         _hook_ref,
-         _gate_ref,
-         grant_target,
-         _enqueue_order,
-         grants,
          remaining
-       )
-       when remaining <= 0 do
-    flunk(
-      "did not observe #{grant_target} real-path grants under four-class backlog; got #{length(grants)}"
-    )
+       ) do
+    cond do
+      length(grants) >= grant_target ->
+        {Enum.take(grants, grant_target), enqueue_order}
+
+      remaining <= 0 ->
+        flunk(
+          "did not observe #{grant_target} real-path grants under four-class backlog; got #{length(grants)}"
+        )
+
+      true ->
+        collect_real_path_grant(
+          uuid,
+          hook_ref,
+          gate_ref,
+          grant_target,
+          enqueue_order,
+          grants,
+          remaining
+        )
+    end
   end
 
-  defp collect_real_path_grants_loop(
+  defp collect_real_path_grant(
          uuid,
          hook_ref,
          gate_ref,
@@ -559,13 +562,13 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
     receive do
       {^hook_ref, :granted, request_ref, class, op} ->
         assert_receive {^gate_ref, :before_begin, executor_pid}, 5_000
-        next_grants = grants ++ [{class, op, request_ref}]
+        next_grants = Enum.concat(grants, [{class, op, request_ref}])
 
         enqueue_order =
           if length(next_grants) < grant_target do
             spawn_real_path_request!(uuid, class)
             assert_receive {^hook_ref, :enqueued, new_ref, ^class, _op, _caller}, 5_000
-            Map.update!(enqueue_order, class, &(&1 ++ [new_ref]))
+            Map.update!(enqueue_order, class, &Enum.concat(&1, [new_ref]))
           else
             enqueue_order
           end
@@ -743,34 +746,37 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
   end
 
   defp collect_immediate_grants_loop(
-         _probe_ref,
-         _hook_ref,
-         _gate_ref,
-         _spawn_request,
-         grant_target,
-         grants,
-         _remaining
-       )
-       when length(grants) >= grant_target do
-    Enum.take(grants, grant_target)
-  end
-
-  defp collect_immediate_grants_loop(
-         _probe_ref,
-         _hook_ref,
-         _gate_ref,
-         _spawn_request,
+         probe_ref,
+         hook_ref,
+         gate_ref,
+         spawn_request,
          grant_target,
          grants,
          remaining
-       )
-       when remaining <= 0 do
-    flunk(
-      "did not observe #{grant_target} synthetic grants under four-class backlog; got #{length(grants)}"
-    )
+       ) do
+    cond do
+      length(grants) >= grant_target ->
+        Enum.take(grants, grant_target)
+
+      remaining <= 0 ->
+        flunk(
+          "did not observe #{grant_target} synthetic grants under four-class backlog; got #{length(grants)}"
+        )
+
+      true ->
+        collect_immediate_grant(
+          probe_ref,
+          hook_ref,
+          gate_ref,
+          spawn_request,
+          grant_target,
+          grants,
+          remaining
+        )
+    end
   end
 
-  defp collect_immediate_grants_loop(
+  defp collect_immediate_grant(
          probe_ref,
          hook_ref,
          gate_ref,
@@ -784,7 +790,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         grants =
           if synthetic_probe_op?(op) do
             assert_receive {^gate_ref, :before_begin, executor_pid}, 5_000
-            next = grants ++ [{class, op}]
+            next = Enum.concat(grants, [{class, op}])
 
             if length(next) < grant_target do
               spawn_request.(class)

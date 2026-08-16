@@ -7,6 +7,7 @@ defmodule VialKeeper.Integrity.Rules do
   """
 
   alias VialKeeper.Domain.{BoundaryPage, Checkpoint, PeerPosition, RetentionBoundary}
+  alias VialKeeper.Error
   alias VialKeeper.JSON.Canonical
   alias VialKeeper.MapAccess
   alias VialKeeper.Revisions.Id
@@ -31,7 +32,7 @@ defmodule VialKeeper.Integrity.Rules do
   Returns `:ok` when all shared rules pass, otherwise an integrity violation
   with the same error identity used by the product integrity path.
   """
-  @spec validate(snapshot()) :: :ok | {:error, VialKeeper.Error.t()}
+  @spec validate(snapshot()) :: :ok | {:error, Error.t()}
   def validate(snapshot) when is_map(snapshot) do
     meta = Map.fetch!(snapshot, :meta)
     boundaries = Map.get(snapshot, :boundaries, [])
@@ -76,17 +77,17 @@ defmodule VialKeeper.Integrity.Rules do
   defp validate_uuid(uuid) when is_binary(uuid) and uuid != "", do: :ok
 
   defp validate_uuid(_),
-    do: {:error, VialKeeper.Error.integrity_violation("database UUID is invalid")}
+    do: {:error, Error.integrity_violation("database UUID is invalid")}
 
   defp validate_history_epoch(epoch) when is_binary(epoch) and epoch != "", do: :ok
 
   defp validate_history_epoch(_),
-    do: {:error, VialKeeper.Error.integrity_violation("history epoch is invalid")}
+    do: {:error, Error.integrity_violation("history epoch is invalid")}
 
   defp validate_non_negative(value, _field) when is_integer(value) and value >= 0, do: :ok
 
   defp validate_non_negative(_, field),
-    do: {:error, VialKeeper.Error.integrity_violation("metadata field is invalid", %{field: field})}
+    do: {:error, Error.integrity_violation("metadata field is invalid", %{field: field})}
 
   defp validate_floor_within_sequence(meta) do
     sequence = Map.get(meta, :current_sequence)
@@ -96,7 +97,7 @@ defmodule VialKeeper.Integrity.Rules do
       do: :ok,
       else:
         {:error,
-         VialKeeper.Error.integrity_violation("retention floor exceeds current sequence", %{
+         Error.integrity_violation("retention floor exceeds current sequence", %{
            floor: floor,
            current_sequence: sequence
          })}
@@ -124,7 +125,7 @@ defmodule VialKeeper.Integrity.Rules do
         :ok
 
       true ->
-        {:error, VialKeeper.Error.integrity_violation("retention boundary digest mismatch")}
+        {:error, Error.integrity_violation("retention boundary digest mismatch")}
     end
   end
 
@@ -140,8 +141,7 @@ defmodule VialKeeper.Integrity.Rules do
         {:cont, :ok}
       else
         false ->
-          {:halt,
-           {:error, VialKeeper.Error.integrity_violation("retention boundary record is invalid")}}
+          {:halt, {:error, Error.integrity_violation("retention boundary record is invalid")}}
 
         {:error, error} ->
           {:halt, {:error, error}}
@@ -152,7 +152,7 @@ defmodule VialKeeper.Integrity.Rules do
   defp validate_retired_branch_roots(%RetentionBoundary{retired_branch_roots: roots}) do
     if Enum.all?(roots, &(is_binary(&1) and &1 != "")),
       do: :ok,
-      else: {:error, VialKeeper.Error.integrity_violation("retention boundary roots are invalid")}
+      else: {:error, Error.integrity_violation("retention boundary roots are invalid")}
   end
 
   defp validate_peer_records(peers, meta) when is_list(peers) do
@@ -167,21 +167,20 @@ defmodule VialKeeper.Integrity.Rules do
   defp validate_peer_record(%PeerPosition{} = peer, meta) do
     cond do
       peer.source_database_uuid != Map.get(meta, :database_uuid) ->
-        {:error, VialKeeper.Error.integrity_violation("peer source database UUID mismatch")}
+        {:error, Error.integrity_violation("peer source database UUID mismatch")}
 
       peer.source_history_epoch != Map.get(meta, :history_epoch) ->
-        {:error, VialKeeper.Error.integrity_violation("peer source history epoch mismatch")}
+        {:error, Error.integrity_violation("peer source history epoch mismatch")}
 
       peer.safe_source_sequence > Map.get(meta, :current_sequence) ->
-        {:error, VialKeeper.Error.integrity_violation("peer safe sequence exceeds source sequence")}
+        {:error, Error.integrity_violation("peer safe sequence exceeds source sequence")}
 
       peer.installed_source_compaction_epoch > Map.get(meta, :compaction_epoch) ->
-        {:error, VialKeeper.Error.integrity_violation("peer installed compaction epoch is invalid")}
+        {:error, Error.integrity_violation("peer installed compaction epoch is invalid")}
 
       peer.safe_source_sequence < Map.get(meta, :retention_floor_sequence) and
           peer.status == :active ->
-        {:error,
-         VialKeeper.Error.integrity_violation("active peer safe sequence is below retention floor")}
+        {:error, Error.integrity_violation("active peer safe sequence is below retention floor")}
 
       true ->
         :ok
@@ -200,7 +199,7 @@ defmodule VialKeeper.Integrity.Rules do
         :ok
 
       {:ok, _} ->
-        {:error, VialKeeper.Error.integrity_violation("retention maintenance counter is invalid")}
+        {:error, Error.integrity_violation("retention maintenance counter is invalid")}
     end
   end
 
@@ -263,7 +262,7 @@ defmodule VialKeeper.Integrity.Rules do
     else
       false ->
         {:error,
-         VialKeeper.Error.integrity_violation("revision identity or generation is invalid", %{
+         Error.integrity_violation("revision identity or generation is invalid", %{
            revision: revision_id
          })}
 
@@ -275,19 +274,17 @@ defmodule VialKeeper.Integrity.Rules do
   defp validate_revision_body_shape(true, nil), do: :ok
 
   defp validate_revision_body_shape(true, _body),
-    do: {:error, VialKeeper.Error.integrity_violation("deleted revision has a body term")}
+    do: {:error, Error.integrity_violation("deleted revision has a body term")}
 
   defp validate_revision_body_shape(false, body) when is_map(body), do: :ok
 
   defp validate_revision_body_shape(false, _body),
-    do:
-      {:error,
-       VialKeeper.Error.integrity_violation("revision identity or generation is invalid", %{})}
+    do: {:error, Error.integrity_violation("revision identity or generation is invalid", %{})}
 
   defp validate_tombstone_attachments(true, attachments, revision_id)
        when attachments != %{} and not is_nil(attachments) do
     {:error,
-     VialKeeper.Error.integrity_violation(
+     Error.integrity_violation(
        "tombstone revisions must have an empty attachment manifest",
        %{revision: revision_id}
      )}
@@ -331,7 +328,7 @@ defmodule VialKeeper.Integrity.Rules do
           do: :ok,
           else:
             {:error,
-             VialKeeper.Error.integrity_violation("revision has a dangling parent", %{
+             Error.integrity_violation("revision has a dangling parent", %{
                revision: revision_id,
                parent_revision: parent
              })}
@@ -354,7 +351,7 @@ defmodule VialKeeper.Integrity.Rules do
       do: :ok,
       else:
         {:error,
-         VialKeeper.Error.integrity_violation("revision leaf marker is stale", %{
+         Error.integrity_violation("revision leaf marker is stale", %{
            revision: revision_id
          })}
   end
@@ -388,7 +385,7 @@ defmodule VialKeeper.Integrity.Rules do
   Accepts maps with `:digest` / `:logical_size` or `{digest, size}` tuples.
   """
   @spec validate_digest_size_consistency([map() | {term(), term()}]) ::
-          :ok | {:error, VialKeeper.Error.t()}
+          :ok | {:error, Error.t()}
   def validate_digest_size_consistency(rows) when is_list(rows) do
     rows
     |> Enum.map(&digest_size_pair/1)
@@ -401,7 +398,7 @@ defmodule VialKeeper.Integrity.Rules do
         uniq ->
           {:halt,
            {:error,
-            VialKeeper.Error.integrity_violation(
+            Error.integrity_violation(
               "attachment digest has inconsistent logical sizes across retained manifests",
               %{digest: digest, sizes: uniq}
             )}}
@@ -443,9 +440,7 @@ defmodule VialKeeper.Integrity.Rules do
 
       _ ->
         {:error,
-         VialKeeper.Error.integrity_violation(
-           "revision_attachments row references a missing revision"
-         )}
+         Error.integrity_violation("revision_attachments row references a missing revision")}
     end
   end
 
@@ -461,9 +456,7 @@ defmodule VialKeeper.Integrity.Rules do
       end)
 
     if invalid?,
-      do:
-        {:error,
-         VialKeeper.Error.integrity_violation("revision_attachments row fields are invalid")},
+      do: {:error, Error.integrity_violation("revision_attachments row fields are invalid")},
       else: :ok
   end
 
@@ -476,7 +469,7 @@ defmodule VialKeeper.Integrity.Rules do
       else
         {:halt,
          {:error,
-          VialKeeper.Error.integrity_violation("revision_attachments digest is invalid", %{
+          Error.integrity_violation("revision_attachments digest is invalid", %{
             digest: digest
           })}}
       end
@@ -496,7 +489,7 @@ defmodule VialKeeper.Integrity.Rules do
       else
         {:halt,
          {:error,
-          VialKeeper.Error.integrity_violation("pending_blobs row fields are invalid", %{
+          Error.integrity_violation("pending_blobs row fields are invalid", %{
             digest: digest
           })}}
       end
@@ -538,7 +531,7 @@ defmodule VialKeeper.Integrity.Rules do
 
       is_nil(winning) ->
         {:error,
-         VialKeeper.Error.integrity_violation("document has no winning revision", %{
+         Error.integrity_violation("document has no winning revision", %{
            document_id: document_id
          })}
 
@@ -557,14 +550,14 @@ defmodule VialKeeper.Integrity.Rules do
           :ok
         else
           {:error,
-           VialKeeper.Error.integrity_violation("materialized winner is inconsistent", %{
+           Error.integrity_violation("materialized winner is inconsistent", %{
              document_id: document_id
            })}
         end
 
       :error ->
         {:error,
-         VialKeeper.Error.integrity_violation("document winner is missing", %{
+         Error.integrity_violation("document winner is missing", %{
            document_id: document_id
          })}
     end
@@ -616,7 +609,7 @@ defmodule VialKeeper.Integrity.Rules do
   defp validate_change_sequence(sequence, _previous, floor) when sequence <= floor,
     do:
       {:error,
-       VialKeeper.Error.integrity_violation("change row is at or below the retention floor", %{
+       Error.integrity_violation("change row is at or below the retention floor", %{
          sequence: sequence,
          floor: floor
        })}
@@ -625,7 +618,7 @@ defmodule VialKeeper.Integrity.Rules do
        when not is_nil(previous) and sequence <= previous,
        do:
          {:error,
-          VialKeeper.Error.integrity_violation("change sequences are not strictly increasing", %{
+          Error.integrity_violation("change sequences are not strictly increasing", %{
             sequence: sequence,
             previous: previous
           })}
@@ -643,8 +636,7 @@ defmodule VialKeeper.Integrity.Rules do
             :ok
 
           :error ->
-            {:error,
-             VialKeeper.Error.integrity_violation("change winner is missing", %{revision: winning})}
+            {:error, Error.integrity_violation("change winner is missing", %{revision: winning})}
         end
 
       error ->
@@ -653,13 +645,13 @@ defmodule VialKeeper.Integrity.Rules do
   end
 
   defp validate_change_leaves(_by_key, _document_id, _winning, _leaves),
-    do: {:error, VialKeeper.Error.integrity_violation("change JSON and term differ")}
+    do: {:error, Error.integrity_violation("change JSON and term differ")}
 
   defp validate_change_leaf(_by_key, document_id, leaf) when not is_map(leaf),
     do:
       {:halt,
        {:error,
-        VialKeeper.Error.integrity_violation("change leaf entry is not an object", %{
+        Error.integrity_violation("change leaf entry is not an object", %{
           document_id: document_id
         })}}
 
@@ -671,7 +663,7 @@ defmodule VialKeeper.Integrity.Rules do
       else:
         {:halt,
          {:error,
-          VialKeeper.Error.integrity_violation("change leaf revision is invalid", %{
+          Error.integrity_violation("change leaf revision is invalid", %{
             document_id: document_id
           })}}
   end
@@ -693,7 +685,7 @@ defmodule VialKeeper.Integrity.Rules do
       :error ->
         {:halt,
          {:error,
-          VialKeeper.Error.integrity_violation("change references a missing revision", %{
+          Error.integrity_violation("change references a missing revision", %{
             revision: revision
           })}}
     end
@@ -707,7 +699,7 @@ defmodule VialKeeper.Integrity.Rules do
     do:
       {:halt,
        {:error,
-        VialKeeper.Error.integrity_violation("change leaf deletion marker is stale", %{
+        Error.integrity_violation("change leaf deletion marker is stale", %{
           revision: revision
         })}}
 
@@ -729,7 +721,7 @@ defmodule VialKeeper.Integrity.Rules do
   end
 
   defp validate_checkpoint_value(_value, _meta),
-    do: {:error, VialKeeper.Error.integrity_violation("checkpoint record is invalid")}
+    do: {:error, Error.integrity_violation("checkpoint record is invalid")}
 
   defp validate_checkpoint_fields(%Checkpoint{} = checkpoint, _meta) do
     validators = [
@@ -746,22 +738,18 @@ defmodule VialKeeper.Integrity.Rules do
 
   defp validate_checkpoint_safe_sequence(checkpoint) do
     if checkpoint.safe_source_sequence > checkpoint.source_sequence,
-      do:
-        {:error,
-         VialKeeper.Error.integrity_violation("checkpoint safe sequence exceeds source sequence")}
+      do: {:error, Error.integrity_violation("checkpoint safe sequence exceeds source sequence")}
   end
 
   defp validate_checkpoint_installed_epoch(checkpoint) do
     if checkpoint.installed_source_compaction_epoch > checkpoint.source_compaction_epoch,
-      do:
-        {:error,
-         VialKeeper.Error.integrity_violation("checkpoint installed compaction epoch regressed")}
+      do: {:error, Error.integrity_violation("checkpoint installed compaction epoch regressed")}
   end
 
   defp validate_checkpoint_history(checkpoint) do
     if checkpoint_history_monotonic?(checkpoint.history, checkpoint.source_sequence),
       do: nil,
-      else: {:error, VialKeeper.Error.integrity_violation("checkpoint history regressed")}
+      else: {:error, Error.integrity_violation("checkpoint history regressed")}
   end
 
   defp checkpoint_history_monotonic?(history, source_sequence) when is_list(history) do

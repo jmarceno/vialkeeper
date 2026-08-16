@@ -21,32 +21,45 @@ defmodule VialKeeper.Shadow.Registry do
 
   @spec get(binary(), GenServer.server()) ::
           {:ok, map()} | :not_found | {:error, VialKeeper.Error.t()}
-  def get(source_uuid, server \\ @default_name), do: GenServer.call(server, {:get, source_uuid})
+  def get(source_uuid, server \\ @default_name),
+    do: GenServer.call(server, {:get, source_uuid}, VialKeeper.Config.request_timeout_ms())
 
   @spec put_desired(Definition.t(), GenServer.server()) ::
           {:ok, Definition.t()} | {:error, VialKeeper.Error.t()}
   def put_desired(definition, server \\ @default_name),
-    do: GenServer.call(server, {:put_desired, definition})
+    do: GenServer.call(server, {:put_desired, definition}, VialKeeper.Config.request_timeout_ms())
 
   @spec disable(binary(), GenServer.server()) ::
           {:ok, Definition.t()} | {:error, VialKeeper.Error.t()}
   def disable(source_uuid, server \\ @default_name),
-    do: GenServer.call(server, {:disable, source_uuid})
+    do: GenServer.call(server, {:disable, source_uuid}, VialKeeper.Config.request_timeout_ms())
 
   @spec apply_observation(binary(), map(), Observation.t(), GenServer.server()) ::
           :ok | :stale | {:error, VialKeeper.Error.t()}
   def apply_observation(source_uuid, token, observation, server \\ @default_name),
-    do: GenServer.call(server, {:apply_observation, source_uuid, token, observation})
+    do:
+      GenServer.call(
+        server,
+        {:apply_observation, source_uuid, token, observation},
+        VialKeeper.Config.request_timeout_ms()
+      )
 
   @spec record_orphan(binary(), map(), GenServer.server()) :: :ok | {:error, VialKeeper.Error.t()}
   def record_orphan(source_uuid, orphan, server \\ @default_name),
-    do: GenServer.call(server, {:record_orphan, source_uuid, orphan})
+    do:
+      GenServer.call(
+        server,
+        {:record_orphan, source_uuid, orphan},
+        VialKeeper.Config.request_timeout_ms()
+      )
 
   @spec snapshot(GenServer.server()) :: map()
-  def snapshot(server \\ @default_name), do: GenServer.call(server, :snapshot)
+  def snapshot(server \\ @default_name),
+    do: GenServer.call(server, :snapshot, VialKeeper.Config.request_timeout_ms())
 
   @spec integrity(GenServer.server()) :: :ok | {:error, VialKeeper.Error.t()}
-  def integrity(server \\ @default_name), do: GenServer.call(server, :integrity)
+  def integrity(server \\ @default_name),
+    do: GenServer.call(server, :integrity, VialKeeper.Config.request_timeout_ms())
 
   @impl true
   def init(opts) do

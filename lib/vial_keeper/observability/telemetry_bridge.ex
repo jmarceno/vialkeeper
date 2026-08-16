@@ -24,6 +24,8 @@ defmodule VialKeeper.Observability.TelemetryBridge do
 
   require OpenTelemetry.Tracer
 
+  alias OpenTelemetry.Span, as: OtelSpan
+  alias OpenTelemetry.Tracer, as: OtelTracer
   alias VialKeeper.Observability.Attributes
 
   @handler_id __MODULE__.Finch
@@ -38,11 +40,12 @@ defmodule VialKeeper.Observability.TelemetryBridge do
   # Finch requests are synchronous per process, so one slot suffices.
   @span_key {__MODULE__, :finch_span}
 
+  @spec start_link(term()) :: GenServer.on_start()
   def start_link(_), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
   @impl true
   def init(_) do
-    :telemetry.attach_many(@handler_id, @finch_events, &__MODULE__.handle_event/4, nil)
+    _ = :telemetry.attach_many(@handler_id, @finch_events, &__MODULE__.handle_event/4, nil)
     {:ok, %{handler_id: @handler_id}}
   end
 
@@ -63,7 +66,7 @@ defmodule VialKeeper.Observability.TelemetryBridge do
   defp dispatch([:finch, :request, :start], _measurements, _metadata) do
     # Constant span name: the remote host/scheme/port stay OUT of the name
     # (§3.1 forbids full remote URLs in telemetry; bounded cardinality).
-    span_ctx = OpenTelemetry.Tracer.start_span("finch.request", %{kind: :client})
+    span_ctx = OtelTracer.start_span("finch.request", %{kind: :client})
     Process.put(@span_key, span_ctx)
     :ok
   end
@@ -85,7 +88,7 @@ defmodule VialKeeper.Observability.TelemetryBridge do
   defp dispatch(_event, _measurements, _metadata), do: :ok
 
   defp finish_span(span_ctx, measurements) do
-    if OpenTelemetry.Span.is_recording(span_ctx) do
+    if OtelSpan.is_recording(span_ctx) do
       attrs =
         case measurements[:duration] do
           nil -> %{}
@@ -94,30 +97,32 @@ defmodule VialKeeper.Observability.TelemetryBridge do
           duration -> Attributes.build(finch_duration: duration)
         end
 
-      _ = OpenTelemetry.Span.set_attributes(span_ctx, attrs)
-      OpenTelemetry.Span.end_span(span_ctx)
+      _ = OtelSpan.set_attributes(span_ctx, attrs)
+      _ = OtelSpan.end_span(span_ctx)
+      :ok
     end
 
     :ok
   end
 
   defp finish_span_exception(span_ctx) do
-    if OpenTelemetry.Span.is_recording(span_ctx) do
+    if OtelSpan.is_recording(span_ctx) do
       try do
         # Generic message only: exception reasons can carry request detail.
         _ =
-          OpenTelemetry.Span.record_exception(
+          OtelSpan.record_exception(
             span_ctx,
             %RuntimeError{message: "finch request failed"},
             []
           )
 
-        OpenTelemetry.Span.set_status(span_ctx, :opentelemetry.status(:error))
+        _ = OtelSpan.set_status(span_ctx, :opentelemetry.status(:error))
       catch
         _, _ -> :ok
       end
 
-      OpenTelemetry.Span.end_span(span_ctx)
+      _ = OtelSpan.end_span(span_ctx)
+      :ok
     end
 
     :ok

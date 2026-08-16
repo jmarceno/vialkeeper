@@ -30,6 +30,7 @@ defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
   import ExUnit.Assertions
 
   alias VialKeeper.Attachments
+  alias VialKeeper.Documents
   alias VialKeeper.Eventual
   alias VialKeeper.Query.Subscriptions
   alias VialKeeper.Replication.{JobManager, LocalEndpoint}
@@ -710,7 +711,7 @@ defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
     gate = make_ref()
 
     assert {:ok, put} =
-             VialKeeper.Documents.put(uuid, %{
+             Documents.put(uuid, %{
                "id" => "download-doc",
                "body" => %{},
                "attachments" => %{
@@ -1045,11 +1046,11 @@ defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
   end
 
   defp assert_correctness!(server, a_uuid, b_uuid, _job_id, _blob, sub_pid) do
-    assert {:ok, %{revision: _}} = VialKeeper.Documents.get(a_uuid, %{id: "task-open"})
-    assert {:ok, %{revision: _}} = VialKeeper.Documents.get(b_uuid, %{id: "task-open"})
+    assert {:ok, %{revision: _}} = Documents.get(a_uuid, %{id: "task-open"})
+    assert {:ok, %{revision: _}} = Documents.get(b_uuid, %{id: "task-open"})
 
     assert {:ok, %{revision: attached_revision}} =
-             VialKeeper.Documents.get(b_uuid, %{id: "attached"})
+             Documents.get(b_uuid, %{id: "attached"})
 
     assert {:ok, stream} =
              Attachments.open_stream(b_uuid, %{
@@ -1102,7 +1103,7 @@ defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
 
     assert {:ok, %{status: :completed}} = VialKeeper.Replication.one_shot(a_uuid, b_uuid)
 
-    assert {:ok, %{revision: _}} = VialKeeper.Documents.get(b_uuid, %{id: "sustained-16"})
+    assert {:ok, %{revision: _}} = Documents.get(b_uuid, %{id: "sustained-16"})
     Subscriptions.close(sub_pid)
   end
 
@@ -1183,7 +1184,7 @@ defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
   defp await_replication_doc(uuid, id) do
     Eventual.eventually(
       fn ->
-        case VialKeeper.Documents.get(uuid, %{id: id}) do
+        case Documents.get(uuid, %{id: id}) do
           {:ok, _} -> true
           _ -> false
         end

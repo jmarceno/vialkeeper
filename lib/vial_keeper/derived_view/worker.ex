@@ -92,9 +92,9 @@ defmodule VialKeeper.DerivedView.Worker do
 
   @impl true
   def terminate(_reason, state) do
-    cancel_tasks(state)
-    unsubscribe_all(state)
-    cancel_retry_timer(state)
+    _ = cancel_tasks(state)
+    _ = unsubscribe_all(state)
+    _ = cancel_retry_timer(state)
     :ok
   end
 
@@ -172,27 +172,7 @@ defmodule VialKeeper.DerivedView.Worker do
 
   @impl true
   def handle_info(:work, state) do
-    state = %{state | work_queued: false}
-
-    cond do
-      state.metadata == nil ->
-        {:noreply, state}
-
-      state.status == :resource_limit ->
-        {:noreply, state}
-
-      not enabled?(state) ->
-        {:noreply, %{state | status: :disabled}}
-
-      map_size(state.tasks) > 0 ->
-        {:noreply, %{state | work_requested: true}}
-
-      state.operation != nil ->
-        {:noreply, run_operation_phase(state)}
-
-      true ->
-        {:noreply, start_next_work(state)}
-    end
+    {:noreply, continue_work(%{state | work_queued: false})}
   end
 
   @impl true
@@ -236,6 +216,25 @@ defmodule VialKeeper.DerivedView.Worker do
         handle_task_result(token, {:error, task_error(reason)}, %{state | tasks: tasks})
     end
   end
+
+  defp continue_work(%{metadata: nil} = state), do: state
+  defp continue_work(%{status: :resource_limit} = state), do: state
+
+  defp continue_work(state) do
+    if enabled?(state) do
+      continue_enabled_work(state)
+    else
+      %{state | status: :disabled}
+    end
+  end
+
+  defp continue_enabled_work(%{tasks: tasks} = state) when map_size(tasks) > 0,
+    do: %{state | work_requested: true}
+
+  defp continue_enabled_work(%{operation: operation} = state) when not is_nil(operation),
+    do: run_operation_phase(state)
+
+  defp continue_enabled_work(state), do: start_next_work(state)
 
   defp bootstrap_context(state, metadata, sources) do
     state = put_context(state, metadata, sources)
@@ -323,9 +322,8 @@ defmodule VialKeeper.DerivedView.Worker do
          {:ok, ref, current, after_sequence} <-
            subscribe_and_verify(source_uuid, max(since, before_sequence)) do
       next = put_subscription(state, source_uuid, ref, since, current)
-      observed_sequence = if is_integer(current), do: current, else: 0
 
-      if Enum.max([before_sequence, after_sequence, observed_sequence]) > since,
+      if Enum.max([before_sequence, after_sequence, current]) > since,
         do: {:ok, %{next | work_requested: true}},
         else: {:ok, next}
     else
@@ -365,15 +363,19 @@ defmodule VialKeeper.DerivedView.Worker do
         subscription_since: Map.put(state.subscription_since, source_uuid, since)
     }
 
-    if is_integer(current) and current > since, do: %{state | work_requested: true}, else: state
+    if current > since, do: %{state | work_requested: true}, else: state
   end
 
   defp identity_sequence(identity) do
     sequence = Map.get(identity, :current_sequence, Map.get(identity, "current_sequence"))
 
-    if is_integer(sequence) and sequence >= 0,
-      do: {:ok, sequence},
-      else: {:error, Error.integrity_violation("source identity sequence is invalid")}
+    if is_integer(sequence) do
+      if sequence >= 0,
+        do: {:ok, sequence},
+        else: {:error, Error.integrity_violation("source identity sequence is invalid")}
+    else
+      {:error, Error.integrity_violation("source identity sequence is invalid")}
+    end
   end
 
   defp remove_subscription(state, source_uuid) do
@@ -438,18 +440,24 @@ defmodule VialKeeper.DerivedView.Worker do
 
   defp fill_active_tasks(%{operation: %{kind: :active} = operation} = state) do
     capacity = max_concurrent_sources(state) - map_size(operation.in_flight)
-
-    cond do
-      capacity > 0 and operation.queue != [] ->
-        start_active_task(state, operation)
-
-      operation.queue == [] and map_size(operation.in_flight) == 0 ->
-        apply_active_results(state, operation.results)
-
-      true ->
-        state
-    end
+    fill_active_tasks_with_capacity(state, operation, capacity)
   end
+
+  defp fill_active_tasks_with_capacity(state, %{queue: queue} = operation, capacity)
+       when capacity > 0 and queue != [] do
+    start_active_task(state, operation)
+  end
+
+  defp fill_active_tasks_with_capacity(
+         state,
+         %{queue: [], in_flight: in_flight} = operation,
+         _capacity
+       )
+       when map_size(in_flight) == 0 do
+    apply_active_results(state, operation.results)
+  end
+
+  defp fill_active_tasks_with_capacity(state, _operation, _capacity), do: state
 
   defp start_active_task(state, operation) do
     [source | queue] = operation.queue
@@ -805,12 +813,19 @@ defmodule VialKeeper.DerivedView.Worker do
         history_epoch: history_epoch
     }
 
-    cond do
-      has_more? -> %{operation | replay_has_more: true}
-      next_cursor >= operation.target_sequence -> %{operation | phase: :finish}
-      true -> %{operation | phase: :target}
+    if has_more? do
+      %{operation | replay_has_more: true}
+    else
+      finish_or_target_rebuild(operation, next_cursor)
     end
   end
+
+  defp finish_or_target_rebuild(operation, next_cursor)
+       when next_cursor >= operation.target_sequence do
+    %{operation | phase: :finish}
+  end
+
+  defp finish_or_target_rebuild(operation, _next_cursor), do: %{operation | phase: :target}
 
   defp complete_rebuild(state) do
     case load_context(state.uuid) do
@@ -1129,31 +1144,34 @@ defmodule VialKeeper.DerivedView.Worker do
   defp handle_failure(state, source_uuid, %Error{} = error) do
     state = cancel_tasks(%{state | operation: nil})
     state = record_source_error(state, source_uuid, error)
-
-    cond do
-      error.code in [:history_truncated, :source_history_reset] and is_binary(source_uuid) ->
-        log_failure(state, source_uuid, error)
-
-        state
-        |> Map.update!(:needs_rebuild, &MapSet.put(&1, source_uuid))
-        |> Map.put(:status, :rebuilding)
-        |> request_work()
-
-      error.code == :revision_conflict ->
-        resynchronize_after_conflict(state)
-
-      true ->
-        log_failure(state, source_uuid, error)
-
-        state
-        |> maybe_remove_subscription(source_uuid)
-        |> Map.put(:status, :stale)
-        |> schedule_retry()
-    end
+    classify_failure(state, source_uuid, error)
   end
 
   defp handle_failure(state, source_uuid, reason),
     do: handle_failure(state, source_uuid, task_error(reason))
+
+  defp classify_failure(state, source_uuid, %Error{code: code} = error)
+       when code in [:history_truncated, :source_history_reset] and is_binary(source_uuid) do
+    log_failure(state, source_uuid, error)
+
+    state
+    |> Map.update!(:needs_rebuild, &MapSet.put(&1, source_uuid))
+    |> Map.put(:status, :rebuilding)
+    |> request_work()
+  end
+
+  defp classify_failure(state, _source_uuid, %Error{code: :revision_conflict}) do
+    resynchronize_after_conflict(state)
+  end
+
+  defp classify_failure(state, source_uuid, %Error{} = error) do
+    log_failure(state, source_uuid, error)
+
+    state
+    |> maybe_remove_subscription(source_uuid)
+    |> Map.put(:status, :stale)
+    |> schedule_retry()
+  end
 
   defp maybe_remove_subscription(state, source_uuid) when is_binary(source_uuid),
     do: remove_subscription(state, source_uuid)
@@ -1253,7 +1271,11 @@ defmodule VialKeeper.DerivedView.Worker do
   end
 
   defp cancel_retry_timer(state) do
-    if is_reference(state.retry_timer), do: Process.cancel_timer(state.retry_timer)
+    if is_reference(state.retry_timer) do
+      _ = Process.cancel_timer(state.retry_timer)
+      :ok
+    end
+
     %{state | retry_timer: nil}
   end
 
@@ -1265,21 +1287,15 @@ defmodule VialKeeper.DerivedView.Worker do
     %{state | tasks: %{}}
   end
 
+  defp request_work(%{retry_timer: timer} = state) when is_reference(timer), do: state
+  defp request_work(%{work_queued: true} = state), do: state
+
+  defp request_work(%{tasks: tasks} = state) when map_size(tasks) > 0,
+    do: %{state | work_requested: true}
+
   defp request_work(state) do
-    cond do
-      is_reference(state.retry_timer) ->
-        state
-
-      state.work_queued ->
-        state
-
-      map_size(state.tasks) > 0 ->
-        %{state | work_requested: true}
-
-      true ->
-        send(self(), :work)
-        %{state | work_queued: true}
-    end
+    send(self(), :work)
+    %{state | work_queued: true}
   end
 
   defp enabled?(%{metadata: %{enabled: enabled}}), do: enabled

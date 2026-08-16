@@ -1,13 +1,14 @@
 defmodule VialKeeper.JSON.Canonical do
   @moduledoc "RFC 8785-style canonical JSON for validated JSON values."
+  alias VialKeeper.Error
 
-  @spec encode(term()) :: {:ok, binary()} | {:error, VialKeeper.Error.t()}
+  @spec encode(term()) :: {:ok, binary()} | {:error, Error.t()}
   def encode(value) do
     {:ok, IO.iodata_to_binary(encode_value(value))}
   rescue
-    ArgumentError -> {:error, VialKeeper.Error.invalid_request("value is not canonical JSON")}
-    ArithmeticError -> {:error, VialKeeper.Error.invalid_request("value is not canonical JSON")}
-    FunctionClauseError -> {:error, VialKeeper.Error.invalid_request("value is not canonical JSON")}
+    ArgumentError -> {:error, Error.invalid_request("value is not canonical JSON")}
+    ArithmeticError -> {:error, Error.invalid_request("value is not canonical JSON")}
+    FunctionClauseError -> {:error, Error.invalid_request("value is not canonical JSON")}
   end
 
   @spec encode!(term()) :: binary()

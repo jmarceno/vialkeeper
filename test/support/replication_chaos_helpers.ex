@@ -32,7 +32,7 @@ defmodule VialKeeper.ReplicationChaosHelpers do
 
       value ->
         case Integer.parse(value) do
-          {seed, ""} -> Enum.uniq(@committed_seeds ++ [seed])
+          {seed, ""} -> Enum.uniq(Enum.concat(@committed_seeds, [seed]))
           _other -> raise ArgumentError, "CHAOS_SEED must be an integer, got: #{inspect(value)}"
         end
     end

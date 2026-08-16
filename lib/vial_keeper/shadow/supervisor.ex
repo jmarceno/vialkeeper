@@ -2,8 +2,10 @@ defmodule VialKeeper.Shadow.Supervisor do
   @moduledoc "Supervision boundary for source-local shadow control and routing."
   use Supervisor
 
+  @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []), do: Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @spec init(keyword()) :: {:ok, {Supervisor.sup_flags(), [Supervisor.child_spec()]}}
   @impl true
   def init(opts) do
     children =
@@ -15,7 +17,9 @@ defmodule VialKeeper.Shadow.Supervisor do
         {VialKeeper.Shadow.ControlTaskSupervisor, opts},
         {VialKeeper.Shadow.WorkerRegistry, opts},
         {VialKeeper.Shadow.WorkerSupervisor, opts}
-      ] ++ worker_child(opts) ++ [{VialKeeper.Shadow.ControllerManager, opts}]
+      ]
+      |> Enum.concat(worker_child(opts))
+      |> Enum.concat([{VialKeeper.Shadow.ControllerManager, opts}])
 
     Supervisor.init(children, strategy: :rest_for_one)
   end

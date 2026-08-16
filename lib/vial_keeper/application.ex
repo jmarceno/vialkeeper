@@ -2,6 +2,9 @@ defmodule VialKeeper.Application do
   @moduledoc "OTP application supervisor for the VialKeeper runtime."
   use Application
 
+  @spec start(Application.start_type(), term()) :: {:ok, pid()} | {:error, term()}
+
+  alias VialKeeper.HostConfig
   alias VialKeeper.Storage.OpaqueHandle.Server, as: OpaqueHandleServer
 
   @impl true
@@ -35,6 +38,10 @@ defmodule VialKeeper.Application do
     opts = [strategy: :one_for_one, name: VialKeeper.Supervisor]
     Supervisor.start_link(children, opts)
   end
+
+  @spec stop(term()) :: :ok
+  @impl true
+  def stop(_state), do: :ok
 
   # CONFIG-005 failsafe: refuse to start on a non-loopback interface unless
   # authentication or TLS is enabled, or the operator sets the explicit
@@ -96,10 +103,10 @@ defmodule VialKeeper.Application do
     http_options = [compress: false]
 
     if Keyword.get(tls, :enabled, false) do
-      root = VialKeeper.HostConfig.database_root()
+      root = HostConfig.database_root()
 
-      certfile = VialKeeper.HostConfig.resolve_path(root, tls[:certfile])
-      keyfile = VialKeeper.HostConfig.resolve_path(root, tls[:keyfile])
+      certfile = HostConfig.resolve_path(root, tls[:certfile])
+      keyfile = HostConfig.resolve_path(root, tls[:keyfile])
 
       Bandit.child_spec(
         [

@@ -10,6 +10,7 @@ defmodule VialKeeper.Runtime.ReadPoolSupervisor do
 
   alias VialKeeper.Runtime.{ChildSpec, ReadPool, ReadWorker}
 
+  @spec child_spec(binary(), pos_integer(), pos_integer()) :: map()
   def child_spec(uuid, pool_size, queue_limit)
       when is_binary(uuid) and is_integer(pool_size) and pool_size > 0 and
              is_integer(queue_limit) and queue_limit > 0 do
@@ -21,6 +22,7 @@ defmodule VialKeeper.Runtime.ReadPoolSupervisor do
     )
   end
 
+  @spec start_link({binary(), pos_integer(), pos_integer()}) :: Supervisor.on_start()
   def start_link({uuid, pool_size, queue_limit}),
     do: Supervisor.start_link(__MODULE__, {uuid, pool_size, queue_limit}, name: via(uuid))
 

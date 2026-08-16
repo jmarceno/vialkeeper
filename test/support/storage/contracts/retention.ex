@@ -5,11 +5,14 @@ defmodule VialKeeper.Storage.Contracts.Retention do
 
   defmacro __using__(opts) do
     # The contract tests must be injected into each adapter module.
+    # quality:reason contract tests are injected via quote into each adapter module
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
     quote do
       use VialKeeper.Storage.AdapterCase, unquote(opts)
 
       alias VialKeeper.Domain.BoundaryPage
+      alias VialKeeper.Error
+      alias VialKeeper.Storage.Services
 
       @digest_a String.duplicate("a", 64)
       @digest_b String.duplicate("b", 64)
@@ -280,7 +283,7 @@ defmodule VialKeeper.Storage.Contracts.Retention do
                  @adapter.list_live_attachment_digests(adapter, %{limit: 2})
 
         assert match?([_, _], first_page)
-        assert cursor == List.last(first_page)
+        assert cursor == hd(Enum.reverse(first_page))
 
         assert {:ok, %{digests: rest, next_after_digest: nil}} =
                  @adapter.list_live_attachment_digests(adapter, %{
@@ -311,7 +314,7 @@ defmodule VialKeeper.Storage.Contracts.Retention do
         context = @adapter.to_context(adapter)
 
         assert {:ok, %{count: 3, protected: protected}} =
-                 VialKeeper.Storage.Services.protect_pending_blobs(context, %{
+                 Services.protect_pending_blobs(context, %{
                    blobs: [
                      %{digest: @digest_a, logical_size: 1},
                      %{digest: @digest_b, logical_size: 2},
@@ -328,8 +331,8 @@ defmodule VialKeeper.Storage.Contracts.Retention do
 
         missing = String.duplicate("d", 64)
 
-        assert {:error, %VialKeeper.Error{code: :invalid_request}} =
-                 VialKeeper.Storage.Services.protect_pending_blobs(context, %{
+        assert {:error, %Error{code: :invalid_request}} =
+                 Services.protect_pending_blobs(context, %{
                    blobs: [
                      %{digest: missing, logical_size: 4},
                      %{digest: "not-a-digest", logical_size: 5}

@@ -1,7 +1,9 @@
 defmodule VialKeeper.HTTP.Routes.Attachments do
   @moduledoc "HTTP routes for attachment upload, metadata, and download operations."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
 
+  alias Plug.Conn
   alias VialKeeper.Attachments
   alias VialKeeper.HTTP.{Request, Response, Schemas}
 
@@ -21,7 +23,7 @@ defmodule VialKeeper.HTTP.Routes.Attachments do
             # The request body may be partially consumed; do not reuse the
             # connection with stale body accounting.
             conn
-            |> Plug.Conn.put_resp_header("connection", "close")
+            |> Conn.put_resp_header("connection", "close")
             |> Response.error(error)
         end
 
@@ -58,7 +60,7 @@ defmodule VialKeeper.HTTP.Routes.Attachments do
   end
 
   defp require_octet_stream(conn) do
-    content_type = conn |> Plug.Conn.get_req_header("content-type") |> List.first()
+    content_type = conn |> Conn.get_req_header("content-type") |> List.first()
 
     cond do
       is_nil(content_type) ->
@@ -84,11 +86,11 @@ defmodule VialKeeper.HTTP.Routes.Attachments do
     try do
       conn =
         conn
-        |> Plug.Conn.put_resp_header("x-request-id", request_id)
-        |> Plug.Conn.put_resp_header("content-type", stream.content_type)
-        |> Plug.Conn.put_resp_header("content-length", Integer.to_string(stream.content_length))
-        |> Plug.Conn.put_resp_header("etag", stream.etag)
-        |> Plug.Conn.send_chunked(200)
+        |> Conn.put_resp_header("x-request-id", request_id)
+        |> Conn.put_resp_header("content-type", stream.content_type)
+        |> Conn.put_resp_header("content-length", Integer.to_string(stream.content_length))
+        |> Conn.put_resp_header("etag", stream.etag)
+        |> Conn.send_chunked(200)
 
       Response.stream_chunks(conn, stream.body)
     after

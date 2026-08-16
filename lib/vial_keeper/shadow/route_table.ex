@@ -23,18 +23,25 @@ defmodule VialKeeper.Shadow.RouteTable do
 
   @spec put(binary(), map(), GenServer.server()) :: :ok | :stale
   def put(source_uuid, snapshot, server \\ @default_name),
-    do: GenServer.call(server, {:put, source_uuid, snapshot})
+    do:
+      GenServer.call(server, {:put, source_uuid, snapshot}, VialKeeper.Config.request_timeout_ms())
 
   @spec delete(binary(), GenServer.server()) :: :ok
   def delete(source_uuid, server \\ @default_name),
-    do: GenServer.call(server, {:delete, source_uuid})
+    do: GenServer.call(server, {:delete, source_uuid}, VialKeeper.Config.request_timeout_ms())
 
   @spec compare_delete(binary(), map(), GenServer.server()) :: :ok | :stale
   def compare_delete(source_uuid, snapshot, server \\ @default_name),
-    do: GenServer.call(server, {:compare_delete, source_uuid, snapshot})
+    do:
+      GenServer.call(
+        server,
+        {:compare_delete, source_uuid, snapshot},
+        VialKeeper.Config.request_timeout_ms()
+      )
 
   @spec list(GenServer.server()) :: [{binary(), map()}]
-  def list(server \\ @default_name), do: GenServer.call(server, :list)
+  def list(server \\ @default_name),
+    do: GenServer.call(server, :list, VialKeeper.Config.request_timeout_ms())
 
   @impl true
   def init(opts) do

@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.Routes.MaterializedViews do
   @moduledoc "HTTP lifecycle and status routes for materialized federated views."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
 
   alias VialKeeper.HTTP.{Request, Response, Schemas}
   alias VialKeeper.MaterializedViews

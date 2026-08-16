@@ -36,6 +36,8 @@ defmodule VialKeeper.Federation.Executor do
 
   @doc "Executes one normalized federation request with a private task supervisor."
   @spec run(map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  @spec run(map()) :: {:ok, map()} | {:error, Error.t()}
+  @spec run(term(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def run(request, opts \\ [])
 
   def run(request, opts) when is_map(request) and is_list(opts) do
@@ -259,12 +261,10 @@ defmodule VialKeeper.Federation.Executor do
         end
 
       {:DOWN, ref, :process, _pid, reason} ->
-        case Map.has_key?(pending, ref) do
-          true ->
-            stop_after_error(pending, internal_error("federation source task stopped", reason))
-
-          false ->
-            await_tasks(pending, results, deadline)
+        if Map.has_key?(pending, ref) do
+          stop_after_error(pending, internal_error("federation source task stopped", reason))
+        else
+          await_tasks(pending, results, deadline)
         end
     after
       Deadline.call_timeout(deadline) ->
@@ -338,9 +338,13 @@ defmodule VialKeeper.Federation.Executor do
   defp normalize_source_page(_),
     do: {:error, internal_error("federation source returned an invalid page", :invalid_page)}
 
-  defp validate_page_size({:ok, page}, limit)
-       when is_integer(limit) and limit > 0 and length(page.documents) <= limit,
-       do: {:ok, page}
+  defp validate_page_size({:ok, page}, limit) when is_integer(limit) and limit > 0 do
+    if length(page.documents) <= limit do
+      {:ok, page}
+    else
+      {:error, invalid_page(:page_exceeds_requested_limit)}
+    end
+  end
 
   defp validate_page_size({:ok, _page}, _limit),
     do: {:error, invalid_page(:page_exceeds_requested_limit)}

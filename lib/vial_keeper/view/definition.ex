@@ -101,7 +101,21 @@ defmodule VialKeeper.View.Definition do
     end
   end
 
-  defp normalize_key(key) when is_list(key) and key != [] and length(key) <= @max_key_expressions do
+  defp normalize_key(key) when is_list(key) and key != [] do
+    if length(key) <= @max_key_expressions do
+      normalize_key_expressions(key)
+    else
+      {:error, VialKeeper.Error.invalid_request("view key must be a non-empty array")}
+    end
+  end
+
+  defp normalize_key([]),
+    do: {:error, VialKeeper.Error.invalid_request("view key must be a non-empty array")}
+
+  defp normalize_key(_),
+    do: {:error, VialKeeper.Error.invalid_request("view key must be a non-empty array")}
+
+  defp normalize_key_expressions(key) do
     Enum.reduce_while(key, {:ok, []}, fn expression, {:ok, acc} ->
       case Expression.normalize(expression) do
         {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
@@ -113,12 +127,6 @@ defmodule VialKeeper.View.Definition do
       error -> error
     end)
   end
-
-  defp normalize_key([]),
-    do: {:error, VialKeeper.Error.invalid_request("view key must be a non-empty array")}
-
-  defp normalize_key(_),
-    do: {:error, VialKeeper.Error.invalid_request("view key must be a non-empty array")}
 
   defp normalize_value(nil, _reducer), do: {:ok, nil}
 

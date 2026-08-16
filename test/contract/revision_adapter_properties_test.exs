@@ -249,7 +249,8 @@ for {name, adapter_module} <- [
 
         {:ok, ancestors} = Facts.list_ancestors(context, document_id, leaf)
 
-        assert Enum.map(Enum.reverse(ancestors), & &1.revision_id) ++ [leaf] == expected_ids
+        assert Enum.concat(Enum.map(Enum.reverse(ancestors), & &1.revision_id), [leaf]) ==
+                 expected_ids
       after
         _ = @adapter.close(adapter)
         VialKeeper.TempDatabase.cleanup(bundle_path)

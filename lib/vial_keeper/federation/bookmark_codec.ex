@@ -2,6 +2,7 @@ defmodule VialKeeper.Federation.BookmarkCodec do
   @moduledoc "Independent codec for stateless federation continuation bookmarks."
   alias VialKeeper.JSON.{Canonical, StrictDecoder}
 
+  @spec encode(map()) :: {:ok, binary()} | {:error, VialKeeper.Error.t()}
   def encode(payload) when is_map(payload) do
     unsigned =
       payload |> Map.put("version", 1) |> Map.put("protocol_major", VialKeeper.protocol_major())
@@ -14,6 +15,8 @@ defmodule VialKeeper.Federation.BookmarkCodec do
     end
   end
 
+  @spec decode(term()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
+  @spec decode(term(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def decode(bookmark, expected \\ %{})
 
   def decode(bookmark, expected) when is_binary(bookmark) do
@@ -91,7 +94,7 @@ defmodule VialKeeper.Federation.BookmarkCodec do
 
   defp valid_ordering_key?(key, sort, id),
     do:
-      is_list(key) and length(key) == length(sort) + 1 and List.last(key) == id and
+      is_list(key) and length(key) == length(sort) + 1 and hd(Enum.reverse(key)) == id and
         Enum.all?(key, &valid_json?/1)
 
   defp valid_json?(nil), do: true

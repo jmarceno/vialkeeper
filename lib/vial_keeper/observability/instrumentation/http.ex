@@ -23,6 +23,9 @@ defmodule VialKeeper.Observability.Instrumentation.HTTP do
 
   require OpenTelemetry.Tracer
 
+  alias OpenTelemetry.Ctx, as: OtelCtx
+  alias OpenTelemetry.Span, as: OtelSpan
+  alias OpenTelemetry.Tracer, as: OtelTracer
   alias VialKeeper.Observability.{Attributes, Meters, Tracer}
 
   @request_span "vial_keeper.http.request"
@@ -61,9 +64,9 @@ defmodule VialKeeper.Observability.Instrumentation.HTTP do
       )
 
     span_ctx =
-      OpenTelemetry.Tracer.start_span(@request_span, %{kind: :server, attributes: start_attrs})
+      OtelTracer.start_span(@request_span, %{kind: :server, attributes: start_attrs})
 
-    OpenTelemetry.Tracer.set_current_span(span_ctx)
+    _ = OtelTracer.set_current_span(span_ctx)
 
     conn =
       Plug.Conn.register_before_send(conn, fn conn ->
@@ -96,8 +99,12 @@ defmodule VialKeeper.Observability.Instrumentation.HTTP do
     after
       # Restore the prior context so the extracted parent doesn't leak into
       # the next keep-alive request on this connection process.
-      if extract_token, do: OpenTelemetry.Ctx.detach(extract_token)
-      OpenTelemetry.Tracer.set_current_span(:undefined)
+      if extract_token do
+        _ = OtelCtx.detach(extract_token)
+        :ok
+      end
+
+      _ = OtelTracer.set_current_span(:undefined)
     end
   end
 
@@ -166,9 +173,10 @@ defmodule VialKeeper.Observability.Instrumentation.HTTP do
     Meters.record(:"vial_keeper.http.request.duration", duration, metric_attrs)
 
     # Guards the raise-after-send case: the span may already be ended.
-    if OpenTelemetry.Span.is_recording(span_ctx) do
+    if OtelSpan.is_recording(span_ctx) do
       record_http_status(span_ctx, conn.status)
-      OpenTelemetry.Span.end_span(span_ctx)
+      _ = OtelSpan.end_span(span_ctx)
+      :ok
     end
 
     :ok
@@ -177,11 +185,13 @@ defmodule VialKeeper.Observability.Instrumentation.HTTP do
   defp record_http_status(_span_ctx, nil), do: :ok
 
   defp record_http_status(span_ctx, status) do
-    _ = OpenTelemetry.Span.set_attributes(span_ctx, Attributes.build(http_status_code: status))
+    _ = OtelSpan.set_attributes(span_ctx, Attributes.build(http_status_code: status))
 
     if status >= 500 do
-      OpenTelemetry.Span.set_status(span_ctx, :opentelemetry.status(:error))
+      _ = OtelSpan.set_status(span_ctx, :opentelemetry.status(:error))
     end
+
+    :ok
   end
 
   # The pipeline raised before a response: the request failed with a 500 by
@@ -195,12 +205,13 @@ defmodule VialKeeper.Observability.Instrumentation.HTTP do
 
     Meters.record(:"vial_keeper.http.request.duration", duration, metric_attrs)
 
-    if OpenTelemetry.Span.is_recording(span_ctx) do
+    if OtelSpan.is_recording(span_ctx) do
       _ =
-        OpenTelemetry.Span.set_attributes(span_ctx, Attributes.build(http_status_code: 500))
+        OtelSpan.set_attributes(span_ctx, Attributes.build(http_status_code: 500))
 
-      OpenTelemetry.Span.set_status(span_ctx, :opentelemetry.status(:error))
-      OpenTelemetry.Span.end_span(span_ctx)
+      _ = OtelSpan.set_status(span_ctx, :opentelemetry.status(:error))
+      _ = OtelSpan.end_span(span_ctx)
+      :ok
     end
 
     :ok

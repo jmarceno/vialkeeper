@@ -5,6 +5,7 @@ defmodule VialKeeper.HTTP.Response do
   alias VialKeeper.MapAccess
   alias VialKeeper.Storage.Results
 
+  @spec request_id(Plug.Conn.t()) :: binary()
   def request_id(conn) do
     case get_req_header(conn, "x-request-id") do
       [value | _] when byte_size(value) <= 128 and value != "" ->
@@ -15,10 +16,13 @@ defmodule VialKeeper.HTTP.Response do
     end
   end
 
+  @spec ok(Plug.Conn.t(), term()) :: Plug.Conn.t()
+  @spec ok(Plug.Conn.t(), term(), pos_integer()) :: Plug.Conn.t()
   def ok(conn, data, status \\ 200) do
     send_json(conn, status, %{"request_id" => request_id(conn), "data" => data})
   end
 
+  @spec error(Plug.Conn.t(), VialKeeper.Error.t()) :: Plug.Conn.t()
   def error(conn, %VialKeeper.Error{} = error),
     do:
       send_json(conn, error.http_status, %{
@@ -26,6 +30,10 @@ defmodule VialKeeper.HTTP.Response do
         "error" => VialKeeper.Error.public(error)
       })
 
+  @spec result(Plug.Conn.t(), :ok | {:ok, term()} | {:error, VialKeeper.Error.t()}) ::
+          Plug.Conn.t()
+  @spec result(Plug.Conn.t(), :ok | {:ok, term()} | {:error, VialKeeper.Error.t()}, pos_integer()) ::
+          Plug.Conn.t()
   def result(conn, result, status \\ 200)
 
   def result(conn, {:ok, data}, status),
@@ -34,6 +42,15 @@ defmodule VialKeeper.HTTP.Response do
   def result(conn, {:error, error}, _status), do: error(conn, error)
   def result(conn, :ok, status), do: ok(conn, %{}, status)
 
+  @spec result_with_read_meta(
+          Plug.Conn.t(),
+          {:ok, term(), map()} | {:error, VialKeeper.Error.t()}
+        ) :: Plug.Conn.t()
+  @spec result_with_read_meta(
+          Plug.Conn.t(),
+          {:ok, term(), map()} | {:error, VialKeeper.Error.t()},
+          pos_integer()
+        ) :: Plug.Conn.t()
   def result_with_read_meta(conn, result, status \\ 200)
 
   def result_with_read_meta(conn, {:ok, data, meta}, status) when is_map(meta) do
@@ -43,6 +60,7 @@ defmodule VialKeeper.HTTP.Response do
 
   def result_with_read_meta(conn, {:error, _} = error, _status), do: result(conn, error)
 
+  @spec put_read_headers(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def put_read_headers(conn, %{served_by: "shadow", source_watermark: watermark})
       when is_integer(watermark) and watermark >= 0 do
     conn
@@ -55,6 +73,7 @@ defmodule VialKeeper.HTTP.Response do
 
   def put_read_headers(conn, _meta), do: conn
 
+  @spec send_json(Plug.Conn.t(), pos_integer(), map()) :: Plug.Conn.t()
   def send_json(conn, status, body) do
     request_id = MapAccess.get(body, :request_id, request_id(conn))
 
@@ -65,6 +84,7 @@ defmodule VialKeeper.HTTP.Response do
   end
 
   @doc "Streams binary chunks onto an already-chunked response connection."
+  @spec stream_chunks(Plug.Conn.t(), Enumerable.t()) :: Plug.Conn.t()
   def stream_chunks(conn, enumerable) do
     Enum.reduce_while(enumerable, conn, &stream_chunk/2)
   end

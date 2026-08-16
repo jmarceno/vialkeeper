@@ -2,12 +2,16 @@ defmodule VialKeeper.Documents do
   @moduledoc "Validated document operations over the database runtime."
   alias VialKeeper.Attachments
   alias VialKeeper.Attachments.Manifest
+  alias VialKeeper.Error
   alias VialKeeper.JSON.Canonical
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Mutation
   alias VialKeeper.Runtime.DatabaseCatalog
   alias VialKeeper.Shadow.ReadRouter
+
+  @type uuid :: binary()
+  @type result(ok) :: {:ok, ok} | {:error, Error.t()}
 
   @bulk_put_keys [
     :type,
@@ -47,8 +51,10 @@ defmodule VialKeeper.Documents do
     "delete_all"
   ]
 
+  @spec get(uuid(), map()) :: result(map())
   def get(uuid, request), do: get(uuid, request, [])
 
+  @spec get(uuid(), map(), keyword()) :: result(map())
   def get(uuid, request, opts) when is_list(opts) do
     case validate_get(request) do
       {:ok, request} ->
@@ -70,6 +76,9 @@ defmodule VialKeeper.Documents do
     end
   end
 
+  @spec get_with_meta(uuid(), map()) :: {:ok, term(), map()} | {:error, Error.t()}
+  @spec get_with_meta(uuid(), map(), keyword()) ::
+          {:ok, term(), map()} | {:error, Error.t()}
   def get_with_meta(uuid, request, opts \\ []) do
     with {:ok, request} <- validate_get(request) do
       ReadRouter.get(
@@ -80,6 +89,7 @@ defmodule VialKeeper.Documents do
     end
   end
 
+  @spec put(uuid(), map()) :: result(map())
   def put(uuid, request) do
     with {:ok, request} <-
            Mutation.phase(:put, :validation, fn -> validate_mutation(request, false) end),
@@ -100,6 +110,7 @@ defmodule VialKeeper.Documents do
     end
   end
 
+  @spec delete(uuid(), map()) :: result(map())
   def delete(uuid, request) do
     with {:ok, request} <-
            Mutation.phase(:delete, :validation, fn -> validate_mutation(request, true) end) do
@@ -109,6 +120,7 @@ defmodule VialKeeper.Documents do
     end
   end
 
+  @spec resolve(uuid(), map()) :: result(map())
   def resolve(uuid, request) do
     with {:ok, normalized} <- validate_resolution(request),
          {:ok, attachments, guard} <-
@@ -124,11 +136,14 @@ defmodule VialKeeper.Documents do
     end
   end
 
+  @spec bulk_get(uuid(), [map()]) :: result(list())
   def bulk_get(uuid, requests) when is_list(requests), do: bulk_get(uuid, requests, [])
 
+  @spec bulk_get(term(), term()) :: {:error, Error.t()}
   def bulk_get(_uuid, _requests),
-    do: {:error, VialKeeper.Error.invalid_request("bulk-get body must be an array")}
+    do: {:error, Error.invalid_request("bulk-get body must be an array")}
 
+  @spec bulk_get(uuid(), [map()], keyword()) :: result(list())
   def bulk_get(uuid, requests, opts) when is_list(requests) and is_list(opts) do
     case bulk_get_with_meta(uuid, requests, opts) do
       {:ok, value, _meta} -> {:ok, value}
@@ -137,8 +152,11 @@ defmodule VialKeeper.Documents do
   end
 
   def bulk_get(_uuid, _requests, _opts),
-    do: {:error, VialKeeper.Error.invalid_request("bulk-get body must be an array")}
+    do: {:error, Error.invalid_request("bulk-get body must be an array")}
 
+  @spec bulk_get_with_meta(uuid(), [map()]) :: {:ok, list(), map()} | {:error, Error.t()}
+  @spec bulk_get_with_meta(uuid(), [map()], keyword()) ::
+          {:ok, list(), map()} | {:error, Error.t()}
   def bulk_get_with_meta(uuid, requests, opts \\ [])
 
   def bulk_get_with_meta(uuid, requests, opts) when is_list(requests) do
@@ -149,12 +167,11 @@ defmodule VialKeeper.Documents do
           requests,
           Keyword.put(opts, :primary, fn normalized -> bulk_get_primary(uuid, normalized) end)
         ),
-      else:
-        {:error, VialKeeper.Error.resource_limit("bulk-get operation count exceeds the host limit")}
+      else: {:error, Error.resource_limit("bulk-get operation count exceeds the host limit")}
   end
 
   def bulk_get_with_meta(_uuid, _requests, _opts),
-    do: {:error, VialKeeper.Error.invalid_request("bulk-get body must be an array")}
+    do: {:error, Error.invalid_request("bulk-get body must be an array")}
 
   defp get_primary(uuid, request),
     do: DatabaseCatalog.command(uuid, {:command, :get_document, request})
@@ -166,42 +183,49 @@ defmodule VialKeeper.Documents do
          {:ok, normalized} ->
            case get_primary(uuid, normalized) do
              {:ok, value} -> %{ok: value}
-             {:error, error} -> %{error: VialKeeper.Error.public(error)}
+             {:error, error} -> %{error: Error.public(error)}
            end
 
          {:error, error} ->
-           %{error: VialKeeper.Error.public(error)}
+           %{error: Error.public(error)}
        end
      end)}
   end
 
+  @spec bulk_write(uuid(), [map()]) :: result(list())
   def bulk_write(uuid, operations) when is_list(operations) do
     limit = VialKeeper.Config.host_limits()[:max_bulk_operations] || 500
 
     if length(operations) > limit do
-      {:error, VialKeeper.Error.resource_limit("bulk-write operation count exceeds the host limit")}
+      {:error, Error.resource_limit("bulk-write operation count exceeds the host limit")}
     else
-      case Mutation.phase(:bulk_write, :validation, fn ->
-             prepare_bulk_operations(uuid, operations)
-           end) do
-        {:ok, normalized, guard} ->
-          try do
-            Mutation.phase(:bulk_write, :catalog_route, fn ->
-              DatabaseCatalog.command(uuid, {:command, :bulk_write, %{operations: normalized}})
-            end)
-          after
-            Attachments.release_guard(uuid, guard)
-          end
-
-        {:error, _} = error ->
-          error
-      end
+      dispatch_bulk_write(uuid, operations)
     end
   end
 
   # SAFETY: see bulk_get/2 — a non-array body must not raise FunctionClauseError.
   def bulk_write(_uuid, _operations),
-    do: {:error, VialKeeper.Error.invalid_request("bulk-write body must be an array")}
+    do: {:error, Error.invalid_request("bulk-write body must be an array")}
+
+  defp dispatch_bulk_write(uuid, operations) do
+    case Mutation.phase(:bulk_write, :validation, fn ->
+           prepare_bulk_operations(uuid, operations)
+         end) do
+      {:ok, normalized, guard} ->
+        catalog_bulk_write(uuid, normalized, guard)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp catalog_bulk_write(uuid, normalized, guard) do
+    Mutation.phase(:bulk_write, :catalog_route, fn ->
+      DatabaseCatalog.command(uuid, {:command, :bulk_write, %{operations: normalized}})
+    end)
+  after
+    Attachments.release_guard(uuid, guard)
+  end
 
   defp prepare_bulk_operations(uuid, operations) do
     with {:ok, normalized} <- map_bulk_operations(operations) do
@@ -304,12 +328,12 @@ defmodule VialKeeper.Documents do
          include_conflicts: MapAccess.get(request, :include_conflicts, false)
        }}
     else
-      false -> {:error, VialKeeper.Error.invalid_request("include_conflicts must be a boolean")}
+      false -> {:error, Error.invalid_request("include_conflicts must be a boolean")}
       {:error, error} -> {:error, error}
     end
   end
 
-  defp validate_get(_), do: {:error, VialKeeper.Error.invalid_request("document get requires id")}
+  defp validate_get(_), do: {:error, Error.invalid_request("document get requires id")}
 
   defp validate_mutation(request, true) when is_map(request) do
     with :ok <- known(request, [:id, :if_revision, "id", "if_revision"]) do
@@ -334,7 +358,7 @@ defmodule VialKeeper.Documents do
   end
 
   defp validate_mutation(_request, _deleted),
-    do: {:error, VialKeeper.Error.invalid_request("document mutation requires an object")}
+    do: {:error, Error.invalid_request("document mutation requires an object")}
 
   defp validate_put(request) do
     id = MapAccess.get(request, :id)
@@ -357,7 +381,7 @@ defmodule VialKeeper.Documents do
          attachments: attachments
        }}
     else
-      false -> {:error, VialKeeper.Error.invalid_request("document body must be an object")}
+      false -> {:error, Error.invalid_request("document body must be an object")}
       {:error, error} -> {:error, error}
     end
   end
@@ -414,18 +438,18 @@ defmodule VialKeeper.Documents do
          }}
       else
         false ->
-          {:error, VialKeeper.Error.invalid_request("conflict resolution request is invalid")}
+          {:error, Error.invalid_request("conflict resolution request is invalid")}
 
         {:error, error} ->
           {:error, error}
       end
     else
-      {:error, VialKeeper.Error.invalid_request("request contains an unknown field")}
+      {:error, Error.invalid_request("request contains an unknown field")}
     end
   end
 
   defp validate_resolution(_),
-    do: {:error, VialKeeper.Error.invalid_request("conflict resolution request must be an object")}
+    do: {:error, Error.invalid_request("conflict resolution request must be an object")}
 
   defp normalize_resolution_body(true, _body), do: {:ok, nil}
 
@@ -459,35 +483,35 @@ defmodule VialKeeper.Documents do
   end
 
   defp normalize_client_attachments(_),
-    do: {:error, VialKeeper.Error.invalid_request("attachments must be an object")}
+    do: {:error, Error.invalid_request("attachments must be an object")}
 
   defp expected_revision(request) do
     revision = MapAccess.get(request, :if_revision)
 
     if is_nil(revision) or is_binary(revision),
       do: {:ok, revision},
-      else: {:error, VialKeeper.Error.invalid_request("if_revision must be a string or null")}
+      else: {:error, Error.invalid_request("if_revision must be a string or null")}
   end
 
   defp validate_id(id) when is_binary(id) do
     cond do
       id == "" ->
-        {:error, VialKeeper.Error.invalid_request("document id must not be empty")}
+        {:error, Error.invalid_request("document id must not be empty")}
 
       byte_size(id) > (VialKeeper.Config.host_limits()[:max_document_id_bytes] || 512) ->
-        {:error, VialKeeper.Error.resource_limit("document id exceeds the configured limit")}
+        {:error, Error.resource_limit("document id exceeds the configured limit")}
 
       String.contains?(id, <<0>>) ->
-        {:error, VialKeeper.Error.invalid_request("document id contains NUL")}
+        {:error, Error.invalid_request("document id contains NUL")}
 
       String.starts_with?(id, "_system/") ->
-        {:error, VialKeeper.Error.invalid_request("reserved document id")}
+        {:error, Error.invalid_request("reserved document id")}
 
       not String.valid?(id) ->
-        {:error, VialKeeper.Error.invalid_request("document id must be valid UTF-8")}
+        {:error, Error.invalid_request("document id must be valid UTF-8")}
 
       Enum.any?(String.to_charlist(id), &(&1 < 0x20)) ->
-        {:error, VialKeeper.Error.invalid_request("document id contains a control character")}
+        {:error, Error.invalid_request("document id contains a control character")}
 
       true ->
         :ok
@@ -495,12 +519,12 @@ defmodule VialKeeper.Documents do
   end
 
   defp validate_id(_),
-    do: {:error, VialKeeper.Error.invalid_request("document id must be a string")}
+    do: {:error, Error.invalid_request("document id must be a string")}
 
   defp known(request, allowed) when is_map(request) do
     if Enum.all?(Map.keys(request), &(&1 in allowed)),
       do: :ok,
-      else: {:error, VialKeeper.Error.invalid_request("request contains an unknown field")}
+      else: {:error, Error.invalid_request("request contains an unknown field")}
   end
 
   defp normalize_bulk_operation(%{"type" => "delete", "id" => id} = operation) do
@@ -598,7 +622,7 @@ defmodule VialKeeper.Documents do
   defp normalize_bulk_operation(operation),
     do:
       {:error,
-       VialKeeper.Error.invalid_request("bulk-write operation is invalid", %{
+       Error.invalid_request("bulk-write operation is invalid", %{
          operation: inspect(operation)
        })}
 

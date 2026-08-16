@@ -25,9 +25,11 @@ defmodule VialKeeper.HTTP.AuthPlug do
 
   @bearer_prefix "Bearer "
 
+  @spec init(Plug.opts()) :: Plug.opts()
   @impl true
   def init(opts), do: opts
 
+  @spec call(Plug.Conn.t(), Plug.opts()) :: Plug.Conn.t()
   @impl true
   def call(conn, _opts) do
     # Read auth configuration on each request rather than in init/1, so the
@@ -50,7 +52,7 @@ defmodule VialKeeper.HTTP.AuthPlug do
     end
   end
 
-  @doc false
+  @doc "Returns true when this request is the public Web UI shell or its assets."
   @spec public_web_ui_request?(Plug.Conn.t()) :: boolean()
   def public_web_ui_request?(conn) do
     WebUI.enabled?() and
@@ -58,7 +60,7 @@ defmodule VialKeeper.HTTP.AuthPlug do
       public_web_ui_path?(conn.request_path)
   end
 
-  @doc false
+  @doc "Returns true when this request is a control-plane route."
   @spec control_plane_request?(Plug.Conn.t()) :: boolean()
   def control_plane_request?(conn),
     do: String.starts_with?(conn.request_path, "/v1/control-plane")

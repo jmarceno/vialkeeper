@@ -35,7 +35,7 @@ defmodule VialKeeper.Storage.SQLite.Context do
   def unwrap(_),
     do: {:error, VialKeeper.Error.internal_error("backend context is not a SQLite adapter")}
 
-  @doc false
+  @doc "Binds a SQLite adapter into the current process for subsequent unwraps."
   @spec bind(Adapter.t()) :: Adapter.t()
   def bind(%Adapter{} = adapter) do
     handle = OpaqueHandle.wrap(adapter)
@@ -44,7 +44,7 @@ defmodule VialKeeper.Storage.SQLite.Context do
     bound
   end
 
-  @doc false
+  @doc "Drops the opaque handle bound for this SQLite adapter, if any."
   @spec release(OpaqueHandle.t() | nil) :: :ok
   def release(%OpaqueHandle{} = handle) do
     OpaqueHandle.drop(handle)

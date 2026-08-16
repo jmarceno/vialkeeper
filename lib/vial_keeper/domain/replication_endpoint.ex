@@ -21,6 +21,7 @@ defmodule VialKeeper.Domain.ReplicationEndpoint do
           auth_token: binary() | nil
         }
 
+  @spec new(map()) :: {:ok, t()} | {:error, VialKeeper.Error.t()}
   def new(attrs) when is_map(attrs) do
     attrs = Stringify.keys(attrs)
 

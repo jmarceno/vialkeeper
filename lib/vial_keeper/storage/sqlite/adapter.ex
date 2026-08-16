@@ -17,6 +17,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   use VialKeeper.Storage.AdapterFacade
 
   alias VialKeeper.Changes.Page
+  alias VialKeeper.Error
   alias VialKeeper.JSON.{Canonical, StrictCache, StrictDecoder}
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.{Query, SQLite}
@@ -63,9 +64,9 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   ]
 
   @type storage_mode :: :disk | :memory
-  @type retention_fault :: (atom() -> :ok | {:error, VialKeeper.Error.t()}) | nil
-  @type view_fault :: (atom() -> :ok | {:error, VialKeeper.Error.t()}) | nil
-  @type derived_fault :: (atom() -> :ok | {:error, VialKeeper.Error.t()}) | nil
+  @type retention_fault :: (atom() -> :ok | {:error, Error.t()}) | nil
+  @type view_fault :: (atom() -> :ok | {:error, Error.t()}) | nil
+  @type derived_fault :: (atom() -> :ok | {:error, Error.t()}) | nil
   @type t :: %__MODULE__{
           path: binary(),
           conn: Connection.handle(),
@@ -108,7 +109,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
        })}
     else
       false ->
-        {:error, VialKeeper.Error.invalid_request("database UUID must be a UUID")}
+        {:error, Error.invalid_request("database UUID must be a UUID")}
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
@@ -189,7 +190,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
 
   @doc "Transaction port entry used by `VialKeeper.Storage.Transaction.run/2`."
   @spec run_transaction(BackendContext.t(), (BackendContext.t() -> term())) ::
-          {:ok, term()} | {:error, VialKeeper.Error.t()}
+          {:ok, term()} | {:error, Error.t()}
   def run_transaction(%BackendContext{} = context, fun) when is_function(fun, 1) do
     Transaction.run(context, fun)
   end
@@ -205,7 +206,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   private to a connection.
   """
   @spec open_reader(t()) ::
-          {:ok, t()} | {:error, :unsupported_readers} | {:error, VialKeeper.Error.t()}
+          {:ok, t()} | {:error, :unsupported_readers} | {:error, Error.t()}
   def open_reader(%__MODULE__{storage_mode: :memory}), do: {:error, :unsupported_readers}
 
   def open_reader(%__MODULE__{storage_mode: :disk, path: path, identity: writer_identity})
@@ -393,7 +394,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def get_document(_adapter, _request),
-    do: {:error, VialKeeper.Error.invalid_request("document request must be an object")}
+    do: {:error, Error.invalid_request("document request must be an object")}
 
   @impl true
   def get_revision(%__MODULE__{} = adapter, request) when is_map(request) do
@@ -409,7 +410,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def get_revision(_adapter, _request),
-    do: {:error, VialKeeper.Error.invalid_request("revision request must be an object")}
+    do: {:error, Error.invalid_request("revision request must be an object")}
 
   @doc "Applies a local put/delete via `VialKeeper.Storage.Services` (not an Adapter callback)."
   def apply_local_mutation(adapter, request) when is_map(request) do
@@ -419,7 +420,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def apply_local_mutation(_adapter, _request),
-    do: {:error, VialKeeper.Error.invalid_request("mutation request must be an object")}
+    do: {:error, Error.invalid_request("mutation request must be an object")}
 
   @doc "Applies a bulk mutation batch via `VialKeeper.Storage.Services` (not an Adapter callback)."
   def apply_bulk_mutation(adapter, request) when is_map(request) do
@@ -429,7 +430,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def apply_bulk_mutation(_adapter, _request),
-    do: {:error, VialKeeper.Error.invalid_request("bulk mutation request must be an object")}
+    do: {:error, Error.invalid_request("bulk mutation request must be an object")}
 
   @doc "Resolves a conflict via `VialKeeper.Storage.Services` (not an Adapter callback)."
   def resolve_conflict(adapter, request) when is_map(request) do
@@ -439,7 +440,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def resolve_conflict(_adapter, _request),
-    do: {:error, VialKeeper.Error.invalid_request("conflict request must be an object")}
+    do: {:error, Error.invalid_request("conflict request must be an object")}
 
   @impl true
   def read_changes(%__MODULE__{conn: conn} = adapter, request) when is_map(request) do
@@ -475,7 +476,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def read_changes(_adapter, _request),
-    do: {:error, VialKeeper.Error.invalid_request("changes request must be an object")}
+    do: {:error, Error.invalid_request("changes request must be an object")}
 
   @impl true
   def has_local_origin_changes?(%__MODULE__{conn: conn}),
@@ -505,7 +506,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def import_revision_chains(_adapter, _request),
-    do: {:error, VialKeeper.Error.invalid_request("revision import request must be an object")}
+    do: {:error, Error.invalid_request("revision import request must be an object")}
 
   @impl true
   def get_local_record(%__MODULE__{conn: conn}, namespace, key),
@@ -516,7 +517,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     do: transaction(adapter, fn -> LocalRecords.put_cas_tx(adapter, request) end)
 
   def put_local_record_cas(_adapter, _request),
-    do: {:error, VialKeeper.Error.invalid_request("local record request must be an object")}
+    do: {:error, Error.invalid_request("local record request must be an object")}
 
   @impl true
   def list_replication_jobs(%__MODULE__{conn: conn}), do: ReplicationJobs.list_all(conn)
@@ -593,7 +594,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def execute_query(_adapter, _request),
-    do: {:error, VialKeeper.Error.invalid_request("query must be an object")}
+    do: {:error, Error.invalid_request("query must be an object")}
 
   @impl true
   def execute_subscription_snapshot(%__MODULE__{} = adapter, request) when is_map(request) do
@@ -612,8 +613,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def execute_subscription_snapshot(_adapter, _request),
-    do:
-      {:error, VialKeeper.Error.invalid_request("subscription snapshot request must be an object")}
+    do: {:error, Error.invalid_request("subscription snapshot request must be an object")}
 
   @impl true
   def get_revisions_batch(%__MODULE__{} = adapter, requests) when is_list(requests) do
@@ -621,7 +621,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def get_revisions_batch(_adapter, _requests),
-    do: {:error, VialKeeper.Error.invalid_request("revision batch requests must be a list")}
+    do: {:error, Error.invalid_request("revision batch requests must be a list")}
 
   @impl true
   def explain_query(%__MODULE__{} = adapter, request) when is_map(request) do
@@ -632,7 +632,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   def explain_query(_adapter, _request),
-    do: {:error, VialKeeper.Error.invalid_request("query explanation must be an object")}
+    do: {:error, Error.invalid_request("query explanation must be an object")}
 
   defp prepare_query_request(%Prepared{} = prepared),
     do: Normalizer.normalize_public_request(prepared)
@@ -660,11 +660,11 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     SQLite.trace_sqlite_phase(:document_lookup, fn ->
       case Documents.load_winner(adapter.conn, document_id) do
         {:ok, nil} ->
-          {:error, VialKeeper.Error.document_not_found("document not found")}
+          {:error, Error.document_not_found("document not found")}
 
         {:ok, {:deleted, winning_revision}} ->
           {:error,
-           VialKeeper.Error.document_not_found("document is deleted", %{
+           Error.document_not_found("document is deleted", %{
              winning_revision: winning_revision
            })}
 
@@ -700,13 +700,13 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   defp choose_revision(_adapter, nil, _revision),
-    do: {:error, VialKeeper.Error.document_not_found("document not found")}
+    do: {:error, Error.document_not_found("document not found")}
 
   defp choose_revision(adapter, doc, nil) do
     if doc.winning_deleted,
       do:
         {:error,
-         VialKeeper.Error.document_not_found("document is deleted", %{
+         Error.document_not_found("document is deleted", %{
            winning_revision: doc.winning_revision
          })},
       else: Revisions.find(adapter.conn, doc.doc_key, doc.winning_revision)
@@ -735,7 +735,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   defp ensure_writable(%__MODULE__{identity: %{database_kind: :derived}}),
     do:
       {:error,
-       VialKeeper.Error.derived_database_read_only(
+       Error.derived_database_read_only(
          "derived databases accept writes only from their materializer"
        )}
 
@@ -786,15 +786,15 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
       :ok
     else
       {:error,
-       VialKeeper.Error.database_unavailable(
+       Error.database_unavailable(
          "database UUID mismatch",
-         VialKeeper.Error.identity_mismatch_details(:uuid_mismatch, expected, uuid)
+         Error.identity_mismatch_details(:uuid_mismatch, expected, uuid)
        )}
     end
   end
 
   defp match_reader_uuid(_uuid, _identity),
-    do: {:error, VialKeeper.Error.internal_error("writer identity is missing")}
+    do: {:error, Error.internal_error("writer identity is missing")}
 
   defp storage_mode(path, options) do
     requested =
@@ -808,14 +808,13 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
         {:ok, :memory}
 
       {:memory, false} ->
-        {:error,
-         VialKeeper.Error.invalid_request("in-memory SQLite databases must use the :memory: path")}
+        {:error, Error.invalid_request("in-memory SQLite databases must use the :memory: path")}
 
       {:disk, true} ->
-        {:error, VialKeeper.Error.invalid_request(":memory: requires storage_mode: :memory")}
+        {:error, Error.invalid_request(":memory: requires storage_mode: :memory")}
 
       _ ->
-        {:error, VialKeeper.Error.invalid_request("SQLite storage mode must be :disk or :memory")}
+        {:error, Error.invalid_request("SQLite storage mode must be :disk or :memory")}
     end
   end
 

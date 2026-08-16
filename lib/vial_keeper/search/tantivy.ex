@@ -155,7 +155,7 @@ defmodule VialKeeper.Search.Tantivy do
 
   @spec schema() :: TantivyEx.Schema.t()
   def schema do
-    TantivyEx.Tokenizer.register_default_tokenizers()
+    _ = TantivyEx.Tokenizer.register_default_tokenizers()
 
     TantivyEx.Schema.new()
     |> TantivyEx.Schema.add_text_field_with_tokenizer(@id_field, :text_stored, "raw")

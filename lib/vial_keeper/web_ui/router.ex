@@ -8,6 +8,7 @@ defmodule VialKeeper.WebUI.Router do
   """
 
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
 
   alias VialKeeper.HTTP.Response, as: JSONResponse
   alias VialKeeper.WebUI

@@ -5,6 +5,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   alias VialKeeper.Commands
   alias VialKeeper.DatabaseBundle
   alias VialKeeper.DerivedView.Manager, as: DerivedViewManager
+  alias VialKeeper.Error
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Compact
   alias VialKeeper.Observability.Instrumentation.Mutation
@@ -24,17 +25,21 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   alias VialKeeper.Storage.Results
   alias VialKeeper.Storage.Services
 
+  @spec start_link({binary(), DatabaseBundle.t()}) :: GenServer.on_start()
   def start_link({uuid, %DatabaseBundle{} = bundle}),
     do: start_link({uuid, bundle, nil})
 
+  @spec start_link({binary(), DatabaseBundle.t(), atom() | nil}) :: GenServer.on_start()
   def start_link({uuid, %DatabaseBundle{} = bundle, expected_kind}),
     do:
       GenServer.start_link(__MODULE__, {uuid, bundle, expected_kind},
         name: via(uuid, expected_kind || :ordinary)
       )
 
+  @spec child_spec({binary(), DatabaseBundle.t()}) :: map()
   def child_spec({uuid, bundle}), do: child_spec({uuid, bundle, nil})
 
+  @spec child_spec({binary(), DatabaseBundle.t(), atom() | nil}) :: map()
   def child_spec({uuid, _bundle, _kind} = arg) do
     %{
       id: {:database_owner, uuid},
@@ -45,18 +50,22 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
     }
   end
 
+  @spec via(binary()) :: {:via, module(), term()}
   def via(uuid), do: via(uuid, nil)
 
+  @spec via(binary(), atom() | nil) :: {:via, module(), term()}
   def via(uuid, kind),
     do: {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid}, kind}}
 
+  @spec command(binary(), term()) :: term() | {:error, Error.t()}
+  @spec command(binary(), term(), timeout()) :: term() | {:error, Error.t()}
   def command(uuid, command, timeout \\ 30_000) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid}) do
       [{pid, _}] ->
         GenServer.call(pid, {:owner_queued_command, System.monotonic_time(), command}, timeout)
 
       [] ->
-        {:error, VialKeeper.Error.database_closed("database owner is not running")}
+        {:error, Error.database_closed("database owner is not running")}
     end
   end
 
@@ -72,7 +81,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
         )
 
       [] ->
-        {:error, VialKeeper.Error.database_closed("database owner is not running")}
+        {:error, Error.database_closed("database owner is not running")}
     end
   end
 
@@ -93,12 +102,12 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   a long writer commit; a short call timeout would silently shrink the pool.
   """
   @spec reader_source(binary(), timeout()) ::
-          {:ok, VialKeeper.Storage.BackendContext.t()} | {:error, VialKeeper.Error.t()}
+          {:ok, VialKeeper.Storage.BackendContext.t()} | {:error, Error.t()}
   def reader_source(uuid, timeout \\ VialKeeper.Config.shutdown_timeout())
       when is_binary(uuid) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid}) do
       [{pid, _}] -> GenServer.call(pid, :reader_source, timeout)
-      [] -> {:error, VialKeeper.Error.database_closed("database owner is not running")}
+      [] -> {:error, Error.database_closed("database owner is not running")}
     end
   end
 
@@ -111,7 +120,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
       {:ok, adapter} ->
         open_owner(backend, adapter, path, bundle, uuid, expected_kind)
 
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         {:stop, error}
     end
   end
@@ -121,7 +130,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
       {:ok, identity} ->
         accept_or_reject_owner(backend, adapter, path, bundle, uuid, expected_kind, identity)
 
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         _ = backend.close(adapter)
         {:stop, error}
     end
@@ -151,9 +160,9 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
         _ = backend.close(adapter)
 
         {:stop,
-         VialKeeper.Error.integrity_violation(
+         Error.integrity_violation(
            "database kind does not match registration hint",
-           VialKeeper.Error.identity_mismatch_details(
+           Error.identity_mismatch_details(
              :database_kind_mismatch,
              expected_kind,
              actual_kind
@@ -164,9 +173,9 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
         _ = backend.close(adapter)
 
         {:stop,
-         VialKeeper.Error.database_unavailable(
+         Error.database_unavailable(
            "database UUID mismatch",
-           VialKeeper.Error.identity_mismatch_details(:uuid_mismatch, uuid, actual_uuid)
+           Error.identity_mismatch_details(:uuid_mismatch, uuid, actual_uuid)
          )}
     end
   end
@@ -209,7 +218,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
 
       {:reply,
        {:error,
-        VialKeeper.Error.internal_error("database command failed", %{
+        Error.internal_error("database command failed", %{
           cause: inspect(reason),
           kind: kind
         })}, state}
@@ -222,7 +231,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
              :ok <- ShadowBinding.check(database_kind(state), state.context, context, state.uuid) do
           handle_command(normalized, from, state)
         else
-          {:error, %VialKeeper.Error{} = error} -> {:reply, {:error, error}, state}
+          {:error, %Error{} = error} -> {:reply, {:error, error}, state}
         end
 
       other ->
@@ -240,8 +249,8 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   defp handle_owner_command(%Commands.UpdateConfig{request: request}, _from, state) do
     case Services.update_config(state.context, request) do
       {:ok, config} = ok ->
-        RetentionScheduler.reschedule(state.uuid)
-        AttachmentCoordinator.update_limits(state.uuid, Map.get(config, "attachments", %{}))
+        _ = RetentionScheduler.reschedule(state.uuid)
+        _ = AttachmentCoordinator.update_limits(state.uuid, Map.get(config, "attachments", %{}))
         {:reply, ok, put_config(state, config)}
 
       {:error, _} = error ->
@@ -403,7 +412,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
     do: {:stop, :shutdown, :ok, state}
 
   defp handle_owner_command(_unknown, _from, state),
-    do: {:reply, {:error, VialKeeper.Error.invalid_request("unknown database command")}, state}
+    do: {:reply, {:error, Error.invalid_request("unknown database command")}, state}
 
   defp set_derived_enabled(request, state) do
     result = Services.set_derived_enabled(state.context, request)
@@ -529,7 +538,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
       :derived ->
         {:reply,
          {:error,
-          VialKeeper.Error.derived_database_read_only(
+          Error.derived_database_read_only(
             "derived databases accept writes only from their materializer"
           )}, state}
 

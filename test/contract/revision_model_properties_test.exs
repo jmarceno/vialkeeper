@@ -7,7 +7,7 @@ defmodule VialKeeper.Contract.RevisionModelPropertiesTest do
 
   property "linear history winner is the tip regardless of shuffle of equal set" do
     check all(revisions <- ModelGenerators.linear_revision_history()) do
-      tip = List.last(revisions)
+      tip = hd(Enum.reverse(revisions))
       # Winner.select operates on leaves; a linear history has one leaf (the tip).
       assert {:ok, ^tip} = Winner.select([tip])
       assert Winner.conflicts([tip], tip) == []

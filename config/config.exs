@@ -8,23 +8,14 @@ config :logger, :console,
   format: "[$level] $message\n",
   metadata: [:database_uuid, :kind, :reason]
 
-# OpenTelemetry resource identity and span batch processor tuning only. The OTLP
-# endpoint is intentionally NOT set here — a hardcoded endpoint
-# would risk a network attempt on misconfiguration and break the "no network
-# when unconfigured" guarantee (OBSV-004). The exporter is wired exclusively by
-# config/runtime.exs when an otlp_endpoint is present in host.toml.
+# OpenTelemetry resource identity only. The OTLP endpoint is intentionally NOT
+# set here — a hardcoded endpoint would risk a network attempt on
+# misconfiguration and break the "no network when unconfigured" guarantee
+# (OBSV-004). The exporter and span processors are wired by config/runtime.exs
+# (batch processor in Mix/release environments) and config/test.exs (synchronous
+# simple processor). Mix deep-merges keyword-list `:processors` values, so this
+# file must not declare a batch processor or tests would run both processors.
 config :opentelemetry, :resource, service: %{name: "vial_keeper", version: "0.1.0"}
-
-# Batch processor tuning; the key names are the SDK's actual ones:
-# scheduled_delay_ms / max_queue_size / exporting_timeout_ms). The values equal
-# the SDK defaults — declared explicitly so the operational contract is visible.
-# test.exs overrides :processors with the synchronous simple processor.
-config :opentelemetry, :processors,
-  otel_batch_processor: %{
-    scheduled_delay_ms: 5_000,
-    max_queue_size: 2_048,
-    exporting_timeout_ms: 30_000
-  }
 
 # Default: no exporter wired. runtime.exs enables OTLP export only when an
 # otlp_endpoint is set in host.toml. Per-env config (test.exs) may override to

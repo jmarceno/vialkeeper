@@ -119,9 +119,9 @@ defmodule VialKeeper.Bench.PmcInventory do
           |> Enum.filter(&Regex.match?(~r/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}Z\/$/, &1))
           |> Enum.sort()
 
-        case List.last(prefixes) do
-          nil -> {:error, "no PMC inventory snapshots were listed"}
-          prefix -> {:ok, prefix}
+        case Enum.reverse(prefixes) do
+          [] -> {:error, "no PMC inventory snapshots were listed"}
+          [prefix | _] -> {:ok, prefix}
         end
 
       {:error, reason} ->

@@ -8,6 +8,7 @@ defmodule VialKeeper.Replication.PeerErrorTextTest do
   """
   use ExUnit.Case, async: false
 
+  alias Plug.Conn
   alias VialKeeper.Error
   alias VialKeeper.Replication.RemoteTransport
   alias VialKeeper.Replication.WireCompression
@@ -103,14 +104,14 @@ defmodule VialKeeper.Replication.PeerErrorTextTest do
         request_hook: fn conn ->
           conn =
             conn
-            |> Plug.Conn.put_resp_header("content-type", "application/json")
-            |> Plug.Conn.put_resp_header("content-encoding", "zstd")
-            |> Plug.Conn.put_resp_header(
+            |> Conn.put_resp_header("content-type", "application/json")
+            |> Conn.put_resp_header("content-encoding", "zstd")
+            |> Conn.put_resp_header(
               "x-vialkeeper-uncompressed-length",
               Integer.to_string(encoded.uncompressed_length)
             )
 
-          {:halt, Plug.Conn.send_resp(conn, status, encoded.body)}
+          {:halt, Conn.send_resp(conn, status, encoded.body)}
         end
       )
 

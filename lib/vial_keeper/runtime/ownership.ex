@@ -9,6 +9,7 @@ defmodule VialKeeper.Runtime.Ownership do
   alias VialKeeper.Storage.Registry, as: StorageRegistry
 
   @doc false
+  @spec child_spec(binary()) :: map()
   def child_spec(bundle_root) when is_binary(bundle_root) do
     backend = StorageRegistry.backend()
 

@@ -312,10 +312,13 @@ defmodule VialKeeper.DerivedView.Definition do
   defp normalize_options(_, _, _),
     do: {:error, VialKeeper.Error.invalid_request("materialized view options must be an object")}
 
-  defp validate_source_count(sources, max_sources) when length(sources) <= max_sources, do: :ok
-
-  defp validate_source_count(_sources, _max_sources),
-    do: {:error, VialKeeper.Error.resource_limit("materialized view has too many sources")}
+  defp validate_source_count(sources, max_sources) do
+    if length(sources) <= max_sources do
+      :ok
+    else
+      {:error, VialKeeper.Error.resource_limit("materialized view has too many sources")}
+    end
+  end
 
   defp validate_source_values(sources) do
     if Enum.any?(sources, &(not is_binary(&1) or not uuid?(&1))) do

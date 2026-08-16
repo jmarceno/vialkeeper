@@ -184,14 +184,18 @@ defmodule VialKeeper.Search do
 
     case fun.() do
       {:ok, result} ->
-        case Mutation.phase(:search_flush, fn -> flush_pending(context) end) do
-          :ok -> {:ok, result}
-          {:error, _} = error -> error
-        end
+        flush_search_pending(context, result)
 
       {:error, _} = error ->
         clear_pending()
         error
+    end
+  end
+
+  defp flush_search_pending(context, result) do
+    case Mutation.phase(:search_flush, fn -> flush_pending(context) end) do
+      :ok -> {:ok, result}
+      {:error, _} = error -> error
     end
   end
 

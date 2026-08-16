@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.Routes.Replications do
   @moduledoc "HTTP routes for durable replication-job management."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
   alias VialKeeper.HTTP.{Request, Response, Schemas}
   alias VialKeeper.Replication.JobManager
   plug(:match)

@@ -627,14 +627,14 @@ defmodule VialKeeper.Replication.FaultInjectionTest do
 
   defp phase_observer_hook(seen) do
     fn observed, _context ->
-      Agent.update(seen, &(&1 ++ [observed]))
+      Agent.update(seen, &Enum.concat(&1, [observed]))
       :ok
     end
   end
 
   defp phase_fault_hook(seen, faults) do
     fn observed, _context ->
-      Agent.update(seen, &(&1 ++ [observed]))
+      Agent.update(seen, &Enum.concat(&1, [observed]))
       Agent.get_and_update(faults, &phase_fault_update(&1, observed))
     end
   end

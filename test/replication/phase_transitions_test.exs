@@ -64,7 +64,7 @@ defmodule VialKeeper.Replication.PhaseTransitionsTest do
       mode: "one_shot",
       direction: "push",
       phase_hook: fn phase, _context ->
-        Agent.update(agent, &(&1 ++ [phase]))
+        Agent.update(agent, &Enum.concat(&1, [phase]))
         :ok
       end
     }
@@ -165,7 +165,7 @@ defmodule VialKeeper.Replication.PhaseTransitionsTest do
       direction: "push",
       wait_ms: 10,
       phase_hook: fn phase, _context ->
-        Agent.update(seen, &Enum.uniq(&1 ++ [phase]))
+        Agent.update(seen, &Enum.uniq(Enum.concat(&1, [phase])))
         :ok
       end
     }

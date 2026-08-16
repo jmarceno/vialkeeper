@@ -4,8 +4,11 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   require Logger
   alias VialKeeper.DatabaseBundle
   alias VialKeeper.Deadline
+  alias VialKeeper.DerivedView.Manager, as: DerivedViewManager
+  alias VialKeeper.Error
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Database
+  alias VialKeeper.PathSafety
   alias VialKeeper.Query.SubscriptionHub
   alias VialKeeper.Replication.JobManager
 
@@ -22,13 +25,15 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
     RegistrationManifest
   }
 
-  alias VialKeeper.DerivedView.Manager, as: DerivedViewManager
-  alias VialKeeper.PathSafety
   alias VialKeeper.Shadow.Reconciler
   alias VialKeeper.Shadow.Registry, as: ShadowRegistry
   alias VialKeeper.Shadow.RouteTable
   alias VialKeeper.Storage.Registry, as: StorageRegistry
   alias VialKeeper.View.Manager
+
+  @type catalog_reply :: {:ok, term()} | {:error, Error.t()}
+
+  @spec start_link(term()) :: GenServer.on_start()
   def start_link(_args), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
   @doc "Creates an ordinary database using the configured control-plane timeout."
@@ -37,21 +42,48 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
     do: GenServer.call(__MODULE__, {:create, relative_path, options}, timeout)
 
   @doc "Creates a derived bundle through the trusted materialization boundary."
+  @spec create_internal(binary()) :: catalog_reply()
+  @spec create_internal(binary(), map()) :: catalog_reply()
   def create_internal(relative_path, options \\ %{}),
-    do: GenServer.call(__MODULE__, {:create_internal, relative_path, options})
+    do:
+      GenServer.call(
+        __MODULE__,
+        {:create_internal, relative_path, options},
+        VialKeeper.Config.request_timeout_ms()
+      )
 
   @doc "Creates a shadow bundle through the trusted shadow controller boundary."
+  @spec create_shadow_internal(binary()) :: catalog_reply()
+  @spec create_shadow_internal(binary(), map()) :: catalog_reply()
   def create_shadow_internal(relative_path, options \\ %{}),
-    do: GenServer.call(__MODULE__, {:create_shadow_internal, relative_path, options})
+    do:
+      GenServer.call(
+        __MODULE__,
+        {:create_shadow_internal, relative_path, options},
+        VialKeeper.Config.request_timeout_ms()
+      )
 
-  def register(relative_path), do: GenServer.call(__MODULE__, {:register, relative_path})
+  @spec register(binary()) :: catalog_reply()
+  def register(relative_path),
+    do:
+      GenServer.call(__MODULE__, {:register, relative_path}, VialKeeper.Config.request_timeout_ms())
 
   @doc "Registers a shadow bundle through the trusted shadow controller boundary."
+  @spec register_shadow_internal(binary()) :: catalog_reply()
   def register_shadow_internal(relative_path),
-    do: GenServer.call(__MODULE__, {:register_shadow_internal, relative_path})
+    do:
+      GenServer.call(
+        __MODULE__,
+        {:register_shadow_internal, relative_path},
+        VialKeeper.Config.request_timeout_ms()
+      )
 
-  def unregister(uuid), do: GenServer.call(__MODULE__, {:unregister, uuid})
-  def list, do: GenServer.call(__MODULE__, :list)
+  @spec unregister(binary()) :: catalog_reply() | :ok
+  def unregister(uuid),
+    do: GenServer.call(__MODULE__, {:unregister, uuid}, VialKeeper.Config.request_timeout_ms())
+
+  @spec list() :: {:ok, [map()]} | {:error, Error.t()}
+  def list, do: GenServer.call(__MODULE__, :list, VialKeeper.Config.request_timeout_ms())
 
   @doc "Returns whether an ordinary source is currently open for public routing."
   @spec ordinary_open?(binary()) :: boolean()
@@ -62,27 +94,40 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
     )
   end
 
+  @spec info(binary()) :: catalog_reply()
   def info(uuid) do
-    case GenServer.call(__MODULE__, {:info, uuid}) do
+    case GenServer.call(__MODULE__, {:info, uuid}, VialKeeper.Config.request_timeout_ms()) do
       {:route, ^uuid} -> command(uuid, {:command, :identity, %{}}, 30_000)
       result -> result
     end
   end
 
   @doc "Opens a shadow bundle through an internal control-plane boundary."
+  @spec open_internal(binary()) :: catalog_reply()
   def open_internal(uuid), do: GenServer.call(__MODULE__, {:open, uuid, true}, 30_000)
 
+  @spec close(binary()) :: catalog_reply() | :ok
   def close(uuid), do: GenServer.call(__MODULE__, {:close, uuid}, 30_000)
 
   @doc "Returns the absolute bundle root for a registered database UUID."
-  def bundle_root(uuid), do: GenServer.call(__MODULE__, {:bundle_root, uuid})
+  @spec bundle_root(binary()) :: {:ok, binary()} | {:error, Error.t()}
+  def bundle_root(uuid),
+    do: GenServer.call(__MODULE__, {:bundle_root, uuid}, VialKeeper.Config.request_timeout_ms())
 
   @doc "Returns a shadow bundle root through an internal control-plane boundary."
-  def bundle_root_internal(uuid), do: GenServer.call(__MODULE__, {:bundle_root, uuid, true})
+  @spec bundle_root_internal(binary()) :: {:ok, binary()} | {:error, Error.t()}
+  def bundle_root_internal(uuid),
+    do:
+      GenServer.call(
+        __MODULE__,
+        {:bundle_root, uuid, true},
+        VialKeeper.Config.request_timeout_ms()
+      )
 
   # The database.open span is created here, in the caller process, before the
   # GenServer.call — so the span is a child of the caller's trace (e.g. the
   # HTTP request that triggered the open) and covers call latency.
+  @spec open(binary()) :: catalog_reply()
   def open(uuid) do
     Database.open(uuid, fn ->
       GenServer.call(__MODULE__, {:open, uuid}, 30_000)
@@ -95,7 +140,8 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   This is a short host-global catalog call. Queue wait and owner execution happen
   outside the catalog GenServer via per-database admission.
   """
-  @spec ensure_command_target(binary(), Deadline.t()) :: :ok | {:error, VialKeeper.Error.t()}
+  @spec ensure_command_target(binary()) :: :ok | {:error, Error.t()}
+  @spec ensure_command_target(binary(), Deadline.t()) :: :ok | {:error, Error.t()}
   def ensure_command_target(uuid) when is_binary(uuid) do
     ensure_command_target(uuid, Deadline.from_timeout(30_000))
   end
@@ -103,7 +149,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   def ensure_command_target(uuid, :infinity) when is_binary(uuid) do
     case catalog_index_target(uuid, false) do
       :open -> :ok
-      :closing -> {:error, VialKeeper.Error.database_closed("database is closing")}
+      :closing -> {:error, Error.database_closed("database is closing")}
       :miss -> GenServer.call(__MODULE__, {:ensure_command_target, uuid}, :infinity)
     end
   end
@@ -117,7 +163,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
           :ok
 
         :closing ->
-          {:error, VialKeeper.Error.database_closed("database is closing")}
+          {:error, Error.database_closed("database is closing")}
 
         :miss ->
           GenServer.call(
@@ -135,7 +181,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
       {:error, command_deadline_error()}
   end
 
-  @spec command(binary(), term(), timeout()) :: term() | {:error, VialKeeper.Error.t()}
+  @spec command(binary(), term(), timeout()) :: term() | {:error, Error.t()}
   def command(uuid, command, timeout \\ 30_000)
 
   def command(uuid, command, :infinity) when is_binary(uuid) do
@@ -176,7 +222,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   defp ensure_command_target_internal(uuid, :infinity) do
     case catalog_index_target(uuid, true) do
       :open -> :ok
-      :closing -> {:error, VialKeeper.Error.database_closed("database is closing")}
+      :closing -> {:error, Error.database_closed("database is closing")}
       :miss -> GenServer.call(__MODULE__, {:ensure_command_target, uuid, true}, :infinity)
     end
   end
@@ -190,7 +236,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
           :ok
 
         :closing ->
-          {:error, VialKeeper.Error.database_closed("database is closing")}
+          {:error, Error.database_closed("database is closing")}
 
         :miss ->
           GenServer.call(
@@ -214,7 +260,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
   @doc "Routes a command using an already-created absolute deadline."
   @spec command_with_deadline(binary(), term(), Deadline.t()) ::
-          term() | {:error, VialKeeper.Error.t()}
+          term() | {:error, Error.t()}
   def command_with_deadline(uuid, command, deadline) when is_binary(uuid) do
     with :ok <- ensure_command_target(uuid, deadline) do
       Database.command(uuid, command, fn ->
@@ -225,7 +271,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
   @doc "Trusted internal command routing with an explicit admission service class."
   @spec command_as(binary(), DatabaseAdmission.service_class(), term(), timeout()) ::
-          term() | {:error, VialKeeper.Error.t()}
+          term() | {:error, Error.t()}
   def command_as(uuid, class, command, timeout \\ 30_000)
 
   def command_as(uuid, class, command, :infinity) when is_binary(uuid) do
@@ -267,7 +313,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
       {:ok, entries} ->
         Map.new(entries, &{&1.uuid, &1})
 
-      {:error, %VialKeeper.Error{code: code}} ->
+      {:error, %Error{code: code}} ->
         Logger.warning("registration manifest unreadable (#{code}); starting with an empty catalog")
 
         %{}
@@ -278,21 +324,18 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
     case safe_path(state.root, relative_path) do
       {:ok, bundle_root} ->
         if File.exists?(bundle_root) do
-          {:reply, {:error, VialKeeper.Error.invalid_request("database bundle already exists")},
-           state}
+          {:reply, {:error, Error.invalid_request("database bundle already exists")}, state}
         else
           create_new_bundle(state, relative_path, bundle_root, options, database_kind)
         end
 
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         {:reply, {:error, error}, state}
     end
   end
 
   defp create_database(state, _relative_path, _options, _database_kind) do
-    {:reply,
-     {:error, VialKeeper.Error.invalid_request("database creation options must be an object")},
-     state}
+    {:reply, {:error, Error.invalid_request("database creation options must be an object")}, state}
   end
 
   defp create_new_bundle(state, relative_path, bundle_root, options, database_kind) do
@@ -323,12 +366,11 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
                  ) do
             {:ok, identity, next}
           else
-            {:error, %VialKeeper.Error{} = error} ->
+            {:error, %Error{} = error} ->
               {:error, error}
 
             {:error, reason} ->
-              {:error,
-               VialKeeper.Error.internal_error("database creation failed", %{cause: inspect(reason)})}
+              {:error, Error.internal_error("database creation failed", %{cause: inspect(reason)})}
           end
 
         case result do
@@ -340,7 +382,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
             {:reply, {:error, error}, state}
         end
 
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         {:reply, {:error, error}, state}
     end
   end
@@ -368,17 +410,16 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
       {:reply, {:ok, identity}, next}
     else
       false ->
-        {:reply,
-         {:error, VialKeeper.Error.database_unavailable("registered database bundle is missing")},
+        {:reply, {:error, Error.database_unavailable("registered database bundle is missing")},
          state}
 
-      {:error, %VialKeeper.Error{} = error} ->
+      {:error, %Error{} = error} ->
         {:reply, {:error, error}, state}
 
       {:error, reason} ->
         {:reply,
          {:error,
-          VialKeeper.Error.database_unavailable("database could not be registered", %{
+          Error.database_unavailable("database could not be registered", %{
             cause: inspect(reason)
           })}, state}
     end
@@ -387,7 +428,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   defp allow_shadow_or_reject(:shadow, true), do: :ok
 
   defp allow_shadow_or_reject(:shadow, false),
-    do: {:error, VialKeeper.Error.shadow_database_hidden("shadow databases are internal")}
+    do: {:error, Error.shadow_database_hidden("shadow databases are internal")}
 
   defp allow_shadow_or_reject(_kind, _allow_shadow), do: :ok
 
@@ -405,9 +446,8 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
         else
           {:reply,
            {:error,
-            VialKeeper.Error.invalid_request(
-              "internal database creation requires the derived database kind"
-            )}, state}
+            Error.invalid_request("internal database creation requires the derived database kind")},
+           state}
         end
       end,
       state
@@ -423,9 +463,8 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
         else
           {:reply,
            {:error,
-            VialKeeper.Error.invalid_request(
-              "internal shadow creation requires the shadow database kind"
-            )}, state}
+            Error.invalid_request("internal shadow creation requires the shadow database kind")},
+           state}
         end
       end,
       state
@@ -446,8 +485,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   def handle_call({:unregister, uuid}, _from, state) do
     case Map.get(state.entries, uuid) do
       nil ->
-        {:reply, {:error, VialKeeper.Error.database_not_registered("database is not registered")},
-         state}
+        {:reply, {:error, Error.database_not_registered("database is not registered")}, state}
 
       _entry ->
         case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid}) do
@@ -460,8 +498,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
           _ ->
             {:reply,
-             {:error,
-              VialKeeper.Error.database_not_closable("database must be closed before unregistering")},
+             {:error, Error.database_not_closable("database must be closed before unregistering")},
              state}
         end
     end
@@ -489,12 +526,10 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   def handle_call({:info, uuid}, _from, state) do
     case Map.get(state.entries, uuid) do
       nil ->
-        {:reply, {:error, VialKeeper.Error.database_not_registered("database is not registered")},
-         state}
+        {:reply, {:error, Error.database_not_registered("database is not registered")}, state}
 
       %{database_kind: :shadow} ->
-        {:reply, {:error, VialKeeper.Error.shadow_database_hidden("shadow database is internal")},
-         state}
+        {:reply, {:error, Error.shadow_database_hidden("shadow database is internal")}, state}
 
       entry ->
         case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid}) do
@@ -539,7 +574,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
             {:reply,
              {:error,
-              VialKeeper.Error.internal_error("database close could not be scheduled", %{
+              Error.internal_error("database close could not be scheduled", %{
                 cause: inspect(reason)
               })}, state}
         end
@@ -558,7 +593,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
   defp reply_ensure_command_target(uuid, state, allow_shadow) do
     if Map.has_key?(state.close_operations, uuid) do
-      {:reply, {:error, VialKeeper.Error.database_closed("database is closing")}, state}
+      {:reply, {:error, Error.database_closed("database is closing")}, state}
     else
       case open_runtime(state, uuid, allow_shadow) do
         {:ok, _info, new_state} -> {:reply, :ok, new_state}
@@ -579,13 +614,13 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
       {:ok, _} = ok ->
         {:reply, ok, mark_status(state, uuid, :registered)}
 
-      {:error, %VialKeeper.Error{} = error} = err ->
+      {:error, %Error{} = error} = err ->
         {:reply, err, maybe_mark_unavailable(state, uuid, error)}
     end
   end
 
   defp command_deadline_error do
-    VialKeeper.Error.new(
+    Error.new(
       :internal_error,
       "database command timed out",
       %{reason: :deadline_exhausted},
@@ -631,7 +666,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
       {:reply,
        {:error,
-        VialKeeper.Error.internal_error("database operation failed", %{
+        Error.internal_error("database operation failed", %{
           cause: inspect(reason),
           kind: kind
         })}, state}
@@ -654,9 +689,10 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   def handle_info(:resume_registered_jobs, state) do
     uuids = Map.keys(state.entries)
 
-    Task.Supervisor.start_child(VialKeeper.TaskSupervisor, fn ->
-      Enum.each(uuids, &resume_registered_jobs/1)
-    end)
+    _ =
+      Task.Supervisor.start_child(VialKeeper.TaskSupervisor, fn ->
+        Enum.each(uuids, &resume_registered_jobs/1)
+      end)
 
     {:noreply, state}
   end
@@ -664,25 +700,22 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   defp handle_bundle_root(state, uuid, allow_shadow) do
     case Map.get(state.entries, uuid) do
       %{database_kind: :shadow} when not allow_shadow ->
-        {:reply, {:error, VialKeeper.Error.shadow_database_hidden("shadow database is internal")},
-         state}
+        {:reply, {:error, Error.shadow_database_hidden("shadow database is internal")}, state}
 
       %{bundle_root: bundle_root} when is_binary(bundle_root) ->
         {:reply, {:ok, bundle_root}, state}
 
       nil ->
-        {:reply, {:error, VialKeeper.Error.database_not_registered("database is not registered")},
-         state}
+        {:reply, {:error, Error.database_not_registered("database is not registered")}, state}
 
       _entry ->
-        {:reply, {:error, VialKeeper.Error.database_unavailable("database bundle root is missing")},
-         state}
+        {:reply, {:error, Error.database_unavailable("database bundle root is missing")}, state}
     end
   end
 
   defp handle_open(state, uuid, allow_shadow) do
     if Map.has_key?(state.close_operations, uuid) do
-      {:reply, {:error, VialKeeper.Error.database_closed("database is closing")}, state}
+      {:reply, {:error, Error.database_closed("database is closing")}, state}
     else
       case open_runtime(state, uuid, allow_shadow) do
         {:ok, info, new_state} -> {:reply, {:ok, info}, new_state}
@@ -694,10 +727,10 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   defp open_runtime(state, uuid, allow_shadow) do
     case Map.get(state.entries, uuid) do
       nil ->
-        {:error, VialKeeper.Error.database_not_registered("database is not registered"), state}
+        {:error, Error.database_not_registered("database is not registered"), state}
 
       %{database_kind: :shadow} when not allow_shadow ->
-        {:error, VialKeeper.Error.shadow_database_hidden("shadow database is internal"), state}
+        {:error, Error.shadow_database_hidden("shadow database is internal"), state}
 
       %{bundle_root: _root} = entry ->
         open_registered_entry(state, uuid, entry)
@@ -727,11 +760,11 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   defp start_registered_entry(state, uuid, %{bundle_root: bundle_root} = entry) do
     cond do
       not File.dir?(bundle_root) ->
-        error = VialKeeper.Error.database_unavailable("registered database bundle is missing")
+        error = Error.database_unavailable("registered database bundle is missing")
         {:error, error, mark_status(state, uuid, :unavailable)}
 
       open_count() >= (VialKeeper.Config.host_limits()[:max_open_databases] || 64) ->
-        {:error, VialKeeper.Error.resource_limit("maximum open database count reached", %{}), state}
+        {:error, Error.resource_limit("maximum open database count reached", %{}), state}
 
       true ->
         start_database_runtime(state, uuid, entry, bundle_root)
@@ -786,7 +819,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   defp maybe_mark_unavailable(
          state,
          uuid,
-         %VialKeeper.Error{code: code} = error
+         %Error{code: code} = error
        )
        when code in [:database_unavailable, :integrity_violation] do
     if uuid_mismatch?(error) or missing_file?(error) or kind_mismatch?(error),
@@ -808,28 +841,28 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
   defp open_failure_error(reason, _entry) do
     case extract_error(reason) do
-      %VialKeeper.Error{} = error ->
+      %Error{} = error ->
         error
 
       _ ->
-        VialKeeper.Error.database_unavailable("database could not be opened", %{
+        Error.database_unavailable("database could not be opened", %{
           cause: inspect(reason)
         })
     end
   end
 
-  defp extract_error(%VialKeeper.Error{} = error), do: error
+  defp extract_error(%Error{} = error), do: error
   defp extract_error({:shutdown, reason}), do: extract_error(reason)
   defp extract_error({:failed_to_start_child, _id, reason}), do: extract_error(reason)
   defp extract_error(_), do: nil
 
-  defp uuid_mismatch?(%VialKeeper.Error{details: %{reason: :uuid_mismatch}}), do: true
+  defp uuid_mismatch?(%Error{details: %{reason: :uuid_mismatch}}), do: true
   defp uuid_mismatch?(_), do: false
 
-  defp kind_mismatch?(%VialKeeper.Error{details: %{reason: :database_kind_mismatch}}), do: true
+  defp kind_mismatch?(%Error{details: %{reason: :database_kind_mismatch}}), do: true
   defp kind_mismatch?(_), do: false
 
-  defp missing_file?(%VialKeeper.Error{message: message}) when is_binary(message),
+  defp missing_file?(%Error{message: message}) when is_binary(message),
     do: String.contains?(message, "missing")
 
   defp missing_file?(_), do: false
@@ -862,7 +895,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
     case Map.get(state.entries, uuid) do
       nil -> :ok
       %{bundle_root: ^bundle_root} -> :ok
-      _ -> {:error, VialKeeper.Error.duplicate_database_uuid("database UUID is already registered")}
+      _ -> {:error, Error.duplicate_database_uuid("database UUID is already registered")}
     end
   end
 
@@ -874,8 +907,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
             :ok
 
           _ ->
-            {:error,
-             VialKeeper.Error.database_in_use("database must be closed before registration")}
+            {:error, Error.database_in_use("database must be closed before registration")}
         end
 
       nil ->
@@ -894,10 +926,10 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
         Enum.any?(components, &(&1 in [".", ".."])) or
         String.contains?(relative, "\\") or relative_to_root == expanded or
           String.starts_with?(relative_to_root, "../") ->
-        {:error, VialKeeper.Error.invalid_request("database path escapes the database root")}
+        {:error, Error.invalid_request("database path escapes the database root")}
 
       not PathSafety.no_symlink_components?(expanded) ->
-        {:error, VialKeeper.Error.invalid_request("database path contains a symlink")}
+        {:error, Error.invalid_request("database path contains a symlink")}
 
       true ->
         {:ok, expanded}
@@ -905,7 +937,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   end
 
   defp safe_path(_, _),
-    do: {:error, VialKeeper.Error.invalid_request("database path must be relative")}
+    do: {:error, Error.invalid_request("database path must be relative")}
 
   defp index_open(uuid, entry) do
     CatalogIndex.put_open(uuid, Map.get(entry, :database_kind, :ordinary))
@@ -961,7 +993,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
           {:error, error}
       end
     else
-      {:error, VialKeeper.Error.database_unavailable("registered database bundle is missing")}
+      {:error, Error.database_unavailable("registered database bundle is missing")}
     end
   end
 
@@ -980,9 +1012,9 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
           uuid == entry.uuid ->
             {:error,
-             VialKeeper.Error.integrity_violation(
+             Error.integrity_violation(
                "database kind does not match registration hint",
-               VialKeeper.Error.identity_mismatch_details(
+               Error.identity_mismatch_details(
                  :database_kind_mismatch,
                  Map.get(entry, :database_kind, :ordinary),
                  database_kind
@@ -991,9 +1023,9 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
           true ->
             {:error,
-             VialKeeper.Error.database_unavailable(
+             Error.database_unavailable(
                "database UUID mismatch",
-               VialKeeper.Error.identity_mismatch_details(:uuid_mismatch, entry.uuid, uuid)
+               Error.identity_mismatch_details(:uuid_mismatch, entry.uuid, uuid)
              )}
         end
 
@@ -1034,7 +1066,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
     else
       true ->
         _ = ReadPool.cancel_close(uuid)
-        {:error, VialKeeper.Error.database_not_closable("database has active replication jobs")}
+        {:error, Error.database_not_closable("database has active replication jobs")}
 
       {:error, _} = error ->
         _ = ReadPool.cancel_close(uuid)
@@ -1069,7 +1101,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
     catch
       :exit, reason ->
         {:error,
-         VialKeeper.Error.internal_error("database runtime shutdown failed during close", %{
+         Error.internal_error("database runtime shutdown failed during close", %{
            cause: inspect(reason)
          })}
     end
@@ -1126,7 +1158,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
         DerivedViewManager.close(uuid)
 
       {:ok, _metadata} ->
-        {:error, VialKeeper.Error.integrity_violation("derived enabled state is invalid")}
+        {:error, Error.integrity_violation("derived enabled state is invalid")}
 
       {:error, _} = error ->
         error
@@ -1145,7 +1177,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   defp close_derived_manager(uuid) do
     case DerivedViewManager.close(uuid) do
       :ok -> :ok
-      {:error, %VialKeeper.Error{code: :database_closed}} -> :ok
+      {:error, %Error{code: :database_closed}} -> :ok
       {:error, _} = error -> error
     end
   end
@@ -1157,7 +1189,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   defp close_attachment_coordinator(uuid) do
     case AttachmentCoordinator.begin_close(uuid) do
       :ok -> :ok
-      {:error, %VialKeeper.Error{code: :database_closed}} -> :ok
+      {:error, %Error{code: :database_closed}} -> :ok
       {:error, _} = error -> error
     end
   end
@@ -1165,23 +1197,17 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   defp close_subscription_hub(uuid) do
     case SubscriptionHub.close(uuid) do
       :ok -> :ok
-      {:error, %VialKeeper.Error{code: :database_closed}} -> :ok
+      {:error, %Error{code: :database_closed}} -> :ok
       {:error, _} = error -> error
     end
   end
 
-  defp close_change_notifier(uuid) do
-    case ChangeNotifier.close(uuid) do
-      :ok -> :ok
-      {:error, %VialKeeper.Error{code: :database_closed}} -> :ok
-      {:error, _} = error -> error
-    end
-  end
+  defp close_change_notifier(uuid), do: ChangeNotifier.close(uuid)
 
   defp drain_read_pool(uuid) do
     case ReadPool.begin_close(uuid) do
       :ok -> :ok
-      {:error, %VialKeeper.Error{code: :database_closed}} -> :ok
+      {:error, %Error{code: :database_closed}} -> :ok
       {:error, _} = error -> error
     end
   catch
@@ -1189,7 +1215,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
       _ = ReadPool.cancel_close(uuid)
 
       {:error,
-       VialKeeper.Error.internal_error("database read pool drain failed during close", %{
+       Error.internal_error("database read pool drain failed during close", %{
          cause: inspect(reason)
        })}
   end
@@ -1220,7 +1246,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
       {:error, reason} ->
         {:error,
-         VialKeeper.Error.internal_error("database read pool shutdown failed during close", %{
+         Error.internal_error("database read pool shutdown failed during close", %{
            cause: inspect(reason)
          })}
     end
@@ -1258,7 +1284,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
       _ = DatabaseAdmission.cancel_close(uuid)
 
       {:error,
-       VialKeeper.Error.internal_error("database admission drain failed during close", %{
+       Error.internal_error("database admission drain failed during close", %{
          cause: inspect(reason)
        })}
   end
@@ -1307,7 +1333,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
       _ = rollback_aborted_close(uuid)
 
       {:error,
-       VialKeeper.Error.internal_error("database close failed", %{
+       Error.internal_error("database close failed", %{
          kind: kind,
          cause: inspect(reason)
        })}

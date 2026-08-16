@@ -196,7 +196,10 @@ defmodule VialKeeper.Query.Executor do
       selected_indexes: Enum.map(index_bindings, & &1.index_id),
       last_ordering_key:
         Ordering.ordering_key(
-          List.last(page_source),
+          case page_source do
+            [] -> nil
+            _ -> hd(Enum.reverse(page_source))
+          end,
           Ordering.compile_sort(MapAccess.get(request, :sort, []))
         )
     }

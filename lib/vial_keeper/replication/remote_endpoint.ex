@@ -10,6 +10,12 @@ defmodule VialKeeper.Replication.RemoteEndpoint do
 
   defstruct [:base_url, :database_uuid, :auth_token]
 
+  @type t :: %__MODULE__{
+          base_url: binary(),
+          database_uuid: binary(),
+          auth_token: binary() | nil
+        }
+
   def new(attrs) when is_map(attrs) do
     normalized = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 

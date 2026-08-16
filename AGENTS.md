@@ -30,6 +30,22 @@ We do not work with PRs or any other GitHub features.
 
 Never add comments with the plan/wave/phase that a code satisfies, this kind of comment is strictly forbidden.
 
+`mix check.full` is the non-negotiable completion gate. An implementation is incomplete until that alias passes. Do not respond to a red gate by removing checks, weakening thresholds, adding suppressions, broadening types to `term()`, or excluding tests. A suppression, `term()` contract, or test exclusion is allowed only when the design independently requires it and a `# quality:reason` records why.
+
+## Elixir
+
+- Normalize external maps once at the boundary. Do not thread atom/string key variants through internals.
+- Prefer pattern matching and function clauses over defensive branching.
+- Treat `{:ok, _} | {:error, _}` contracts explicitly. Do not discard result tuples.
+- Do not blanket-rescue exceptions.
+- Use supervised concurrency (`Task.Supervisor`, `DynamicSupervisor`, or an existing worker). Do not `spawn` production work.
+- Never rely unintentionally on OTP's default 5-second `GenServer.call` / `Task.await` timeouts. Pass an explicit timeout.
+- Avoid repeated Enum traversals and `acc ++ [item]`.
+- Use streams or iodata when the workload can be large.
+- Add precise `@spec`s to new public APIs. Do not invent `@doc` prose just to raise coverage.
+- Keep backend-specific APIs inside their boundary module. `TantivyEx` stays in `VialKeeper.Search.Tantivy`, except `VialKeeper.Bench.PerformanceDiagnostics`, which is the raw native control on the same-disk diagnostic ladder rather than a product search implementation. SQLite/Exqlite stay behind the storage SQLite backend.
+
+When a mistake keeps recurring, encode it as a quality rule in this order: an existing Credo/ExSlop/Reach check; otherwise a VialKeeper Reach smell under `quality/`; otherwise a bounded StreamData property in the ordinary `mix test` suite.
 
 Keeping all docs and supporting harnesses up to date, is as important as writting correct code, so after every task, ask yourself the following questions, and proceed accordainly.
 

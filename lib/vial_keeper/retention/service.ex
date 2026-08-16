@@ -6,6 +6,7 @@ defmodule VialKeeper.Retention.Service do
   """
 
   alias VialKeeper.Domain.{BoundaryPage, PeerPosition, RetentionState}
+  alias VialKeeper.Error
   alias VialKeeper.Retention.{CompactionPlan, Frontier}
 
   @page_size 100
@@ -95,7 +96,7 @@ defmodule VialKeeper.Retention.Service do
   @spec decide_compaction(meta(), [PeerPosition.t()], [map()], [map()], map(), DateTime.t()) ::
           {:noop, map()}
           | {:apply, map(), CompactionPlan.t(), effect_meta()}
-          | {:error, VialKeeper.Error.t()}
+          | {:error, Error.t()}
   def decide_compaction(meta, peers, boundaries, plan_input_docs, config, now)
       when is_map(meta) and is_list(peers) and is_list(boundaries) and is_list(plan_input_docs) and
              is_map(config) do
@@ -122,7 +123,7 @@ defmodule VialKeeper.Retention.Service do
         ) ::
           {:noop, map()}
           | {:apply, map(), CompactionPlan.t(), effect_meta()}
-          | {:error, VialKeeper.Error.t()}
+          | {:error, Error.t()}
   def decide_compaction_with_mode(meta, peers, boundaries, plan_input_docs, config, mode, now)
       when is_map(meta) and is_list(peers) and is_list(boundaries) and is_list(plan_input_docs) and
              is_map(config) and mode in [:disabled, :stable_frontier] do
@@ -184,7 +185,7 @@ defmodule VialKeeper.Retention.Service do
 
   @doc "Validates an incoming peer put against local meta and stored peers."
   @spec validate_peer_put(meta(), [PeerPosition.t()], PeerPosition.t(), boolean()) ::
-          :ok | {:error, VialKeeper.Error.t()}
+          :ok | {:error, Error.t()}
   def validate_peer_put(meta, peers, incoming_peer, bootstrap_completed)
       when is_map(meta) and is_list(peers) and is_boolean(bootstrap_completed) do
     with :ok <- validate_peer_source_database(meta, incoming_peer) do
@@ -194,7 +195,7 @@ defmodule VialKeeper.Retention.Service do
 
   @doc "Validates a boundary-page read against the local history/compaction epoch."
   @spec validate_boundary_read(meta(), binary() | nil, non_neg_integer() | nil) ::
-          :ok | {:error, VialKeeper.Error.t()}
+          :ok | {:error, Error.t()}
   def validate_boundary_read(_meta, nil, nil), do: :ok
 
   def validate_boundary_read(meta, requested_history, requested_epoch) when is_map(meta) do
@@ -205,21 +206,20 @@ defmodule VialKeeper.Retention.Service do
 
   @doc "Validates required boundary-page fields for install/transfer."
   @spec validate_boundary_page_fields(BoundaryPage.t() | map()) ::
-          :ok | {:error, VialKeeper.Error.t()}
+          :ok | {:error, Error.t()}
   def validate_boundary_page_fields(page) when is_map(page) do
     cond do
       not is_binary(page.source_history_epoch) or page.source_history_epoch == "" ->
-        {:error, VialKeeper.Error.invalid_request("boundary page source_history_epoch is required")}
+        {:error, Error.invalid_request("boundary page source_history_epoch is required")}
 
       not is_integer(page.compaction_epoch) or page.compaction_epoch < 0 ->
-        {:error,
-         VialKeeper.Error.invalid_request("boundary page compaction_epoch must be non-negative")}
+        {:error, Error.invalid_request("boundary page compaction_epoch must be non-negative")}
 
       not is_binary(page.boundary_digest) or page.boundary_digest == "" ->
-        {:error, VialKeeper.Error.invalid_request("boundary page boundary_digest is required")}
+        {:error, Error.invalid_request("boundary page boundary_digest is required")}
 
       not is_list(page.boundaries) ->
-        {:error, VialKeeper.Error.invalid_request("boundary page boundaries must be an array")}
+        {:error, Error.invalid_request("boundary page boundaries must be an array")}
 
       true ->
         :ok
@@ -232,7 +232,7 @@ defmodule VialKeeper.Retention.Service do
   Pure: callers supply `installed_state` loaded from retention records.
   """
   @spec validate_boundary_install(map() | nil, BoundaryPage.t() | map()) ::
-          :ok | {:error, VialKeeper.Error.t()}
+          :ok | {:error, Error.t()}
   def validate_boundary_install(installed_state, page) when is_map(page) do
     with :ok <- validate_source_uuid(page.source_database_uuid) do
       validate_boundary_epoch(installed_state, page)
@@ -243,7 +243,7 @@ defmodule VialKeeper.Retention.Service do
   Returns `:ok` when a staged boundary page matches install session metadata.
   """
   @spec same_boundary_install?(map(), BoundaryPage.t() | map()) ::
-          :ok | {:error, VialKeeper.Error.t()}
+          :ok | {:error, Error.t()}
   def same_boundary_install?(metadata, page) when is_map(metadata) and is_map(page) do
     if page.source_database_uuid == metadata.source_database_uuid and
          page.source_history_epoch == metadata.source_history_epoch and
@@ -251,13 +251,13 @@ defmodule VialKeeper.Retention.Service do
          page.boundary_digest == metadata.boundary_digest do
       :ok
     else
-      {:error, VialKeeper.Error.boundary_conflict("boundary pages belong to different installs")}
+      {:error, Error.boundary_conflict("boundary pages belong to different installs")}
     end
   end
 
   @doc "Paginates stored boundaries with source-qualified NUL record keys."
   @spec paginate_boundaries([map()], binary() | nil, pos_integer() | term()) ::
-          {:ok, [map()], binary() | nil} | {:error, VialKeeper.Error.t()}
+          {:ok, [map()], binary() | nil} | {:error, Error.t()}
   def paginate_boundaries(boundaries, cursor, limit) when is_list(boundaries) do
     with :ok <- validate_pagination(cursor, limit) do
       max = VialKeeper.Config.host_limits()[:max_bulk_operations] || 500
@@ -296,7 +296,7 @@ defmodule VialKeeper.Retention.Service do
   end
 
   @doc "Decodes a peer position from atom-key or wire maps."
-  @spec decode_peer(term()) :: {:ok, PeerPosition.t()} | {:error, VialKeeper.Error.t()}
+  @spec decode_peer(term()) :: {:ok, PeerPosition.t()} | {:error, Error.t()}
   def decode_peer(value) when is_map(value) do
     if Enum.any?(Map.keys(value), &is_atom/1),
       do: PeerPosition.new(value),
@@ -304,10 +304,10 @@ defmodule VialKeeper.Retention.Service do
   end
 
   def decode_peer(_),
-    do: {:error, VialKeeper.Error.invalid_request("peer position must be an object")}
+    do: {:error, Error.invalid_request("peer position must be an object")}
 
   @doc "Decodes a boundary page from atom-key or wire maps."
-  @spec decode_boundary_page(term()) :: {:ok, BoundaryPage.t()} | {:error, VialKeeper.Error.t()}
+  @spec decode_boundary_page(term()) :: {:ok, BoundaryPage.t()} | {:error, Error.t()}
   def decode_boundary_page(value) when is_map(value) do
     if Enum.any?(Map.keys(value), &is_atom/1),
       do: BoundaryPage.new(value),
@@ -315,7 +315,7 @@ defmodule VialKeeper.Retention.Service do
   end
 
   def decode_boundary_page(_),
-    do: {:error, VialKeeper.Error.invalid_request("boundary page must be an object")}
+    do: {:error, Error.invalid_request("boundary page must be an object")}
 
   @doc "Install-state fields carried with a boundary page."
   @spec boundary_install_state_for_page(BoundaryPage.t() | map()) :: map()
@@ -404,7 +404,7 @@ defmodule VialKeeper.Retention.Service do
   defp maybe_noop(frontier, plan, :disabled, meta) do
     if frontier.noop? and work_empty?(plan),
       do: {:noop, noop_stats(frontier, meta)},
-      else: {:error, VialKeeper.Error.invalid_request("retention compaction is disabled")}
+      else: {:error, Error.invalid_request("retention compaction is disabled")}
   end
 
   defp maybe_noop(frontier, plan, :stable_frontier, meta) do
@@ -420,14 +420,14 @@ defmodule VialKeeper.Retention.Service do
       do: :ok,
       else:
         {:error,
-         VialKeeper.Error.boundary_conflict("boundary request history epoch does not match", %{
+         Error.boundary_conflict("boundary request history epoch does not match", %{
            expected: meta.history_epoch,
            received: history
          })}
   end
 
   defp validate_boundary_history(_meta, _),
-    do: {:error, VialKeeper.Error.invalid_request("boundary request history epoch is invalid")}
+    do: {:error, Error.invalid_request("boundary request history epoch is invalid")}
 
   defp validate_boundary_epoch_request(_meta, nil), do: :ok
 
@@ -436,14 +436,14 @@ defmodule VialKeeper.Retention.Service do
       do: :ok,
       else:
         {:error,
-         VialKeeper.Error.boundary_conflict("boundary request compaction epoch is not available", %{
+         Error.boundary_conflict("boundary request compaction epoch is not available", %{
            current: meta.compaction_epoch,
            requested: epoch
          })}
   end
 
   defp validate_boundary_epoch_request(_meta, _),
-    do: {:error, VialKeeper.Error.invalid_request("boundary request compaction epoch is invalid")}
+    do: {:error, Error.invalid_request("boundary request compaction epoch is invalid")}
 
   defp validate_boundary_epoch(nil, _page), do: :ok
 
@@ -456,7 +456,7 @@ defmodule VialKeeper.Retention.Service do
     cond do
       page.compaction_epoch < installed_epoch ->
         {:error,
-         VialKeeper.Error.boundary_conflict(
+         Error.boundary_conflict(
            "boundary page compaction epoch regressed for source",
            %{
              received: page.compaction_epoch,
@@ -465,8 +465,7 @@ defmodule VialKeeper.Retention.Service do
          )}
 
       page.source_history_epoch != installed_history and not replacing? ->
-        {:error,
-         VialKeeper.Error.boundary_conflict("boundary page history epoch changed mid-install")}
+        {:error, Error.boundary_conflict("boundary page history epoch changed mid-install")}
 
       true ->
         :ok
@@ -476,7 +475,7 @@ defmodule VialKeeper.Retention.Service do
   defp validate_source_uuid(uuid) when is_binary(uuid) and uuid != "", do: :ok
 
   defp validate_source_uuid(_),
-    do: {:error, VialKeeper.Error.invalid_request("boundary page source_database_uuid is required")}
+    do: {:error, Error.invalid_request("boundary page source_database_uuid is required")}
 
   defp validate_pagination(cursor, limit) do
     max = VialKeeper.Config.host_limits()[:max_bulk_operations] || 500
@@ -484,10 +483,10 @@ defmodule VialKeeper.Retention.Service do
 
     cond do
       not is_nil(cursor) and not is_binary(cursor) ->
-        {:error, VialKeeper.Error.invalid_request("boundary page cursor must be a binary or null")}
+        {:error, Error.invalid_request("boundary page cursor must be a binary or null")}
 
       is_nil(clamped) ->
-        {:error, VialKeeper.Error.invalid_request("boundary page limit must be a positive integer")}
+        {:error, Error.invalid_request("boundary page limit must be a positive integer")}
 
       true ->
         :ok
@@ -525,8 +524,7 @@ defmodule VialKeeper.Retention.Service do
     if peer.source_database_uuid == meta.database_uuid,
       do: :ok,
       else:
-        {:error,
-         VialKeeper.Error.invalid_request("peer source_database_uuid does not match local database")}
+        {:error, Error.invalid_request("peer source_database_uuid does not match local database")}
   end
 
   defp check_peer_regression(peers, incoming, bootstrap_completed, meta) do
@@ -543,7 +541,7 @@ defmodule VialKeeper.Retention.Service do
 
       PeerPosition.regresses?(previous, incoming) ->
         {:error,
-         VialKeeper.Error.rebase_required("peer position regressed", %{
+         Error.rebase_required("peer position regressed", %{
            peer_database_uuid: incoming.peer_database_uuid
          })}
 
@@ -557,7 +555,7 @@ defmodule VialKeeper.Retention.Service do
       :ok
     else
       {:error,
-       VialKeeper.Error.rebase_required("peer history changed; bootstrap is required", %{
+       Error.rebase_required("peer history changed; bootstrap is required", %{
          peer_database_uuid: incoming.peer_database_uuid
        })}
     end
@@ -574,7 +572,7 @@ defmodule VialKeeper.Retention.Service do
       :ok
     else
       {:error,
-       VialKeeper.Error.rebase_required("peer bootstrap replacement is incomplete", %{
+       Error.rebase_required("peer bootstrap replacement is incomplete", %{
          peer_database_uuid: peer.peer_database_uuid
        })}
     end

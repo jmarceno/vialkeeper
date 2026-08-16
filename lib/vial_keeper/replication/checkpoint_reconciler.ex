@@ -12,6 +12,7 @@ defmodule VialKeeper.Replication.CheckpointReconciler do
           retention_floor: non_neg_integer()
         }
 
+  @spec common_sequence(map() | nil, map() | nil) :: non_neg_integer()
   def common_sequence(nil, _target), do: 0
   def common_sequence(_source, nil), do: 0
 

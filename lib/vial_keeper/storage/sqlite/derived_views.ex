@@ -318,7 +318,7 @@ defmodule VialKeeper.Storage.SQLite.DerivedViews do
     case Connection.query(
            conn,
            "SELECT source_document_id FROM derived_rows WHERE #{filter} ORDER BY source_document_id LIMIT ?",
-           params ++ [limit]
+           params |> Enum.concat([limit])
          ) do
       {:ok, rows} -> {:ok, Enum.map(rows, fn [document_id] -> document_id end)}
       {:error, reason} -> {:error, normalize_error(reason)}

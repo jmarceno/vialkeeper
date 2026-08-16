@@ -2,7 +2,9 @@ defmodule VialKeeper.Replication.JobManager do
   @moduledoc "Persistent replication definitions and transient worker lifecycle."
   use GenServer
 
+  alias VialKeeper.Config
   alias VialKeeper.Domain.ReplicationEndpoint
+  alias VialKeeper.Error
   alias VialKeeper.JSON.Stringify
   alias VialKeeper.MapAccess
   alias VialKeeper.Replication.Id
@@ -10,6 +12,8 @@ defmodule VialKeeper.Replication.JobManager do
   alias VialKeeper.Replication.RemoteEndpoint
   alias VialKeeper.Runtime.DatabaseCatalog
   @table :vial_keeper_replication_jobs
+
+  @type job_reply :: {:ok, map()} | {:error, Error.t()}
 
   @active_states [
     :idle,
@@ -27,6 +31,8 @@ defmodule VialKeeper.Replication.JobManager do
     :backoff
   ]
 
+  @spec start_link() :: GenServer.on_start()
+  @spec start_link(term()) :: GenServer.on_start()
   def start_link(_args \\ []), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
   @impl true
@@ -35,17 +41,16 @@ defmodule VialKeeper.Replication.JobManager do
     {:ok, %{}}
   end
 
+  @spec list(binary()) :: {:ok, [map()]} | {:error, Error.t()}
   def list(uuid) do
     table = ensure_table()
 
     with {:ok, jobs} <- list_persisted_jobs(uuid) do
-      {:ok,
-       jobs
-       |> Enum.map(&running_job(&1, table))
-       |> Enum.map(&redact_job/1)}
+      {:ok, Enum.map(jobs, &redact_job(running_job(&1, table)))}
     end
   end
 
+  @spec resume(binary()) :: :ok
   def resume(uuid) do
     case list_persisted_jobs(uuid) do
       {:ok, jobs} ->
@@ -65,10 +70,11 @@ defmodule VialKeeper.Replication.JobManager do
       do: start(uuid, job.job_id)
   end
 
+  @spec get(binary(), binary()) :: job_reply()
   def get(uuid, job_id) do
     with {:ok, jobs} <- list(uuid) do
       case Enum.find(jobs, &(&1.job_id == job_id)) do
-        nil -> {:error, VialKeeper.Error.replication_job_not_found("replication job not found")}
+        nil -> {:error, Error.replication_job_not_found("replication job not found")}
         job -> {:ok, job}
       end
     end
@@ -94,6 +100,7 @@ defmodule VialKeeper.Replication.JobManager do
     end
   end
 
+  @spec active?(binary()) :: boolean()
   def active?(uuid) do
     ensure_table()
     |> :ets.tab2list()
@@ -133,6 +140,7 @@ defmodule VialKeeper.Replication.JobManager do
     end)
   end
 
+  @spec put(binary(), map()) :: job_reply()
   def put(uuid, definition) do
     with {:ok, normalized} <- normalize_definition(definition),
          persist <- option(normalized, :persist, true),
@@ -165,6 +173,7 @@ defmodule VialKeeper.Replication.JobManager do
   defp persisted_result(uuid, job_id, true), do: start(uuid, job_id)
   defp persisted_result(_uuid, job_id, false), do: {:ok, %{job_id: job_id, state: :disabled}}
 
+  @spec start(binary(), binary()) :: job_reply()
   def start(uuid, job_id) do
     table = ensure_table()
 
@@ -173,7 +182,7 @@ defmodule VialKeeper.Replication.JobManager do
          :ok <-
            if(job.enabled,
              do: :ok,
-             else: {:error, VialKeeper.Error.invalid_request("replication job is disabled")}
+             else: {:error, Error.invalid_request("replication job is disabled")}
            ),
          {:ok, options} <- worker_options(uuid, job),
          :ok <- ensure_worker_available(options.replication_id),
@@ -184,6 +193,7 @@ defmodule VialKeeper.Replication.JobManager do
     end
   end
 
+  @spec cancel(binary() | nil, binary()) :: job_reply()
   def cancel(uuid, job_id) do
     cancel_entry(uuid, job_id, :ets.lookup(ensure_table(), job_id))
   end
@@ -210,10 +220,12 @@ defmodule VialKeeper.Replication.JobManager do
   end
 
   defp cancel_entry(_uuid, _job_id, []),
-    do: {:error, VialKeeper.Error.replication_job_not_found("replication job is not running")}
+    do: {:error, Error.replication_job_not_found("replication job is not running")}
 
+  @spec cancel(binary()) :: job_reply()
   def cancel(job_id), do: cancel(nil, job_id)
 
+  @spec enable(binary(), binary()) :: job_reply()
   def enable(uuid, job_id) do
     with {:ok, job} <- fetch_job(uuid, job_id),
          definition <- Map.put(job.definition, "enabled", true),
@@ -222,6 +234,7 @@ defmodule VialKeeper.Replication.JobManager do
     end
   end
 
+  @spec disable(binary(), binary()) :: job_reply()
   def disable(uuid, job_id) do
     with {:ok, job} <- fetch_job(uuid, job_id),
          :ok <- cancel_if_active(uuid, job_id),
@@ -232,16 +245,19 @@ defmodule VialKeeper.Replication.JobManager do
     end
   end
 
+  @spec delete(binary(), binary()) :: :ok | {:ok, map()} | {:error, Error.t()}
   def delete(uuid, job_id) do
     case :ets.lookup(ensure_table(), job_id) do
       [{^job_id, state, _pid, ^uuid, _, _details}] when state in @active_states ->
-        {:error, VialKeeper.Error.database_not_closable("replication job is active")}
+        {:error, Error.database_not_closable("replication job is active")}
 
       _ ->
         DatabaseCatalog.command(uuid, {:command, :delete_job, job_id})
     end
   end
 
+  @spec report(binary(), atom()) :: :ok
+  @spec report(binary(), atom(), map()) :: :ok
   def report(job_id, state, details \\ %{}) do
     table = ensure_table()
 
@@ -269,10 +285,10 @@ defmodule VialKeeper.Replication.JobManager do
   end
 
   defp start_worker(options) do
-    max_workers = VialKeeper.Config.host_limits()[:max_replication_workers] || 32
+    max_workers = Config.host_limits()[:max_replication_workers] || 32
 
     if Registry.count(VialKeeper.Replication.WorkerRegistry) >= max_workers do
-      {:error, VialKeeper.Error.resource_limit("maximum replication worker count reached")}
+      {:error, Error.resource_limit("maximum replication worker count reached")}
     else
       case DynamicSupervisor.start_child(
              VialKeeper.Replication.WorkerSupervisor,
@@ -281,16 +297,15 @@ defmodule VialKeeper.Replication.JobManager do
         {:ok, pid} ->
           {:ok, pid}
 
-        {:error, {:shutdown, %VialKeeper.Error{} = error}} ->
+        {:error, {:shutdown, %Error{} = error}} ->
           {:error, error}
 
         {:error, {:already_started, _pid}} ->
-          {:error,
-           VialKeeper.Error.replication_already_running("replication worker is already running")}
+          {:error, Error.replication_already_running("replication worker is already running")}
 
         {:error, reason} ->
           {:error,
-           VialKeeper.Error.internal_error("replication worker could not start", %{
+           Error.internal_error("replication worker could not start", %{
              cause: inspect(reason)
            })}
       end
@@ -303,8 +318,7 @@ defmodule VialKeeper.Replication.JobManager do
         :ok
 
       _ ->
-        {:error,
-         VialKeeper.Error.replication_already_running("replication worker is already running")}
+        {:error, Error.replication_already_running("replication worker is already running")}
     end
   end
 
@@ -350,18 +364,18 @@ defmodule VialKeeper.Replication.JobManager do
       {:DOWN, ^ref, :process, ^pid, _reason} ->
         :ok
     after
-      VialKeeper.Config.shutdown_timeout() ->
+      Config.shutdown_timeout() ->
         Process.demonitor(ref, [:flush])
 
         {:error,
-         VialKeeper.Error.database_not_closable("replication worker did not stop", %{
+         Error.database_not_closable("replication worker did not stop", %{
            job_id: job_id
          })}
     end
   end
 
   defp await_worker_registry_release(replication_id, pid) do
-    deadline = System.monotonic_time(:millisecond) + VialKeeper.Config.shutdown_timeout()
+    deadline = System.monotonic_time(:millisecond) + Config.shutdown_timeout()
     await_worker_registry_release(replication_id, pid, deadline)
   end
 
@@ -373,7 +387,7 @@ defmodule VialKeeper.Replication.JobManager do
       [{^pid, _}] ->
         if System.monotonic_time(:millisecond) >= deadline do
           {:error,
-           VialKeeper.Error.database_not_closable(
+           Error.database_not_closable(
              "replication worker registry entry did not clear",
              %{
                replication_id: replication_id
@@ -385,8 +399,7 @@ defmodule VialKeeper.Replication.JobManager do
         end
 
       _entries ->
-        {:error,
-         VialKeeper.Error.replication_already_running("replication worker is already running")}
+        {:error, Error.replication_already_running("replication worker is already running")}
     end
   end
 
@@ -478,7 +491,7 @@ defmodule VialKeeper.Replication.JobManager do
 
   defp find_job(jobs, job_id) do
     case Enum.find(jobs, &(&1.job_id == job_id)) do
-      nil -> {:error, VialKeeper.Error.replication_job_not_found("replication job not found")}
+      nil -> {:error, Error.replication_job_not_found("replication job not found")}
       job -> {:ok, job}
     end
   end
@@ -564,9 +577,7 @@ defmodule VialKeeper.Replication.JobManager do
     case LocalEndpoint.identity(target) do
       {:ok, %{database_kind: :derived}} ->
         {:error,
-         VialKeeper.Error.derived_database_read_only(
-           "derived databases cannot be replication targets"
-         )}
+         Error.derived_database_read_only("derived databases cannot be replication targets")}
 
       {:ok, _identity} ->
         :ok
@@ -638,18 +649,18 @@ defmodule VialKeeper.Replication.JobManager do
            :ok <- validate_job_options(normalized) do
         {:ok, normalized}
       else
-        _ -> {:error, VialKeeper.Error.invalid_request("replication definition is invalid")}
+        _ -> {:error, Error.invalid_request("replication definition is invalid")}
       end
     else
-      {:error, VialKeeper.Error.invalid_request("replication definition contains an unknown field")}
+      {:error, Error.invalid_request("replication definition contains an unknown field")}
     end
   end
 
   defp normalize_definition(_),
-    do: {:error, VialKeeper.Error.invalid_request("replication definition must be an object")}
+    do: {:error, Error.invalid_request("replication definition must be an object")}
 
   defp validate_persistence(false, "continuous"),
-    do: {:error, VialKeeper.Error.invalid_request("unpersisted replication must be one_shot")}
+    do: {:error, Error.invalid_request("unpersisted replication must be one_shot")}
 
   defp validate_persistence(_, _), do: :ok
 
@@ -658,11 +669,11 @@ defmodule VialKeeper.Replication.JobManager do
     retry = Map.get(definition, "retry", %{})
     batch_keys = ["documents", "bytes"]
     retry_keys = ["max_attempts", "base_delay_ms", "max_delay_ms", "jitter_ms"]
-    max_documents = VialKeeper.Config.host_limits()[:max_replication_batch_documents] || 500
-    max_bytes = VialKeeper.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
-    max_attempts = VialKeeper.Config.host_limits()[:max_replication_attempts] || 32
-    max_delay = VialKeeper.Config.host_limits()[:max_replication_delay_ms] || 300_000
-    max_wait = VialKeeper.Config.host_limits()[:max_wait_ms] || 30_000
+    max_documents = Config.host_limits()[:max_replication_batch_documents] || 500
+    max_bytes = Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
+    max_attempts = Config.host_limits()[:max_replication_attempts] || 32
+    max_delay = Config.host_limits()[:max_replication_delay_ms] || 300_000
+    max_wait = Config.host_limits()[:max_wait_ms] || 30_000
 
     with true <- is_map(batch) and Enum.all?(Map.keys(batch), &(&1 in batch_keys)),
          true <- is_map(retry) and Enum.all?(Map.keys(retry), &(&1 in retry_keys)),
@@ -693,19 +704,19 @@ defmodule VialKeeper.Replication.JobManager do
       :ok
     else
       {:error, _} = error -> error
-      _ -> {:error, VialKeeper.Error.invalid_request("replication job options are invalid")}
+      _ -> {:error, Error.invalid_request("replication job options are invalid")}
     end
   end
 
   defp validate_transfer_job_options(definition) do
     max_chain_fetches =
-      VialKeeper.Config.host_limits()[:max_replication_concurrent_chain_fetches] || 32
+      Config.host_limits()[:max_replication_concurrent_chain_fetches] || 32
 
     max_blob_transfers =
-      VialKeeper.Config.host_limits()[:max_replication_concurrent_blob_transfers] || 32
+      Config.host_limits()[:max_replication_concurrent_blob_transfers] || 32
 
     max_transfer_bytes =
-      VialKeeper.Config.host_limits()[:max_replication_transfer_bytes_in_flight] || 4_294_967_296
+      Config.host_limits()[:max_replication_transfer_bytes_in_flight] || 4_294_967_296
 
     with true <-
            positive_bounded?(
@@ -736,7 +747,7 @@ defmodule VialKeeper.Replication.JobManager do
            ) do
       :ok
     else
-      _ -> {:error, VialKeeper.Error.invalid_request("replication job options are invalid")}
+      _ -> {:error, Error.invalid_request("replication job options are invalid")}
     end
   end
 
@@ -771,7 +782,7 @@ defmodule VialKeeper.Replication.JobManager do
   defp option(_map, _key, default), do: default
 
   defp replication_default(key, default) do
-    VialKeeper.Config.defaults()
+    Config.defaults()
     |> Map.get("replication", %{})
     |> Map.get(Atom.to_string(key), default)
   end

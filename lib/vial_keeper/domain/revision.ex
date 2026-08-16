@@ -41,6 +41,7 @@ defmodule VialKeeper.Domain.Revision do
           insertion_sequence: non_neg_integer() | nil
         }
 
+  @spec new(map()) :: {:ok, t()} | {:error, VialKeeper.Error.t()}
   def new(attrs) when is_map(attrs) do
     with :ok <- validate_attrs(attrs),
          {:ok, generation} <- generation(attrs),
@@ -105,6 +106,7 @@ defmodule VialKeeper.Domain.Revision do
     do: {:error, VialKeeper.Error.invalid_request("revision attachments must be a map")}
 
   @doc false
+  @spec assemble(keyword()) :: t()
   def assemble(fields) when is_list(fields) do
     struct!(__MODULE__, fields)
   end

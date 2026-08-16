@@ -484,10 +484,11 @@ defmodule VialKeeper.Search.Owner do
   end
 
   defp cleanup_generations(state, index_id, current_generation) do
-    with {:ok, root} <- index_root(state.tmp_path, index_id),
-         {:ok, entries} <- File.ls(root) do
-      Enum.each(entries, &remove_stale_generation(root, &1, current_generation))
-    end
+    _ =
+      with {:ok, root} <- index_root(state.tmp_path, index_id),
+           {:ok, entries} <- File.ls(root) do
+        Enum.each(entries, &remove_stale_generation(root, &1, current_generation))
+      end
 
     state
   end
@@ -495,6 +496,7 @@ defmodule VialKeeper.Search.Owner do
   defp remove_stale_generation(root, entry, current_generation) do
     if generation_number(entry) not in [0, current_generation] do
       _ = File.rm_rf(Path.join(root, entry))
+      :ok
     end
 
     :ok

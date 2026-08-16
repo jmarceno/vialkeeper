@@ -91,7 +91,7 @@ defmodule VialKeeper.Observability.Instrumentation.Search do
       result = fun.()
       duration = System.monotonic_time() - started
       outcome = if match?({:error, _}, result), do: :failed, else: :ok
-      result_attrs = attrs ++ [outcome: outcome]
+      result_attrs = Keyword.put(attrs, :outcome, outcome)
       Meters.add(count_metric, result_attrs)
       Meters.record(duration_metric, duration, result_attrs)
       result
@@ -143,7 +143,7 @@ defmodule VialKeeper.Observability.Instrumentation.Search do
   end
 
   defp emit_result(base_attrs, duration, _result) do
-    attrs = base_attrs ++ [outcome: :ok]
+    attrs = Keyword.put(base_attrs, :outcome, :ok)
     Meters.add(@count_metric, attrs)
     Meters.record(@duration_metric, duration, attrs)
     :ok

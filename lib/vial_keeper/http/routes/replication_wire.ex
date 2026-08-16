@@ -1,6 +1,8 @@
 defmodule VialKeeper.HTTP.Routes.ReplicationWire do
   @moduledoc "HTTP routes for the replication wire protocol."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
+  alias Plug.Conn
   alias Plug.Conn.Utils
   alias VialKeeper.Attachments.Manifest
   alias VialKeeper.Domain.Checkpoint
@@ -71,7 +73,7 @@ defmodule VialKeeper.HTTP.Routes.ReplicationWire do
   end
 
   get "/local-origin" do
-    conn = Plug.Conn.fetch_query_params(conn)
+    conn = Conn.fetch_query_params(conn)
     peer_database_uuid = conn.query_params["peer_database_uuid"]
 
     command =
@@ -312,7 +314,7 @@ defmodule VialKeeper.HTTP.Routes.ReplicationWire do
                  conn,
                  admission_class: :replication
                ) do
-            {:ok, %Plug.Conn{} = conn} ->
+            {:ok, %Conn{} = conn} ->
               ReplicationInstr.wire_bytes(
                 :ingress,
                 :blob,
@@ -326,7 +328,7 @@ defmodule VialKeeper.HTTP.Routes.ReplicationWire do
               # The request body may be partially consumed; do not reuse the
               # connection with stale body accounting.
               conn
-              |> Plug.Conn.put_resp_header("connection", "close")
+              |> Conn.put_resp_header("connection", "close")
               |> Response.error(error)
           end
 
@@ -445,7 +447,7 @@ defmodule VialKeeper.HTTP.Routes.ReplicationWire do
   end
 
   defp discard_request_body(conn) do
-    case Plug.Conn.read_body(conn, length: 65_536, read_length: 65_536) do
+    case Conn.read_body(conn, length: 65_536, read_length: 65_536) do
       {:ok, _, conn} -> conn
       {:more, _, conn} -> discard_request_body(conn)
       {:error, _} -> conn
@@ -458,7 +460,7 @@ defmodule VialKeeper.HTTP.Routes.ReplicationWire do
     else
       conn
       |> Response.error(VialKeeper.Error.invalid_request("accept-encoding must include zstd"))
-      |> Plug.Conn.halt()
+      |> Conn.halt()
     end
   end
 
@@ -471,7 +473,7 @@ defmodule VialKeeper.HTTP.Routes.ReplicationWire do
         {:error, error} ->
           conn
           |> Response.error(error)
-          |> Plug.Conn.halt()
+          |> Conn.halt()
       end
     else
       conn
@@ -480,7 +482,7 @@ defmodule VialKeeper.HTTP.Routes.ReplicationWire do
 
   defp accepts_zstd?(conn) do
     conn
-    |> Plug.Conn.get_req_header("accept-encoding")
+    |> Conn.get_req_header("accept-encoding")
     |> Enum.any?(&header_accepts_zstd?/1)
   end
 
@@ -524,13 +526,13 @@ defmodule VialKeeper.HTTP.Routes.ReplicationWire do
 
     conn =
       Enum.reduce(BlobRepresentationStream.response_headers(stream), conn, fn {key, value}, conn ->
-        Plug.Conn.put_resp_header(conn, key, value)
+        Conn.put_resp_header(conn, key, value)
       end)
 
     conn =
       conn
-      |> Plug.Conn.put_resp_header("x-request-id", request_id)
-      |> Plug.Conn.send_chunked(200)
+      |> Conn.put_resp_header("x-request-id", request_id)
+      |> Conn.send_chunked(200)
 
     Response.stream_chunks(conn, stream.body)
   end

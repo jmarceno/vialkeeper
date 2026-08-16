@@ -10,6 +10,7 @@ defmodule VialKeeper.Contract.FixturesTest do
   alias VialKeeper.Replication.{CheckpointReconciler, Id}
   alias VialKeeper.Revisions.Id, as: RevisionId
   alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.TempDatabase
 
   @fixtures_root Application.app_dir(:vial_keeper, "priv/fixtures")
 
@@ -209,8 +210,8 @@ defmodule VialKeeper.Contract.FixturesTest do
   end
 
   defp execute_checkpoint_cas_scenario(fixture) do
-    {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-fixture-cas")
-    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
+    {:ok, bundle_path} = TempDatabase.create(prefix: "vialkeeper-fixture-cas")
+    path = TempDatabase.sqlite_path(bundle_path)
     assert {:ok, adapter} = Adapter.create(path, %{})
 
     try do
@@ -253,7 +254,7 @@ defmodule VialKeeper.Contract.FixturesTest do
       end
     after
       _ = Adapter.close(adapter)
-      VialKeeper.TempDatabase.cleanup(bundle_path)
+      TempDatabase.cleanup(bundle_path)
     end
   end
 

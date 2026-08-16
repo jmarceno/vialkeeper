@@ -7,6 +7,7 @@ defmodule VialKeeper.View.BuilderSupervisor do
   alias VialKeeper.Runtime.ChildSpec
   alias VialKeeper.View.Builder
 
+  @spec child_spec(binary()) :: map()
   def child_spec(uuid),
     do:
       ChildSpec.supervisor(
@@ -15,12 +16,16 @@ defmodule VialKeeper.View.BuilderSupervisor do
         :permanent
       )
 
+  @spec start_link(binary()) :: Supervisor.on_start()
   def start_link(uuid),
     do: DynamicSupervisor.start_link(__MODULE__, uuid, name: via(uuid))
 
+  @spec via(binary()) :: {:via, module(), term()}
   def via(uuid),
     do: {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:view_builder_supervisor, uuid}}}
 
+  @spec start_builder(binary(), binary()) :: DynamicSupervisor.on_start_child()
+  @spec start_builder(binary(), binary(), keyword()) :: DynamicSupervisor.on_start_child()
   def start_builder(uuid, view_id, opts \\ []) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:view_builder_supervisor, uuid}) do
       [{supervisor, _}] ->

@@ -17,6 +17,9 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
     ServiceClass
   }
 
+  # quality:reason this helper always exits after cancelling the in-flight acquire
+  @dialyzer {:nowarn_function, cancel_on_acquire_exit: 3}
+
   @default_timeout 30_000
 
   defmodule Waiter do
@@ -177,7 +180,7 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
   defp run_acquired_permit(other, _uuid, _request_ref, _fun), do: other
 
   defp cancel_on_acquire_exit(uuid, request_ref, reason) do
-    cancel(uuid, request_ref)
+    _ = cancel(uuid, request_ref)
     exit(reason)
   end
 
@@ -251,7 +254,7 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
         )
       catch
         :exit, reason ->
-          cancel(uuid, request_ref)
+          _ = cancel(uuid, request_ref)
           exit(reason)
       end
     end
@@ -891,17 +894,22 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
   defp terminate_executor(%__MODULE__{} = state, _active), do: state
 
   defp clear_active(%__MODULE__{} = state, %ActivePermit{} = active) do
-    if active.caller_monitor_ref && active.caller_monitor_ref != :DOWN,
-      do: Process.demonitor(active.caller_monitor_ref, [:flush])
+    if active.caller_monitor_ref && active.caller_monitor_ref != :DOWN do
+      _ = Process.demonitor(active.caller_monitor_ref, [:flush])
+    end
 
-    if active.executor_monitor_ref,
-      do: Process.demonitor(active.executor_monitor_ref, [:flush])
+    if active.executor_monitor_ref do
+      _ = Process.demonitor(active.executor_monitor_ref, [:flush])
+    end
 
-    if active.drain_monitor_ref,
-      do: Process.demonitor(active.drain_monitor_ref, [:flush])
+    if active.drain_monitor_ref do
+      _ = Process.demonitor(active.drain_monitor_ref, [:flush])
+    end
 
-    if active.drain_pid && Process.alive?(active.drain_pid),
-      do: DynamicSupervisor.terminate_child(state.admitted_command_supervisor, active.drain_pid)
+    if active.drain_pid && Process.alive?(active.drain_pid) do
+      _ = DynamicSupervisor.terminate_child(state.admitted_command_supervisor, active.drain_pid)
+      :ok
+    end
 
     state
     |> Map.put(:active, nil)

@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.Routes.Indexes do
   @moduledoc "HTTP routes for logical index management."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
   alias VialKeeper.HTTP.{Request, Response, Schemas}
 
   plug(:match)
@@ -48,14 +49,16 @@ defmodule VialKeeper.HTTP.Routes.Indexes do
     end
   end
 
-  @doc false
+  @doc "HTTP handler that executes a query against the database."
+  @spec query(Plug.Conn.t()) :: Plug.Conn.t()
   def query(conn) do
     Request.call(conn, Schemas.opts(:query, "query contains an unknown field"), fn body, conn ->
       Response.result(conn, VialKeeper.Query.execute(Request.uuid(conn), body))
     end)
   end
 
-  @doc false
+  @doc "HTTP handler that explains the selected query plan."
+  @spec explain(Plug.Conn.t()) :: Plug.Conn.t()
   def explain(conn) do
     Request.call(conn, Schemas.opts(:query, "query explain contains an unknown field"), fn body,
                                                                                            conn ->

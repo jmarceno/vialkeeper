@@ -1,6 +1,7 @@
 defmodule VialKeeper.Replication.RemoteTransport do
   @moduledoc "Executes authenticated HTTP requests and lazy response streams for remote replication."
 
+  alias Req.Response
   alias VialKeeper.Error
   alias VialKeeper.Observability.Instrumentation.Replication, as: ReplicationInstr
   alias VialKeeper.Observability.Tracer
@@ -11,6 +12,10 @@ defmodule VialKeeper.Replication.RemoteTransport do
   @bounded_overflow_private_key :transport_bounded_overflow
   @bounded_body_key :transport_bounded_body
 
+  @spec request(binary(), atom(), binary()) :: {:ok, map()} | {:error, Error.t()}
+  @spec request(binary(), atom(), binary(), map() | nil) :: {:ok, map()} | {:error, Error.t()}
+  @spec request(binary(), atom(), binary(), map() | nil, binary() | nil) ::
+          {:ok, map()} | {:error, Error.t()}
   def request(base_url, method, path, body \\ nil, auth_token \\ nil) do
     request(
       base_url,
@@ -63,6 +68,18 @@ defmodule VialKeeper.Replication.RemoteTransport do
   end
 
   @doc "Opens a lazy blob response for an authenticated JSON POST request."
+  @spec open_post_stream(binary(), binary(), map(), binary() | nil) ::
+          {:ok, map(), Enumerable.t()}
+          | {:ok, map(), Enumerable.t(), term()}
+          | {:error, Error.t()}
+  @spec open_post_stream(binary(), binary(), map(), binary() | nil, binary() | nil) ::
+          {:ok, map(), Enumerable.t()}
+          | {:ok, map(), Enumerable.t(), term()}
+          | {:error, Error.t()}
+  @spec open_post_stream(binary(), binary(), map(), binary() | nil, binary() | nil, timeout() | nil) ::
+          {:ok, map(), Enumerable.t()}
+          | {:ok, map(), Enumerable.t(), term()}
+          | {:error, Error.t()}
   def open_post_stream(base_url, path, body, digest, auth_token \\ nil, timeout \\ nil) do
     timeout = timeout || VialKeeper.Config.request_timeout_ms()
 
@@ -232,7 +249,7 @@ defmodule VialKeeper.Replication.RemoteTransport do
   defp decoded_limit,
     do: VialKeeper.Config.host_limits()[:max_replication_batch_bytes] || 16_777_216
 
-  defp enumerable_body?(%Req.Response.Async{}), do: true
+  defp enumerable_body?(%Response.Async{}), do: true
   defp enumerable_body?(body) when is_struct(body), do: true
   defp enumerable_body?(_), do: false
 
@@ -241,24 +258,23 @@ defmodule VialKeeper.Replication.RemoteTransport do
   defp bounded_collector(encoded_limit) do
     fn
       {:data, data}, {request, response} ->
-        bytes = Req.Response.get_private(response, @bounded_bytes_private_key, 0)
-        body = Req.Response.get_private(response, @bounded_body_key, [])
+        bytes = Response.get_private(response, @bounded_bytes_private_key, 0)
+        body = Response.get_private(response, @bounded_body_key, [])
 
         if bytes + byte_size(data) > encoded_limit do
-          {:halt,
-           {request, Req.Response.put_private(response, @bounded_overflow_private_key, true)}}
+          {:halt, {request, Response.put_private(response, @bounded_overflow_private_key, true)}}
         else
           response =
             response
-            |> Req.Response.put_private(@bounded_bytes_private_key, bytes + byte_size(data))
-            |> Req.Response.put_private(@bounded_body_key, [data | body])
+            |> Response.put_private(@bounded_bytes_private_key, bytes + byte_size(data))
+            |> Response.put_private(@bounded_body_key, [data | body])
 
           {:cont, {request, response}}
         end
     end
   end
 
-  defp bounded_result(%Req.Response{private: private} = response) do
+  defp bounded_result(%Response{private: private} = response) do
     if Map.get(private, @bounded_overflow_private_key) do
       {:error, Error.payload_too_large("remote endpoint response is too large")}
     else

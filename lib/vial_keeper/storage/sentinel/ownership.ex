@@ -7,6 +7,7 @@ defmodule VialKeeper.Storage.Sentinel.Ownership do
   """
   use GenServer
 
+  @spec start_link(binary()) :: GenServer.on_start()
   def start_link(bundle_root), do: GenServer.start_link(__MODULE__, bundle_root)
 
   @impl true

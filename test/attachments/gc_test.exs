@@ -9,6 +9,7 @@ defmodule VialKeeper.Attachments.GCTest do
 
   @moduletag :integration
 
+  alias Exqlite.Sqlite3
   alias VialKeeper.Attachments
   alias VialKeeper.Attachments.FilesystemStore
   alias VialKeeper.Attachments.Manifest
@@ -589,20 +590,20 @@ defmodule VialKeeper.Attachments.GCTest do
     path = Path.join(DatabaseBundle.root(bundle), "database.sqlite3")
     past = DateTime.utc_now() |> DateTime.add(-3_600, :second) |> DateTime.to_iso8601()
 
-    {:ok, conn} = Exqlite.Sqlite3.open(path)
+    {:ok, conn} = Sqlite3.open(path)
 
     try do
       {:ok, stmt} =
-        Exqlite.Sqlite3.prepare(
+        Sqlite3.prepare(
           conn,
           "UPDATE pending_blobs SET expires_at = ? WHERE blob_digest = ?"
         )
 
-      :ok = Exqlite.Sqlite3.bind(stmt, [past, digest])
-      :done = Exqlite.Sqlite3.step(conn, stmt)
-      :ok = Exqlite.Sqlite3.release(conn, stmt)
+      :ok = Sqlite3.bind(stmt, [past, digest])
+      :done = Sqlite3.step(conn, stmt)
+      :ok = Sqlite3.release(conn, stmt)
     after
-      Exqlite.Sqlite3.close(conn)
+      Sqlite3.close(conn)
     end
   end
 

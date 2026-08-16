@@ -181,5 +181,21 @@
         ]
       }
     ]
+  ],
+  smells: [
+    strict: true,
+    behaviour_candidate: [
+      ignore: [modules: ["VialKeeper.Quality.ReachSmells.*"]]
+    ],
+    custom_checks: [
+      VialKeeper.Quality.ReachSmells.ExplicitGenServerTimeout,
+      VialKeeper.Quality.ReachSmells.ExplicitTaskTimeout,
+      VialKeeper.Quality.ReachSmells.BoundedAsyncStream,
+      VialKeeper.Quality.ReachSmells.NoBareSpawn,
+      VialKeeper.Quality.ReachSmells.TantivyBoundary,
+      VialKeeper.Quality.ReachSmells.BenchmarkExternalRoot,
+      VialKeeper.Quality.ReachSmells.NoSleepInOtpCallback,
+      VialKeeper.Quality.ReachSmells.JustifiedSuppressions
+    ]
   ]
 ]

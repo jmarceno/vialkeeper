@@ -5,7 +5,9 @@ defmodule VialKeeper.StorageAdapter.DocumentsTest do
 
   @moduletag :sqlite_physical
 
+  alias VialKeeper.JSON.Canonical
   alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.UUID
 
   setup do
     {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-test")
@@ -108,8 +110,8 @@ defmodule VialKeeper.StorageAdapter.DocumentsTest do
     end)
 
     body = %{"z" => [3, 2, 1], "a" => %{"value" => true}}
-    body_json = VialKeeper.JSON.Canonical.encode!(body)
-    history_id = VialKeeper.UUID.v4()
+    body_json = Canonical.encode!(body)
+    history_id = UUID.v4()
 
     request = %{
       operation: :put,

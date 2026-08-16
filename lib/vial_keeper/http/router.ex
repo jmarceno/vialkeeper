@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.Router do
   @moduledoc "Top-level Plug router for the VialKeeper HTTP API."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
 
   alias VialKeeper.HTTP.Response
 

@@ -58,13 +58,13 @@ defmodule VialKeeper.Storage.Memory.AttachmentMetadata do
     with {:ok, adapter} <- Context.unwrap(context),
          {:ok, digest} <- require_digest(row),
          {:ok, logical_size} <- require_logical_size(row) do
-      meta = %{
-        digest: digest,
-        logical_size: logical_size,
-        length: logical_size,
-        expires_at: MapAccess.get(row, :expires_at),
-        updated_at: MapAccess.get(row, :updated_at)
-      }
+      meta =
+        Orchestration.pending_meta(
+          digest,
+          logical_size,
+          MapAccess.get(row, :expires_at),
+          MapAccess.get(row, :updated_at)
+        )
 
       update_pending(adapter.store, fn pending ->
         {Map.put(pending, digest, meta), meta}
@@ -134,13 +134,13 @@ defmodule VialKeeper.Storage.Memory.AttachmentMetadata do
     Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
       with {:ok, digest} <- require_digest(row),
            {:ok, logical_size} <- require_logical_size(row) do
-        meta = %{
-          digest: digest,
-          logical_size: logical_size,
-          length: logical_size,
-          expires_at: MapAccess.get(row, :expires_at),
-          updated_at: MapAccess.get(row, :updated_at)
-        }
+        meta =
+          Orchestration.pending_meta(
+            digest,
+            logical_size,
+            MapAccess.get(row, :expires_at),
+            MapAccess.get(row, :updated_at)
+          )
 
         {:cont, {:ok, [meta | acc]}}
       else

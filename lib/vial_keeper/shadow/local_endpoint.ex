@@ -61,7 +61,7 @@ defmodule VialKeeper.Shadow.LocalEndpoint do
     do: invoke(endpoint, :open_attachment_representation, [request, opts])
 
   defp invoke(%__MODULE__{worker: worker, worker_options: options}, function, args) do
-    apply(worker, function, args ++ [options])
+    apply(worker, function, Enum.concat(args, [options]))
   rescue
     exception in [ArgumentError, FunctionClauseError, UndefinedFunctionError] ->
       {:error,

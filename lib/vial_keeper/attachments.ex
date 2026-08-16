@@ -924,6 +924,8 @@ defmodule VialKeeper.Attachments do
 
   defp upload_physical_batch(uuid, bundle_root, sources, concurrency, opts) do
     sources
+    # quality:reason batch upload streams CAS under coordinator slots; a timeout would abandon durable writes
+    # reach:disable-next-line vial_keeper_unbounded_async_stream -- batch uploads must run to completion
     |> Task.async_stream(
       fn descriptor -> upload_one_batch_source(uuid, bundle_root, descriptor, opts) end,
       max_concurrency: concurrency,
@@ -983,40 +985,53 @@ defmodule VialKeeper.Attachments do
         maximum
       )
 
-    cond do
-      not is_integer(batch_size) or batch_size <= 0 or batch_size > maximum ->
-        {:error,
-         VialKeeper.Error.invalid_request(
-           "attachment protection batch size exceeds the host bulk limit"
-         )}
-
-      true ->
-        AttachmentUpload.phase(:pending_protection, fn ->
-          descriptors
-          |> Enum.uniq_by(& &1.blob)
-          |> Enum.chunk_every(batch_size)
-          |> Enum.reduce_while({:ok, %{}}, fn batch, {:ok, expiries} ->
-            blobs = Enum.map(batch, &%{digest: &1.blob, logical_size: &1.length})
-
-            case metadata_command(
-                   uuid,
-                   {:command, :protect_pending_blobs, %{blobs: blobs}},
-                   admission_class
-                 ) do
-              {:ok, %{protected: protected}} ->
-                updated =
-                  Enum.reduce(protected, expiries, fn row, acc ->
-                    Map.put(acc, MapAccess.get(row, :digest), MapAccess.get(row, :expires_at))
-                  end)
-
-                {:cont, {:ok, updated}}
-
-              {:error, _} = error ->
-                {:halt, error}
-            end
-          end)
-        end)
+    if valid_protection_batch_size?(batch_size, maximum) do
+      AttachmentUpload.phase(:pending_protection, fn ->
+        protect_descriptor_batches(uuid, descriptors, batch_size, admission_class)
+      end)
+    else
+      {:error,
+       VialKeeper.Error.invalid_request(
+         "attachment protection batch size exceeds the host bulk limit"
+       )}
     end
+  end
+
+  defp valid_protection_batch_size?(batch_size, maximum)
+       when is_integer(batch_size) and batch_size > 0 and batch_size <= maximum,
+       do: true
+
+  defp valid_protection_batch_size?(_batch_size, _maximum), do: false
+
+  defp protect_descriptor_batches(uuid, descriptors, batch_size, admission_class) do
+    descriptors
+    |> Enum.uniq_by(& &1.blob)
+    |> Enum.chunk_every(batch_size)
+    |> Enum.reduce_while({:ok, %{}}, fn batch, acc ->
+      protect_one_batch(uuid, admission_class, batch, acc)
+    end)
+  end
+
+  defp protect_one_batch(uuid, admission_class, batch, {:ok, expiries}) do
+    blobs = Enum.map(batch, &%{digest: &1.blob, logical_size: &1.length})
+
+    case metadata_command(
+           uuid,
+           {:command, :protect_pending_blobs, %{blobs: blobs}},
+           admission_class
+         ) do
+      {:ok, %{protected: protected}} ->
+        {:cont, {:ok, merge_protection_expiries(expiries, protected)}}
+
+      {:error, _} = error ->
+        {:halt, error}
+    end
+  end
+
+  defp merge_protection_expiries(expiries, protected) do
+    Enum.reduce(protected, expiries, fn row, acc ->
+      Map.put(acc, MapAccess.get(row, :digest), MapAccess.get(row, :expires_at))
+    end)
   end
 
   defp open_stream_under_guard(uuid, ticket_request, read_guard, read_handle) do

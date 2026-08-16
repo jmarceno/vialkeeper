@@ -16,6 +16,7 @@ defmodule VialKeeper.View.Builder do
 
   @default_page_limit 100
 
+  @spec child_spec(keyword()) :: map()
   def child_spec(opts) do
     uuid = Keyword.fetch!(opts, :uuid)
     view_id = Keyword.fetch!(opts, :view_id)
@@ -27,6 +28,7 @@ defmodule VialKeeper.View.Builder do
     )
   end
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     uuid = Keyword.fetch!(opts, :uuid)
     view_id = Keyword.fetch!(opts, :view_id)
@@ -36,6 +38,7 @@ defmodule VialKeeper.View.Builder do
     )
   end
 
+  @spec via(binary(), binary()) :: {:via, module(), term()}
   def via(uuid, view_id),
     do: {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:view_builder, uuid, view_id}}}
 

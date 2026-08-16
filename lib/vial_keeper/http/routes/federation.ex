@@ -2,6 +2,7 @@ defmodule VialKeeper.HTTP.Routes.Federation do
   @moduledoc "HTTP routes for explicit and named federation queries."
 
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
 
   alias VialKeeper.Federation
   alias VialKeeper.Federation.SavedQueries

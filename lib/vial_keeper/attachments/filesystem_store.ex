@@ -791,10 +791,14 @@ defmodule VialKeeper.Attachments.FilesystemStore do
     if Compression.already_compressed?(probe) do
       :raw
     else
-      case Compression.probe(probe) do
-        {:ok, result} -> if Compression.worthwhile?(result), do: :zstd, else: :raw
-        {:error, _} -> :raw
-      end
+      encoding_from_probe(probe)
+    end
+  end
+
+  defp encoding_from_probe(probe) do
+    case Compression.probe(probe) do
+      {:ok, result} -> if Compression.worthwhile?(result), do: :zstd, else: :raw
+      {:error, _} -> :raw
     end
   end
 

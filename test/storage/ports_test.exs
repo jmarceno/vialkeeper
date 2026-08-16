@@ -228,8 +228,8 @@ defmodule VialKeeper.Storage.PortsTest do
     ]
 
     for path <-
-          Path.wildcard("lib/vial_keeper/storage/ports/*.ex") ++
-            ["lib/vial_keeper/storage/transaction.ex"] do
+          Path.wildcard("lib/vial_keeper/storage/ports/*.ex")
+          |> Enum.concat(["lib/vial_keeper/storage/transaction.ex"]) do
       source = File.read!(path)
 
       for marker <- forbidden do

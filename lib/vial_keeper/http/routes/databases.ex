@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.Routes.Databases do
   @moduledoc "HTTP routes for database lifecycle and registration operations."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
   alias VialKeeper.HTTP.{Request, Response}
   alias VialKeeper.HTTP.Schemas
   alias VialKeeper.Maintenance
@@ -107,7 +108,8 @@ defmodule VialKeeper.HTTP.Routes.Databases do
     not_found(conn)
   end
 
-  @doc false
+  @doc "HTTP handler that registers an existing database bundle."
+  @spec register(Plug.Conn.t()) :: Plug.Conn.t()
   def register(conn) do
     Request.call(
       conn,
@@ -121,7 +123,8 @@ defmodule VialKeeper.HTTP.Routes.Databases do
     )
   end
 
-  @doc false
+  @doc "HTTP handler that unregisters a database from this host."
+  @spec unregister(Plug.Conn.t()) :: Plug.Conn.t()
   def unregister(conn) do
     case DatabaseCatalog.unregister(Request.uuid(conn)) do
       :ok -> Response.ok(conn, %{})

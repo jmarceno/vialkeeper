@@ -100,7 +100,7 @@ defmodule VialKeeper.Observability.Instrumentation.Attachment do
         Meters.add(@read_count, emit_attrs)
         Meters.record(@read_duration, duration, emit_attrs)
       after
-        OpenTelemetry.Span.end_span(span_ctx)
+        _ = OpenTelemetry.Span.end_span(span_ctx)
         _ = OpenTelemetry.Tracer.set_current_span(previous)
       end
 
@@ -125,7 +125,7 @@ defmodule VialKeeper.Observability.Instrumentation.Attachment do
         Meters.add(@read_count, attrs)
         Meters.record(@read_duration, duration, attrs)
       after
-        OpenTelemetry.Span.end_span(span_ctx)
+        _ = OpenTelemetry.Span.end_span(span_ctx)
         _ = OpenTelemetry.Tracer.set_current_span(previous)
       end
 

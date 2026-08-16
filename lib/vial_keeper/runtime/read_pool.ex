@@ -805,7 +805,11 @@ defmodule VialKeeper.Runtime.ReadPool do
   end
 
   defp cancel_timer(nil), do: :ok
-  defp cancel_timer(timer_ref), do: Process.cancel_timer(timer_ref)
+
+  defp cancel_timer(timer_ref) do
+    _ = Process.cancel_timer(timer_ref)
+    :ok
+  end
 
   defp unwrap_authority({:command_context, %CommandContext{} = authority, command}),
     do: {authority, command}

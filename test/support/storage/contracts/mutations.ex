@@ -7,6 +7,7 @@ defmodule VialKeeper.Storage.Contracts.Mutations do
     physical? = Keyword.get(opts, :physical, false)
 
     # The contract tests must be injected into each adapter module.
+    # quality:reason contract tests are injected via quote into each adapter module
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
     quote do
       use VialKeeper.Storage.AdapterCase, unquote(opts)

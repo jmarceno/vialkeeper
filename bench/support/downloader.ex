@@ -197,7 +197,7 @@ defmodule VialKeeper.Bench.Downloader do
   defp close_stream_io({:error, _reason, acc}), do: close_io(acc)
 
   defp close_io(%{io: io} = acc) when not is_nil(io) do
-    File.close(io)
+    _ = File.close(io)
     %{acc | io: nil}
   end
 

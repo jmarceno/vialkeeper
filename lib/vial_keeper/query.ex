@@ -1,12 +1,16 @@
 defmodule VialKeeper.Query do
   @moduledoc "Query service and logical index lifecycle."
 
+  alias VialKeeper.Config
   alias VialKeeper.JSON.{Canonical, Pointer}
   alias VialKeeper.MapAccess
   alias VialKeeper.Query.{BookmarkCodec, Normalizer, Prepared}
   alias VialKeeper.Runtime.DatabaseCatalog
-  alias VialKeeper.Config
 
+  @type uuid :: binary()
+  @type result(ok) :: {:ok, ok} | {:error, VialKeeper.Error.t()}
+
+  @spec create_index(uuid(), map()) :: result(map())
   def create_index(uuid, definition) do
     with {:ok, normalized} <- normalize_index(definition) do
       DatabaseCatalog.command(
@@ -17,11 +21,14 @@ defmodule VialKeeper.Query do
     end
   end
 
+  @spec list_indexes(uuid()) :: result(map())
   def list_indexes(uuid), do: DatabaseCatalog.command(uuid, {:command, :list_indexes, %{}})
 
+  @spec delete_index(uuid(), binary()) :: result(map())
   def delete_index(uuid, index_id),
     do: DatabaseCatalog.command(uuid, {:command, :delete_index, index_id})
 
+  @spec rebuild_index(uuid(), binary()) :: result(map())
   def rebuild_index(uuid, index_id),
     do:
       DatabaseCatalog.command(
@@ -30,11 +37,13 @@ defmodule VialKeeper.Query do
         Config.search_rebuild_timeout_ms()
       )
 
+  @spec execute(uuid(), map()) :: result(map())
   def execute(uuid, request) do
     execute_internal(uuid, request, :ordinary)
   end
 
   @doc "Executes a query using a caller-provided shared deadline."
+  @spec execute_with_deadline(uuid(), map(), pos_integer()) :: result(map())
   def execute_with_deadline(uuid, request, deadline_ms)
       when is_integer(deadline_ms) do
     execute_internal(uuid, request, {:deadline, deadline_ms})
@@ -58,6 +67,7 @@ defmodule VialKeeper.Query do
   defp command(uuid, request, {:deadline, deadline}),
     do: DatabaseCatalog.command_with_deadline(uuid, request, deadline)
 
+  @spec explain(uuid(), map()) :: result(map())
   def explain(uuid, request) do
     with {:ok, normalized} <- Normalizer.normalize(request),
          :ok <- validate_query(normalized),
@@ -356,7 +366,12 @@ defmodule VialKeeper.Query do
         result_values -> result_values
       end
 
-    last = List.last(values)
+    last =
+      case values do
+        [] -> nil
+        _ -> hd(Enum.reverse(values))
+      end
+
     last_id = get(last, :id)
 
     sequence =

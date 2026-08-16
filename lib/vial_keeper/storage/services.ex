@@ -247,7 +247,7 @@ defmodule VialKeeper.Storage.Services do
   def apply_local_mutation(%BackendContext{} = context, request) when is_map(request) do
     families =
       if shadow_profile?(request),
-        do: @mutation_port_families ++ [:shadow_state],
+        do: Enum.concat(@mutation_port_families, [:shadow_state]),
         else: @mutation_port_families
 
     with_ports(context, families, fn ->

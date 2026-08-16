@@ -9,11 +9,13 @@ defmodule VialKeeper.Storage.SQLite.LocalRecords do
   alias VialKeeper.JSON.{Canonical, StrictDecoder}
   alias VialKeeper.MapAccess
   alias VialKeeper.Storage.SQLite.{Adapter, Checkpoints, Connection}
-  @doc false
+  @doc "Adapter compatibility entry that loads one local record."
+  @spec get(map(), binary(), binary()) :: {:ok, map() | nil} | {:error, VialKeeper.Error.t()}
   def get(adapter, namespace, key),
     do: Adapter.get_local_record(adapter, namespace, key)
 
-  @doc false
+  @doc "Adapter compatibility entry that compare-and-swaps a local record."
+  @spec put(map(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def put(adapter, request),
     do: Adapter.put_local_record_cas(adapter, request)
 

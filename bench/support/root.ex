@@ -345,6 +345,8 @@ defmodule VialKeeper.Bench.Root do
     end
   end
 
+  # quality:reason this helper only compares candidate roots against the system temp directory so they can be rejected
+  # reach:disable-next-line vial_keeper_benchmark_external_root -- reject roots under the system temp directory
   defp tmp_dir, do: String.trim_trailing(Path.expand(System.tmp_dir!()), "/")
   defp cwd_dir, do: String.trim_trailing(Path.expand(File.cwd!()), "/")
 

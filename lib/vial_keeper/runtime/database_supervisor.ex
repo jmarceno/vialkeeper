@@ -8,8 +8,10 @@ defmodule VialKeeper.Runtime.DatabaseSupervisor do
   """
   use DynamicSupervisor
 
+  @spec start_link(term()) :: Supervisor.on_start()
   def start_link(_args \\ []), do: DynamicSupervisor.start_link(__MODULE__, [], name: __MODULE__)
 
+  @spec init(term()) :: {:ok, DynamicSupervisor.sup_flags()}
   @impl true
   def init(_args),
     do: DynamicSupervisor.init(strategy: :one_for_one, max_restarts: 20, max_seconds: 5)

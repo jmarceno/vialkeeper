@@ -4,6 +4,7 @@ defmodule VialKeeper.Runtime.AdmittedCommandSupervisor do
 
   alias VialKeeper.Runtime.ChildSpec
 
+  @spec child_spec(binary()) :: map()
   def child_spec(uuid) do
     ChildSpec.supervisor(
       {:admitted_command_supervisor, uuid},
@@ -12,8 +13,10 @@ defmodule VialKeeper.Runtime.AdmittedCommandSupervisor do
     )
   end
 
+  @spec start_link(binary()) :: Supervisor.on_start()
   def start_link(uuid), do: DynamicSupervisor.start_link(__MODULE__, uuid, name: via(uuid))
 
+  @spec via(binary()) :: {:via, module(), term()}
   def via(uuid),
     do:
       {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:admitted_command_supervisor, uuid}}}

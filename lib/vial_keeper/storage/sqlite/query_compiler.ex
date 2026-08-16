@@ -188,11 +188,10 @@ defmodule VialKeeper.Storage.SQLite.QueryCompiler do
 
   defp compile_in_conditions(compiled, acc) do
     {:ok,
-     acc ++
-       [
-         {"(" <> Enum.map_join(compiled, " OR ", &elem(&1, 0)) <> ")",
-          Enum.map(compiled, &elem(&1, 1))}
-       ]}
+     Enum.concat(acc, [
+       {"(" <> Enum.map_join(compiled, " OR ", &elem(&1, 0)) <> ")",
+        Enum.map(compiled, &elem(&1, 1))}
+     ])}
   end
 
   defp reduce_ok(enumerable, acc, fun) do

@@ -26,10 +26,12 @@ defmodule VialKeeper.Shadow.Replicator do
   end
 
   @spec cancel(GenServer.server()) :: :ok
-  def cancel(server), do: GenServer.call(server, :cancel)
+  def cancel(server),
+    do: GenServer.call(server, :cancel, VialKeeper.Config.request_timeout_ms())
 
   @spec status(GenServer.server()) :: map()
-  def status(server), do: GenServer.call(server, :status)
+  def status(server),
+    do: GenServer.call(server, :status, VialKeeper.Config.request_timeout_ms())
 
   @impl true
   def init(opts) do
@@ -208,6 +210,8 @@ defmodule VialKeeper.Shadow.Replicator do
           result_value(result, :source_sequence),
           worker_opts
         )
+
+      :ok
     end
 
     :ok
@@ -215,8 +219,6 @@ defmodule VialKeeper.Shadow.Replicator do
 
   defp result_value(result, key) when is_map(result),
     do: Map.get(result, key, Map.get(result, to_string(key), 0))
-
-  defp result_value(_result, _key), do: 0
 
   defp continuous?(opts), do: Keyword.get(opts, :mode, "one_shot") in [:continuous, "continuous"]
   defp retry_ms(opts), do: Keyword.get(opts, :retry_ms, @default_retry_ms)

@@ -6,7 +6,12 @@ defmodule VialKeeper.Changes do
   alias VialKeeper.Runtime.{ChangeNotifier, DatabaseCatalog}
 
   @type admission_class :: :foreground | :replication
+  @type uuid :: binary()
+  @type result(ok) :: {:ok, ok} | {:error, VialKeeper.Error.t()}
 
+  @spec read(uuid()) :: result(map())
+  @spec read(uuid(), map() | struct()) :: result(map())
+  @spec read(uuid(), map() | struct(), keyword()) :: result(map())
   def read(uuid, request \\ %{}, opts \\ []) do
     admission_class = Keyword.get(opts, :admission_class, :foreground)
 
@@ -17,6 +22,8 @@ defmodule VialKeeper.Changes do
     end)
   end
 
+  @spec wait(uuid(), map() | struct()) :: result(map())
+  @spec wait(uuid(), map() | struct(), keyword()) :: result(map())
   def wait(uuid, request, opts \\ []) do
     with {:ok, normalized} <- normalize_request(request) do
       wait_request(uuid, normalized, Keyword.get(opts, :admission_class, :foreground))
@@ -57,12 +64,10 @@ defmodule VialKeeper.Changes do
   defp normalize_request(request) when is_map(request) do
     allowed = [:since, :limit, :wait_ms, "since", "limit", "wait_ms"]
 
-    case Enum.all?(Map.keys(request), &(&1 in allowed)) do
-      true ->
-        normalize_values(request)
-
-      false ->
-        {:error, VialKeeper.Error.invalid_request("changes request contains an unknown field")}
+    if Enum.all?(Map.keys(request), &(&1 in allowed)) do
+      normalize_values(request)
+    else
+      {:error, VialKeeper.Error.invalid_request("changes request contains an unknown field")}
     end
   end
 

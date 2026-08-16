@@ -1246,6 +1246,11 @@ defmodule FakeOwner do
     {:reply, state.block_from == nil, state}
   end
 
+  def handle_call({:owner_queued_command, queued_at, command}, from, state)
+      when is_integer(queued_at) do
+    handle_call(command, from, state)
+  end
+
   def handle_call({:block, notify_pid}, from, state) do
     send(notify_pid, :owner_blocked)
     {:noreply, %{state | block_from: from}}

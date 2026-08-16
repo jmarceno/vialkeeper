@@ -20,18 +20,22 @@ defmodule VialKeeper.Observability.Supervisor do
 
   require Logger
 
+  alias VialKeeper.Observability.{Meters, TelemetryBridge}
+
+  @spec start_link(term()) :: Supervisor.on_start()
   def start_link(_args), do: Supervisor.start_link(__MODULE__, [], name: __MODULE__)
 
+  @spec init(term()) :: {:ok, {Supervisor.sup_flags(), [Supervisor.child_spec()]}}
   @impl true
   def init(_) do
     ensure_started(:opentelemetry_api)
     ensure_started(:opentelemetry)
     ensure_started(:opentelemetry_experimental)
-    :ok = VialKeeper.Observability.Meters.initialize()
+    :ok = Meters.initialize()
 
     children = [
       # Attaches the Bandit/Finch :telemetry bridge handlers; detaches on shutdown.
-      {VialKeeper.Observability.TelemetryBridge, []}
+      {TelemetryBridge, []}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

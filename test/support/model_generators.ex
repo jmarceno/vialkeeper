@@ -316,7 +316,7 @@ defmodule VialKeeper.ModelGenerators do
     )
   end
 
-  defp maybe_append_replay(ops, true) when ops != [], do: ops ++ [%{op: :replay_last}]
+  defp maybe_append_replay(ops, true) when ops != [], do: Enum.concat(ops, [%{op: :replay_last}])
   defp maybe_append_replay(ops, _), do: ops
 
   defp distinct_left_body(left, right) when left == right,

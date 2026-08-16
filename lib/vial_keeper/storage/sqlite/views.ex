@@ -285,7 +285,7 @@ defmodule VialKeeper.Storage.SQLite.Views do
     case Connection.query(
            conn,
            "SELECT document_id, winning_revision, winning_body_json, winning_body_term, update_sequence FROM documents WHERE #{filter} ORDER BY document_id LIMIT ?",
-           params ++ [limit + 1]
+           params |> Enum.concat([limit + 1])
          ) do
       {:ok, rows} -> {:ok, rows}
       {:error, reason} -> {:error, normalize_error(reason)}
@@ -357,15 +357,15 @@ defmodule VialKeeper.Storage.SQLite.Views do
 
         start_sort ->
           if plan.bookmark_after do
-            {filters ++ ["(key_sort > ? OR (key_sort = ? AND document_id > ?))"],
-             params ++
-               [
-                 TermBlob.bind(start_sort),
-                 TermBlob.bind(start_sort),
-                 plan.bookmark_after
-               ]}
+            {Enum.concat(filters, ["(key_sort > ? OR (key_sort = ? AND document_id > ?))"]),
+             Enum.concat(params, [
+               TermBlob.bind(start_sort),
+               TermBlob.bind(start_sort),
+               plan.bookmark_after
+             ])}
           else
-            {filters ++ ["key_sort >= ?"], params ++ [TermBlob.bind(start_sort)]}
+            {Enum.concat(filters, ["key_sort >= ?"]),
+             Enum.concat(params, [TermBlob.bind(start_sort)])}
           end
       end
 
@@ -376,7 +376,9 @@ defmodule VialKeeper.Storage.SQLite.Views do
 
         end_sort ->
           op = if plan.inclusive_end, do: "<=", else: "<"
-          {filters ++ [["key_sort ", op, " ?"]], params ++ [TermBlob.bind(end_sort)]}
+
+          {Enum.concat(filters, [["key_sort ", op, " ?"]]),
+           Enum.concat(params, [TermBlob.bind(end_sort)])}
       end
 
     sql =
@@ -387,7 +389,7 @@ defmodule VialKeeper.Storage.SQLite.Views do
         limit_clause(fetch_limit)
       ])
 
-    params = if fetch_limit, do: params ++ [fetch_limit], else: params
+    params = if fetch_limit, do: Enum.concat(params, [fetch_limit]), else: params
     {sql, params}
   end
 

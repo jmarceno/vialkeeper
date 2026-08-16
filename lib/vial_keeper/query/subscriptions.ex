@@ -11,6 +11,8 @@ defmodule VialKeeper.Query.Subscriptions do
   alias VialKeeper.Query.Subscription.Events
   alias VialKeeper.Runtime.DatabaseCatalog
 
+  @spec open(binary(), map()) :: {:ok, pid()} | {:error, VialKeeper.Error.t()}
+  @spec open(binary(), map(), pid()) :: {:ok, pid()} | {:error, VialKeeper.Error.t()}
   def open(uuid, request, client_pid \\ self()) do
     with {:ok, identity} <-
            DatabaseCatalog.command_as(uuid, :subscription, {:command, :identity, %{}}),
@@ -36,6 +38,9 @@ defmodule VialKeeper.Query.Subscriptions do
     end
   end
 
+  @spec next(pid()) :: {:ok | :closed | :error, Events.t()} | {:error, VialKeeper.Error.t()}
+  @spec next(pid(), timeout()) ::
+          {:ok | :closed | :error, Events.t()} | {:error, VialKeeper.Error.t()}
   def next(pid, timeout \\ 30_000) do
     Subscription.next(pid, timeout)
   catch
@@ -43,11 +48,13 @@ defmodule VialKeeper.Query.Subscriptions do
     :exit, {{:noproc, _}, _} -> {:closed, Events.closed()}
   end
 
+  @spec close(pid()) :: :ok
   def close(pid) when is_pid(pid) do
     if Process.alive?(pid), do: Subscription.close(pid)
     :ok
   end
 
+  @spec count(binary()) :: non_neg_integer()
   def count(uuid) do
     case SubscriptionHub.count(uuid) do
       n when is_integer(n) -> n

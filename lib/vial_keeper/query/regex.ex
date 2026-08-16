@@ -6,6 +6,8 @@ defmodule VialKeeper.Query.Regex do
   canonical query or plan representations.
   """
 
+  alias VialKeeper.Error
+
   @max_pattern_bytes 1_024
   @match_limit 100_000
   @match_limit_recursion 1_000
@@ -15,17 +17,17 @@ defmodule VialKeeper.Query.Regex do
 
   @type t :: %__MODULE__{source: binary(), compiled: term()}
 
-  @spec compile(binary()) :: {:ok, t()} | {:error, VialKeeper.Error.t()}
+  @spec compile(binary()) :: {:ok, t()} | {:error, Error.t()}
   def compile(source) when is_binary(source) do
     cond do
       byte_size(source) > @max_pattern_bytes ->
-        {:error, VialKeeper.Error.resource_limit("regex pattern exceeds the configured limit")}
+        {:error, Error.resource_limit("regex pattern exceeds the configured limit")}
 
       not String.valid?(source) ->
-        {:error, VialKeeper.Error.invalid_request("regex pattern must be valid UTF-8")}
+        {:error, Error.invalid_request("regex pattern must be valid UTF-8")}
 
       inline_flags?(source) ->
-        {:error, VialKeeper.Error.invalid_request("regex inline flags are not supported")}
+        {:error, Error.invalid_request("regex inline flags are not supported")}
 
       true ->
         case :re.compile(source, [:unicode]) do
@@ -34,16 +36,16 @@ defmodule VialKeeper.Query.Regex do
 
           {:error, reason} ->
             {:error,
-             VialKeeper.Error.invalid_request("regex pattern is invalid", %{
+             Error.invalid_request("regex pattern is invalid", %{
                reason: regex_reason(reason)
              })}
         end
     end
   end
 
-  def compile(_), do: {:error, VialKeeper.Error.invalid_request("regex pattern must be a string")}
+  def compile(_), do: {:error, Error.invalid_request("regex pattern must be a string")}
 
-  @spec match?(t(), term()) :: {:ok, boolean()} | {:error, VialKeeper.Error.t()}
+  @spec match?(t(), term()) :: {:ok, boolean()} | {:error, Error.t()}
   def match?(%__MODULE__{}, value) when not is_binary(value), do: {:ok, false}
 
   def match?(%__MODULE__{compiled: compiled}, value) when is_binary(value) do
@@ -60,18 +62,17 @@ defmodule VialKeeper.Query.Regex do
         {:ok, false}
 
       {:error, reason} when reason in [:match_limit, :match_limit_recursion] ->
-        {:error, VialKeeper.Error.resource_limit("regex evaluation exceeded its resource limit")}
+        {:error, Error.resource_limit("regex evaluation exceeded its resource limit")}
 
       {:error, reason} ->
-        {:error,
-         VialKeeper.Error.invalid_request("regex evaluation failed", %{reason: regex_reason(reason)})}
+        {:error, Error.invalid_request("regex evaluation failed", %{reason: regex_reason(reason)})}
     end
   rescue
     ArgumentError ->
-      {:error, VialKeeper.Error.invalid_request("regex evaluation failed")}
+      {:error, Error.invalid_request("regex evaluation failed")}
   end
 
-  def match?(_, _), do: {:error, VialKeeper.Error.invalid_request("compiled regex is invalid")}
+  def match?(_, _), do: {:error, Error.invalid_request("compiled regex is invalid")}
 
   @spec source(t()) :: binary()
   def source(%__MODULE__{source: source}), do: source

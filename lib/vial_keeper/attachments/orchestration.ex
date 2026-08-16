@@ -22,20 +22,38 @@ defmodule VialKeeper.Attachments.Orchestration do
   def live_digest_page_size, do: @live_digest_page_size
 
   @doc "Builds a pending-blob metadata row renewing TTL from `now`."
-  @spec pending_row(binary(), non_neg_integer(), DateTime.t()) :: map()
+  @spec pending_row(binary(), non_neg_integer(), DateTime.t()) :: pending_meta()
   def pending_row(digest, logical_size, %DateTime{} = now)
       when is_binary(digest) and is_integer(logical_size) and logical_size >= 0 do
     now = DateTime.truncate(now, :second)
     expires_at = DateTime.add(now, @pending_ttl_seconds, :second)
-    now_iso = DateTime.to_iso8601(now)
-    expires_iso = DateTime.to_iso8601(expires_at)
 
+    pending_meta(
+      digest,
+      logical_size,
+      DateTime.to_iso8601(expires_at),
+      DateTime.to_iso8601(now)
+    )
+  end
+
+  @type pending_meta :: %{
+          required(:digest) => binary(),
+          required(:logical_size) => non_neg_integer(),
+          required(:length) => non_neg_integer(),
+          required(:expires_at) => term(),
+          required(:updated_at) => term()
+        }
+
+  @doc "Builds the pending-blob metadata map shared by backends."
+  @spec pending_meta(binary(), non_neg_integer(), term(), term()) :: pending_meta()
+  def pending_meta(digest, logical_size, expires_at, updated_at)
+      when is_binary(digest) and is_integer(logical_size) and logical_size >= 0 do
     %{
       digest: digest,
       logical_size: logical_size,
       length: logical_size,
-      expires_at: expires_iso,
-      updated_at: now_iso
+      expires_at: expires_at,
+      updated_at: updated_at
     }
   end
 
@@ -101,7 +119,7 @@ defmodule VialKeeper.Attachments.Orchestration do
 
       next_after =
         if length(window) > page_limit do
-          List.last(page)
+          hd(Enum.reverse(page))
         else
           nil
         end

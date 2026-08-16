@@ -48,9 +48,6 @@ defmodule VialKeeper.WebUI.Routes.Home do
 
       {:error, error} ->
         {:error, error}
-
-      other ->
-        {:error, VialKeeper.Error.internal_error("unexpected catalog list", %{got: inspect(other)})}
     end
   end
 

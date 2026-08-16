@@ -13,11 +13,12 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
 
   alias VialKeeper.Bench.{Reports, Root, Runtime, Statistics}
   alias VialKeeper.DatabaseBundle
-  alias VialKeeper.DurableFS
   alias VialKeeper.Documents
+  alias VialKeeper.DurableFS
   alias VialKeeper.JSON.Canonical
   alias VialKeeper.Query
   alias VialKeeper.Revisions.Id
+  alias VialKeeper.Runtime.DatabaseCatalog
   alias VialKeeper.Search
   alias VialKeeper.Search.Tantivy
   alias VialKeeper.Storage.Services
@@ -220,21 +221,22 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     with_adapter(work_path, "service-documents", fn adapter ->
       context = Adapter.to_context(adapter)
 
-      samples =
-        Enum.map(documents, fn document ->
-          timed_result!(fn ->
-            Services.apply_local_mutation(context, %{
-              operation: :put,
-              document_id: document.id,
-              history_id: document.history_id,
-              body: document.body,
-              attachments: %{}
-            })
-          end)
-        end)
+      samples = Enum.map(documents, &service_document_sample(context, &1))
 
       summarize_operations(samples, length(documents))
       |> Map.put("pragmas", connection_pragmas(adapter.conn))
+    end)
+  end
+
+  defp service_document_sample(context, document) do
+    timed_result!(fn ->
+      Services.apply_local_mutation(context, %{
+        operation: :put,
+        document_id: document.id,
+        history_id: document.history_id,
+        body: document.body,
+        attachments: %{}
+      })
     end)
   end
 
@@ -323,15 +325,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     with_public_database(context, "documents-bulk-#{batch_size}", fn uuid ->
       batches = Enum.chunk_every(documents, batch_size)
 
-      samples =
-        Enum.map(batches, fn batch ->
-          operations =
-            Enum.map(batch, fn document ->
-              %{"type" => "put", "id" => document.id, "body" => document.body}
-            end)
-
-          timed_result!(fn -> Documents.bulk_write(uuid, operations) end)
-        end)
+      samples = Enum.map(batches, &bulk_batch_sample(uuid, &1))
 
       operation_count = length(documents)
 
@@ -341,6 +335,14 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
         "transaction_count" => length(batches)
       })
     end)
+  end
+
+  defp bulk_batch_sample(uuid, batch) do
+    timed_result!(fn -> Documents.bulk_write(uuid, Enum.map(batch, &bulk_put_operation/1)) end)
+  end
+
+  defp bulk_put_operation(document) do
+    %{"type" => "put", "id" => document.id, "body" => document.body}
   end
 
   defp database_create_controls(_context, work_path) do
@@ -431,31 +433,28 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
   end
 
   defp attachment_size_controls(context, work_path, config) do
-    by_size =
-      Enum.map(config.attachment_sizes, fn size ->
-        payload = deterministic_payload(size, "size-#{size}")
+    Enum.map(config.attachment_sizes, fn size ->
+      payload = deterministic_payload(size, "size-#{size}")
 
-        by_chunk_size =
-          Enum.map(config.attachment_chunk_sizes, fn chunk_size ->
-            chunks = payload_chunks(payload, chunk_size)
+      by_chunk_size =
+        Enum.map(config.attachment_chunk_sizes, fn chunk_size ->
+          chunks = payload_chunks(payload, chunk_size)
 
-            %{
-              "chunk_bytes" => chunk_size,
-              "raw_non_durable_copy" => raw_filesystem_control(work_path, chunks, size, config),
-              "raw_durable_cas" => raw_durable_cas_control(work_path, chunks, payload, config),
-              "filesystem_store" => filesystem_store_control(work_path, chunks, size, config),
-              "attachments_facade" => attachment_facade_control(context, chunks, size, config)
-            }
-          end)
+          %{
+            "chunk_bytes" => chunk_size,
+            "raw_non_durable_copy" => raw_filesystem_control(work_path, chunks, size, config),
+            "raw_durable_cas" => raw_durable_cas_control(work_path, chunks, payload, config),
+            "filesystem_store" => filesystem_store_control(work_path, chunks, size, config),
+            "attachments_facade" => attachment_facade_control(context, chunks, size, config)
+          }
+        end)
 
-        %{
-          "logical_bytes" => size,
-          "by_chunk_size" => by_chunk_size,
-          "document_reference" => attachment_reference_control(context, payload, config)
-        }
-      end)
-
-    by_size
+      %{
+        "logical_bytes" => size,
+        "by_chunk_size" => by_chunk_size,
+        "document_reference" => attachment_reference_control(context, payload, config)
+      }
+    end)
   end
 
   defp raw_filesystem_control(work_path, chunks, logical_bytes, config) do
@@ -498,15 +497,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
 
         {row, phases} =
           capture_attachment_phases(fn ->
-            started = System.monotonic_time(:microsecond)
-            {:ok, writer} = FilesystemStore.begin_put(ref, logical_bytes + 1, %{})
-            Enum.each(chunks, fn chunk -> :ok = FilesystemStore.write_chunk(writer, chunk) end)
-            {:ok, result} = FilesystemStore.finish_put(writer)
-
-            %{
-              total: System.monotonic_time(:microsecond) - started,
-              encoding: result.encoding
-            }
+            filesystem_store_sample(ref, chunks, logical_bytes)
           end)
 
         Map.put(row, :phases, Map.get(phases, :store, %{}))
@@ -517,28 +508,42 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     Map.put(report, "encodings", encodings)
   end
 
+  defp filesystem_store_sample(ref, chunks, logical_bytes) do
+    started = System.monotonic_time(:microsecond)
+    {:ok, writer} = FilesystemStore.begin_put(ref, logical_bytes + 1, %{})
+    Enum.each(chunks, &write_store_chunk(writer, &1))
+    {:ok, result} = FilesystemStore.finish_put(writer)
+
+    %{
+      total: System.monotonic_time(:microsecond) - started,
+      encoding: result.encoding
+    }
+  end
+
+  defp write_store_chunk(writer, chunk), do: :ok = FilesystemStore.write_chunk(writer, chunk)
+
   defp attachment_facade_control(context, chunks, logical_bytes, config) do
-    rows =
-      repeated_samples(config, fn sample ->
-        with_public_database(context, "attachment-facade-#{sample}", fn uuid ->
-          {row, phases} =
-            capture_attachment_phases(fn ->
-              started = System.monotonic_time(:microsecond)
-              {:ok, result} = Attachments.upload_stream(uuid, chunks)
-
-              %{
-                total: System.monotonic_time(:microsecond) - started,
-                encoding: result.encoding
-              }
-            end)
-
-          Map.put(row, :phases, flatten_attachment_phases(phases))
-        end)
-      end)
-
+    rows = repeated_samples(config, &attachment_facade_row(context, chunks, &1))
     report = summarize_attachment_rows(rows, logical_bytes)
     encodings = rows |> Enum.map(&Atom.to_string(&1.encoding)) |> Enum.uniq()
     Map.put(report, "encodings", encodings)
+  end
+
+  defp attachment_facade_row(context, chunks, sample) do
+    with_public_database(context, "attachment-facade-#{sample}", fn uuid ->
+      {row, phases} = capture_attachment_phases(fn -> attachment_facade_sample(uuid, chunks) end)
+      Map.put(row, :phases, flatten_attachment_phases(phases))
+    end)
+  end
+
+  defp attachment_facade_sample(uuid, chunks) do
+    started = System.monotonic_time(:microsecond)
+    {:ok, result} = Attachments.upload_stream(uuid, chunks)
+
+    %{
+      total: System.monotonic_time(:microsecond) - started,
+      encoding: result.encoding
+    }
   end
 
   defp attachment_reference_control(context, payload, config) do
@@ -576,47 +581,49 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
 
     Enum.map(config.attachment_concurrency, fn concurrency ->
       rows =
-        repeated_samples(config, fn sample ->
-          with_public_database(
-            context,
-            "attachment-concurrency-#{concurrency}-#{sample}",
-            fn uuid ->
-              configure_attachment_write_limit!(uuid, Enum.max(config.attachment_concurrency))
-
-              sources =
-                Enum.map(1..files, fn index ->
-                  payload = deterministic_payload(bytes_per_file, "batch-#{sample}-#{index}")
-
-                  %{
-                    key: index,
-                    source: payload_chunks(payload, 262_144)
-                  }
-                end)
-
-              {row, phases} =
-                capture_attachment_phases(fn ->
-                  started = System.monotonic_time(:microsecond)
-
-                  {:ok, uploaded} =
-                    Attachments.upload_batch(uuid, sources, max_concurrency: concurrency)
-
-                  _ = uploaded
-                  %{total: System.monotonic_time(:microsecond) - started}
-                end)
-
-              Map.put(row, :phases, flatten_attachment_phases(phases))
-            end
-          )
-        end)
+        repeated_samples(
+          config,
+          &attachment_concurrency_row(context, files, bytes_per_file, concurrency, config, &1)
+        )
 
       summarize_attachment_rows(rows, files * bytes_per_file)
       |> Map.merge(%{
         "max_concurrency" => concurrency,
         "files_per_sample" => files,
         "files_per_second" =>
-          Statistics.per_sec(files * length(rows), Enum.sum(Enum.map(rows, & &1.total)))
+          Statistics.per_sec(files * length(rows), Enum.sum_by(rows, & &1.total))
       })
     end)
+  end
+
+  defp attachment_concurrency_row(context, files, bytes_per_file, concurrency, config, sample) do
+    with_public_database(
+      context,
+      "attachment-concurrency-#{concurrency}-#{sample}",
+      fn uuid ->
+        configure_attachment_write_limit!(uuid, Enum.max(config.attachment_concurrency))
+        sources = batch_upload_sources(files, bytes_per_file, sample, "batch", 262_144)
+
+        {row, phases} =
+          capture_attachment_phases(fn -> upload_batch_sample(uuid, sources, concurrency) end)
+
+        Map.put(row, :phases, flatten_attachment_phases(phases))
+      end
+    )
+  end
+
+  defp batch_upload_sources(files, bytes_per_file, sample, prefix, chunk_size) do
+    Enum.map(1..files, fn index ->
+      payload = deterministic_payload(bytes_per_file, "#{prefix}-#{sample}-#{index}")
+      %{key: index, source: payload_chunks(payload, chunk_size)}
+    end)
+  end
+
+  defp upload_batch_sample(uuid, sources, concurrency) do
+    started = System.monotonic_time(:microsecond)
+    {:ok, uploaded} = Attachments.upload_batch(uuid, sources, max_concurrency: concurrency)
+    _ = uploaded
+    %{total: System.monotonic_time(:microsecond) - started}
   end
 
   defp attachment_metadata_batch_control(context, config) do
@@ -625,44 +632,50 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     concurrency = 1
 
     rows =
-      repeated_samples(config, fn sample ->
-        with_public_database(context, "attachment-metadata-800-#{sample}", fn uuid ->
-          sources =
-            Enum.map(1..files, fn index ->
-              payload = deterministic_payload(bytes_per_file, "metadata-#{sample}-#{index}")
-              %{key: index, source: [payload]}
-            end)
-
-          started = System.monotonic_time(:microsecond)
-
-          {:ok, uploaded} =
-            Attachments.upload_batch(
-              uuid,
-              sources,
-              max_concurrency: concurrency,
-              protection_batch_size: 500
-            )
-
-          %{
-            total: System.monotonic_time(:microsecond) - started,
-            phases: %{},
-            protected: length(uploaded)
-          }
-        end)
-      end)
+      repeated_samples(
+        config,
+        &attachment_metadata_row(context, files, bytes_per_file, concurrency, &1)
+      )
 
     summarize_attachment_rows(rows, files * bytes_per_file)
     |> Map.merge(%{
       "files_per_sample" => files,
       "metadata_transactions_per_sample" => ceil_div(files, 500),
       "max_concurrency" => concurrency,
-      "files_per_second" =>
-        Statistics.per_sec(files * length(rows), Enum.sum(Enum.map(rows, & &1.total)))
+      "files_per_second" => Statistics.per_sec(files * length(rows), Enum.sum_by(rows, & &1.total))
     })
   end
 
+  defp attachment_metadata_row(context, files, bytes_per_file, concurrency, sample) do
+    with_public_database(context, "attachment-metadata-800-#{sample}", fn uuid ->
+      sources = metadata_upload_sources(files, bytes_per_file, sample)
+      started = System.monotonic_time(:microsecond)
+
+      {:ok, uploaded} =
+        Attachments.upload_batch(
+          uuid,
+          sources,
+          max_concurrency: concurrency,
+          protection_batch_size: 500
+        )
+
+      %{
+        total: System.monotonic_time(:microsecond) - started,
+        phases: %{},
+        protected: length(uploaded)
+      }
+    end)
+  end
+
+  defp metadata_upload_sources(files, bytes_per_file, sample) do
+    Enum.map(1..files, fn index ->
+      payload = deterministic_payload(bytes_per_file, "metadata-#{sample}-#{index}")
+      %{key: index, source: [payload]}
+    end)
+  end
+
   defp search_controls(context, work_path, config) do
-    count = List.last(config.counts)
+    count = hd(Enum.reverse(config.counts))
     documents = Enum.map(0..(count - 1), &search_document/1)
     definition = %{"index_id" => "diagnostic-search", "fields" => ["/title", "/text"]}
 
@@ -720,6 +733,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
 
     {commit_us, :ok} = :timer.tc(fn -> TantivyEx.IndexWriter.commit(writer) end)
     {searcher_us, {:ok, _searcher}} = :timer.tc(fn -> TantivyEx.Searcher.new(index) end)
+    document_count = length(documents)
     total = schema_us + index_us + writer_us + prepare_us + add_us + commit_us + searcher_us
 
     phase_report(
@@ -734,10 +748,10 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
         commit: [commit_us],
         searcher: [searcher_us]
       },
-      length(documents)
+      document_count
     )
     |> Map.put("batch_size", batch_size)
-    |> Map.put("batch_count", ceil_div(length(documents), batch_size))
+    |> Map.put("batch_count", ceil_div(document_count, batch_size))
   end
 
   defp tantivy_boundary_control(work_path, documents, definition, batch_size) do
@@ -746,15 +760,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
 
     batches = documents |> Enum.map(&{&1.id, &1.body}) |> Enum.chunk_every(batch_size)
 
-    {add_us, add_result} =
-      :timer.tc(fn ->
-        Enum.reduce_while(batches, :ok, fn batch, :ok ->
-          case Tantivy.add_batch(handle, batch) do
-            :ok -> {:cont, :ok}
-            {:error, _} = error -> {:halt, error}
-          end
-        end)
-      end)
+    {add_us, add_result} = :timer.tc(fn -> add_tantivy_batches(handle, batches) end)
 
     :ok = add_result
     {commit_us, {:ok, _committed}} = :timer.tc(fn -> Tantivy.commit(handle) end)
@@ -768,6 +774,17 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     )
     |> Map.put("batch_size", batch_size)
     |> Map.put("batch_count", length(batches))
+  end
+
+  defp add_tantivy_batches(handle, batches) do
+    Enum.reduce_while(batches, :ok, &add_tantivy_batch(handle, &1, &2))
+  end
+
+  defp add_tantivy_batch(handle, batch, :ok) do
+    case Tantivy.add_batch(handle, batch) do
+      :ok -> {:cont, :ok}
+      {:error, _} = error -> {:halt, error}
+    end
   end
 
   defp raw_native_tantivy_batch(_writer, [], _schema), do: :ok
@@ -807,16 +824,17 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
       {finish_us, {:ok, ^added}} =
         :timer.tc(fn -> Search.finish_rebuild(context, index_id) end)
 
+      document_count = length(documents)
       total = begin_us + batches_us + finish_us
 
       phase_report(
         total,
         [total],
         %{begin_rebuild: [begin_us], owner_batches: [batches_us], finish_publish: [finish_us]},
-        length(documents)
+        document_count
       )
       |> Map.put("batch_size", batch_size)
-      |> Map.put("batch_count", ceil_div(length(documents), batch_size))
+      |> Map.put("batch_count", ceil_div(document_count, batch_size))
     after
       Search.stop(context)
       _ = Adapter.close(adapter)
@@ -827,14 +845,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     with_public_database(context, "search-full-rebuild", fn uuid ->
       documents
       |> Enum.chunk_every(500)
-      |> Enum.each(fn batch ->
-        operations =
-          Enum.map(batch, fn document ->
-            %{"type" => "put", "id" => document.id, "body" => document.body}
-          end)
-
-        {:ok, _results} = Documents.bulk_write(uuid, operations)
-      end)
+      |> Enum.each(&bulk_write_search_documents(uuid, &1))
 
       elapsed =
         timed_result!(fn ->
@@ -847,6 +858,10 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
 
       summarize_operations([elapsed], length(documents))
     end)
+  end
+
+  defp bulk_write_search_documents(uuid, batch) do
+    {:ok, _results} = Documents.bulk_write(uuid, Enum.map(batch, &bulk_put_operation/1))
   end
 
   defp with_adapter(work_path, label, fun) do
@@ -887,44 +902,47 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     mutation_started = System.monotonic_time(:microsecond)
 
     try do
-      raw_run!(conn, statements.document_insert, [
-        document.id,
-        document.revision_id,
-        document.body_json,
-        TermBlob.bind(document.body_term),
-        document.sequence
-      ])
+      _ =
+        raw_run!(conn, statements.document_insert, [
+          document.id,
+          document.revision_id,
+          document.body_json,
+          TermBlob.bind(document.body_term),
+          document.sequence
+        ])
 
       {:ok, doc_key} = Sqlite3.last_insert_rowid(conn)
 
-      raw_run!(conn, statements.revision_insert, [
-        doc_key,
-        document.revision_id,
-        document.history_id,
-        document.digest,
-        document.body_json,
-        TermBlob.bind(document.body_term)
-      ])
+      _ =
+        raw_run!(conn, statements.revision_insert, [
+          doc_key,
+          document.revision_id,
+          document.history_id,
+          document.digest,
+          document.body_json,
+          TermBlob.bind(document.body_term)
+        ])
 
-      raw_run!(conn, statements.change_insert, [
-        document.sequence,
-        doc_key,
-        document.id,
-        document.revision_id,
-        document.leaf_json,
-        TermBlob.bind(document.leaf_term)
-      ])
+      _ =
+        raw_run!(conn, statements.change_insert, [
+          document.sequence,
+          doc_key,
+          document.id,
+          document.revision_id,
+          document.leaf_json,
+          TermBlob.bind(document.leaf_term)
+        ])
 
-      raw_run!(conn, statements.sequence_update, [document.sequence])
-      raw_run!(conn, statements.pending_upsert, [@pending_json])
+      _ = raw_run!(conn, statements.sequence_update, [document.sequence])
+      _ = raw_run!(conn, statements.pending_upsert, [@pending_json])
       mutation_us = System.monotonic_time(:microsecond) - mutation_started
       {commit_us, _} = :timer.tc(fn -> raw_run!(conn, statements.commit) end)
       total_us = System.monotonic_time(:microsecond) - total_started
       {total_us, %{transaction_begin: [begin_us], mutation_sql: [mutation_us], commit: [commit_us]}}
-    rescue
-      exception ->
+    catch
+      kind, reason ->
         _ = raw_run(conn, statements.rollback, [])
-        reraise exception, __STACKTRACE__
+        :erlang.raise(kind, reason, __STACKTRACE__)
     end
   end
 
@@ -971,7 +989,6 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
       :done -> {:ok, Enum.reverse(rows)}
       :busy -> {:error, :busy}
       {:error, reason} -> {:error, reason}
-      other -> {:error, other}
     end
   end
 
@@ -1027,7 +1044,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
       id: id,
       history_id: history_id,
       revision_id: revision_id,
-      digest: revision_id |> String.split("-", parts: 2) |> List.last(),
+      digest: revision_id |> String.split("-", parts: 2) |> Enum.reverse() |> hd(),
       body: body,
       body_json: body_json,
       body_term: encode_term!(body, body_json),
@@ -1249,7 +1266,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
   end
 
   defp configure_attachment_write_limit!(uuid, limit) do
-    case VialKeeper.Runtime.DatabaseCatalog.command(
+    case DatabaseCatalog.command(
            uuid,
            {:command, :update_config,
             %{"attachments" => %{"max_concurrent_attachment_writes" => limit}}}

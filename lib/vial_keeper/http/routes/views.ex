@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.Routes.Views do
   @moduledoc "HTTP lifecycle and query routes for local declarative views."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
 
   alias VialKeeper.HTTP.{Request, Response, Schemas}
 

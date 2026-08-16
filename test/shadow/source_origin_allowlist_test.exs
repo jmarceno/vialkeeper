@@ -4,6 +4,7 @@ defmodule VialKeeper.Shadow.SourceOriginAllowlistTest do
   alias VialKeeper.Error
   alias VialKeeper.HostConfig
   alias VialKeeper.Shadow.Worker
+  alias VialKeeper.UUID
 
   @journal_filename "managed_shadows.json"
 
@@ -128,10 +129,10 @@ defmodule VialKeeper.Shadow.SourceOriginAllowlistTest do
 
   defp provision_request(attachment_location) do
     %{
-      "source_uuid" => VialKeeper.UUID.v4(),
-      "shadow_uuid" => VialKeeper.UUID.v4(),
+      "source_uuid" => UUID.v4(),
+      "shadow_uuid" => UUID.v4(),
       "generation" => 1,
-      "operation_id" => VialKeeper.UUID.v4(),
+      "operation_id" => UUID.v4(),
       "attachment_store_type" => "external_cas",
       "attachment_location" => attachment_location,
       "specification_digest" => String.duplicate("b", 64),

@@ -12,372 +12,436 @@ defmodule VialKeeper.Commands do
   defmodule Identity do
     @moduledoc false
     defstruct request: %{}
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule UpdateConfig do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule IntegrityCheck do
     @moduledoc false
     defstruct request: %{}
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule GetDocument do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule GetRevision do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule PutDocument do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule CreateDocument do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule DeleteDocument do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ResolveConflict do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule BulkWrite do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ReadChanges do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule DiffRevisions do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule GetRevisionChains do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ImportRevisionChains do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule GetCheckpoint do
     @moduledoc false
     @enforce_keys [:replication_id]
     defstruct [:replication_id]
+    @type t :: %__MODULE__{replication_id: binary()}
   end
 
   defmodule PutLocalRecord do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule GetLocalRecord do
     @moduledoc false
     @enforce_keys [:namespace, :key]
     defstruct [:namespace, :key]
+    @type t :: %__MODULE__{namespace: binary(), key: binary()}
   end
 
   defmodule PutCheckpoint do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ListIndexes do
     @moduledoc false
     defstruct request: %{}
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule CreateIndex do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule DeleteIndex do
     @moduledoc false
     @enforce_keys [:index_id]
     defstruct [:index_id]
+    @type t :: %__MODULE__{index_id: binary()}
   end
 
   defmodule RebuildIndex do
     @moduledoc false
     @enforce_keys [:index_id]
     defstruct [:index_id]
+    @type t :: %__MODULE__{index_id: binary()}
   end
 
   defmodule ExecuteQuery do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ExecuteSubscriptionSnapshot do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule GetRevisionsBatch do
     @moduledoc false
     @enforce_keys [:requests]
     defstruct [:requests]
+    @type t :: %__MODULE__{requests: [map()]}
   end
 
   defmodule ExplainQuery do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ListJobs do
     @moduledoc false
     defstruct request: %{}
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule PutJob do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule DeleteJob do
     @moduledoc false
     @enforce_keys [:job_id]
     defstruct [:job_id]
+    @type t :: %__MODULE__{job_id: binary()}
   end
 
   defmodule CompactRetention do
     @moduledoc false
     defstruct request: %{}
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule RetentionStatus do
     @moduledoc false
     defstruct request: %{}
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ListPeerPositions do
     @moduledoc false
     defstruct request: %{}
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule PutPeerPositionCas do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ReadBoundaryPages do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule InstallBoundaryPages do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule HasLocalOriginChanges do
     @moduledoc false
     defstruct [:peer_database_uuid]
+    @type t :: %__MODULE__{peer_database_uuid: binary() | nil}
   end
 
   defmodule ClearPendingLocalCausal do
     @moduledoc false
     defstruct [:peer_database_uuid]
+    @type t :: %__MODULE__{peer_database_uuid: binary() | nil}
   end
 
   defmodule Close do
     @moduledoc false
     defstruct []
+    @type t :: %__MODULE__{}
   end
 
   defmodule ResolveAttachmentTicket do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ResolveBlobMetadata do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ProtectPendingBlob do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ProtectPendingBlobs do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule RemovePendingBlobProtection do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ListLiveAttachmentDigests do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule CleanupExpiredPendingBlobs do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ListViews do
     @moduledoc false
     defstruct request: %{}
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule CreateView do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule DeleteView do
     @moduledoc false
     @enforce_keys [:view_id]
     defstruct [:view_id]
+    @type t :: %__MODULE__{view_id: binary()}
   end
 
   defmodule ViewState do
     @moduledoc false
     @enforce_keys [:view_id]
     defstruct [:view_id]
+    @type t :: %__MODULE__{view_id: binary()}
   end
 
   defmodule ApplyViewBatch do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule BeginViewRebuild do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule AppendViewRebuildPage do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule FinishViewRebuild do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule QueryView do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ReadWinningDocumentsPage do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule GetDerivedView do
     @moduledoc false
     defstruct request: %{}
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule SetDerivedEnabled do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ListDerivedSources do
     @moduledoc false
     defstruct request: %{}
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule SetDerivedSourceError do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ApplyDerivedSourceBatch do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule BeginDerivedSourceRebuild do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule ApplyDerivedRebuildPage do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule PruneDerivedRebuildStalePage do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   defmodule FinishDerivedSourceRebuild do
     @moduledoc false
     @enforce_keys [:request]
     defstruct [:request]
+    @type t :: %__MODULE__{request: map()}
   end
 
   @doc "Returns every command envelope type that must receive a policy decision."

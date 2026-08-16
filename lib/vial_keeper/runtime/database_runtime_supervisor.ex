@@ -4,9 +4,13 @@ defmodule VialKeeper.Runtime.DatabaseRuntimeSupervisor do
   alias VialKeeper.DatabaseBundle
   alias VialKeeper.Runtime.{AdmissionPolicy, AdmissionSupervisor, ChildSpec, ReadPoolSupervisor}
 
+  @spec start_link(map()) :: Supervisor.on_start()
   def start_link(%{uuid: uuid} = args), do: Supervisor.start_link(__MODULE__, args, name: via(uuid))
+
+  @spec via(binary()) :: {:via, module(), term()}
   def via(uuid), do: {:via, Registry, {VialKeeper.Runtime.DatabaseRegistry, {:runtime, uuid}}}
 
+  @spec child_spec(map()) :: map()
   def child_spec(%{uuid: uuid} = args) do
     ChildSpec.supervisor({:database_runtime, uuid}, {__MODULE__, :start_link, [args]}, :transient)
   end

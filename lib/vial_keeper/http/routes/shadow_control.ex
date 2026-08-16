@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.Routes.ShadowControl do
   @moduledoc "Authenticated compressed control-plane routes for shadow workers."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
 
   alias VialKeeper.HTTP.{Request, Response}
   alias VialKeeper.Replication.BlobRepresentationStream

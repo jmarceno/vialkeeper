@@ -71,9 +71,7 @@ defmodule VialKeeper.Bench.Prepare do
       case Marker.read(dest) do
         {:ok, %{"profile" => ready_profile}}
         when ready_profile == expected_profile ->
-          with :ok <- ensure_prepared_derivatives(context, spec, dest) do
-            {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
-          end
+          ready_prepared_dataset(context, spec, dest)
 
         {:ok, _marker} ->
           replace_dataset(context, spec, profile, opts)
@@ -84,6 +82,12 @@ defmodule VialKeeper.Bench.Prepare do
         {:error, _reason} ->
           do_prepare_dataset(context, spec, profile, opts)
       end
+    end
+  end
+
+  defp ready_prepared_dataset(context, spec, dest) do
+    with :ok <- ensure_prepared_derivatives(context, spec, dest) do
+      {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
     end
   end
 

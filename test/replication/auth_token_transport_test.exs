@@ -14,6 +14,7 @@ defmodule VialKeeper.Replication.AuthTokenTransportTest do
     @moduledoc false
     use Plug.Router
 
+    alias Plug.Conn
     alias VialKeeper.Replication.WireCompression
 
     plug(:match)
@@ -28,7 +29,7 @@ defmodule VialKeeper.Replication.AuthTokenTransportTest do
     end
 
     defp send_capture(conn) do
-      auth = Plug.Conn.get_req_header(conn, "authorization") |> List.first()
+      auth = Conn.get_req_header(conn, "authorization") |> List.first()
 
       payload = %{
         "captured_authorization" => auth,
@@ -42,13 +43,13 @@ defmodule VialKeeper.Replication.AuthTokenTransportTest do
       {:ok, encoded} = WireCompression.encode_json(payload, 65_536)
 
       conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.put_resp_header("content-encoding", "zstd")
-      |> Plug.Conn.put_resp_header(
+      |> Conn.put_resp_content_type("application/json")
+      |> Conn.put_resp_header("content-encoding", "zstd")
+      |> Conn.put_resp_header(
         "x-vialkeeper-uncompressed-length",
         Integer.to_string(encoded.uncompressed_length)
       )
-      |> Plug.Conn.send_resp(200, encoded.body)
+      |> Conn.send_resp(200, encoded.body)
     end
   end
 

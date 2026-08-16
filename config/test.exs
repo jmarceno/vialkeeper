@@ -75,9 +75,11 @@ config :vial_keeper,
   web_ui: [enabled: true]
 
 # Observability: never export over the network in tests. Wire the SDK to use
-# the simple (synchronous) span processor with the in-memory TestExporter so
-# spans are recorded immediately and assertable. traces_exporter is read by
+# only the simple (synchronous) span processor with the in-memory TestExporter
+# so spans are recorded immediately and assertable. traces_exporter is read by
 # the simple processor config merge and mapped to its `exporter` key.
+# Do not also set a batch processor in config.exs: Mix deep-merges keyword-list
+# `:processors` values, and both processors would then handle every span.
 config :opentelemetry,
   traces_exporter: {:"Elixir.VialKeeper.Observability.TestExporter", []},
   processors: [

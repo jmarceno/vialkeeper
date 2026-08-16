@@ -818,7 +818,7 @@ one host are rejected. Full procedures:
 mix deps.get
 mix check.fast          # while iterating (excludes :slow and :integration)
 mix check.integration   # integration-tagged tests only
-mix check.full          # before handoff (includes integration and :slow)
+mix check.full          # before handoff (integration, :slow, Doctor, Reach dead-code)
 MIX_ENV=prod mix release.build
 ```
 

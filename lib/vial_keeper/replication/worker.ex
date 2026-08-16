@@ -16,6 +16,7 @@ defmodule VialKeeper.Replication.Worker do
 
   require OpenTelemetry.Tracer
 
+  alias OpenTelemetry.Ctx, as: OtelCtx
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Attributes
   alias VialKeeper.Observability.Meters
@@ -42,8 +43,10 @@ defmodule VialKeeper.Replication.Worker do
 
   @terminal_states [:completed, :failed]
 
+  @spec start_link(map()) :: :gen_statem.start_ret()
   def start_link(options), do: :gen_statem.start_link(__MODULE__, options, [])
 
+  @spec child_spec(map()) :: map()
   def child_spec(options) do
     ChildSpec.worker(
       {:replication_worker, MapAccess.get(options, :replication_id, make_ref())},
@@ -175,12 +178,13 @@ defmodule VialKeeper.Replication.Worker do
   def terminate(_reason, state, _data) when state in @terminal_states, do: :ok
 
   def terminate(_reason, state, data) do
-    cleanup_phase_task(state, data)
+    _ = cleanup_phase_task(state, data)
 
     # End any in-flight batch span so it doesn't leak.
     if data.batch_span_ctx do
       replication_id = MapAccess.get(data.options, :replication_id)
       _ = end_batch_span(data, replication_id, data.batch_revisions, :ok)
+      :ok
     end
 
     state = if data.error, do: :failed, else: if(data.result, do: :completed, else: :failed)
@@ -245,15 +249,15 @@ defmodule VialKeeper.Replication.Worker do
     # Capture the current OTel context so the async phase task is a child of
     # the worker's trace. Without detach/attach the task would have
     # no parent and the trace would break across the Task.Supervisor boundary.
-    ctx = OpenTelemetry.Ctx.get_current()
+    ctx = OtelCtx.get_current()
 
     Task.Supervisor.async_nolink(VialKeeper.TaskSupervisor, fn ->
-      token = OpenTelemetry.Ctx.attach(ctx)
+      token = OtelCtx.attach(ctx)
 
       try do
         run_phase(phase, source, target, context, options)
       after
-        OpenTelemetry.Ctx.detach(token)
+        OtelCtx.detach(token)
       end
     end)
   end
@@ -463,7 +467,7 @@ defmodule VialKeeper.Replication.Worker do
         attributes: Attributes.build(replication_id: replication_id)
       })
 
-    OpenTelemetry.Tracer.set_current_span(span_ctx)
+    _ = OpenTelemetry.Tracer.set_current_span(span_ctx)
 
     %{
       data
@@ -482,7 +486,7 @@ defmodule VialKeeper.Replication.Worker do
     span_ctx = data.batch_span_ctx
     duration = System.monotonic_time() - (data.batch_started || System.monotonic_time())
 
-    OpenTelemetry.Tracer.set_current_span(span_ctx)
+    _ = OpenTelemetry.Tracer.set_current_span(span_ctx)
 
     case outcome do
       :ok ->
@@ -501,11 +505,12 @@ defmodule VialKeeper.Replication.Worker do
           VialKeeper.Observability.Tracer.set_attributes(error_code: error.code)
 
         _ = VialKeeper.Observability.Tracer.apply_error_status(error)
+        :ok
     end
 
-    OpenTelemetry.Span.end_span(span_ctx)
+    _ = OpenTelemetry.Span.end_span(span_ctx)
     # Reset current span to none so the worker process doesn't leak it.
-    OpenTelemetry.Tracer.set_current_span(:undefined)
+    _ = OpenTelemetry.Tracer.set_current_span(:undefined)
 
     %{data | batch_span_ctx: nil, batch_started: nil, batch_revisions: 0}
   end

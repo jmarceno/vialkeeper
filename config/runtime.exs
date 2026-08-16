@@ -45,13 +45,27 @@ config :vial_keeper,
 if config_env() != :test do
   otlp_endpoint = Keyword.get(host_config, :otlp_endpoint)
 
+  # Key names are the SDK's: scheduled_delay_ms / max_queue_size /
+  # exporting_timeout_ms. Values equal the SDK defaults and are declared
+  # explicitly so the operational contract is visible. Kept out of config.exs
+  # because Mix deep-merges keyword-list `:processors` and would otherwise
+  # leave this batch processor running alongside the test simple processor.
+  batch_processors = [
+    otel_batch_processor: %{
+      scheduled_delay_ms: 5_000,
+      max_queue_size: 2_048,
+      exporting_timeout_ms: 30_000
+    }
+  ]
+
   if otlp_endpoint not in [nil, ""] do
     config :opentelemetry_exporter,
       otlp_protocol: :http_protobuf,
       otlp_endpoint: otlp_endpoint
 
     config :opentelemetry,
-      traces_exporter: {:opentelemetry_exporter, %{}}
+      traces_exporter: {:opentelemetry_exporter, %{}},
+      processors: batch_processors
 
     config :opentelemetry_experimental,
       readers: [
@@ -65,7 +79,7 @@ if config_env() != :test do
         }
       ]
   else
-    config :opentelemetry, traces_exporter: :none
+    config :opentelemetry, traces_exporter: :none, processors: batch_processors
     config :opentelemetry_experimental, readers: []
   end
 end

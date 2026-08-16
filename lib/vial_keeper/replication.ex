@@ -2,6 +2,7 @@ defmodule VialKeeper.Replication do
   @moduledoc "One-shot and continuous replication orchestration."
   alias VialKeeper.Changes.Request
   alias VialKeeper.Domain.BoundaryPage
+  alias VialKeeper.Error
   alias VialKeeper.JSON.{Canonical, Stringify}
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Replication, as: ReplicationModule
@@ -11,7 +12,13 @@ defmodule VialKeeper.Replication do
   alias VialKeeper.Retention.SafeReport
   @default_batch 100
 
+  @type endpoint :: struct()
+  @type context :: map()
+  @type options :: map()
+  @type result(ok) :: {:ok, ok} | {:error, Error.t()}
+
   @doc "Ordered worker phase states (excluding the terminal idle entry)."
+  @spec phases() :: [atom()]
   def phases do
     [
       :idle,
@@ -32,6 +39,8 @@ defmodule VialKeeper.Replication do
     ]
   end
 
+  @spec one_shot(binary(), binary()) :: result(map())
+  @spec one_shot(binary(), binary(), options()) :: result(map())
   def one_shot(source_uuid, target_uuid, options \\ %{}) do
     with {:ok, source} <- LocalEndpoint.new(source_uuid),
          {:ok, target} <- LocalEndpoint.new(target_uuid) do
@@ -39,9 +48,13 @@ defmodule VialKeeper.Replication do
     end
   end
 
+  @spec one_shot_endpoints(endpoint(), endpoint()) :: result(map())
+  @spec one_shot_endpoints(endpoint(), endpoint(), options()) :: result(map())
   def one_shot_endpoints(source, target, options \\ %{}), do: run(source, target, options)
 
   @doc "Run one captured batch sequence, or keep waiting when mode is continuous."
+  @spec run(endpoint(), endpoint()) :: result(map())
+  @spec run(endpoint(), endpoint(), options()) :: result(map())
   def run(source, target, options \\ %{}) do
     session_id = option(options, :session_id, VialKeeper.UUID.v4())
 
@@ -56,6 +69,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Handshake: identities, compatibility, replication id, checkpoint reconciliation."
+  @spec handshake(endpoint(), endpoint(), options()) :: result(context())
   def handshake(source, target, options) do
     profile = normalize_profile(option(options, :profile, nil))
 
@@ -124,6 +138,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Install source retention boundaries on the target before acknowledging epochs."
+  @spec install_boundaries(endpoint(), endpoint(), context(), options()) :: result(context())
   def install_boundaries(source, target, context, options) do
     with :ok <- phase_hook(options, :install_boundaries, context),
          {:ok, installed_through} <- install_boundary_pages(source, target, context) do
@@ -144,6 +159,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Paginated snapshot/bootstrap transfer from source to target."
+  @spec bootstrap(endpoint(), endpoint(), context(), options()) :: result(context())
   def bootstrap(source, target, context, options) do
     with :ok <- phase_hook(options, :bootstrap, context),
          {:ok, context} <- bootstrap_pages(source, target, context, options) do
@@ -154,6 +170,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Read a bounded change batch from the source after `context.since`."
+  @spec read_changes(endpoint(), context(), options()) :: result(context())
   def read_changes(source, context, options) do
     limit = option(options, :batch, @default_batch)
     wait_ms = option(options, :wait_ms_for_read, 0)
@@ -193,6 +210,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Diff selected change leaves against the target."
+  @spec diff(endpoint(), context(), options()) :: result(context())
   def diff(target, context, options) do
     with :ok <- phase_hook(options, :diff, context),
          {:ok, documents} <- target_diff(target, context) do
@@ -205,6 +223,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Fetch revision chains and transfer their missing attachment blobs."
+  @spec transfer(endpoint(), endpoint(), context(), options()) :: result(context())
   def transfer(source, target, context, options) do
     with :ok <- phase_hook(options, :transfer, context),
          {:ok, context} <-
@@ -215,6 +234,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Import chains into the target and confirm durable commit (REPL-004)."
+  @spec import_chains(endpoint(), context(), options()) :: result(context())
   def import_chains(target, context, options) do
     with :ok <- phase_hook(options, :import, context),
          {:ok, imported} <-
@@ -230,6 +250,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "CAS-write the target checkpoint for the current batch sequence."
+  @spec checkpoint_target(endpoint(), endpoint(), context(), options()) :: result(context())
   def checkpoint_target(source, target, context, options) do
     with :ok <- phase_hook(options, :checkpoint_target, context),
          {:ok, prepared} <- prepare_checkpoint(source, target, context, options),
@@ -256,6 +277,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "CAS-write the source checkpoint after the target checkpoint succeeded."
+  @spec checkpoint_source(endpoint(), context(), options()) :: result(context())
   def checkpoint_source(source, context, options) do
     prepared = Map.fetch!(context, :checkpoint_prepared)
 
@@ -286,6 +308,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Report the target safe position and renew the peer lease on the source."
+  @spec report_peer(endpoint(), endpoint(), context(), options()) :: result(context())
   def report_peer(source, target, context, options) do
     target_uuid = source_uuid(context.target_identity || target)
 
@@ -299,6 +322,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Wait for source changes beyond the current checkpoint (continuous mode)."
+  @spec wait_for_changes(endpoint(), context(), options()) :: result(context())
   def wait_for_changes(source, context, options) do
     with :ok <- phase_hook(options, :waiting, context),
          {:ok, source_identity} <- endpoint_call(source, :identity, []),
@@ -341,6 +365,11 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Advance after checkpoint_source: more batches, waiting, or completed."
+  @spec next_after_checkpoint(context(), map() | keyword()) ::
+          {:bootstrap, context()}
+          | {:continue_batch, context()}
+          | {:waiting, context()}
+          | {:completed, %{replication_id: term(), source_sequence: term(), status: :completed}}
   def next_after_checkpoint(context, options) do
     continuous? = option(options, :mode, "one_shot") in ["continuous", :continuous]
 
@@ -365,6 +394,7 @@ defmodule VialKeeper.Replication do
   end
 
   @doc "Whether handshake found the source already caught up to the terminal sequence."
+  @spec caught_up?(map()) :: boolean()
   def caught_up?(%{since: since, terminal: terminal, bootstrap_required: false}),
     do: since >= terminal
 
@@ -566,8 +596,8 @@ defmodule VialKeeper.Replication do
          }}
       end
     else
-      {:error, %VialKeeper.Error{code: :integrity_violation}} ->
-        {:error, VialKeeper.Error.rebase_required("bootstrap cannot merge local mutations safely")}
+      {:error, %Error{code: :integrity_violation}} ->
+        {:error, Error.rebase_required("bootstrap cannot merge local mutations safely")}
 
       {:error, error} ->
         {:error, error}
@@ -583,7 +613,7 @@ defmodule VialKeeper.Replication do
         {:ok, []}
 
       _other ->
-        {:error, VialKeeper.Error.invalid_request("bootstrap revision chains must be a list")}
+        {:error, Error.invalid_request("bootstrap revision chains must be a list")}
     end
   end
 
@@ -592,8 +622,7 @@ defmodule VialKeeper.Replication do
     page_epoch = get(page, :source_history_epoch)
 
     if is_binary(page_epoch) and page_epoch != source_epoch do
-      {:error,
-       VialKeeper.Error.source_history_reset("bootstrap page history epoch does not match source")}
+      {:error, Error.source_history_reset("bootstrap page history epoch does not match source")}
     else
       :ok
     end
@@ -657,7 +686,7 @@ defmodule VialKeeper.Replication do
   defp prepare_checkpoint(source, target, context, options) do
     sequence =
       case context.selected do
-        [_ | _] = selected -> get(List.last(selected), :sequence)
+        [_ | _] = selected -> get(hd(Enum.reverse(selected)), :sequence)
         _ -> context.since
       end
 
@@ -884,12 +913,12 @@ defmodule VialKeeper.Replication do
   end
 
   defp apply_read_changes_result(
-         {:error, %VialKeeper.Error{code: :history_truncated}},
+         {:error, %Error{code: :history_truncated}},
          context,
          _options
        ) do
     if shadow_profile?(Map.get(context, :profile)) and Map.get(context, :ready?, false) do
-      {:error, VialKeeper.Error.shadow_replacement_required("shadow history was truncated")}
+      {:error, Error.shadow_replacement_required("shadow history was truncated")}
     else
       {:ok, %{context | bootstrap_required: true, selected: []}}
     end
@@ -925,8 +954,9 @@ defmodule VialKeeper.Replication do
     do: Map.put(payload, "expected_checkpoint_version", record_version(current))
 
   defp checkpoint_history(source, target, entry) do
-    (List.wrap(source && MapAccess.get(source, :history)) ++
-       List.wrap(target && MapAccess.get(target, :history)) ++ [entry])
+    List.wrap(source && MapAccess.get(source, :history))
+    |> Enum.concat(List.wrap(target && MapAccess.get(target, :history)))
+    |> Enum.concat([entry])
     |> Enum.uniq_by(fn item -> {get(item, :session_id), get(item, :source_sequence)} end)
     |> Enum.sort_by(&get(&1, :source_sequence), :desc)
     |> Enum.take(10)
@@ -951,7 +981,7 @@ defmodule VialKeeper.Replication do
   end
 
   defp ensure_progress([], since, terminal) when since < terminal,
-    do: {:error, VialKeeper.Error.database_unavailable("source changes did not make progress")}
+    do: {:error, Error.database_unavailable("source changes did not make progress")}
 
   defp ensure_progress(_selected, _since, _terminal), do: :ok
 
@@ -1000,8 +1030,7 @@ defmodule VialKeeper.Replication do
         {:cont, {[change | selected], next_size}}
 
       selected == [] ->
-        {:halt,
-         {:error, VialKeeper.Error.payload_too_large("replication batch exceeds the byte limit")}}
+        {:halt, {:error, Error.payload_too_large("replication batch exceeds the byte limit")}}
 
       true ->
         {:halt, {:done, Enum.reverse(selected)}}
@@ -1088,7 +1117,7 @@ defmodule VialKeeper.Replication do
             error
 
           other ->
-            {:error, VialKeeper.Error.internal_error("phase hook returned #{inspect(other)}")}
+            {:error, Error.internal_error("phase hook returned #{inspect(other)}")}
         end
 
       _ ->
@@ -1169,8 +1198,7 @@ defmodule VialKeeper.Replication do
 
   defp validate_shadow_reconcile(reconcile, %Profile{kind: :shadow}, options) do
     if option(options, :shadow_ready, false) and reconcile.bootstrap_required do
-      {:error,
-       VialKeeper.Error.shadow_replacement_required("shadow history no longer overlaps the source")}
+      {:error, Error.shadow_replacement_required("shadow history no longer overlaps the source")}
     else
       :ok
     end
@@ -1191,13 +1219,13 @@ defmodule VialKeeper.Replication do
        ) do
     cond do
       source_uuid(source) != source_database_uuid ->
-        {:error, VialKeeper.Error.shadow_identity_conflict("shadow source UUID does not match")}
+        {:error, Error.shadow_identity_conflict("shadow source UUID does not match")}
 
       source_uuid(target) != target_database_uuid ->
-        {:error, VialKeeper.Error.shadow_identity_conflict("shadow target UUID does not match")}
+        {:error, Error.shadow_identity_conflict("shadow target UUID does not match")}
 
       get(target, :database_kind) not in [:shadow, "shadow"] ->
-        {:error, VialKeeper.Error.shadow_incompatible("replication target is not a shadow")}
+        {:error, Error.shadow_incompatible("replication target is not a shadow")}
 
       true ->
         :ok
@@ -1245,23 +1273,20 @@ defmodule VialKeeper.Replication do
 
     cond do
       source_uuid == target_uuid ->
-        {:error,
-         VialKeeper.Error.replication_incompatible("source and target database UUIDs must differ")}
+        {:error, Error.replication_incompatible("source and target database UUIDs must differ")}
 
       get(target, :database_kind) in [:derived, "derived"] ->
         {:error,
-         VialKeeper.Error.derived_database_read_only(
-           "derived databases cannot be replication targets"
-         )}
+         Error.derived_database_read_only("derived databases cannot be replication targets")}
 
       version(source, :replication_protocol_major) != version(target, :replication_protocol_major) ->
-        {:error, VialKeeper.Error.replication_incompatible("replication protocol versions differ")}
+        {:error, Error.replication_incompatible("replication protocol versions differ")}
 
       version(source, :revision_algorithm_version) != version(target, :revision_algorithm_version) ->
-        {:error, VialKeeper.Error.replication_incompatible("revision algorithms differ")}
+        {:error, Error.replication_incompatible("revision algorithms differ")}
 
       version(source, :canonicalization_version) != version(target, :canonicalization_version) ->
-        {:error, VialKeeper.Error.replication_incompatible("canonicalization versions differ")}
+        {:error, Error.replication_incompatible("canonicalization versions differ")}
 
       true ->
         :ok

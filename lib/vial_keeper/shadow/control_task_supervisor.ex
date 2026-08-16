@@ -1,9 +1,12 @@
 defmodule VialKeeper.Shadow.ControlTaskSupervisor do
   @moduledoc "Bounded supervision boundary for asynchronous shadow control work."
 
+  @spec start_link() :: Supervisor.on_start()
+  @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []),
     do: Task.Supervisor.start_link(Keyword.put_new(opts, :name, __MODULE__))
 
+  @spec child_spec(keyword()) :: map()
   def child_spec(opts) do
     %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, type: :supervisor}
   end

@@ -67,6 +67,7 @@ defmodule VialKeeper.Observability.Instrumentation.Query do
         {:error, %VialKeeper.Error{} = error} ->
           _ = Tracer.record_error(error)
           _ = Tracer.apply_error_status(error)
+          :ok
 
         _ ->
           :ok
@@ -84,7 +85,7 @@ defmodule VialKeeper.Observability.Instrumentation.Query do
   defp split_result(result), do: {result, nil}
 
   defp query_attrs(attrs, nil), do: attrs
-  defp query_attrs(attrs, examined), do: attrs ++ [examined: examined]
+  defp query_attrs(attrs, examined), do: Keyword.put(attrs, :examined, examined)
 
   defp record_plan({:ok, result}) when is_map(result) do
     plan_kind = Map.get(result, :plan_kind, Map.get(result, "plan_kind"))

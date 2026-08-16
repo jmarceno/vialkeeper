@@ -16,12 +16,15 @@ defmodule VialKeeper.Storage.SQLite.Revisions do
   alias VialKeeper.Storage.SQLite.Adapter
   alias VialKeeper.Storage.SQLite.{Attachments, Connection, TermBlob}
   @revision_body_term_cache_limit 256
-  @doc false
+  @doc "Adapter compatibility entry that loads one revision by request map."
+  @spec get(map(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def get(adapter, request), do: Adapter.get_revision(adapter, request)
 
+  @spec import(map(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def import(adapter, request),
     do: Adapter.import_revision_chains(adapter, request)
 
+  @spec chains(map(), map()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def chains(adapter, request),
     do: Adapter.get_revision_chains(adapter, request)
 
@@ -400,7 +403,9 @@ defmodule VialKeeper.Storage.SQLite.Revisions do
   @spec same?(Revision.t(), Revision.t()) :: boolean()
   def same?(a, b), do: Compare.same?(a, b)
 
-  @doc false
+  @doc "Builds a revision struct from a SQLite revisions-table row."
+  @spec from_row([term()]) :: Revision.t()
+  @spec from_row([term()], map()) :: Revision.t()
   def from_row(row, attachments \\ %{})
 
   def from_row(

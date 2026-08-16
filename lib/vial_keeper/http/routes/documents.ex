@@ -1,6 +1,7 @@
 defmodule VialKeeper.HTTP.Routes.Documents do
   @moduledoc "HTTP routes for document reads, writes, conflicts, and imports."
   use Plug.Router
+  use VialKeeper.HTTP.RouterSpecs
   alias VialKeeper.HTTP.{Request, Response, Schemas}
 
   plug(:match)

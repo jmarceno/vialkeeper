@@ -1,9 +1,13 @@
 defmodule VialKeeper.Federation.Normalizer do
   @moduledoc "Normalizes bounded, source-isolated federation requests."
+  alias VialKeeper.Error
   alias VialKeeper.JSON.Canonical
   alias VialKeeper.Query.Normalizer
 
   @keys ~w(databases query)a
+
+  @spec normalize(map()) :: {:ok, map()} | {:error, Error.t()}
+  @spec normalize(term(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def normalize(request, opts \\ [])
 
   def normalize(request, opts) when is_map(request) do
@@ -18,15 +22,14 @@ defmodule VialKeeper.Federation.Normalizer do
   end
 
   def normalize(_, _opts),
-    do: {:error, VialKeeper.Error.invalid_request("federation request must be an object")}
+    do: {:error, Error.invalid_request("federation request must be an object")}
 
   defp known(map, keys) do
     string_keys = Enum.map(keys, &Atom.to_string/1)
 
     if Enum.all?(Map.keys(map), &(&1 in keys or &1 in string_keys)),
       do: :ok,
-      else:
-        {:error, VialKeeper.Error.invalid_request("federation request contains an unknown field")}
+      else: {:error, Error.invalid_request("federation request contains an unknown field")}
   end
 
   defp sources(request, opts) do
@@ -38,19 +41,19 @@ defmodule VialKeeper.Federation.Normalizer do
 
     cond do
       not is_list(value) or value == [] ->
-        {:error, VialKeeper.Error.invalid_request("databases must be a non-empty array")}
+        {:error, Error.invalid_request("databases must be a non-empty array")}
 
       length(value) > Keyword.get(opts, :max_sources, max) ->
-        {:error, VialKeeper.Error.resource_limit("too many federation sources")}
+        {:error, Error.resource_limit("too many federation sources")}
 
       Enum.any?(value, &(not is_binary(&1) or not uuid?(&1))) ->
-        {:error, VialKeeper.Error.invalid_request("databases must contain UUID strings")}
+        {:error, Error.invalid_request("databases must contain UUID strings")}
 
       true ->
         normalized = Enum.map(value, &String.downcase/1)
 
         if length(Enum.uniq(normalized)) != length(normalized) do
-          {:error, VialKeeper.Error.invalid_request("databases must not contain duplicates")}
+          {:error, Error.invalid_request("databases must not contain duplicates")}
         else
           {:ok, normalized}
         end
@@ -71,17 +74,15 @@ defmodule VialKeeper.Federation.Normalizer do
   end
 
   defp normalize_query(_, _opts),
-    do: {:error, VialKeeper.Error.invalid_request("query must be an object")}
+    do: {:error, Error.invalid_request("query must be an object")}
 
   defp reject_unsupported_query_features(query) do
     cond do
       Map.has_key?(query, :search) or Map.has_key?(query, "search") ->
-        {:error,
-         VialKeeper.Error.invalid_request("federation query does not support search or index")}
+        {:error, Error.invalid_request("federation query does not support search or index")}
 
       Map.has_key?(query, :index) or Map.has_key?(query, "index") ->
-        {:error,
-         VialKeeper.Error.invalid_request("federation query does not support search or index")}
+        {:error, Error.invalid_request("federation query does not support search or index")}
 
       true ->
         :ok
@@ -96,15 +97,11 @@ defmodule VialKeeper.Federation.Normalizer do
            VialKeeper.Config.host_limits()[:max_query_results] || 500
          ),
        do: :ok,
-       else:
-         {:error,
-          VialKeeper.Error.resource_limit("federation query limit exceeds the configured limit")}
+       else: {:error, Error.resource_limit("federation query limit exceeds the configured limit")}
   end
 
   defp validate_limit(_, _opts),
-    do:
-      {:error,
-       VialKeeper.Error.resource_limit("federation query limit exceeds the configured limit")}
+    do: {:error, Error.resource_limit("federation query limit exceeds the configured limit")}
 
   defp put_default_limit(%{limit: nil} = query), do: %{query | limit: 50}
   defp put_default_limit(query), do: query

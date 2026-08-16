@@ -309,7 +309,9 @@ defmodule VialKeeper.Query.Normalizer do
   defp compile_operator_entry(key, value, predicates, normalized, state, depth) do
     case compile_operator(key, value, state, depth) do
       {:ok, normalized_value, predicate, state} ->
-        {:cont, {:ok, predicates ++ [predicate], Map.put(normalized, key, normalized_value), state}}
+        {:cont,
+         {:ok, Enum.concat(predicates, [predicate]), Map.put(normalized, key, normalized_value),
+          state}}
 
       {:error, _} = error ->
         {:halt, error}
@@ -623,6 +625,7 @@ defmodule VialKeeper.Query.Normalizer do
   defp value_or_default(value, _default), do: value
 
   @doc "Validates that nested object keys remain unique after stringification."
+  @spec validate_key_collisions(term()) :: :ok | {:error, VialKeeper.Error.t()}
   def validate_key_collisions(value) when is_map(value) do
     Enum.reduce_while(value, {:ok, MapSet.new()}, fn {key, child}, {:ok, seen} ->
       with {:ok, string_key} <- key_as_string(key),

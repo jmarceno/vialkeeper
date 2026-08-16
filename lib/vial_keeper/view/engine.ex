@@ -362,8 +362,10 @@ defmodule VialKeeper.View.Engine do
 
   defp query_bookmark(_page, false, _definition, _state), do: nil
 
+  defp query_bookmark([], true, _definition, _state), do: nil
+
   defp query_bookmark(page, true, definition, state) do
-    encode_query_bookmark(List.last(page), definition, state)
+    encode_query_bookmark(hd(Enum.reverse(page)), definition, state)
   end
 
   defp encode_query_bookmark(nil, _definition, _state), do: nil
@@ -382,7 +384,8 @@ defmodule VialKeeper.View.Engine do
     end
   end
 
-  defp last_document_id(%{ids: ids}) when is_list(ids), do: List.last(ids)
+  defp last_document_id(%{ids: []}), do: nil
+  defp last_document_id(%{ids: ids}) when is_list(ids), do: hd(Enum.reverse(ids))
   defp last_document_id(_), do: nil
 
   defp public_result(%{key: key, value: value} = row) do

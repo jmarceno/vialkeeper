@@ -290,8 +290,12 @@ defmodule VialKeeper.Replication.ChaosEndpointTest do
 
   defp collect_calls(pid, module, function, arity, calls) do
     receive do
-      {:trace, ^pid, :call, {^module, ^function, arguments}} when length(arguments) == arity ->
-        collect_calls(pid, module, function, arity, [arguments | calls])
+      {:trace, ^pid, :call, {^module, ^function, arguments}} ->
+        if length(arguments) == arity do
+          collect_calls(pid, module, function, arity, [arguments | calls])
+        else
+          collect_calls(pid, module, function, arity, calls)
+        end
     after
       20 -> Enum.reverse(calls)
     end

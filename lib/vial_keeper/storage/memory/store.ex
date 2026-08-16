@@ -419,7 +419,7 @@ defmodule VialKeeper.Storage.Memory.Store do
       origin: Map.get(entry, :origin, "local")
     }
 
-    {:ok, %{state | changes: state.changes ++ [change]}}
+    {:ok, %{state | changes: Enum.concat(state.changes, [change])}}
   end
 
   defp empty_state(root, identity) do

@@ -67,10 +67,12 @@ defmodule VialKeeper.Runtime.AdmissionModelTest do
       assert Enum.count(@default_schedule, &(&1 == :maintenance)) == 1
 
       assert @default_schedule ==
-               List.duplicate(:foreground, 8) ++
-                 List.duplicate(:subscription, 4) ++
-                 List.duplicate(:replication, 2) ++
+               Enum.concat([
+                 List.duplicate(:foreground, 8),
+                 List.duplicate(:subscription, 4),
+                 List.duplicate(:replication, 2),
                  [:maintenance]
+               ])
     end
 
     test "custom weights preserve ServiceClass ordering in the schedule" do
@@ -86,10 +88,12 @@ defmodule VialKeeper.Runtime.AdmissionModelTest do
       schedule = AdmissionSchedule.build(policy)
 
       assert schedule ==
-               [:foreground] ++
-                 List.duplicate(:subscription, 3) ++
-                 List.duplicate(:replication, 2) ++
+               Enum.concat([
+                 [:foreground],
+                 List.duplicate(:subscription, 3),
+                 List.duplicate(:replication, 2),
                  [:maintenance]
+               ])
 
       assert schedule_counts(schedule) == AdmissionPolicy.weights(policy)
     end
@@ -139,7 +143,7 @@ defmodule VialKeeper.Runtime.AdmissionModelTest do
             |> release_only()
             |> enqueue_ok(class, make_ref())
 
-          {grants ++ [class], current}
+          {Enum.concat(grants, [class]), current}
         end)
 
       assert grants == @default_schedule
@@ -186,7 +190,7 @@ defmodule VialKeeper.Runtime.AdmissionModelTest do
       {granted_ids, _} =
         Enum.reduce(ids, {[], model}, fn _expected, {seen, current} ->
           granted = grant(current)
-          seen = seen ++ [granted.active.request_id]
+          seen = Enum.concat(seen, [granted.active.request_id])
           {seen, release(granted)}
         end)
 
@@ -206,7 +210,7 @@ defmodule VialKeeper.Runtime.AdmissionModelTest do
         {granted_ids, _} =
           Enum.reduce(ids, {[], model}, fn _expected, {seen, current} ->
             granted = grant(current)
-            seen = seen ++ [granted.active.request_id]
+            seen = Enum.concat(seen, [granted.active.request_id])
             {seen, release(granted)}
           end)
 
@@ -235,7 +239,7 @@ defmodule VialKeeper.Runtime.AdmissionModelTest do
           Enum.reduce(enqueued, {[], model}, fn _expected, {seen, current} ->
             granted = grant(current)
             assert granted.active.class == class
-            {seen ++ [granted.active.request_id], release_only(granted)}
+            {Enum.concat(seen, [granted.active.request_id]), release_only(granted)}
           end)
 
         assert granted_ids == enqueued
@@ -509,7 +513,7 @@ defmodule VialKeeper.Runtime.AdmissionModelTest do
             granted = grant(current)
             class = granted.active.class
             id = granted.active.request_id
-            {grants ++ [{class, id}], release(granted)}
+            {Enum.concat(grants, [{class, id}]), release(granted)}
           end)
 
         grants
