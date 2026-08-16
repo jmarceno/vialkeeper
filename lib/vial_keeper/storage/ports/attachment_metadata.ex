@@ -15,6 +15,7 @@ defmodule VialKeeper.Storage.Ports.AttachmentMetadata do
   @callback resolve_attachment_ticket(BackendContext.t(), map()) :: result(map())
   @callback lookup_reachable_size(BackendContext.t(), binary()) :: result(non_neg_integer())
   @callback put_pending_blob(BackendContext.t(), map()) :: result(map())
+  @callback put_pending_blobs(BackendContext.t(), [map()]) :: result([map()])
   @callback delete_pending_digests(BackendContext.t(), [binary()]) ::
               :ok | {:error, VialKeeper.Error.t()}
   @callback list_retained_digests(BackendContext.t()) :: result([binary()])

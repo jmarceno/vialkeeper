@@ -7,6 +7,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   alias VialKeeper.DerivedView.Manager, as: DerivedViewManager
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Compact
+  alias VialKeeper.Observability.Instrumentation.Mutation
 
   alias VialKeeper.Runtime.{
     AttachmentCoordinator,
@@ -51,8 +52,11 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
 
   def command(uuid, command, timeout \\ 30_000) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid}) do
-      [{pid, _}] -> GenServer.call(pid, command, timeout)
-      [] -> {:error, VialKeeper.Error.database_closed("database owner is not running")}
+      [{pid, _}] ->
+        GenServer.call(pid, {:owner_queued_command, System.monotonic_time(), command}, timeout)
+
+      [] ->
+        {:error, VialKeeper.Error.database_closed("database owner is not running")}
     end
   end
 
@@ -60,8 +64,15 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   @spec command_with_context(binary(), CommandContext.t(), term(), timeout()) :: term()
   def command_with_context(uuid, %CommandContext{} = context, command, timeout \\ 30_000) do
     case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:owner, uuid}) do
-      [{pid, _}] -> GenServer.call(pid, {:command_context, context, command}, timeout)
-      [] -> {:error, VialKeeper.Error.database_closed("database owner is not running")}
+      [{pid, _}] ->
+        GenServer.call(
+          pid,
+          {:owner_queued_command, System.monotonic_time(), {:command_context, context, command}},
+          timeout
+        )
+
+      [] ->
+        {:error, VialKeeper.Error.database_closed("database owner is not running")}
     end
   end
 
@@ -173,6 +184,12 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
 
   def handle_call(:reader_source, _from, state), do: {:reply, {:ok, state.context}, state}
 
+  def handle_call({:owner_queued_command, queued_at, command}, from, state)
+      when is_integer(queued_at) do
+    record_owner_queue(command, queued_at)
+    handle_call(command, from, state)
+  end
+
   def handle_call({:command_context, %CommandContext{} = context, command}, from, state) do
     safe_dispatch(context, command, from, state)
   end
@@ -237,36 +254,44 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
 
   defp handle_owner_command(%Commands.PutDocument{request: request}, _from, state),
     do:
-      writable_mutation(state, fn ->
-        mutate(
-          wrap_put(
-            Services.apply_local_mutation(state.context, Map.put(request, :operation, :put))
-          ),
-          state
-        )
+      Mutation.with_operation(:put, fn ->
+        writable_mutation(state, fn ->
+          mutate(
+            wrap_put(
+              Services.apply_local_mutation(state.context, Map.put(request, :operation, :put))
+            ),
+            state
+          )
+        end)
       end)
 
   defp handle_owner_command(%Commands.DeleteDocument{request: request}, _from, state),
     do:
-      writable_mutation(state, fn ->
-        mutate(
-          wrap_put(
-            Services.apply_local_mutation(state.context, Map.put(request, :operation, :delete))
-          ),
-          state
-        )
+      Mutation.with_operation(:delete, fn ->
+        writable_mutation(state, fn ->
+          mutate(
+            wrap_put(
+              Services.apply_local_mutation(state.context, Map.put(request, :operation, :delete))
+            ),
+            state
+          )
+        end)
       end)
 
   defp handle_owner_command(%Commands.BulkWrite{request: request}, _from, state),
     do:
-      writable_mutation(state, fn ->
-        mutate(Services.apply_bulk_mutation(state.context, request), state)
+      Mutation.with_operation(:bulk_write, fn ->
+        writable_mutation(state, fn ->
+          mutate(Services.apply_bulk_mutation(state.context, request), state)
+        end)
       end)
 
   defp handle_owner_command(%Commands.ResolveConflict{request: request}, _from, state),
     do:
-      writable_mutation(state, fn ->
-        mutate(Services.resolve_conflict(state.context, request), state)
+      Mutation.with_operation(:resolve, fn ->
+        writable_mutation(state, fn ->
+          mutate(Services.resolve_conflict(state.context, request), state)
+        end)
       end)
 
   defp handle_owner_command(
@@ -318,6 +343,9 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
 
   defp handle_owner_command(%Commands.ProtectPendingBlob{request: request}, _from, state),
     do: reply(Services.protect_pending_blob(state.context, request), state)
+
+  defp handle_owner_command(%Commands.ProtectPendingBlobs{request: request}, _from, state),
+    do: reply(Services.protect_pending_blobs(state.context, request), state)
 
   defp handle_owner_command(%Commands.RemovePendingBlobProtection{request: request}, _from, state),
     do: reply(Services.remove_pending_blob_protection(state.context, request), state)
@@ -464,13 +492,13 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   end
 
   defp mutate({:ok, %{sequence: sequence} = value}, state) do
-    ChangeNotifier.publish(state.uuid, sequence)
+    Mutation.phase(:change_notifier, fn -> ChangeNotifier.publish(state.uuid, sequence) end)
     {:reply, {:ok, value}, state}
   end
 
   defp mutate({:ok, %{last_sequence: sequence} = value}, state)
        when is_integer(sequence) and sequence > 0 do
-    ChangeNotifier.publish(state.uuid, sequence)
+    Mutation.phase(:change_notifier, fn -> ChangeNotifier.publish(state.uuid, sequence) end)
     {:reply, {:ok, value}, state}
   end
 
@@ -481,7 +509,9 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
         _value, maximum -> maximum
       end)
 
-    if sequence > 0, do: ChangeNotifier.publish(state.uuid, sequence)
+    if sequence > 0,
+      do: Mutation.phase(:change_notifier, fn -> ChangeNotifier.publish(state.uuid, sequence) end)
+
     {:reply, result, state}
   end
 
@@ -505,6 +535,30 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
 
       _ ->
         fun.()
+    end
+  end
+
+  defp record_owner_queue(command, queued_at) do
+    case mutation_operation(command) do
+      operation when operation in [:put, :delete, :resolve, :bulk_write, :import] ->
+        Mutation.record(operation, :owner_queue, max(System.monotonic_time() - queued_at, 0))
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp mutation_operation({:command_context, %CommandContext{}, command}),
+    do: mutation_operation(command)
+
+  defp mutation_operation(command) do
+    case Commands.normalize(command) do
+      %Commands.PutDocument{} -> :put
+      %Commands.DeleteDocument{} -> :delete
+      %Commands.ResolveConflict{} -> :resolve
+      %Commands.BulkWrite{} -> :bulk_write
+      %Commands.ImportRevisionChains{} -> :import
+      _other -> nil
     end
   end
 

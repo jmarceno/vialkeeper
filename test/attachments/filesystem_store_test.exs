@@ -202,6 +202,49 @@ defmodule VialKeeper.Attachments.FilesystemStoreTest do
     assert size == byte_size(payload)
   end
 
+  test "raw representation reuses the logical digest for the payload digest", %{bundle: bundle} do
+    payload = <<0xFF, 0xD8, 0xFF, :crypto.strong_rand_bytes(32_768)::binary>>
+    digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+
+    assert {:ok, %{digest: ^digest, encoding: :raw}} = put_whole(bundle.root, payload)
+
+    representation = File.read!(blob_path_for(bundle.root, digest))
+    trailer_offset = byte_size(representation) - Representation.trailer_size()
+    trailer = binary_part(representation, trailer_offset, Representation.trailer_size())
+
+    assert {:ok, descriptor} = Representation.parse_trailer(trailer)
+    assert descriptor.logical_digest == digest
+    assert descriptor.payload_sha256 == digest
+    assert descriptor.logical_length == byte_size(payload)
+    assert descriptor.payload_length == byte_size(payload)
+    assert {:ok, reader} = FilesystemStore.open_read(bundle.root, digest)
+    assert collect_reader(reader) == payload
+  end
+
+  test "known compressed container signatures select raw representation", %{bundle: bundle} do
+    signatures = [
+      <<0xFF, 0xD8, 0xFF, 0>>,
+      <<0x89, "PNG\r\n", 0x1A, "\n", 0>>,
+      <<"GIF89a", 0>>,
+      <<"PK", 3, 4, 0>>,
+      <<0x1F, 0x8B, 0>>,
+      <<0x28, 0xB5, 0x2F, 0xFD, 0>>,
+      <<0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0>>,
+      <<"Rar!", 0x1A, 0x07, 0>>,
+      <<"%PDF-1.7", 0>>,
+      <<"RIFF", 0, 0, 0, 0, "WEBP", 0>>,
+      <<0, 0, 0, 24, "ftyp", "isom">>
+    ]
+
+    Enum.each(signatures, fn signature ->
+      assert Compression.already_compressed?(signature)
+      payload = signature <> :crypto.strong_rand_bytes(300_000)
+      assert {:ok, %{encoding: :raw}} = put_whole(bundle.root, payload)
+    end)
+
+    refute Compression.already_compressed?("plain text")
+  end
+
   @tag :compressed
   test "compressed read returns exact original bytes when worthwhile", %{bundle: bundle} do
     payload = compressible_payload()

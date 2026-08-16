@@ -5,6 +5,7 @@ defmodule VialKeeper.Documents do
   alias VialKeeper.JSON.Canonical
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.MapAccess
+  alias VialKeeper.Observability.Instrumentation.Mutation
   alias VialKeeper.Runtime.DatabaseCatalog
   alias VialKeeper.Shadow.ReadRouter
 
@@ -80,14 +81,19 @@ defmodule VialKeeper.Documents do
   end
 
   def put(uuid, request) do
-    with {:ok, request} <- validate_mutation(request, false),
+    with {:ok, request} <-
+           Mutation.phase(:put, :validation, fn -> validate_mutation(request, false) end),
          {:ok, attachments, guard} <-
-           Attachments.resolve_manifest_for_mutation(uuid, request.attachments) do
+           Mutation.phase(:put, :attachment_manifest, fn ->
+             Attachments.resolve_manifest_for_mutation(uuid, request.attachments)
+           end) do
       try do
-        DatabaseCatalog.command(
-          uuid,
-          {:command, :put, Map.put(request, :attachments, attachments)}
-        )
+        Mutation.phase(:put, :catalog_route, fn ->
+          DatabaseCatalog.command(
+            uuid,
+            {:command, :put, Map.put(request, :attachments, attachments)}
+          )
+        end)
       after
         Attachments.release_guard(uuid, guard)
       end
@@ -95,8 +101,11 @@ defmodule VialKeeper.Documents do
   end
 
   def delete(uuid, request) do
-    with {:ok, request} <- validate_mutation(request, true) do
-      DatabaseCatalog.command(uuid, {:command, :delete, request})
+    with {:ok, request} <-
+           Mutation.phase(:delete, :validation, fn -> validate_mutation(request, true) end) do
+      Mutation.phase(:delete, :catalog_route, fn ->
+        DatabaseCatalog.command(uuid, {:command, :delete, request})
+      end)
     end
   end
 
@@ -172,10 +181,14 @@ defmodule VialKeeper.Documents do
     if length(operations) > limit do
       {:error, VialKeeper.Error.resource_limit("bulk-write operation count exceeds the host limit")}
     else
-      case prepare_bulk_operations(uuid, operations) do
+      case Mutation.phase(:bulk_write, :validation, fn ->
+             prepare_bulk_operations(uuid, operations)
+           end) do
         {:ok, normalized, guard} ->
           try do
-            DatabaseCatalog.command(uuid, {:command, :bulk_write, %{operations: normalized}})
+            Mutation.phase(:bulk_write, :catalog_route, fn ->
+              DatabaseCatalog.command(uuid, {:command, :bulk_write, %{operations: normalized}})
+            end)
           after
             Attachments.release_guard(uuid, guard)
           end
@@ -329,8 +342,10 @@ defmodule VialKeeper.Documents do
 
     with :ok <- validate_id(id),
          true <- is_map(body),
-         {:ok, canonical} <- Canonical.encode(body),
-         {:ok, normalized} <- StrictDecoder.decode(canonical),
+         {:ok, canonical} <-
+           Mutation.phase(:put, :canonical_encode, fn -> Canonical.encode(body) end),
+         {:ok, normalized} <-
+           Mutation.phase(:put, :strict_decode, fn -> StrictDecoder.decode(canonical) end),
          {:ok, revision} <- expected_revision(request),
          {:ok, attachments} <- parse_attachments_field(request) do
       {:ok,
@@ -338,6 +353,7 @@ defmodule VialKeeper.Documents do
          document_id: id,
          if_revision: revision,
          body: normalized,
+         body_json: canonical,
          attachments: attachments
        }}
     else
@@ -602,13 +618,18 @@ defmodule VialKeeper.Documents do
   end
 
   defp normalize_bulk_put(id, body, operation) do
-    with {:ok, attachments} <- parse_attachments_field(operation) do
+    with {:ok, canonical} <-
+           Mutation.phase(:bulk_write, :canonical_encode, fn -> Canonical.encode(body) end),
+         {:ok, normalized} <-
+           Mutation.phase(:bulk_write, :strict_decode, fn -> StrictDecoder.decode(canonical) end),
+         {:ok, attachments} <- parse_attachments_field(operation) do
       {:ok,
        %{
          operation: :put,
          document_id: id,
          if_revision: bulk_if_revision(operation),
-         body: body,
+         body: normalized,
+         body_json: canonical,
          attachments: attachments
        }}
     end

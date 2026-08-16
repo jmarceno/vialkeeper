@@ -185,6 +185,22 @@ defmodule VialKeeper.Storage.SQLite.Attachments do
     end
   end
 
+  @doc "Inserts or renews pending-blob rows within the caller's transaction."
+  @spec put_pending_blobs(Connection.handle(), [map()]) ::
+          {:ok, [map()]} | {:error, VialKeeper.Error.t()}
+  def put_pending_blobs(conn, rows) when is_list(rows) do
+    Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
+      case put_pending_blob(conn, row) do
+        {:ok, protected} -> {:cont, {:ok, [protected | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, protected} -> {:ok, Enum.reverse(protected)}
+      {:error, _} = error -> error
+    end
+  end
+
   @doc "Deletes pending protection for digests."
   @spec delete_pending_digests(Connection.handle(), [binary()]) ::
           :ok | {:error, VialKeeper.Error.t()}

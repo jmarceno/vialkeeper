@@ -8,10 +8,11 @@ defmodule VialKeeper.HostConfig do
   root relocates a complete, working configuration.
   """
 
+  alias VialKeeper.AtomicWrite
   alias VialKeeper.Federation.Normalizer
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.PathSafety
-  alias VialKeeper.Runtime.{AdmissionPolicy, AtomicWrite}
+  alias VialKeeper.Runtime.AdmissionPolicy
 
   @filename "host.toml"
 

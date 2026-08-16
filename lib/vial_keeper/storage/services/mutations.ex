@@ -11,6 +11,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
   alias VialKeeper.Domain.Revision
   alias VialKeeper.JSON.Canonical
   alias VialKeeper.MapAccess
+  alias VialKeeper.Observability.Instrumentation.Mutation
   alias VialKeeper.Revisions.ConflictResolution
   alias VialKeeper.Revisions.{Id, Winner}
   alias VialKeeper.Storage.BackendContext
@@ -28,11 +29,12 @@ defmodule VialKeeper.Storage.Services.Mutations do
     history_id = MapAccess.get(request, :history_id)
     deleted = operation in [:delete, "delete"]
     body = if deleted, do: nil, else: MapAccess.get(request, :body)
+    body_json = if deleted, do: nil, else: MapAccess.get(request, :body_json)
 
     with :ok <- validate_mutation_operation(operation),
-         :ok <- validate_document_input(context, document_id, deleted, body),
-         {:ok, doc} <- Facts.find_document(context, document_id),
-         {:ok, current} <- current_winner(context, doc),
+         :ok <- validate_document_input(context, document_id, deleted, body, body_json),
+         {:ok, {doc, current}} <-
+           Mutation.phase(:fact_reads, fn -> load_document_state(context, document_id) end),
          {:ok, candidate} <-
            candidate_revision(context, doc, %{
              document_id: document_id,
@@ -40,6 +42,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
              current: current,
              deleted: deleted,
              body: body,
+             body_json: body_json,
              history_id: history_id,
              request: request
            }) do
@@ -194,10 +197,15 @@ defmodule VialKeeper.Storage.Services.Mutations do
 
   defp validate_document_input(context, document_id, deleted, body) do
     config = Map.get(adapter_identity(context), :config, VialKeeper.Config.defaults())
-    validate_document_input(context, document_id, deleted, body, config)
+    validate_document_input(context, document_id, deleted, body, nil, config)
   end
 
-  defp validate_document_input(_context, document_id, deleted, body, config) do
+  defp validate_document_input(context, document_id, deleted, body, body_json) do
+    config = Map.get(adapter_identity(context), :config, VialKeeper.Config.defaults())
+    validate_document_input(context, document_id, deleted, body, body_json, config)
+  end
+
+  defp validate_document_input(_context, document_id, deleted, body, body_json, config) do
     max_id = get_in(config, ["documents", "max_document_id_bytes"]) || 512
     max_body = get_in(config, ["documents", "max_document_bytes"]) || 1_048_576
 
@@ -207,7 +215,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
       fn -> validate_document_id_characters(document_id) end,
       fn -> validate_deleted_body(deleted, body) end,
       fn -> validate_live_body(deleted, body) end,
-      fn -> validate_body_size(deleted, body, max_body) end
+      fn -> validate_body_size(deleted, body, body_json, max_body) end
     ]
 
     case Enum.find_value(validators, & &1.()) do
@@ -251,11 +259,20 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp validate_live_body(false, _body),
     do: VialKeeper.Error.invalid_request("document body must be an object")
 
-  defp validate_body_size(true, _body, _max), do: nil
-  defp validate_body_size(false, body, max) when is_map(body), do: body_size_error(body, max)
-  defp validate_body_size(false, _body, _max), do: nil
+  defp validate_body_size(true, _body, _body_json, _max), do: nil
 
-  defp body_size_error(body, max) do
+  defp validate_body_size(false, body, body_json, max) when is_map(body),
+    do: body_size_error(body, body_json, max)
+
+  defp validate_body_size(false, _body, _body_json, _max), do: nil
+
+  defp body_size_error(_body, body_json, max) when is_binary(body_json) do
+    if byte_size(body_json) <= max,
+      do: nil,
+      else: VialKeeper.Error.resource_limit("document body exceeds the configured limit")
+  end
+
+  defp body_size_error(body, _body_json, max) do
     case Canonical.encode(body) do
       {:ok, json} when byte_size(json) <= max ->
         nil
@@ -288,6 +305,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
       current: current,
       deleted: deleted,
       body: body,
+      body_json: body_json,
       history_id: history_id,
       request: request
     } = attrs
@@ -306,24 +324,29 @@ defmodule VialKeeper.Storage.Services.Mutations do
                history_id
              ),
            {:ok, attachments} <-
-             resolve_mutation_attachments(
-               context,
-               doc,
-               request,
-               deleted,
-               parent,
-               current,
-               :mutation
-             ),
+             Mutation.phase(:attachment_manifest, fn ->
+               resolve_mutation_attachments(
+                 context,
+                 doc,
+                 request,
+                 deleted,
+                 parent,
+                 current,
+                 :mutation
+               )
+             end),
            {:ok, revision} <-
-             build_revision(
-               document_id,
-               resolved_history_id,
-               parent,
-               deleted,
-               body,
-               attachments
-             ) do
+             Mutation.phase(:revision_hash, fn ->
+               build_revision(
+                 document_id,
+                 resolved_history_id,
+                 parent,
+                 deleted,
+                 body,
+                 attachments,
+                 body_json
+               )
+             end) do
         candidate_from_revision(context, doc, if_revision, current, revision)
       end
     end
@@ -367,15 +390,23 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp insert_local_revision(context, nil, %Revision{} = candidate, _if_revision, _operation) do
     document_id = candidate.document_id
 
-    with {:ok, _doc} <- Facts.ensure_document(context, document_id),
+    with {:ok, _doc} <-
+           Mutation.phase(:revision_writes, fn ->
+             Facts.ensure_document(context, document_id)
+           end),
          :ok <-
-           Facts.insert_revision_with_body(
-             context,
-             document_id,
-             candidate,
-             revision_body_json(candidate)
-           ),
-         :ok <- Facts.clear_pending_for_manifest(context, candidate.attachments),
+           Mutation.phase(:revision_writes, fn ->
+             Facts.insert_revision_with_body(
+               context,
+               document_id,
+               candidate,
+               revision_body_json(candidate)
+             )
+           end),
+         :ok <-
+           Mutation.phase(:attachment_metadata, fn ->
+             Facts.clear_pending_for_manifest(context, candidate.attachments)
+           end),
          {:ok, result} <- finalize_document(context, document_id, candidate) do
       {:ok, Map.put(result, :replayed, false)}
     end
@@ -387,15 +418,23 @@ defmodule VialKeeper.Storage.Services.Mutations do
         existing_local_revision_result(existing, doc, candidate)
 
       {:error, %VialKeeper.Error{code: :revision_not_found}} ->
-        with :ok <- Facts.ensure_parent(context, doc.document_id, candidate.parent_revision),
+        with :ok <-
+               Mutation.phase(:fact_reads, fn ->
+                 Facts.ensure_parent(context, doc.document_id, candidate.parent_revision)
+               end),
              :ok <-
-               Facts.insert_revision_with_body(
-                 context,
-                 doc.document_id,
-                 candidate,
-                 revision_body_json(candidate)
-               ),
-             :ok <- Facts.clear_pending_for_manifest(context, candidate.attachments),
+               Mutation.phase(:revision_writes, fn ->
+                 Facts.insert_revision_with_body(
+                   context,
+                   doc.document_id,
+                   candidate,
+                   revision_body_json(candidate)
+                 )
+               end),
+             :ok <-
+               Mutation.phase(:attachment_metadata, fn ->
+                 Facts.clear_pending_for_manifest(context, candidate.attachments)
+               end),
              {:ok, result} <-
                finalize_document(context, candidate.document_id, candidate) do
           {:ok, Map.put(result, :replayed, false)}
@@ -435,32 +474,39 @@ defmodule VialKeeper.Storage.Services.Mutations do
          allocated_sequence,
          mark_pending?
        ) do
-    with {:ok, doc} <- Facts.find_document(context, document_id),
-         {:ok, all_leaves} <- Facts.list_leaves(context, document_id),
-         {:ok, winner} <- Winner.select(all_leaves),
-         {:ok, leaf_json} <- Facts.encode_leaf_set(all_leaves),
+    with {:ok, {doc, all_leaves, winner, leaf_json}} <-
+           Mutation.phase(:fact_reads, fn ->
+             load_finalization_facts(context, document_id)
+           end),
          {:ok, sequence} <- allocated_or_new_sequence(context, allocated_sequence),
          :ok <-
-           Facts.update_winning_with_body(
-             context,
-             document_id,
-             winner,
-             sequence,
-             revision_body_json(winner)
-           ),
-         :ok <- refresh_ready_indexes(context, document_id, winner, ready_indexes),
-         :ok <-
-           Facts.append_change(
-             context,
-             Facts.change_entry(
-               sequence,
+           Mutation.phase(:revision_writes, fn ->
+             Facts.update_winning_with_body(
+               context,
                document_id,
                winner,
-               leaf_json,
-               "local",
-               Facts.backend_meta(doc)
+               sequence,
+               revision_body_json(winner)
              )
-           ),
+           end),
+         :ok <-
+           Mutation.phase(:revision_writes, fn ->
+             refresh_ready_indexes(context, document_id, winner, ready_indexes)
+           end),
+         :ok <-
+           Mutation.phase(:change_log, fn ->
+             Facts.append_change(
+               context,
+               Facts.change_entry(
+                 sequence,
+                 document_id,
+                 winner,
+                 leaf_json,
+                 "local",
+                 Facts.backend_meta(doc)
+               )
+             )
+           end),
          :ok <- mark_pending_if_needed(context, mark_pending?) do
       publishless =
         publishless_result(
@@ -493,6 +539,22 @@ defmodule VialKeeper.Storage.Services.Mutations do
 
   defp mark_pending_if_needed(context, true),
     do: Facts.mark_pending_local_causal(context)
+
+  defp load_document_state(context, document_id) do
+    with {:ok, doc} <- Facts.find_document(context, document_id),
+         {:ok, current} <- current_winner(context, doc) do
+      {:ok, {doc, current}}
+    end
+  end
+
+  defp load_finalization_facts(context, document_id) do
+    with {:ok, doc} <- Facts.find_document(context, document_id),
+         {:ok, all_leaves} <- Facts.list_leaves(context, document_id),
+         {:ok, winner} <- Winner.select(all_leaves),
+         {:ok, leaf_json} <- Facts.encode_leaf_set(all_leaves) do
+      {:ok, {doc, all_leaves, winner, leaf_json}}
+    end
+  end
 
   defp prepare_bulk_operations(
          context,
@@ -608,9 +670,10 @@ defmodule VialKeeper.Storage.Services.Mutations do
     history_id = MapAccess.get(request, :history_id)
     deleted = operation in [:delete, "delete"]
     body = if(deleted, do: nil, else: MapAccess.get(request, :body))
+    body_json = if deleted, do: nil, else: MapAccess.get(request, :body_json)
 
     with :ok <- validate_mutation_operation(operation),
-         :ok <- validate_document_input(context, document_id, deleted, body, config),
+         :ok <- validate_document_input(context, document_id, deleted, body, body_json, config),
          {:ok, doc} <- bulk_document(context, document_cache, document_id),
          {:ok, current} <- current_winner(context, doc),
          {:ok, candidate_state} <-
@@ -620,6 +683,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
              current: current,
              deleted: deleted,
              body: body,
+             body_json: body_json,
              history_id: history_id,
              request: request
            }) do
@@ -762,6 +826,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
              document_id,
              delete_all,
              if(delete_all, do: nil, else: body),
+             nil,
              config
            ),
          true <- is_list(expected) and Enum.all?(expected, &is_binary/1),
@@ -851,6 +916,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
     }
 
   defp revision_body_json(%Revision{deleted: true}), do: nil
+  defp revision_body_json(%Revision{body_json: body_json}) when is_binary(body_json), do: body_json
   defp revision_body_json(%Revision{body: body}), do: Canonical.encode!(body)
 
   defp maybe_update_pending_document(
@@ -1367,6 +1433,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
          parent,
          deleted,
          body,
+         body_json,
          attachments
        ) do
     Revision.assemble(
@@ -1378,11 +1445,15 @@ defmodule VialKeeper.Storage.Services.Mutations do
       digest: digest(revision_id),
       deleted: deleted,
       body: body,
+      body_json: body_json,
       attachments: attachments
     )
   end
 
-  defp build_revision(document_id, history_id, parent, deleted, body, attachments) do
+  defp build_revision(document_id, history_id, parent, deleted, body, attachments),
+    do: build_revision(document_id, history_id, parent, deleted, body, attachments, nil)
+
+  defp build_revision(document_id, history_id, parent, deleted, body, attachments, body_json) do
     with {:ok, id} <- Id.calculate(document_id, history_id, parent, deleted, body, attachments),
          {:ok, generation} <- Id.generation(id),
          {:ok, normalized_attachments} <- normalize_attachments(attachments, deleted) do
@@ -1395,6 +1466,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
          parent,
          deleted,
          body,
+         body_json,
          normalized_attachments
        )}
     end

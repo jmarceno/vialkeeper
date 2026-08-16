@@ -7,6 +7,7 @@ defmodule VialKeeper.Runtime.AdmissionSchedulerTest do
 
   @moduletag :integration
 
+  alias VialKeeper.Deadline
   alias VialKeeper.Eventual
 
   alias VialKeeper.Runtime.{
@@ -16,7 +17,6 @@ defmodule VialKeeper.Runtime.AdmissionSchedulerTest do
     DatabaseAdmission,
     DatabaseCatalog,
     DatabaseOwner,
-    Deadline,
     ServiceClass
   }
 

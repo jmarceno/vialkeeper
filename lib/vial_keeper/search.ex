@@ -8,11 +8,12 @@ defmodule VialKeeper.Search do
   """
 
   alias VialKeeper.Config
+  alias VialKeeper.Deadline
   alias VialKeeper.Domain.Revision
   alias VialKeeper.MapAccess
+  alias VialKeeper.Observability.Instrumentation.Mutation
   alias VialKeeper.Search.{Owner, Supervisor}
   alias VialKeeper.Storage.BackendContext
-  alias VialKeeper.Runtime.Deadline
 
   @pending_key :vial_keeper_search_pending
 
@@ -110,10 +111,8 @@ defmodule VialKeeper.Search do
            {:ok, _count} <- consume_pages(context, index_id, cursor, page_fun, deadline),
            :ok <- check_rebuild_deadline(deadline),
            :ok <- run_before_finish(before_finish, deadline),
-           :ok <- check_rebuild_deadline(deadline),
-           {:ok, entries} <-
-             call_with_deadline(context, {:finish_rebuild, index_id}, deadline) do
-        {:ok, entries}
+           :ok <- check_rebuild_deadline(deadline) do
+        call_with_deadline(context, {:finish_rebuild, index_id}, deadline)
       end
 
     finish_rebuild_attempt(context, index_id, result)
@@ -185,7 +184,7 @@ defmodule VialKeeper.Search do
 
     case fun.() do
       {:ok, result} ->
-        case flush_pending(context) do
+        case Mutation.phase(:search_flush, fn -> flush_pending(context) end) do
           :ok -> {:ok, result}
           {:error, _} = error -> error
         end
@@ -245,11 +244,6 @@ defmodule VialKeeper.Search do
       end
     end
   end
-
-  defp call_timeout({:rebuild, _index_id, _definition, _documents}),
-    do: Config.search_rebuild_timeout_ms()
-
-  defp call_timeout(request) when request in [:has_indexes], do: query_timeout()
 
   defp call_timeout({operation, _index_id, _definition})
        when operation in [:begin_rebuild],
@@ -327,9 +321,13 @@ defmodule VialKeeper.Search do
       {:ok, {page, next_cursor, done}} when is_list(page) and is_boolean(done) ->
         with {:ok, added} <- rebuild_batch(context, index_id, page, deadline),
              {:ok, remaining} <-
-               if(done,
-                 do: {:ok, 0},
-                 else: consume_pages(context, index_id, next_cursor, page_fun, deadline)
+               consume_remaining_pages(
+                 done,
+                 context,
+                 index_id,
+                 next_cursor,
+                 page_fun,
+                 deadline
                ) do
           {:ok, added + remaining}
         end
@@ -341,6 +339,12 @@ defmodule VialKeeper.Search do
         {:error, VialKeeper.Error.internal_error("full-text rebuild page is invalid")}
     end
   end
+
+  defp consume_remaining_pages(true, _context, _index_id, _cursor, _page_fun, _deadline),
+    do: {:ok, 0}
+
+  defp consume_remaining_pages(false, context, index_id, cursor, page_fun, deadline),
+    do: consume_pages(context, index_id, cursor, page_fun, deadline)
 
   defp winner_payload(%Revision{deleted: deleted, body: body}), do: {body || %{}, deleted}
 

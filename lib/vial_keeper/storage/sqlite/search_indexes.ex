@@ -6,10 +6,10 @@ defmodule VialKeeper.Storage.SQLite.SearchIndexes do
   disposable and are reconstructed from winners when missing.
   """
 
+  alias VialKeeper.Deadline
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Search, as: SearchInstrumentation
   alias VialKeeper.Query.Projection
-  alias VialKeeper.Runtime.Deadline
   alias VialKeeper.Search
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.SQLite.{Changes, Connection, Context, IndexCatalog, TermBlob}
@@ -107,17 +107,15 @@ defmodule VialKeeper.Storage.SQLite.SearchIndexes do
            definition
            |> Map.merge(nested_metadata(index))
            |> Map.put("index_id", index_id),
-         {:ok, start_sequence} <- Changes.current_sequence(adapter.conn),
-         {:ok, entries} <-
-           Search.rebuild_pages(
-             context,
-             index_id,
-             definition,
-             nil,
-             fn after_id -> winning_documents_page(adapter.conn, after_id, @rebuild_page_size) end,
-             fn deadline -> catch_up(context, adapter.conn, index_id, start_sequence, deadline) end
-           ) do
-      {:ok, entries}
+         {:ok, start_sequence} <- Changes.current_sequence(adapter.conn) do
+      Search.rebuild_pages(
+        context,
+        index_id,
+        definition,
+        nil,
+        fn after_id -> winning_documents_page(adapter.conn, after_id, @rebuild_page_size) end,
+        fn deadline -> catch_up(context, adapter.conn, index_id, start_sequence, deadline) end
+      )
     end
   end
 

@@ -5,7 +5,7 @@ defmodule VialKeeper.Runtime.AtomicWriteTest do
   """
   use ExUnit.Case, async: true
 
-  alias VialKeeper.Runtime.AtomicWrite
+  alias VialKeeper.AtomicWrite
 
   setup do
     dir = Path.join(System.tmp_dir!(), "vialkeeper-atomic-#{System.unique_integer([:positive])}")

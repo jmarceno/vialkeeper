@@ -8,9 +8,9 @@ defmodule VialKeeper.Bench.Root do
   `/mnt/other/downloads/` before any network request or large write.
   """
 
+  alias VialKeeper.AtomicWrite
   alias VialKeeper.Bench.DiskSpace
   alias VialKeeper.PathSafety
-  alias VialKeeper.Runtime.AtomicWrite
   alias VialKeeper.UUID
 
   @approved_parent "/mnt/other/downloads"

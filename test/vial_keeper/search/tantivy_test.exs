@@ -1,7 +1,7 @@
 defmodule VialKeeper.Search.TantivyTest do
   use ExUnit.Case, async: true
 
-  alias VialKeeper.Search.Tantivy
+  alias VialKeeper.Search.{Owner, Tantivy}
 
   @definition %{"index_id" => "idx_search_tantivy_test", "fields" => ["/title"]}
 
@@ -56,6 +56,21 @@ defmodule VialKeeper.Search.TantivyTest do
     :ok = Tantivy.rollback(handle)
   end
 
+  test "native batches remain unsearchable until one explicit commit", %{handle: handle} do
+    assert :ok =
+             Tantivy.add_batch(handle, [
+               {"first", %{"title" => "batched alpha"}},
+               {"second", %{"title" => "batched beta"}}
+             ])
+
+    assert {:error, %VialKeeper.Error{code: :index_not_found}} =
+             Tantivy.search(handle, "batched", "all")
+
+    assert {:ok, committed} = Tantivy.commit(handle)
+    assert {:ok, hits} = Tantivy.search(committed, "batched", "all")
+    assert Enum.map(hits, & &1.id) |> Enum.sort() == ["first", "second"]
+  end
+
   test "owner reopens a committed generation from its manifest" do
     root =
       "/mnt/other/downloads/vialkeeper/work/fts/tantivy-owner-test-" <>
@@ -66,7 +81,7 @@ defmodule VialKeeper.Search.TantivyTest do
     File.rm_rf!(root)
     on_exit(fn -> File.rm_rf(root) end)
 
-    {:ok, pid} = VialKeeper.Search.Owner.start_link({uuid, path})
+    {:ok, pid} = Owner.start_link({uuid, path})
     :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition})
 
     {:ok, 1} =
@@ -82,7 +97,7 @@ defmodule VialKeeper.Search.TantivyTest do
     assert fingerprint == Tantivy.schema_fingerprint()
     :ok = GenServer.stop(pid)
 
-    {:ok, pid} = VialKeeper.Search.Owner.start_link({uuid, path})
+    {:ok, pid} = Owner.start_link({uuid, path})
     assert {:ok, [%{id: "doc"}]} = GenServer.call(pid, {:search, "idx", "reopen", "all"})
 
     :ok =
@@ -124,7 +139,7 @@ defmodule VialKeeper.Search.TantivyTest do
     File.rm_rf!(root)
     on_exit(fn -> File.rm_rf(root) end)
 
-    {:ok, pid} = VialKeeper.Search.Owner.start_link({uuid, path})
+    {:ok, pid} = Owner.start_link({uuid, path})
     :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition})
 
     {:ok, 1} =
@@ -137,6 +152,9 @@ defmodule VialKeeper.Search.TantivyTest do
 
     {:ok, 1} =
       GenServer.call(pid, {:rebuild_batch, "idx", [%{id: "doc", body: %{"title" => "new"}}]})
+
+    rebuilding = :sys.get_state(pid).rebuilds["idx"]
+    assert rebuilding.handle.searcher == nil
 
     assert {:ok, [%{id: "doc"}]} = GenServer.call(pid, {:search, "idx", "old", "all"})
     assert {:ok, []} = GenServer.call(pid, {:search, "idx", "new", "all"})

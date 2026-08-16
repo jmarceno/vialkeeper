@@ -22,7 +22,7 @@ defmodule VialKeeper.Bench.Prepare do
     Zip
   }
 
-  alias VialKeeper.Runtime.AtomicWrite
+  alias VialKeeper.AtomicWrite
 
   @spec prepare(binary(), keyword()) :: {:ok, map()} | {:error, binary()}
   def prepare(name, opts \\ []) when is_binary(name) do
@@ -71,12 +71,12 @@ defmodule VialKeeper.Bench.Prepare do
       case Marker.read(dest) do
         {:ok, %{"profile" => ready_profile}}
         when ready_profile == expected_profile ->
-          {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
+          with :ok <- ensure_prepared_derivatives(context, spec, dest) do
+            {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
+          end
 
         {:ok, _marker} ->
-          with :ok <- Root.remove_dataset!(context, spec["name"], spec["version"]) do
-            do_prepare_dataset(context, spec, profile, opts)
-          end
+          replace_dataset(context, spec, profile, opts)
 
         {:error, :missing} ->
           do_prepare_dataset(context, spec, profile, opts)
@@ -84,6 +84,17 @@ defmodule VialKeeper.Bench.Prepare do
         {:error, _reason} ->
           do_prepare_dataset(context, spec, profile, opts)
       end
+    end
+  end
+
+  defp ensure_prepared_derivatives(context, %{"name" => "simplewiki"}, dest),
+    do: SimpleWiki.ensure_query_workload(context, dest)
+
+  defp ensure_prepared_derivatives(_context, _spec, _dest), do: :ok
+
+  defp replace_dataset(context, spec, profile, opts) do
+    with :ok <- Root.remove_dataset!(context, spec["name"], spec["version"]) do
+      do_prepare_dataset(context, spec, profile, opts)
     end
   end
 
@@ -170,9 +181,8 @@ defmodule VialKeeper.Bench.Prepare do
                context,
                %{url: spec["source_url"], dest: staging_archive},
                opts
-             ),
-           :ok <- copy_inside(context, staging_archive, archive) do
-        :ok
+             ) do
+        copy_inside(context, staging_archive, archive)
       end
     end
   end

@@ -2,8 +2,8 @@ defmodule VialKeeper.Runtime.AdmittedCommand do
   @moduledoc "Executes one admitted owner command and reports its completion to the scheduler."
   use GenServer
 
+  alias VialKeeper.Deadline
   alias VialKeeper.Error
-  alias VialKeeper.Runtime.Deadline
 
   @type args :: %{
           uuid: binary(),

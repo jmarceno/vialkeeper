@@ -1,7 +1,7 @@
 defmodule VialKeeper.NodeIdentity do
   @moduledoc "Durable identity for a host participating in shadow control operations."
 
-  alias VialKeeper.Runtime.AtomicWrite
+  alias VialKeeper.AtomicWrite
 
   @filename "node_identity"
   @uuid_pattern ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i

@@ -1,4 +1,4 @@
-defmodule VialKeeper.Runtime.AtomicWrite do
+defmodule VialKeeper.AtomicWrite do
   @moduledoc """
   Atomic, durable file replacement shared by the registration manifest and the
   host configuration file.

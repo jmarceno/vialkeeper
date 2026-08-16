@@ -1,8 +1,8 @@
 defmodule VialKeeper.Bench.Marker do
   @moduledoc "READY markers for prepared dataset fixtures."
 
+  alias VialKeeper.AtomicWrite
   alias VialKeeper.Bench.{Checksums, Root}
-  alias VialKeeper.Runtime.AtomicWrite
 
   @filename "READY.json"
 

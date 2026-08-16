@@ -3,6 +3,7 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
 
   use GenServer
 
+  alias VialKeeper.Deadline
   alias VialKeeper.Error
   alias VialKeeper.Observability.Instrumentation.Database, as: DatabaseInstrumentation
 
@@ -13,7 +14,6 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
     AdmittedCommand,
     AdmittedCommandSupervisor,
     DatabaseOwner,
-    Deadline,
     ServiceClass
   }
 

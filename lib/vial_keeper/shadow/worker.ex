@@ -3,6 +3,7 @@ defmodule VialKeeper.Shadow.Worker do
   import Kernel, except: [inspect: 1, inspect: 2]
   use GenServer
 
+  alias VialKeeper.AtomicWrite
   alias VialKeeper.Attachments.{FilesystemStore, Manifest, Representation, StoreRef}
   alias VialKeeper.Error
   alias VialKeeper.HostConfig
@@ -10,7 +11,7 @@ defmodule VialKeeper.Shadow.Worker do
   alias VialKeeper.NodeIdentity
   alias VialKeeper.PathSafety
   alias VialKeeper.Replication.BlobRepresentationStream
-  alias VialKeeper.Runtime.{AtomicWrite, CommandContext, DatabaseCatalog}
+  alias VialKeeper.Runtime.{CommandContext, DatabaseCatalog}
   alias VialKeeper.Shadow.{Metadata, Protocol, WorkerSupervisor}
   alias VialKeeper.Storage.Results
 

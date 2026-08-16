@@ -27,6 +27,7 @@ defmodule VialKeeper.Observability.Supervisor do
     ensure_started(:opentelemetry_api)
     ensure_started(:opentelemetry)
     ensure_started(:opentelemetry_experimental)
+    :ok = VialKeeper.Observability.Meters.initialize()
 
     children = [
       # Attaches the Bandit/Finch :telemetry bridge handlers; detaches on shutdown.

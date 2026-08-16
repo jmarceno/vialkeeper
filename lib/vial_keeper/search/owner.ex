@@ -9,7 +9,7 @@ defmodule VialKeeper.Search.Owner do
   """
   use GenServer
 
-  alias VialKeeper.Runtime.AtomicWrite
+  alias VialKeeper.AtomicWrite
   alias VialKeeper.Observability.Instrumentation.Search, as: SearchInstrumentation
   alias VialKeeper.Search.Tantivy
 
@@ -19,6 +19,19 @@ defmodule VialKeeper.Search.Owner do
   @backend "tantivy_ex"
 
   @type args :: {binary(), binary() | nil}
+
+  defmodule IndexGeneration do
+    @moduledoc "A published Tantivy generation and its logical index definition."
+
+    @enforce_keys [:definition, :generation, :handle]
+    defstruct [:definition, :generation, :handle]
+
+    @type t :: %__MODULE__{
+            definition: map(),
+            generation: non_neg_integer() | nil,
+            handle: VialKeeper.Search.Tantivy.handle() | nil
+          }
+  end
 
   @spec start_link(args()) :: GenServer.on_start()
   def start_link({uuid, _tmp_path} = arg) when is_binary(uuid) do
@@ -63,7 +76,11 @@ defmodule VialKeeper.Search.Owner do
 
     if is_binary(index_id) do
       entry =
-        Map.get(state.indexes, index_id, %{definition: definition, generation: nil, handle: nil})
+        Map.get(
+          state.indexes,
+          index_id,
+          %IndexGeneration{definition: definition, generation: nil, handle: nil}
+        )
 
       entry = %{entry | definition: definition}
       new_state = %{state | indexes: Map.put(state.indexes, index_id, entry)}
@@ -226,7 +243,12 @@ defmodule VialKeeper.Search.Owner do
          {:ok, root} <- index_root(state.tmp_path, index_id),
          generation_path = Path.join(root, "generation-#{generation}"),
          {:ok, handle} <- Tantivy.open(generation_path, definition) do
-      entry = %{definition: definition, generation: generation, handle: handle}
+      entry = %IndexGeneration{
+        definition: definition,
+        generation: generation,
+        handle: handle
+      }
+
       %{state | indexes: Map.put(state.indexes, index_id, entry)}
     else
       _ -> state
@@ -241,23 +263,15 @@ defmodule VialKeeper.Search.Owner do
   end
 
   defp rebuild_documents(state, index_id, documents) do
-    case Enum.reduce_while(documents, {:ok, state, 0}, fn document, {:ok, acc, entries} ->
-           case add_documents(Map.fetch!(acc.rebuilds, index_id).handle, [document]) do
-             {:ok, handle, count} ->
-               rebuild = %{
-                 Map.fetch!(acc.rebuilds, index_id)
-                 | handle: handle,
-                   entries: entries + count
-               }
+    rebuild = Map.fetch!(state.rebuilds, index_id)
 
-               {:cont, {:ok, put_in(acc.rebuilds[index_id], rebuild), entries + count}}
+    case add_documents(rebuild.handle, documents) do
+      {:ok, handle, count} ->
+        updated = %{rebuild | handle: handle, entries: rebuild.entries + count}
+        {:ok, put_in(state.rebuilds[index_id], updated), count}
 
-             {:error, reason} ->
-               {:halt, {:error, reason}}
-           end
-         end) do
-      {:ok, state, entries} -> {:ok, state, entries}
-      {:error, _} = error -> error
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -269,30 +283,21 @@ defmodule VialKeeper.Search.Owner do
   end
 
   defp add_documents(handle, documents) do
-    Enum.reduce_while(documents, {:ok, handle, 0}, fn document, {:ok, handle, count} ->
+    with {:ok, prepared, count} <- prepare_documents(documents),
+         :ok <- Tantivy.add_batch(handle, prepared) do
+      {:ok, handle, count}
+    end
+  end
+
+  defp prepare_documents(documents) do
+    Enum.reduce(documents, {[], 0}, fn document, {acc, count} ->
       case document_values(document) do
-        {:ok, {id, body, deleted}} ->
-          result = if(deleted, do: :ok, else: Tantivy.add(handle, id, body))
-
-          case result do
-            :ok -> {:cont, {:ok, handle, count + 1}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-
-        :skip ->
-          {:cont, {:ok, handle, count}}
+        {:ok, {_id, _body, true}} -> {acc, count + 1}
+        {:ok, {id, body, false}} -> {[{id, body} | acc], count + 1}
+        :skip -> {acc, count}
       end
     end)
-    |> case do
-      {:ok, handle, count} ->
-        case Tantivy.commit(handle) do
-          {:ok, committed} -> {:ok, committed, count}
-          {:error, _} = error -> error
-        end
-
-      {:error, _} = error ->
-        error
-    end
+    |> then(fn {prepared, count} -> {:ok, Enum.reverse(prepared), count} end)
   end
 
   defp document_values(%{id: id, body: body, deleted: deleted})
@@ -383,7 +388,12 @@ defmodule VialKeeper.Search.Owner do
   defp finish_rebuild(state, index_id, rebuild) do
     case Tantivy.commit(rebuild.handle) do
       {:ok, handle} ->
-        entry = %{definition: rebuild.definition, generation: rebuild.generation, handle: handle}
+        entry = %IndexGeneration{
+          definition: rebuild.definition,
+          generation: rebuild.generation,
+          handle: handle
+        }
+
         new_state = publish(state, index_id, entry)
 
         case persist_manifest(new_state, index_id, entry) do
@@ -474,25 +484,20 @@ defmodule VialKeeper.Search.Owner do
   end
 
   defp cleanup_generations(state, index_id, current_generation) do
-    case index_root(state.tmp_path, index_id) do
-      {:ok, root} ->
-        case File.ls(root) do
-          {:ok, entries} ->
-            Enum.each(entries, fn entry ->
-              if generation_number(entry) not in [0, current_generation] do
-                _ = File.rm_rf(Path.join(root, entry))
-              end
-            end)
-
-          {:error, _reason} ->
-            :ok
-        end
-
-      {:error, _reason} ->
-        :ok
+    with {:ok, root} <- index_root(state.tmp_path, index_id),
+         {:ok, entries} <- File.ls(root) do
+      Enum.each(entries, &remove_stale_generation(root, &1, current_generation))
     end
 
     state
+  end
+
+  defp remove_stale_generation(root, entry, current_generation) do
+    if generation_number(entry) not in [0, current_generation] do
+      _ = File.rm_rf(Path.join(root, entry))
+    end
+
+    :ok
   end
 
   defp remove_generation(nil, _index_id, _generation), do: :ok
@@ -503,8 +508,8 @@ defmodule VialKeeper.Search.Owner do
   end
 
   defp persist_marker(tmp_path, index_id) do
-    with {:ok, root} <- index_root(tmp_path, index_id), :ok <- File.mkdir_p(root) do
-      :ok
+    with {:ok, root} <- index_root(tmp_path, index_id) do
+      File.mkdir_p(root)
     end
   end
 

@@ -49,10 +49,16 @@ defmodule VialKeeper.Bench.SimpleWikiTest do
                staging
              )
 
-    assert length(manifest["articles"]) == 3
+    assert [_, _, _] = manifest["articles"]
     assert manifest["attachment_count"] == 1
     assert manifest["attachment_bytes"] == 4096
+    assert manifest["query_workload_version"] == "simplewiki-query-v2"
     assert File.regular?(Path.join([staging, "objects", "wiki-1.1", "wiki-1.1.txt"]))
     assert File.stat!(Path.join([staging, "objects", "wiki-1.1", "attachment-0.bin"])).size == 4096
+
+    assert {:ok, workload} = SimpleWiki.load_query_workload(staging)
+    assert workload["query_workload_version"] == "simplewiki-query-v2"
+    assert "beta" in workload["categories"]["common"]
+    assert workload["categories"]["zero_match"] == ["zzzzzxxyy-no-such-term"]
   end
 end

@@ -66,9 +66,8 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
     with {:ok, database_kind} <-
            VialKeeper.DatabaseKind.normalize(Keyword.get(opts, :database_kind, :ordinary)),
-         :ok <- execute_script(conn, schema),
-         :ok <- configure(conn, opts),
          :ok <- begin_initialization(conn),
+         :ok <- execute_script(conn, schema),
          :ok <- insert_metadata(conn, database_uuid, database_kind, config_json),
          :ok <- initialize_derived(conn, database_kind, Keyword.get(opts, :initial_derived_view)),
          :ok <- initialize_shadow(conn, database_kind, Keyword.get(opts, :shadow_metadata)),

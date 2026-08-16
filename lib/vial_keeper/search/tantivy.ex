@@ -13,7 +13,7 @@ defmodule VialKeeper.Search.Tantivy do
   @content_field "content"
   @id_field "id"
   @backend_version "0.4.1"
-  @schema_fingerprint "tantivy-ex-v1:content=fast_stored/default-positional:id=text_stored/raw"
+  @schema_fingerprint "tantivy-ex-v2:content=fast_stored/default-positional:id=text_stored/raw"
 
   @type handle :: %{
           index: reference(),
@@ -21,7 +21,8 @@ defmodule VialKeeper.Search.Tantivy do
           writer: reference(),
           searcher: reference() | nil,
           path: binary(),
-          definition: map()
+          definition: map(),
+          field_paths: [binary()]
         }
 
   @spec create(binary(), map()) :: {:ok, handle()} | {:error, term()}
@@ -37,13 +38,15 @@ defmodule VialKeeper.Search.Tantivy do
          writer: writer,
          searcher: nil,
          path: path,
-         definition: definition
+         definition: definition,
+         field_paths: compile_field_paths(definition)
        }}
     else
       {:error, reason} -> {:error, error("Tantivy index creation failed", reason)}
     end
   rescue
-    error -> {:error, error("Tantivy index creation failed", error)}
+    exception in [ArgumentError, ErlangError, RuntimeError] ->
+      {:error, error("Tantivy index creation failed", exception)}
   end
 
   @spec open(binary(), map()) :: {:ok, handle()} | {:error, term()}
@@ -59,13 +62,15 @@ defmodule VialKeeper.Search.Tantivy do
          writer: writer,
          searcher: searcher,
          path: path,
-         definition: definition
+         definition: definition,
+         field_paths: compile_field_paths(definition)
        }}
     else
       {:error, reason} -> {:error, error("Tantivy index open failed", reason)}
     end
   rescue
-    error -> {:error, error("Tantivy index open failed", error)}
+    exception in [ArgumentError, ErlangError, RuntimeError] ->
+      {:error, error("Tantivy index open failed", exception)}
   end
 
   @spec commit(handle()) :: {:ok, handle()} | {:error, term()}
@@ -73,8 +78,6 @@ defmodule VialKeeper.Search.Tantivy do
     with :ok <- checked(:commit, fn -> TantivyEx.IndexWriter.commit(writer) end),
          {:ok, searcher} <- TantivyEx.Searcher.new(index) do
       {:ok, %{handle | searcher: searcher}}
-    else
-      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -86,35 +89,41 @@ defmodule VialKeeper.Search.Tantivy do
   @spec add(handle(), binary(), map() | nil) :: :ok | {:error, term()}
   def add(%{writer: writer} = handle, document_id, body)
       when is_binary(document_id) and (is_map(body) or is_nil(body)) do
-    with {:ok, content} <- content(body || %{}, handle.definition),
-         :ok <-
-           checked(:add_document, fn ->
-             TantivyEx.IndexWriter.add_document(writer, %{
-               @id_field => document_id,
-               @content_field => content
-             })
-           end) do
-      :ok
+    with {:ok, content} <- content(body || %{}, handle.definition) do
+      checked(:add_document, fn ->
+        TantivyEx.IndexWriter.add_document(writer, %{
+          @id_field => document_id,
+          @content_field => content
+        })
+      end)
+    end
+  end
+
+  @doc "Adds one bounded document batch without committing or creating a searcher."
+  @spec add_batch(handle(), [{binary(), map()}]) :: :ok | {:error, term()}
+  def add_batch(%{writer: writer, schema: schema, field_paths: paths}, documents)
+      when is_list(documents) do
+    with {:ok, prepared} <- prepare_batch(documents, paths) do
+      checked_batch(length(prepared), fn ->
+        TantivyEx.Native.writer_add_document_batch(writer, prepared, schema)
+      end)
     end
   end
 
   @spec delete(handle(), binary()) :: :ok | {:error, term()}
   def delete(%{schema: schema, writer: writer}, document_id) when is_binary(document_id) do
-    with {:ok, query} <- TantivyEx.Query.term(schema, @id_field, document_id),
-         :ok <-
-           checked(:delete_documents, fn ->
-             TantivyEx.IndexWriter.delete_documents(writer, query)
-           end) do
-      :ok
+    with {:ok, query} <- TantivyEx.Query.term(schema, @id_field, document_id) do
+      checked(:delete_documents, fn ->
+        TantivyEx.IndexWriter.delete_documents(writer, query)
+      end)
     end
   end
 
   @spec replace(handle(), binary(), map() | nil, boolean()) :: :ok | {:error, term()}
   def replace(handle, document_id, body, deleted)
       when is_binary(document_id) and (is_map(body) or is_nil(body)) and is_boolean(deleted) do
-    with :ok <- delete(handle, document_id),
-         :ok <- if(deleted, do: :ok, else: add(handle, document_id, body)) do
-      :ok
+    with :ok <- delete(handle, document_id) do
+      if(deleted, do: :ok, else: add(handle, document_id, body))
     end
   end
 
@@ -137,18 +146,29 @@ defmodule VialKeeper.Search.Tantivy do
       {:error, reason} -> {:error, normalize_query_error(reason)}
     end
   rescue
-    error ->
-      {:error, VialKeeper.Error.internal_error("full-text search failed", %{cause: inspect(error)})}
+    exception in [ArgumentError, ErlangError, RuntimeError] ->
+      {:error,
+       VialKeeper.Error.internal_error("full-text search failed", %{
+         cause: inspect(exception)
+       })}
   end
 
-  @spec schema() :: reference()
+  @spec schema() :: TantivyEx.Schema.t()
   def schema do
     TantivyEx.Tokenizer.register_default_tokenizers()
 
     TantivyEx.Schema.new()
     |> TantivyEx.Schema.add_text_field_with_tokenizer(@id_field, :text_stored, "raw")
-    |> TantivyEx.Schema.add_text_field(@content_field, :fast_stored)
+    |> add_positional_content_field()
   end
+
+  defp add_positional_content_field(schema) do
+    module = schema_module()
+    module.add_text_field(schema, @content_field, :fast_stored)
+  end
+
+  @spec schema_module() :: module()
+  defp schema_module, do: Module.concat(["TantivyEx", "Schema"])
 
   @spec backend_version() :: binary()
   def backend_version, do: @backend_version
@@ -158,12 +178,10 @@ defmodule VialKeeper.Search.Tantivy do
 
   @spec content(map(), map()) :: {:ok, binary()} | {:error, VialKeeper.Error.t()}
   def content(body, definition) when is_map(body) and is_map(definition) do
-    paths =
-      definition
-      |> MapAccess.get(:fields, [])
-      |> Enum.map(&field_path/1)
-      |> Enum.filter(&is_binary/1)
+    content_from_paths(body, compile_field_paths(definition))
+  end
 
+  defp content_from_paths(body, paths) do
     values =
       Enum.flat_map(paths, fn path ->
         case Pointer.get(body, path) do
@@ -178,6 +196,34 @@ defmodule VialKeeper.Search.Tantivy do
       {:ok, content}
     else
       {:error, VialKeeper.Error.invalid_request("full-text fields must contain valid UTF-8")}
+    end
+  end
+
+  defp compile_field_paths(definition) do
+    definition
+    |> MapAccess.get(:fields, [])
+    |> Enum.map(&field_path/1)
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp prepare_batch(documents, paths) do
+    Enum.reduce_while(documents, {:ok, []}, fn
+      {document_id, body}, {:ok, acc} when is_binary(document_id) and is_map(body) ->
+        case content_from_paths(body, paths) do
+          {:ok, content} ->
+            prepared = %{@id_field => document_id, @content_field => content}
+            {:cont, {:ok, [prepared | acc]}}
+
+          {:error, _} = error ->
+            {:halt, error}
+        end
+
+      _invalid, _acc ->
+        {:halt, {:error, VialKeeper.Error.invalid_request("full-text batch is invalid")}}
+    end)
+    |> case do
+      {:ok, prepared} -> {:ok, Enum.reverse(prepared)}
+      {:error, _} = error -> error
     end
   end
 
@@ -203,9 +249,8 @@ defmodule VialKeeper.Search.Tantivy do
     with {:ok, queries} <-
            map_queries(terms, fn term ->
              TantivyEx.Query.wildcard(schema, @content_field, term <> "*")
-           end),
-         {:ok, query} <- combine(queries, :all) do
-      {:ok, query}
+           end) do
+      combine(queries, :all)
     end
   end
 
@@ -214,9 +259,8 @@ defmodule VialKeeper.Search.Tantivy do
   defp build_query(schema, terms, _mode), do: combine_terms(schema, terms, :all)
 
   defp combine_terms(schema, terms, mode) do
-    with {:ok, queries} <- map_queries(terms, &TantivyEx.Query.term(schema, @content_field, &1)),
-         {:ok, query} <- combine(queries, mode) do
-      {:ok, query}
+    with {:ok, queries} <- map_queries(terms, &TantivyEx.Query.term(schema, @content_field, &1)) do
+      combine(queries, mode)
     end
   end
 
@@ -253,12 +297,38 @@ defmodule VialKeeper.Search.Tantivy do
   defp checked(operation, fun) do
     case fun.() do
       :ok -> :ok
-      {:ok, _} -> :ok
       {:error, reason} -> {:error, error("Tantivy #{operation} failed", reason)}
-      other -> {:error, error("Tantivy #{operation} returned an unexpected result", other)}
     end
   rescue
-    error -> {:error, error("Tantivy #{operation} failed", error)}
+    exception in [ArgumentError, ErlangError, RuntimeError] ->
+      {:error, error("Tantivy #{operation} failed", exception)}
+  end
+
+  defp checked_batch(0, _fun), do: :ok
+
+  defp checked_batch(expected, fun) do
+    case fun.() do
+      result when is_binary(result) ->
+        case Jason.decode(result) do
+          {:ok, %{"successful" => ^expected, "errors" => 0}} ->
+            :ok
+
+          {:ok, summary} ->
+            {:error, error("Tantivy add_batch failed", summary)}
+
+          {:error, reason} ->
+            {:error, error("Tantivy add_batch returned an invalid result", reason)}
+        end
+
+      {:error, reason} ->
+        {:error, error("Tantivy add_batch failed", reason)}
+
+      other ->
+        {:error, error("Tantivy add_batch returned unexpectedly", other)}
+    end
+  rescue
+    exception in [ArgumentError, ErlangError, RuntimeError] ->
+      {:error, error("Tantivy add_batch failed", exception)}
   end
 
   defp normalize_query_error(%VialKeeper.Error{} = error), do: error

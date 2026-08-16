@@ -9,6 +9,7 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
   @behaviour VialKeeper.Storage.Ports.Transaction
 
   alias VialKeeper.Observability.Instrumentation.SQLite
+  alias VialKeeper.Observability.Instrumentation.Mutation
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Ports.Errors
   alias VialKeeper.Storage.SQLite.{Adapter, Connection, Context}
@@ -122,9 +123,20 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
     end
   end
 
-  defp control(conn, sql, phase, true) do
-    SQLite.trace_sqlite_phase(phase, fn -> Connection.exec(conn, sql) end)
+  defp control(conn, sql, :transaction_begin = phase, true) do
+    Mutation.phase(:transaction_begin, fn ->
+      SQLite.trace_sqlite_phase(phase, fn -> Connection.exec(conn, sql) end)
+    end)
   end
+
+  defp control(conn, sql, :transaction_commit = phase, true) do
+    Mutation.phase(:transaction_commit, fn ->
+      SQLite.trace_sqlite_phase(phase, fn -> Connection.exec(conn, sql) end)
+    end)
+  end
+
+  defp control(conn, sql, phase, true),
+    do: SQLite.trace_sqlite_phase(phase, fn -> Connection.exec(conn, sql) end)
 
   defp control(conn, sql, _phase, false), do: Connection.exec(conn, sql)
 

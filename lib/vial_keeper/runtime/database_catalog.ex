@@ -2,6 +2,8 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   @moduledoc "Registration catalog and lazy database runtime manager."
   use GenServer
   require Logger
+  alias VialKeeper.DatabaseBundle
+  alias VialKeeper.Deadline
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Database
   alias VialKeeper.Query.SubscriptionHub
@@ -16,12 +18,10 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
     DatabaseAdmission,
     DatabaseOwner,
     DatabaseRuntimeSupervisor,
-    Deadline,
     ReadPool,
     RegistrationManifest
   }
 
-  alias VialKeeper.DatabaseBundle
   alias VialKeeper.DerivedView.Manager, as: DerivedViewManager
   alias VialKeeper.PathSafety
   alias VialKeeper.Shadow.Reconciler

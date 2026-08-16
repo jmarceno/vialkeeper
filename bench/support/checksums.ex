@@ -34,9 +34,8 @@ defmodule VialKeeper.Bench.Checksums do
   def verify_file(path, opts) when is_binary(path) and is_list(opts) do
     with {:ok, stat} <- stat(path),
          :ok <- verify_size(stat.size, opts[:expected_size]),
-         :ok <- verify_hash(path, opts),
-         :ok <- verify_not_html(path, stat.size, opts) do
-      :ok
+         :ok <- verify_hash(path, opts) do
+      verify_not_html(path, stat.size, opts)
     end
   end
 
@@ -94,26 +93,22 @@ defmodule VialKeeper.Bench.Checksums do
         compare_md5(path, opts[:md5], opts[:etag])
 
       is_binary(opts[:sha256]) ->
-        compare_hash(path, :sha256, opts[:sha256], "SHA-256")
+        compare_sha256(path, opts[:sha256])
 
       true ->
         :ok
     end
   end
 
-  defp compare_hash(path, algorithm, expected, label) do
-    with {:ok, expected} <- canonicalize_if_md5(algorithm, expected),
-         {:ok, actual} <- hash_file(path, algorithm) do
+  defp compare_sha256(path, expected) do
+    with {:ok, actual} <- hash_file(path, :sha256) do
       if actual == String.downcase(expected) do
         :ok
       else
-        {:error, "#{label} mismatch for #{path}"}
+        {:error, "SHA-256 mismatch for #{path}"}
       end
     end
   end
-
-  defp canonicalize_if_md5(:md5, expected), do: canonicalize_md5(expected)
-  defp canonicalize_if_md5(_algorithm, expected), do: {:ok, String.downcase(expected)}
 
   defp compare_md5(path, expected, etag) do
     with {:ok, expected} <- canonicalize_md5(expected),

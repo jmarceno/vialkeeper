@@ -54,6 +54,32 @@ defmodule VialKeeper.Storage.Services.Attachments do
       {:error,
        VialKeeper.Error.invalid_request("pending blob protection request must be an object")}
 
+  @doc "Inserts or renews pending protection for a bounded blob descriptor batch."
+  @spec protect_pending_blobs(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, VialKeeper.Error.t()}
+  def protect_pending_blobs(%BackendContext{} = context, request) when is_map(request) do
+    blobs = VialKeeper.MapAccess.get(request, :blobs)
+
+    with true <- is_list(blobs) and blobs != [],
+         {:ok, rows} <- pending_rows(blobs) do
+      Transaction.run(context, fn tx ->
+        case Access.port(tx, :attachment_metadata).put_pending_blobs(tx, rows) do
+          {:ok, protected} -> {:ok, %{protected: protected, count: length(protected)}}
+          {:error, _} = error -> error
+        end
+      end)
+    else
+      false ->
+        {:error, VialKeeper.Error.invalid_request("pending blob batch must be a non-empty list")}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  def protect_pending_blobs(_context, _request),
+    do: {:error, VialKeeper.Error.invalid_request("pending blob batch must be an object")}
+
   @doc "Removes pending protection for one digest or a digest list."
   @spec remove_pending_blob_protection(BackendContext.t(), map()) ::
           {:ok, map()} | {:error, VialKeeper.Error.t()}
@@ -140,6 +166,28 @@ defmodule VialKeeper.Storage.Services.Attachments do
         {:error, _} = error -> error
       end
     end)
+  end
+
+  defp pending_rows(blobs) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Enum.reduce_while(blobs, {:ok, []}, fn blob, {:ok, acc} ->
+      with true <- is_map(blob),
+           {:ok, digest} <- MetadataRequest.request_digest(blob),
+           {:ok, logical_size} <- MetadataRequest.request_logical_size(blob) do
+        {:cont, {:ok, [Orchestration.pending_row(digest, logical_size, now) | acc]}}
+      else
+        false ->
+          {:halt, {:error, VialKeeper.Error.invalid_request("pending blob must be an object")}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, rows} -> {:ok, Enum.reverse(rows)}
+      {:error, _} = error -> error
+    end
   end
 
   defp cleanup_expired_tx(tx, now) do

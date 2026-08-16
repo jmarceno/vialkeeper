@@ -268,6 +268,8 @@ defmodule VialKeeper.Observability.Instrumentation.Database do
   defp command_type_for_struct(%Commands.PutPeerPositionCas{}), do: :put_peer_position_cas
   defp command_type_for_struct(%Commands.ReadBoundaryPages{}), do: :read_boundary_pages
   defp command_type_for_struct(%Commands.InstallBoundaryPages{}), do: :install_boundary_pages
+  defp command_type_for_struct(%Commands.ProtectPendingBlob{}), do: :protect_pending_blob
+  defp command_type_for_struct(%Commands.ProtectPendingBlobs{}), do: :protect_pending_blobs
   defp command_type_for_struct(%Commands.Close{}), do: :close
   defp command_type_for_struct(_), do: :unknown
 end

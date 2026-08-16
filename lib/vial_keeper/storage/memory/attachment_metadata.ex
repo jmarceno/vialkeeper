@@ -73,6 +73,17 @@ defmodule VialKeeper.Storage.Memory.AttachmentMetadata do
   end
 
   @impl true
+  def put_pending_blobs(%BackendContext{} = context, rows) when is_list(rows) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, metas} <- pending_metas(rows) do
+      update_pending(adapter.store, fn pending ->
+        updated = Enum.reduce(metas, pending, &Map.put(&2, &1.digest, &1))
+        {updated, metas}
+      end)
+    end
+  end
+
+  @impl true
   def delete_pending_digests(%BackendContext{} = context, digests) when is_list(digests) do
     with {:ok, adapter} <- Context.unwrap(context),
          :ok <- MetadataRequest.validate_digest_list(digests) do
@@ -115,6 +126,29 @@ defmodule VialKeeper.Storage.Memory.AttachmentMetadata do
   defp drop_pending(store, digests) do
     case update_pending(store, fn pending -> {Map.drop(pending, digests), :ok} end) do
       {:ok, :ok} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp pending_metas(rows) do
+    Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
+      with {:ok, digest} <- require_digest(row),
+           {:ok, logical_size} <- require_logical_size(row) do
+        meta = %{
+          digest: digest,
+          logical_size: logical_size,
+          length: logical_size,
+          expires_at: MapAccess.get(row, :expires_at),
+          updated_at: MapAccess.get(row, :updated_at)
+        }
+
+        {:cont, {:ok, [meta | acc]}}
+      else
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, metas} -> {:ok, Enum.reverse(metas)}
       {:error, _} = error -> error
     end
   end

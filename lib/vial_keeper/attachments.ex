@@ -10,6 +10,7 @@ defmodule VialKeeper.Attachments do
   alias VialKeeper.Attachments.{FilesystemStore, Manifest, Representation, StoreRef, Ticket}
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Attachment, as: AttachmentInstr
+  alias VialKeeper.Observability.Instrumentation.AttachmentUpload
   alias VialKeeper.Replication.BlobRepresentationStream
   alias VialKeeper.Runtime.{AttachmentCoordinator, DatabaseCatalog}
   alias VialKeeper.Shadow.ReadRouter
@@ -31,9 +32,15 @@ defmodule VialKeeper.Attachments do
   ]
   @pending_protection_hours 24
   @read_chunk_opts [length: 65_536, read_length: 65_536]
+  @default_batch_concurrency 16
 
   @type guard :: reference() | nil
   @type chunk_source :: Plug.Conn.t() | Enumerable.t() | (-> term())
+  @type batch_source :: %{required(:source) => chunk_source(), optional(:key) => term()}
+
+  @doc "Returns the measured default concurrency for local attachment batches."
+  @spec default_batch_concurrency() :: pos_integer()
+  def default_batch_concurrency, do: @default_batch_concurrency
 
   @doc """
   Streams an upload into the database-local CAS and protects the digest.
@@ -50,10 +57,15 @@ defmodule VialKeeper.Attachments do
   def upload_stream(uuid, source, opts \\ []) when is_binary(uuid) and is_list(opts) do
     admission_class = Keyword.get(opts, :admission_class, :foreground)
 
-    with :ok <- ensure_open(uuid),
-         :ok <- ensure_writable(uuid, admission_class),
-         {:ok, bundle_root} <- DatabaseCatalog.bundle_root(uuid),
-         {:ok, write_guard, max_bytes} <- AttachmentCoordinator.acquire_write(uuid) do
+    with :ok <- AttachmentUpload.phase(:open_check, fn -> ensure_open(uuid) end),
+         :ok <-
+           AttachmentUpload.phase(:writable_check, fn -> ensure_writable(uuid, admission_class) end),
+         {:ok, bundle_root} <-
+           AttachmentUpload.phase(:bundle_lookup, fn -> DatabaseCatalog.bundle_root(uuid) end),
+         {:ok, write_guard, max_bytes} <-
+           AttachmentUpload.phase(:coordinator_wait, fn ->
+             AttachmentCoordinator.acquire_write(uuid)
+           end) do
       try do
         AttachmentInstr.write(uuid, fn ->
           do_upload(uuid, bundle_root, source, max_bytes, opts, admission_class)
@@ -64,6 +76,53 @@ defmodule VialKeeper.Attachments do
       |> pop_source_conn()
     end
   end
+
+  @doc """
+  Streams a bounded collection of local/import sources and protects completed
+  digests in metadata batches.
+
+  Each item is `%{source: source, key: optional_key}` or `{key, source}`. The
+  sources are never materialized as complete binaries by this function. A
+  reference guard remains held from before physical writes through the final
+  pending-protection transaction, so attachment GC cannot race the batch.
+  """
+  @spec upload_batch(binary(), [batch_source() | {term(), chunk_source()}], keyword()) ::
+          {:ok, [map()]} | {:error, VialKeeper.Error.t()}
+  def upload_batch(uuid, sources, opts \\ [])
+
+  def upload_batch(uuid, sources, opts)
+      when is_binary(uuid) and is_list(sources) and is_list(opts) do
+    admission_class = Keyword.get(opts, :admission_class, :foreground)
+
+    with {:ok, normalized} <- normalize_batch_sources(sources),
+         :ok <- AttachmentUpload.phase(:open_check, fn -> ensure_open(uuid) end),
+         :ok <-
+           AttachmentUpload.phase(:writable_check, fn -> ensure_writable(uuid, admission_class) end),
+         {:ok, bundle_root} <-
+           AttachmentUpload.phase(:bundle_lookup, fn -> DatabaseCatalog.bundle_root(uuid) end),
+         {:ok, concurrency} <- batch_concurrency(uuid, opts),
+         {:ok, reference_guard} <-
+           AttachmentUpload.phase(:coordinator_wait, fn ->
+             AttachmentCoordinator.acquire_reference(uuid)
+           end) do
+      try do
+        with {:ok, physical} <-
+               upload_physical_batch(uuid, bundle_root, normalized, concurrency, opts),
+             {:ok, expiries} <-
+               protect_uploaded_blobs(uuid, physical, admission_class, opts) do
+          {:ok,
+           Enum.map(physical, fn descriptor ->
+             Map.put(descriptor, :expires_at, Map.fetch!(expiries, descriptor.blob))
+           end)}
+        end
+      after
+        _ = AttachmentCoordinator.release(uuid, reference_guard)
+      end
+    end
+  end
+
+  def upload_batch(_uuid, _sources, _opts),
+    do: {:error, VialKeeper.Error.invalid_request("attachment batch must be a list")}
 
   @doc """
   Resolves an attachment ticket under a read guard and opens a store reader.
@@ -468,26 +527,33 @@ defmodule VialKeeper.Attachments do
   end
 
   defp do_upload(uuid, bundle_root, source, max_bytes, opts, admission_class) do
+    with {:ok, physical} <-
+           AttachmentUpload.phase(:physical_store, fn ->
+             do_physical_upload(bundle_root, source, max_bytes, opts)
+           end),
+         {:ok, protected} <-
+           AttachmentUpload.phase(:pending_protection, fn ->
+             protect_uploaded_blob(uuid, physical.blob, physical.length, admission_class)
+           end) do
+      {:ok, Map.merge(physical, protected)}
+    end
+  end
+
+  defp do_physical_upload(bundle_root, source, max_bytes, opts) do
     case @store.begin_put(StoreRef.bundle_local(bundle_root), max_bytes, Map.new(opts)) do
       {:ok, writer} ->
         try do
           with {:ok, stream_chunks, final_conn} <-
                  normalize_chunk_result(write_all_chunks(writer, source)),
-               {:ok, finished} <- @store.finish_put(writer),
-               {:ok, protected} <-
-                 protect_uploaded_blob(
-                   uuid,
-                   finished.digest,
-                   finished.logical_size,
-                   admission_class
-                 ) do
+               {:ok, finished} <- @store.finish_put(writer) do
             {:ok,
-             protected
-             |> Map.merge(%{
+             %{
+               blob: finished.digest,
+               length: finished.logical_size,
                stream_chunks: stream_chunks,
                encoding: finished.encoding,
                deduplicated?: finished.deduplicated?
-             })
+             }
              |> put_source_conn(final_conn)}
           else
             {:error, _} = error ->
@@ -776,11 +842,180 @@ defmodule VialKeeper.Attachments do
             }},
            admission_class
          ) do
-      {:ok, _} ->
-        {:ok, %{blob: digest, length: logical_size, expires_at: expires_at}}
+      {:ok, protected} ->
+        {:ok,
+         %{
+           blob: digest,
+           length: logical_size,
+           expires_at: MapAccess.get(protected, :expires_at, expires_at)
+         }}
 
       {:error, _} = error ->
         error
+    end
+  end
+
+  defp normalize_batch_sources([]),
+    do: {:error, VialKeeper.Error.invalid_request("attachment batch must not be empty")}
+
+  defp normalize_batch_sources(sources) do
+    sources
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {source, index}, {:ok, acc} ->
+      case normalize_batch_source(source, index) do
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp normalize_batch_source(%{source: %Plug.Conn{}}, _index),
+    do: {:error, VialKeeper.Error.invalid_request("Plug.Conn uploads cannot be batched")}
+
+  defp normalize_batch_source(%{source: source} = descriptor, index) do
+    normalize_batch_source_value(source, Map.get(descriptor, :key, index))
+  end
+
+  defp normalize_batch_source({_key, %Plug.Conn{}}, _index),
+    do: {:error, VialKeeper.Error.invalid_request("Plug.Conn uploads cannot be batched")}
+
+  defp normalize_batch_source({key, source}, _index),
+    do: normalize_batch_source_value(source, key)
+
+  defp normalize_batch_source(source, index),
+    do: normalize_batch_source_value(source, index)
+
+  defp normalize_batch_source_value(source, key) when is_function(source, 0),
+    do: {:ok, %{key: key, source: source}}
+
+  defp normalize_batch_source_value(source, key) do
+    if Enumerable.impl_for(source) do
+      {:ok, %{key: key, source: source}}
+    else
+      {:error, VialKeeper.Error.invalid_request("attachment batch source is not enumerable")}
+    end
+  end
+
+  defp batch_concurrency(uuid, opts) do
+    with %{write_limit: limit} when is_integer(limit) and limit > 0 <-
+           AttachmentCoordinator.status(uuid),
+         requested =
+           Keyword.get(opts, :max_concurrency, min(@default_batch_concurrency, limit)),
+         true <- is_integer(requested) and requested > 0 and requested <= limit do
+      {:ok, requested}
+    else
+      false ->
+        {:error,
+         VialKeeper.Error.invalid_request(
+           "attachment batch max_concurrency exceeds the database write limit"
+         )}
+
+      {:error, _} = error ->
+        error
+
+      _ ->
+        {:error, VialKeeper.Error.internal_error("attachment write limit is unavailable")}
+    end
+  end
+
+  defp upload_physical_batch(uuid, bundle_root, sources, concurrency, opts) do
+    sources
+    |> Task.async_stream(
+      fn descriptor -> upload_one_batch_source(uuid, bundle_root, descriptor, opts) end,
+      max_concurrency: concurrency,
+      ordered: true,
+      timeout: :infinity
+    )
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, {:ok, descriptor}}, {:ok, acc} ->
+        {:cont, {:ok, [descriptor | acc]}}
+
+      {:ok, {:error, _} = error}, _acc ->
+        {:halt, error}
+
+      {:exit, reason}, _acc ->
+        {:halt,
+         {:error,
+          VialKeeper.Error.internal_error("attachment batch worker failed", %{
+            cause: inspect(reason)
+          })}}
+    end)
+    |> case do
+      {:ok, descriptors} -> {:ok, Enum.reverse(descriptors)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp upload_one_batch_source(uuid, bundle_root, descriptor, opts) do
+    with {:ok, write_guard, max_bytes} <-
+           AttachmentUpload.phase(:coordinator_wait, fn ->
+             AttachmentCoordinator.acquire_write(uuid)
+           end) do
+      try do
+        AttachmentInstr.write(uuid, fn ->
+          result =
+            AttachmentUpload.phase(:physical_store, fn ->
+              do_physical_upload(bundle_root, descriptor.source, max_bytes, opts)
+            end)
+
+          case result do
+            {:ok, physical} -> {:ok, Map.put(physical, :key, descriptor.key)}
+            {:error, _} = error -> error
+          end
+        end)
+      after
+        _ = AttachmentCoordinator.release(uuid, write_guard)
+      end
+    end
+  end
+
+  defp protect_uploaded_blobs(uuid, descriptors, admission_class, opts) do
+    maximum = min(VialKeeper.Config.host_limits()[:max_bulk_operations] || 500, 500)
+
+    batch_size =
+      Keyword.get(
+        opts,
+        :protection_batch_size,
+        maximum
+      )
+
+    cond do
+      not is_integer(batch_size) or batch_size <= 0 or batch_size > maximum ->
+        {:error,
+         VialKeeper.Error.invalid_request(
+           "attachment protection batch size exceeds the host bulk limit"
+         )}
+
+      true ->
+        AttachmentUpload.phase(:pending_protection, fn ->
+          descriptors
+          |> Enum.uniq_by(& &1.blob)
+          |> Enum.chunk_every(batch_size)
+          |> Enum.reduce_while({:ok, %{}}, fn batch, {:ok, expiries} ->
+            blobs = Enum.map(batch, &%{digest: &1.blob, logical_size: &1.length})
+
+            case metadata_command(
+                   uuid,
+                   {:command, :protect_pending_blobs, %{blobs: blobs}},
+                   admission_class
+                 ) do
+              {:ok, %{protected: protected}} ->
+                updated =
+                  Enum.reduce(protected, expiries, fn row, acc ->
+                    Map.put(acc, MapAccess.get(row, :digest), MapAccess.get(row, :expires_at))
+                  end)
+
+                {:cont, {:ok, updated}}
+
+              {:error, _} = error ->
+                {:halt, error}
+            end
+          end)
+        end)
     end
   end
 

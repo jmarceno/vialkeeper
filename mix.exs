@@ -36,6 +36,7 @@ defmodule VialKeeper.MixProject do
       preferred_envs: [
         bench: :test,
         "bench.data": :test,
+        "bench.diagnostics": :test,
         "bench.fts": :test,
         "bench.stress": :test,
         "bench.torture": :test,
@@ -135,6 +136,7 @@ defmodule VialKeeper.MixProject do
       ],
       bench: ["run --no-start bench/product_benchmark.exs"],
       "bench.data": ["run --no-start bench/datasets.exs"],
+      "bench.diagnostics": ["run --no-start bench/performance_diagnostics.exs"],
       "bench.fts": ["run --no-start bench/fts_benchmark.exs"],
       "bench.stress": ["run --no-start bench/pmc_stress_benchmark.exs"],
       "bench.torture": ["run --no-start bench/open_images_torture_benchmark.exs"],

@@ -1,5 +1,5 @@
-defmodule VialKeeper.Runtime.Deadline do
-  @moduledoc "Monotonic deadline and remaining-time helpers for database operations."
+defmodule VialKeeper.Deadline do
+  @moduledoc "Monotonic deadline and remaining-time helpers for bounded operations."
 
   @type t :: integer() | :infinity
   @type deadline_timeout :: non_neg_integer() | :infinity

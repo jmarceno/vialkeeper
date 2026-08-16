@@ -69,6 +69,54 @@ defmodule VialKeeper.Observability.AttachmentSignalTest do
 
     Eventual.eventually(
       fn ->
+        TestMetricExporter.datapoints("vial_keeper.attachment.store.phase.duration") != []
+      end,
+      timeout: 2_000,
+      message: "attachment store phase histogram missing"
+    )
+
+    Eventual.eventually(
+      fn ->
+        TestMetricExporter.datapoints("vial_keeper.attachment.upload.phase.duration") != []
+      end,
+      timeout: 2_000,
+      message: "attachment upload phase histogram missing"
+    )
+
+    store_phases =
+      for datapoint <- TestMetricExporter.datapoints("vial_keeper.attachment.store.phase.duration"),
+          phase = metric_attr(datapoint[:attributes], :attachment_phase),
+          not is_nil(phase),
+          do: phase
+
+    assert :logical_hash in store_phases
+    assert :compression_probe in store_phases
+    assert :file_sync in store_phases
+    assert :cas_install in store_phases
+
+    assert Enum.all?(
+             store_phases,
+             &(&1 in VialKeeper.Observability.Instrumentation.AttachmentStore.phases())
+           )
+
+    upload_phases =
+      for datapoint <-
+            TestMetricExporter.datapoints("vial_keeper.attachment.upload.phase.duration"),
+          phase = metric_attr(datapoint[:attributes], :attachment_phase),
+          not is_nil(phase),
+          do: phase
+
+    assert :coordinator_wait in upload_phases
+    assert :physical_store in upload_phases
+    assert :pending_protection in upload_phases
+
+    assert Enum.all?(
+             upload_phases,
+             &(&1 in VialKeeper.Observability.Instrumentation.AttachmentUpload.phases())
+           )
+
+    Eventual.eventually(
+      fn ->
         TestMetricExporter.counter_sum("vial_keeper.attachment.read.count", %{
           :"db.uuid" => uuid,
           :outcome => :ok
@@ -110,6 +158,8 @@ defmodule VialKeeper.Observability.AttachmentSignalTest do
     metric_names = [
       "vial_keeper.attachment.write.count",
       "vial_keeper.attachment.read.count",
+      "vial_keeper.attachment.upload.phase.duration",
+      "vial_keeper.attachment.store.phase.duration",
       "vial_keeper.attachment.gc.count"
     ]
 
@@ -149,4 +199,8 @@ defmodule VialKeeper.Observability.AttachmentSignalTest do
   defp metric_attr_values({:attributes, _, _, _, map}) when is_map(map), do: Map.values(map)
   defp metric_attr_values(map) when is_map(map), do: Map.values(map)
   defp metric_attr_values(_), do: []
+
+  defp metric_attr({:attributes, _, _, _, map}, key) when is_map(map), do: Map.get(map, key)
+  defp metric_attr(map, key) when is_map(map), do: Map.get(map, key)
+  defp metric_attr(_attributes, _key), do: nil
 end

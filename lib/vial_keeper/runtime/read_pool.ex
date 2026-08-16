@@ -8,9 +8,10 @@ defmodule VialKeeper.Runtime.ReadPool do
   """
   use GenServer
 
+  alias VialKeeper.Deadline
   alias VialKeeper.Error
   alias VialKeeper.Observability.Instrumentation.Database, as: DatabaseInstrumentation
-  alias VialKeeper.Runtime.{CommandContext, Deadline, ServiceClass}
+  alias VialKeeper.Runtime.{CommandContext, ServiceClass}
 
   defmodule Waiter do
     @moduledoc "Internal FIFO wait-queue entry tracked by `ReadPool`."

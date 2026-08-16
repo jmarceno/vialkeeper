@@ -30,6 +30,24 @@ defmodule VialKeeper.Attachments.Compression do
     output * 10 <= input * 9
   end
 
+  @doc "Returns true when a bounded prefix identifies an already-compressed container."
+  @spec already_compressed?(binary()) :: boolean()
+  def already_compressed?(<<0xFF, 0xD8, 0xFF, _rest::binary>>), do: true
+  def already_compressed?(<<0x89, "PNG\r\n", 0x1A, "\n", _rest::binary>>), do: true
+  def already_compressed?(<<"GIF87a", _rest::binary>>), do: true
+  def already_compressed?(<<"GIF89a", _rest::binary>>), do: true
+  def already_compressed?(<<"PK", 3, 4, _rest::binary>>), do: true
+  def already_compressed?(<<"PK", 5, 6, _rest::binary>>), do: true
+  def already_compressed?(<<"PK", 7, 8, _rest::binary>>), do: true
+  def already_compressed?(<<0x1F, 0x8B, _rest::binary>>), do: true
+  def already_compressed?(<<0x28, 0xB5, 0x2F, 0xFD, _rest::binary>>), do: true
+  def already_compressed?(<<0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, _rest::binary>>), do: true
+  def already_compressed?(<<"Rar!", 0x1A, 0x07, _rest::binary>>), do: true
+  def already_compressed?(<<"%PDF-", _rest::binary>>), do: true
+  def already_compressed?(<<"RIFF", _size::binary-size(4), "WEBP", _rest::binary>>), do: true
+  def already_compressed?(<<_size::unsigned-big-32, "ftyp", _rest::binary>>), do: true
+  def already_compressed?(_prefix), do: false
+
   @spec new_compression_context() :: {:ok, context()} | {:error, term()}
   def new_compression_context do
     case :ezstd.create_compression_context(@zstd_buffer) do

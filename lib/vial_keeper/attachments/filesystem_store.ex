@@ -14,6 +14,7 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   alias VialKeeper.DatabaseBundle
   alias VialKeeper.DurableFS
   alias VialKeeper.Error
+  alias VialKeeper.Observability.Instrumentation.AttachmentStore
   alias VialKeeper.PathSafety
 
   @probe_prefix_bytes 256 * 1024
@@ -32,6 +33,10 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   @impl true
   def begin_put(store_ref, max_bytes, _options)
       when is_integer(max_bytes) and max_bytes > 0 do
+    AttachmentStore.phase(:begin, fn -> do_begin_put(store_ref, max_bytes) end)
+  end
+
+  defp do_begin_put(store_ref, max_bytes) do
     with {:ok, ref} <- writable_ref(store_ref),
          {:ok, bundle} <- bundle_for(ref),
          {:ok, tmp_path} <- exclusive_tmp(bundle.tmp_path),
@@ -45,7 +50,7 @@ defmodule VialKeeper.Attachments.FilesystemStore do
           tmp_path: tmp_path,
           fd: fd,
           hash_ctx: :crypto.hash_init(:sha256),
-          payload_hash_ctx: :crypto.hash_init(:sha256),
+          payload_hash_ctx: nil,
           logical_size: 0,
           payload_length: 0,
           max_bytes: max_bytes,
@@ -85,14 +90,18 @@ defmodule VialKeeper.Attachments.FilesystemStore do
     result =
       with {:ok, state} <- fetch_writer(ref),
            {:ok, state} <- maybe_decide_encoding(state),
-           {:ok, state} <- finalize_physical(state),
-           {:ok, descriptor} <- original_descriptor(state),
+           {:ok, state} <-
+             AttachmentStore.phase(:compression_finalize, fn -> finalize_physical(state) end),
+           {:ok, descriptor} <-
+             AttachmentStore.phase(:digest_finalize, fn -> original_descriptor(state) end),
            {:ok, trailer} <- Representation.encode_trailer(descriptor),
-           :ok <- write_trailer(state.fd, trailer),
-           :ok <- sync_file(state.fd),
-           :ok <- close_fd(state.fd),
+           :ok <- AttachmentStore.phase(:trailer_write, fn -> write_trailer(state.fd, trailer) end),
+           :ok <- AttachmentStore.phase(:file_sync, fn -> sync_file(state.fd) end),
+           :ok <- AttachmentStore.phase(:file_close, fn -> close_fd(state.fd) end),
            {:ok, install_kind} <-
-             install_blob(state.store_ref, state.tmp_path, descriptor.logical_digest) do
+             AttachmentStore.phase(:cas_install, fn ->
+               install_blob(state.store_ref, state.tmp_path, descriptor.logical_digest)
+             end) do
         {:ok,
          %{
            digest: descriptor.logical_digest,
@@ -422,7 +431,12 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   defp original_descriptor(state) do
     encoding = encoding_from_phase(state.phase)
     logical_digest = :crypto.hash_final(state.hash_ctx) |> Base.encode16(case: :lower)
-    payload_digest = :crypto.hash_final(state.payload_hash_ctx) |> Base.encode16(case: :lower)
+
+    payload_digest =
+      case encoding do
+        :raw -> logical_digest
+        :zstd -> :crypto.hash_final(state.payload_hash_ctx) |> Base.encode16(case: :lower)
+      end
 
     Representation.descriptor(%{
       encoding: encoding,
@@ -671,8 +685,9 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   end
 
   defp write_chunk_state(state, chunk) do
-    with {:ok, state} <- add_logical_bytes(state, chunk) do
-      write_original_chunk(state, chunk)
+    with {:ok, state} <-
+           AttachmentStore.phase(:logical_hash, fn -> add_logical_bytes(state, chunk) end) do
+      AttachmentStore.phase(:payload_write, fn -> write_original_chunk(state, chunk) end)
     end
   end
 
@@ -748,7 +763,7 @@ defmodule VialKeeper.Attachments.FilesystemStore do
            %{
              state
              | payload_length: state.payload_length + byte_size(binary),
-               payload_hash_ctx: :crypto.hash_update(state.payload_hash_ctx, binary)
+               payload_hash_ctx: update_payload_hash(state, binary)
            }}
 
         {:error, reason} ->
@@ -761,7 +776,8 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   defp maybe_decide_encoding(state), do: {:ok, state}
 
   defp decide_encoding(%{probe_buffer: probe} = state) do
-    encoding = encoding_for_probe(probe)
+    encoding =
+      AttachmentStore.phase(:compression_probe, fn -> encoding_for_probe(probe) end)
 
     with {:ok, state} <- start_writing(state, encoding),
          {:ok, state} <- write_payload(state, probe) do
@@ -772,22 +788,37 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   defp encoding_for_probe(<<>>), do: :raw
 
   defp encoding_for_probe(probe) do
-    case Compression.probe(probe) do
-      {:ok, result} -> if Compression.worthwhile?(result), do: :zstd, else: :raw
-      {:error, _} -> :raw
+    if Compression.already_compressed?(probe) do
+      :raw
+    else
+      case Compression.probe(probe) do
+        {:ok, result} -> if Compression.worthwhile?(result), do: :zstd, else: :raw
+        {:error, _} -> :raw
+      end
     end
   end
 
   defp start_writing(state, :raw) do
-    {:ok, %{state | phase: {:writing, :raw}, compression_ctx: nil}}
+    {:ok, %{state | phase: {:writing, :raw}, compression_ctx: nil, payload_hash_ctx: nil}}
   end
 
   defp start_writing(state, :zstd) do
     with {:ok, ctx} <- Compression.new_compression_context(),
          :ok <- Compression.set_level(ctx) do
-      {:ok, %{state | phase: {:writing, :zstd}, compression_ctx: ctx}}
+      {:ok,
+       %{
+         state
+         | phase: {:writing, :zstd},
+           compression_ctx: ctx,
+           payload_hash_ctx: :crypto.hash_init(:sha256)
+       }}
     end
   end
+
+  defp update_payload_hash(%{phase: {:writing, :raw}}, _binary), do: nil
+
+  defp update_payload_hash(%{payload_hash_ctx: hash_ctx}, binary),
+    do: :crypto.hash_update(hash_ctx, binary)
 
   defp finalize_physical(%{phase: {:writing, :zstd}, fd: fd, compression_ctx: ctx} = state) do
     with {:ok, output, _ctx} <- Compression.finish_compression(ctx, <<>>) do

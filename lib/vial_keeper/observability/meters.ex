@@ -12,6 +12,7 @@ defmodule VialKeeper.Observability.Meters do
   | Metric | Kind |
   |---|---|
   | `vial_keeper.database.open.count` | counter |
+  | `vial_keeper.document.mutation.phase.duration` | histogram |
   | `vial_keeper.database.command.duration` | histogram |
   | `vial_keeper.database.overload.count` | counter |
   | `vial_keeper.database.admission.wait` | histogram |
@@ -46,6 +47,8 @@ defmodule VialKeeper.Observability.Meters do
   | `vial_keeper.attachment.read.duration` | histogram |
   | `vial_keeper.attachment.write.count` | counter |
   | `vial_keeper.attachment.write.duration` | histogram |
+  | `vial_keeper.attachment.upload.phase.duration` | histogram |
+  | `vial_keeper.attachment.store.phase.duration` | histogram |
   | `vial_keeper.attachment.gc.count` | counter |
   | `vial_keeper.attachment.gc.duration` | histogram |
   | `vial_keeper.replication.blob.transfer.count` | counter |
@@ -61,6 +64,7 @@ defmodule VialKeeper.Observability.Meters do
 
   @instruments [
     {:"vial_keeper.database.open.count", :counter},
+    {:"vial_keeper.document.mutation.phase.duration", :histogram},
     {:"vial_keeper.database.command.duration", :histogram},
     {:"vial_keeper.database.overload.count", :counter},
     {:"vial_keeper.database.admission.wait", :histogram},
@@ -97,6 +101,8 @@ defmodule VialKeeper.Observability.Meters do
     {:"vial_keeper.attachment.read.duration", :histogram},
     {:"vial_keeper.attachment.write.count", :counter},
     {:"vial_keeper.attachment.write.duration", :histogram},
+    {:"vial_keeper.attachment.upload.phase.duration", :histogram},
+    {:"vial_keeper.attachment.store.phase.duration", :histogram},
     {:"vial_keeper.attachment.gc.count", :counter},
     {:"vial_keeper.attachment.gc.duration", :histogram},
     {:"vial_keeper.replication.blob.transfer.count", :counter},
@@ -115,6 +121,16 @@ defmodule VialKeeper.Observability.Meters do
   @doc "Returns the instrument catalog declared by this module."
   @spec instruments() :: [{atom(), :counter | :histogram | :updown_counter}]
   def instruments, do: @instruments
+
+  @doc "Creates the configured metric instruments serially during observability startup."
+  @spec initialize() :: :ok
+  def initialize do
+    if metrics_enabled?() do
+      Enum.each(@instruments, fn {name, kind} -> _ = instrument(name, kind) end)
+    end
+
+    :ok
+  end
 
   @doc "Increments the named counter by 1 with allow-listed `attrs`."
   @spec add(atom(), keyword()) :: :ok

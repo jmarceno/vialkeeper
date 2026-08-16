@@ -1,10 +1,5 @@
 PRAGMA application_id = 1163412546;
 PRAGMA user_version = 1;
-PRAGMA journal_mode = DELETE;
-PRAGMA foreign_keys = ON;
-PRAGMA synchronous = EXTRA;
-PRAGMA locking_mode = NORMAL;
-PRAGMA trusted_schema = OFF;
 
 CREATE TABLE IF NOT EXISTS db_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),

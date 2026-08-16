@@ -245,6 +245,12 @@ defmodule VialKeeper.Commands do
     defstruct [:request]
   end
 
+  defmodule ProtectPendingBlobs do
+    @moduledoc false
+    @enforce_keys [:request]
+    defstruct [:request]
+  end
+
   defmodule RemovePendingBlobProtection do
     @moduledoc false
     @enforce_keys [:request]
@@ -419,6 +425,7 @@ defmodule VialKeeper.Commands do
       ResolveAttachmentTicket,
       ResolveBlobMetadata,
       ProtectPendingBlob,
+      ProtectPendingBlobs,
       RemovePendingBlobProtection,
       ListLiveAttachmentDigests,
       CleanupExpiredPendingBlobs,
@@ -544,6 +551,9 @@ defmodule VialKeeper.Commands do
 
   def normalize({:command, :protect_pending_blob, request}),
     do: %ProtectPendingBlob{request: request}
+
+  def normalize({:command, :protect_pending_blobs, request}),
+    do: %ProtectPendingBlobs{request: request}
 
   def normalize({:command, :remove_pending_blob_protection, request}),
     do: %RemovePendingBlobProtection{request: request}

@@ -58,6 +58,7 @@ defmodule VialKeeper.Runtime.CommandIO do
            Commands.InstallBoundaryPages,
            Commands.ClearPendingLocalCausal,
            Commands.ProtectPendingBlob,
+           Commands.ProtectPendingBlobs,
            Commands.RemovePendingBlobProtection,
            Commands.CreateView,
            Commands.DeleteView,

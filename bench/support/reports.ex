@@ -1,8 +1,8 @@
 defmodule VialKeeper.Bench.Reports do
   @moduledoc "JSON report writer constrained to `<bench-root>/reports/`."
 
+  alias VialKeeper.AtomicWrite
   alias VialKeeper.Bench.{Root, Statistics}
-  alias VialKeeper.Runtime.AtomicWrite
 
   @spec write(Root.t(), binary(), map(), keyword()) :: {:ok, Path.t()} | {:error, binary()}
   def write(%Root{} = context, default_name, report, opts \\ []) do

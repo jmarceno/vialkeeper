@@ -6,8 +6,8 @@ defmodule VialKeeper.Bench.PmcInventory do
   regenerate with the same snapshot and algorithm yields the same 100K set.
   """
 
+  alias VialKeeper.AtomicWrite
   alias VialKeeper.Bench.{Downloader, Pmc, Registry, Root}
-  alias VialKeeper.Runtime.AtomicWrite
 
   @list_url "https://pmc-oa-opendata.s3.amazonaws.com/?list-type=2&prefix=inventory-reports/pmc-oa-opendata/metadata/&delimiter=/"
   @https "https://pmc-oa-opendata.s3.amazonaws.com"
@@ -43,35 +43,38 @@ defmodule VialKeeper.Bench.PmcInventory do
 
       :missing_or_invalid ->
         selected = Pmc.select_inventory_keys(keys, spec, min(@overscan, max(count * 3, count)))
-        payload = JSON.encode!(selected) <> "\n"
+        cache_selected_keys(context, path, selected)
+    end
+  end
 
-        if Root.descendant?(path, context.root) do
-          case AtomicWrite.write(path, payload) do
-            :ok -> {:ok, selected}
-            {:error, reason} -> {:error, "failed to cache selected PMC keys: #{inspect(reason)}"}
-          end
-        else
-          {:error, "selected PMC key cache escapes benchmark root"}
-        end
+  defp cache_selected_keys(context, path, selected) do
+    if Root.descendant?(path, context.root) do
+      write_selected_keys(path, selected)
+    else
+      {:error, "selected PMC key cache escapes benchmark root"}
+    end
+  end
+
+  defp write_selected_keys(path, selected) do
+    case AtomicWrite.write(path, JSON.encode!(selected) <> "\n") do
+      :ok -> {:ok, selected}
+      {:error, reason} -> {:error, "failed to cache selected PMC keys: #{inspect(reason)}"}
     end
   end
 
   defp read_selected_keys(path) do
-    case File.read(path) do
-      {:ok, body} ->
-        case JSON.decode(body) do
-          {:ok, selected} when is_list(selected) ->
-            if Enum.all?(selected, &valid_selected_key?/1),
-              do: {:ok, selected},
-              else: :missing_or_invalid
-
-          _ ->
-            :missing_or_invalid
-        end
-
-      {:error, _reason} ->
-        :missing_or_invalid
+    with {:ok, body} <- File.read(path),
+         {:ok, selected} when is_list(selected) <- JSON.decode(body) do
+      validate_selected_keys(selected)
+    else
+      _ -> :missing_or_invalid
     end
+  end
+
+  defp validate_selected_keys(selected) do
+    if Enum.all?(selected, &valid_selected_key?/1),
+      do: {:ok, selected},
+      else: :missing_or_invalid
   end
 
   defp valid_selected_key?(%{"key" => key, "pmcid" => pmcid, "version" => version})
@@ -213,17 +216,8 @@ defmodule VialKeeper.Bench.PmcInventory do
     rows =
       keys
       |> Enum.chunk_every(@metadata_batch_size)
-      |> Enum.reduce_while({[], 0}, fn batch, {batches, eligible} ->
-        case fetch_metadata_batch(context, meta_dir, batch, download, opts) do
-          {:ok, batch_rows} ->
-            batch_eligible = Enum.count(batch_rows, &Pmc.selectable?(&1, prefixes))
-            next = {[batch_rows | batches], eligible + batch_eligible}
-
-            if eligible + batch_eligible >= count, do: {:halt, next}, else: {:cont, next}
-
-          {:error, reason} ->
-            {:halt, {:error, reason}}
-        end
+      |> Enum.reduce_while({[], 0}, fn batch, acc ->
+        reduce_metadata_batch(context, meta_dir, batch, download, opts, prefixes, count, acc)
       end)
 
     case rows do
@@ -231,6 +225,31 @@ defmodule VialKeeper.Bench.PmcInventory do
       {batches, _eligible} -> {:ok, batches |> Enum.reverse() |> List.flatten()}
     end
   end
+
+  defp reduce_metadata_batch(
+         context,
+         meta_dir,
+         batch,
+         download,
+         opts,
+         prefixes,
+         count,
+         {batches, eligible}
+       ) do
+    case fetch_metadata_batch(context, meta_dir, batch, download, opts) do
+      {:ok, batch_rows} ->
+        batch_eligible = Enum.count(batch_rows, &Pmc.selectable?(&1, prefixes))
+        continue_metadata({[batch_rows | batches], eligible + batch_eligible}, count)
+
+      {:error, reason} ->
+        {:halt, {:error, reason}}
+    end
+  end
+
+  defp continue_metadata({_batches, eligible} = acc, count) when eligible >= count,
+    do: {:halt, acc}
+
+  defp continue_metadata(acc, _count), do: {:cont, acc}
 
   defp fetch_metadata_batch(context, meta_dir, keys, download, opts) do
     result =

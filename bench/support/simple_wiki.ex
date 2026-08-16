@@ -7,7 +7,8 @@ defmodule VialKeeper.Bench.SimpleWiki do
   fan out into one network request per document or attachment.
   """
 
-  alias VialKeeper.Bench.Checksums
+  alias VialKeeper.AtomicWrite
+  alias VialKeeper.Bench.{Checksums, Root}
 
   @page_start "<page>"
   @page_end "</page>"
@@ -21,6 +22,7 @@ defmodule VialKeeper.Bench.SimpleWiki do
   @small_attachment_size 64 * 1024
   @medium_attachment_size 1024 * 1024
   @large_attachment_size 16 * 1024 * 1024
+  @query_workload_version "simplewiki-query-v2"
 
   @type article :: %{
           required(:id) => binary(),
@@ -39,7 +41,8 @@ defmodule VialKeeper.Bench.SimpleWiki do
 
     with {:ok, archive_size} <- archive_size(archive),
          {:ok, archive_md5} <- Checksums.md5_file(archive),
-         {:ok, state} <- generate_articles(archive, staging, profile, count) do
+         {:ok, state} <- generate_articles(archive, staging, profile, count),
+         :ok <- write_query_workload(staging, query_workload(state.token_counts)) do
       articles = Enum.reverse(state.articles)
 
       {:ok,
@@ -48,6 +51,8 @@ defmodule VialKeeper.Bench.SimpleWiki do
          "version" => spec["version"],
          "profile" => Atom.to_string(profile),
          "selection_algorithm" => "first-current-main-v1",
+         "query_workload_version" => @query_workload_version,
+         "query_workload_path" => "queries.json",
          "selection_count" => count,
          "source_url" => spec["source_url"],
          "source_archive_size_bytes" => archive_size,
@@ -64,6 +69,46 @@ defmodule VialKeeper.Bench.SimpleWiki do
   @spec count_for(atom()) :: pos_integer()
   def count_for(:standard), do: @standard_count
   def count_for(:smoke), do: @smoke_count
+
+  @doc "Returns the deterministic query workload algorithm version."
+  @spec query_workload_version() :: binary()
+  def query_workload_version, do: @query_workload_version
+
+  @doc "Loads and validates the prepared query workload without reading article text."
+  @spec load_query_workload(Path.t()) :: {:ok, map()} | {:error, binary()}
+  def load_query_workload(dataset) when is_binary(dataset) do
+    path = Path.join(dataset, "queries.json")
+
+    with {:ok, body} <- File.read(path),
+         {:ok, workload} <- JSON.decode(body),
+         true <- valid_query_workload?(workload) do
+      {:ok, workload}
+    else
+      {:error, reason} -> {:error, "cannot read SimpleWiki query workload: #{inspect(reason)}"}
+      _ -> {:error, "SimpleWiki query workload is invalid or stale"}
+    end
+  end
+
+  @doc "Creates a missing v2 query workload for an already prepared fixture."
+  @spec ensure_query_workload(Root.t(), Path.t()) :: :ok | {:error, binary()}
+  def ensure_query_workload(%Root{} = context, dataset) when is_binary(dataset) do
+    if Root.descendant?(dataset, context.root) do
+      case load_query_workload(dataset) do
+        {:ok, _workload} ->
+          ensure_manifest_query_version(dataset)
+
+        {:error, _reason} ->
+          with {:ok, manifest} <- read_manifest(dataset),
+               counts <- count_fixture_tokens(dataset, manifest["articles"] || []),
+               :ok <- write_query_workload(dataset, query_workload(counts)),
+               :ok <- write_manifest_query_version(dataset, manifest) do
+            :ok
+          end
+      end
+    else
+      {:error, "SimpleWiki fixture path escapes the benchmark root"}
+    end
+  end
 
   @spec document_body(map(), binary()) :: map()
   def document_body(article, text) when is_map(article) and is_binary(text) do
@@ -109,19 +154,12 @@ defmodule VialKeeper.Bench.SimpleWiki do
       attachment_stride: attachment_stride(profile, count),
       text_bytes: 0,
       attachment_bytes: 0,
-      attachment_count: 0
+      attachment_count: 0,
+      token_counts: %{}
     }
 
     stream_pages(archive, state, fn page, state ->
-      if state.selected >= count do
-        {:halt, state}
-      else
-        case write_article(staging, profile, page, state) do
-          {:ok, next} when next.selected >= count -> {:halt, next}
-          {:ok, next} -> {:cont, next}
-          {:error, reason} -> {:error, reason}
-        end
-      end
+      generate_article(staging, profile, page, state, count)
     end)
     |> case do
       {:ok, %{selected: selected} = state} when selected == count ->
@@ -132,6 +170,18 @@ defmodule VialKeeper.Bench.SimpleWiki do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp generate_article(_staging, _profile, _page, %{selected: selected} = state, count)
+       when selected >= count,
+       do: {:halt, state}
+
+  defp generate_article(staging, profile, page, state, count) do
+    case write_article(staging, profile, page, state) do
+      {:ok, %{selected: selected} = next} when selected >= count -> {:halt, next}
+      {:ok, next} -> {:cont, next}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -162,7 +212,8 @@ defmodule VialKeeper.Bench.SimpleWiki do
            selected: state.selected + 1,
            text_bytes: state.text_bytes + byte_size(page["text"]),
            attachment_bytes: state.attachment_bytes + attachment_bytes,
-           attachment_count: state.attachment_count + if(is_map(attachment), do: 1, else: 0)
+           attachment_count: state.attachment_count + if(is_map(attachment), do: 1, else: 0),
+           token_counts: count_tokens(page["text"], state.token_counts)
        }}
     else
       {:error, reason} ->
@@ -287,31 +338,33 @@ defmodule VialKeeper.Bench.SimpleWiki do
 
       {start, _} ->
         page_buffer = binary_part(buffer, start, byte_size(buffer) - start)
-
-        case :binary.match(page_buffer, @page_end) do
-          :nomatch ->
-            {:cont, page_buffer, state}
-
-          {finish, _} ->
-            page = binary_part(page_buffer, 0, finish + byte_size(@page_end))
-
-            rest =
-              binary_part(page_buffer, byte_size(page), byte_size(page_buffer) - byte_size(page))
-
-            case parse_page(page) do
-              :skip ->
-                consume_pages(rest, state, callback)
-
-              {:ok, article} ->
-                case callback.(article, state) do
-                  {:cont, next_state} -> consume_pages(rest, next_state, callback)
-                  {:halt, next_state} -> {:halt, next_state}
-                  {:error, reason} -> {:error, reason}
-                end
-            end
-        end
+        consume_page_buffer(page_buffer, state, callback)
     end
   end
+
+  defp consume_page_buffer(page_buffer, state, callback) do
+    case :binary.match(page_buffer, @page_end) do
+      :nomatch ->
+        {:cont, page_buffer, state}
+
+      {finish, _} ->
+        split_and_consume_page(page_buffer, finish, state, callback)
+    end
+  end
+
+  defp split_and_consume_page(page_buffer, finish, state, callback) do
+    page = binary_part(page_buffer, 0, finish + byte_size(@page_end))
+    rest = binary_part(page_buffer, byte_size(page), byte_size(page_buffer) - byte_size(page))
+
+    case parse_page(page) do
+      :skip -> consume_pages(rest, state, callback)
+      {:ok, article} -> continue_page(callback.(article, state), rest, callback)
+    end
+  end
+
+  defp continue_page({:cont, state}, rest, callback), do: consume_pages(rest, state, callback)
+  defp continue_page({:halt, state}, _rest, _callback), do: {:halt, state}
+  defp continue_page({:error, reason}, _rest, _callback), do: {:error, reason}
 
   defp capture_text(page) do
     case :binary.match(page, "<text") do
@@ -320,19 +373,25 @@ defmodule VialKeeper.Bench.SimpleWiki do
 
       {start, _} ->
         header = binary_part(page, start, byte_size(page) - start)
+        capture_text_body(header)
+    end
+  end
 
-        case :binary.match(header, ">") do
-          :nomatch ->
-            :error
+  defp capture_text_body(header) do
+    case :binary.match(header, ">") do
+      :nomatch ->
+        :error
 
-          {open_end, _} ->
-            body = binary_part(header, open_end + 1, byte_size(header) - open_end - 1)
+      {open_end, _} ->
+        body = binary_part(header, open_end + 1, byte_size(header) - open_end - 1)
+        capture_until(body, "</text>")
+    end
+  end
 
-            case :binary.match(body, "</text>") do
-              :nomatch -> :error
-              {finish, _} -> {:ok, binary_part(body, 0, finish)}
-            end
-        end
+  defp capture_until(body, close) do
+    case :binary.match(body, close) do
+      :nomatch -> :error
+      {finish, _} -> {:ok, binary_part(body, 0, finish)}
     end
   end
 
@@ -343,11 +402,7 @@ defmodule VialKeeper.Bench.SimpleWiki do
 
       {start, _} ->
         body = binary_part(page, start + byte_size(open), byte_size(page) - start - byte_size(open))
-
-        case :binary.match(body, close) do
-          :nomatch -> :error
-          {finish, _} -> {:ok, binary_part(body, 0, finish)}
-        end
+        capture_until(body, close)
     end
   end
 
@@ -374,5 +429,112 @@ defmodule VialKeeper.Bench.SimpleWiki do
       {:error, reason} ->
         {:error, "cannot stat Simple Wikipedia archive #{path}: #{inspect(reason)}"}
     end
+  end
+
+  defp query_workload(counts) do
+    tokens = Enum.sort_by(counts, fn {token, count} -> {-count, token} end)
+    common = tokens |> Enum.take(5) |> Enum.map(&elem(&1, 0))
+
+    medium =
+      tokens
+      |> Enum.drop(div(length(tokens), 3))
+      |> Enum.take(5)
+      |> Enum.map(&elem(&1, 0))
+
+    rare = tokens |> Enum.reverse() |> Enum.take(5) |> Enum.map(&elem(&1, 0))
+
+    multi_term =
+      [Enum.take(common, 2), [List.first(medium), List.first(rare)]]
+      |> Enum.map(fn terms -> terms |> Enum.reject(&is_nil/1) |> Enum.join(" ") end)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    categories = %{
+      "common" => common,
+      "medium" => medium,
+      "rare" => rare,
+      "multi_term" => multi_term,
+      "zero_match" => ["zzzzzxxyy-no-such-term"]
+    }
+
+    %{
+      "schema_version" => 1,
+      "query_workload_version" => @query_workload_version,
+      "categories" => categories,
+      "queries" => categories |> Map.values() |> List.flatten() |> Enum.uniq()
+    }
+  end
+
+  defp write_query_workload(directory, workload) do
+    case AtomicWrite.write(Path.join(directory, "queries.json"), JSON.encode!(workload) <> "\n") do
+      :ok -> :ok
+      {:error, reason} -> {:error, "failed to write SimpleWiki queries: #{inspect(reason)}"}
+    end
+  end
+
+  defp valid_query_workload?(%{
+         "query_workload_version" => @query_workload_version,
+         "categories" => categories,
+         "queries" => queries
+       }) do
+    is_map(categories) and is_list(queries) and queries != [] and
+      Enum.all?(queries, &is_binary/1)
+  end
+
+  defp valid_query_workload?(_workload), do: false
+
+  defp ensure_manifest_query_version(dataset) do
+    with {:ok, manifest} <- read_manifest(dataset) do
+      if manifest["query_workload_version"] == @query_workload_version do
+        :ok
+      else
+        write_manifest_query_version(dataset, manifest)
+      end
+    end
+  end
+
+  defp write_manifest_query_version(dataset, manifest) do
+    updated =
+      manifest
+      |> Map.put("query_workload_version", @query_workload_version)
+      |> Map.put("query_workload_path", "queries.json")
+
+    case AtomicWrite.write(Path.join(dataset, "manifest.json"), JSON.encode!(updated) <> "\n") do
+      :ok -> :ok
+      {:error, reason} -> {:error, "failed to update SimpleWiki manifest: #{inspect(reason)}"}
+    end
+  end
+
+  defp read_manifest(dataset) do
+    case File.read(Path.join(dataset, "manifest.json")) do
+      {:ok, body} ->
+        case JSON.decode(body) do
+          {:ok, manifest} when is_map(manifest) -> {:ok, manifest}
+          _ -> {:error, "SimpleWiki manifest is invalid"}
+        end
+
+      {:error, reason} ->
+        {:error, "cannot read SimpleWiki manifest: #{inspect(reason)}"}
+    end
+  end
+
+  defp count_fixture_tokens(dataset, articles) do
+    Enum.reduce(articles, %{}, fn article, counts ->
+      prefix = article["id"] <> "." <> to_string(article["version"])
+      text_name = get_in(article, ["text", "name"]) || prefix <> ".txt"
+
+      case File.read(Path.join([dataset, "objects", prefix, text_name])) do
+        {:ok, text} -> count_tokens(text, counts)
+        {:error, _reason} -> counts
+      end
+    end)
+  end
+
+  defp count_tokens(text, counts) do
+    text
+    |> String.downcase()
+    |> String.split(~r/[^a-z0-9]+/u, trim: true)
+    |> Enum.filter(&(String.length(&1) > 3))
+    |> Enum.reduce(counts, fn token, acc -> Map.update(acc, token, 1, &(&1 + 1)) end)
   end
 end

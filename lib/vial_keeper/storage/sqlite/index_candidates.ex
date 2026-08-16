@@ -12,8 +12,8 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
   """
   @behaviour VialKeeper.Storage.Ports.IndexCandidates
 
-  alias VialKeeper.JSON.StrictCache
   alias VialKeeper.Config
+  alias VialKeeper.JSON.StrictCache
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.SQLite
   alias VialKeeper.Query.{Executor, Ordering, Plan}

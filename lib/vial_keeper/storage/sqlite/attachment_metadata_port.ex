@@ -32,6 +32,12 @@ defmodule VialKeeper.Storage.SQLite.AttachmentMetadataPort do
   end
 
   @impl true
+  def put_pending_blobs(%BackendContext{} = context, rows) when is_list(rows) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         do: Errors.wrap(Attachments.put_pending_blobs(adapter.conn, rows))
+  end
+
+  @impl true
   def delete_pending_digests(%BackendContext{} = context, digests) when is_list(digests) do
     with {:ok, adapter} <- Context.unwrap(context),
          do: Errors.wrap(Attachments.delete_pending_digests(adapter.conn, digests))

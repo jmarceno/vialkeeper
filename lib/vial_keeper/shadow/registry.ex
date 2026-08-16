@@ -2,9 +2,9 @@ defmodule VialKeeper.Shadow.Registry do
   @moduledoc "Durable host-local desired and observed shadow state."
   use GenServer
 
+  alias VialKeeper.AtomicWrite
   alias VialKeeper.JSON.{Canonical, StrictDecoder}
   alias VialKeeper.MapAccess
-  alias VialKeeper.Runtime.AtomicWrite
   alias VialKeeper.Shadow.{Definition, Observation}
 
   @version 1

@@ -5,10 +5,15 @@ defmodule VialKeeper.Query do
   alias VialKeeper.MapAccess
   alias VialKeeper.Query.{BookmarkCodec, Normalizer, Prepared}
   alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Config
 
   def create_index(uuid, definition) do
     with {:ok, normalized} <- normalize_index(definition) do
-      DatabaseCatalog.command(uuid, {:command, :create_index, normalized})
+      DatabaseCatalog.command(
+        uuid,
+        {:command, :create_index, normalized},
+        index_lifecycle_timeout(normalized)
+      )
     end
   end
 
@@ -18,7 +23,12 @@ defmodule VialKeeper.Query do
     do: DatabaseCatalog.command(uuid, {:command, :delete_index, index_id})
 
   def rebuild_index(uuid, index_id),
-    do: DatabaseCatalog.command(uuid, {:command, :rebuild_index, index_id})
+    do:
+      DatabaseCatalog.command(
+        uuid,
+        {:command, :rebuild_index, index_id},
+        Config.search_rebuild_timeout_ms()
+      )
 
   def execute(uuid, request) do
     execute_internal(uuid, request, :ordinary)
@@ -80,6 +90,11 @@ defmodule VialKeeper.Query do
 
   defp normalize_index(_),
     do: {:error, VialKeeper.Error.invalid_request("index definition must be an object")}
+
+  defp index_lifecycle_timeout(%{"type" => "full_text"}),
+    do: Config.search_rebuild_timeout_ms()
+
+  defp index_lifecycle_timeout(_definition), do: Config.request_timeout_ms()
 
   defp known_index_fields(definition) do
     allowed = [:name, :type, :fields, "name", "type", "fields"]

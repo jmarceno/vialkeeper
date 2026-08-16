@@ -305,6 +305,41 @@ defmodule VialKeeper.Storage.Contracts.Retention do
         refute @digest_c in after_cleanup
       end
 
+      test "batch pending protection validates first and installs all rows atomically", %{
+        adapter: adapter
+      } do
+        context = @adapter.to_context(adapter)
+
+        assert {:ok, %{count: 3, protected: protected}} =
+                 VialKeeper.Storage.Services.protect_pending_blobs(context, %{
+                   blobs: [
+                     %{digest: @digest_a, logical_size: 1},
+                     %{digest: @digest_b, logical_size: 2},
+                     %{digest: @digest_c, logical_size: 3}
+                   ]
+                 })
+
+        assert Enum.map(protected, & &1.digest) == [@digest_a, @digest_b, @digest_c]
+
+        for {digest, size} <- [{@digest_a, 1}, {@digest_b, 2}, {@digest_c, 3}] do
+          assert {:ok, %{logical_size: ^size}} =
+                   @adapter.resolve_blob_metadata(adapter, %{digest: digest})
+        end
+
+        missing = String.duplicate("d", 64)
+
+        assert {:error, %VialKeeper.Error{code: :invalid_request}} =
+                 VialKeeper.Storage.Services.protect_pending_blobs(context, %{
+                   blobs: [
+                     %{digest: missing, logical_size: 4},
+                     %{digest: "not-a-digest", logical_size: 5}
+                   ]
+                 })
+
+        assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
+                 @adapter.resolve_blob_metadata(adapter, %{digest: missing})
+      end
+
       test "integrity passes on a fresh database", %{adapter: adapter} do
         assert {:ok, report} = @adapter.integrity_check(adapter, %{})
         assert report.ok == true

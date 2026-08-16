@@ -4,8 +4,9 @@ defmodule VialKeeper.Runtime.ReadPoolConcurrencyTest do
   """
   use ExUnit.Case, async: false
 
+  alias VialKeeper.Deadline
   alias VialKeeper.Eventual
-  alias VialKeeper.Runtime.{DatabaseCatalog, Deadline}
+  alias VialKeeper.Runtime.DatabaseCatalog
   alias VialKeeper.View.Manager
 
   setup do

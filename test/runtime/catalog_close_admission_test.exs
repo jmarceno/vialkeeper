@@ -7,6 +7,7 @@ defmodule VialKeeper.Runtime.CatalogCloseAdmissionTest do
 
   @moduletag :integration
 
+  alias VialKeeper.Deadline
   alias VialKeeper.Eventual
   alias VialKeeper.Replication.JobManager
 
@@ -14,7 +15,6 @@ defmodule VialKeeper.Runtime.CatalogCloseAdmissionTest do
     AttachmentCoordinator,
     DatabaseAdmission,
     DatabaseCatalog,
-    Deadline,
     ReadPool
   }
 

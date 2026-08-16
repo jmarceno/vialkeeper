@@ -13,6 +13,7 @@ defmodule VialKeeper.Observability.Attributes do
   `federation.source_count`,
   `http.method`, `http.route` (route template, never the raw path),
   `http.status_code`, `index_id`, `index_type`, `trigger`, `plan_kind`,
+  `mutation_operation`, `mutation_phase`, `attachment_phase`,
   `selected_index_count`, `union_branch_count`, `replication.id`, `endpoint`
   (`:source` | `:target`), the bounded counts `entries`, `examined`,
   `revisions_written`, attachment stream measurements `logical_bytes`,
@@ -101,7 +102,10 @@ defmodule VialKeeper.Observability.Attributes do
     event_type: :event_type,
     admission_class: :"admission.class",
     queue_depth_at_enqueue: :queue_depth_at_enqueue,
-    queue_depth_at_grant: :queue_depth_at_grant
+    queue_depth_at_grant: :queue_depth_at_grant,
+    mutation_operation: :mutation_operation,
+    mutation_phase: :mutation_phase,
+    attachment_phase: :attachment_phase
   ]
 
   @allowed_keys Keyword.keys(@allowed)

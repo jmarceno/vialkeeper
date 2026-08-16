@@ -1,6 +1,7 @@
 defmodule VialKeeper.Federation.Executor do
   @moduledoc "Executes bounded, stateless federation queries over registered sources."
 
+  alias VialKeeper.Deadline
   alias VialKeeper.Error
 
   alias VialKeeper.Federation.{
@@ -14,7 +15,6 @@ defmodule VialKeeper.Federation.Executor do
   alias VialKeeper.MapAccess
   alias VialKeeper.Query
   alias VialKeeper.Query.Projection
-  alias VialKeeper.Runtime.Deadline
 
   @default_max_sources 16
   @default_max_concurrent_sources 8

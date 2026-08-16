@@ -10,6 +10,7 @@ defmodule VialKeeper.Runtime.ReadWorker do
   use GenServer
 
   alias VialKeeper.Commands
+  alias VialKeeper.Deadline
   alias VialKeeper.Error
   alias VialKeeper.MapAccess
 
@@ -18,7 +19,6 @@ defmodule VialKeeper.Runtime.ReadWorker do
     DatabaseCommandPolicy,
     DatabaseOwner,
     DatabaseReadDispatch,
-    Deadline,
     ReadPool,
     ShadowBinding
   }

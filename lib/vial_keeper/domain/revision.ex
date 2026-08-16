@@ -22,6 +22,7 @@ defmodule VialKeeper.Domain.Revision do
     :digest,
     :deleted,
     :body,
+    :body_json,
     :attachments,
     :insertion_sequence
   ]
@@ -35,6 +36,7 @@ defmodule VialKeeper.Domain.Revision do
           digest: binary() | nil,
           deleted: boolean(),
           body: map() | nil,
+          body_json: binary() | nil,
           attachments: Manifest.t(),
           insertion_sequence: non_neg_integer() | nil
         }

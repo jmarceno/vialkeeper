@@ -442,6 +442,15 @@ defmodule VialKeeper.Storage.Services do
         Attachments.protect_pending_blob(context, request)
       end)
 
+  @doc "Protects a pending attachment blob batch in one metadata transaction."
+  @spec protect_pending_blobs(BackendContext.t(), map()) ::
+          {:ok, map()} | {:error, VialKeeper.Error.t()}
+  def protect_pending_blobs(%BackendContext{} = context, request) when is_map(request),
+    do:
+      with_ports(context, [:transaction, :attachment_metadata], fn ->
+        Attachments.protect_pending_blobs(context, request)
+      end)
+
   @doc "Removes pending attachment blob protection."
   @spec remove_pending_blob_protection(BackendContext.t(), map()) ::
           {:ok, map()} | {:error, VialKeeper.Error.t()}

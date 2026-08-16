@@ -5,8 +5,9 @@ defmodule VialKeeper.Runtime.ReadPoolTest do
   """
   use ExUnit.Case, async: false
 
+  alias VialKeeper.Deadline
   alias VialKeeper.Eventual
-  alias VialKeeper.Runtime.{DatabaseCatalog, Deadline, ReadPool}
+  alias VialKeeper.Runtime.{DatabaseCatalog, ReadPool}
   alias VialKeeper.View.Manager
 
   setup do

@@ -1,7 +1,7 @@
 defmodule VialKeeper.Bench.CLI do
   @moduledoc "Mix entrypoints for data-backed benchmark commands."
 
-  alias VialKeeper.Bench.{FTS, Prepare, Root, Stress, Torture}
+  alias VialKeeper.Bench.{FTS, PerformanceDiagnostics, Prepare, Root, Stress, Torture}
 
   @benchmark_options [:profile, :output, :warmup, :iterations]
 
@@ -23,9 +23,36 @@ defmodule VialKeeper.Bench.CLI do
   @spec run_fts([binary()]) :: :ok
   def run_fts(argv), do: run_benchmark(&FTS.run/1, argv, "fts", @benchmark_options)
 
+  @spec run_diagnostics([binary()]) :: :ok
+  def run_diagnostics(argv) do
+    run_benchmark(
+      &PerformanceDiagnostics.run/1,
+      argv,
+      "diagnostics",
+      @benchmark_options ++
+        [
+          :section,
+          :document_mode,
+          :counts,
+          :batch_sizes,
+          :search_batch_sizes,
+          :attachment_sizes,
+          :attachment_mode,
+          :attachment_chunk_sizes,
+          :attachment_concurrency
+        ]
+    )
+  end
+
   @spec run_stress([binary()]) :: :ok
   def run_stress(argv),
-    do: run_benchmark(&Stress.run/1, argv, "stress", @benchmark_options ++ [:max_concurrency])
+    do:
+      run_benchmark(
+        &Stress.run/1,
+        argv,
+        "stress",
+        @benchmark_options ++ [:max_concurrency, :diagnostic_ceiling_seconds]
+      )
 
   @spec run_torture([binary()]) :: :ok
   def run_torture(argv), do: run_benchmark(&Torture.run/1, argv, "torture", @benchmark_options)
@@ -157,12 +184,53 @@ defmodule VialKeeper.Bench.CLI do
 
     extra
     |> Enum.reduce(base, fn
-      :profile, acc -> Keyword.put(acc, :profile, :string)
-      :output, acc -> Keyword.put(acc, :output, :string)
-      :warmup, acc -> Keyword.put(acc, :warmup, :integer)
-      :iterations, acc -> Keyword.put(acc, :iterations, :integer)
-      :max_concurrency, acc -> Keyword.put(acc, :max_concurrency, :integer)
-      _, acc -> acc
+      :profile, acc ->
+        Keyword.put(acc, :profile, :string)
+
+      :output, acc ->
+        Keyword.put(acc, :output, :string)
+
+      :warmup, acc ->
+        Keyword.put(acc, :warmup, :integer)
+
+      :iterations, acc ->
+        Keyword.put(acc, :iterations, :integer)
+
+      :max_concurrency, acc ->
+        Keyword.put(acc, :max_concurrency, :integer)
+
+      :diagnostic_ceiling_seconds, acc ->
+        Keyword.put(acc, :diagnostic_ceiling_seconds, :integer)
+
+      :section, acc ->
+        Keyword.put(acc, :section, :string)
+
+      :document_mode, acc ->
+        Keyword.put(acc, :document_mode, :string)
+
+      :counts, acc ->
+        Keyword.put(acc, :counts, :string)
+
+      :batch_sizes, acc ->
+        Keyword.put(acc, :batch_sizes, :string)
+
+      :search_batch_sizes, acc ->
+        Keyword.put(acc, :search_batch_sizes, :string)
+
+      :attachment_sizes, acc ->
+        Keyword.put(acc, :attachment_sizes, :string)
+
+      :attachment_mode, acc ->
+        Keyword.put(acc, :attachment_mode, :string)
+
+      :attachment_chunk_sizes, acc ->
+        Keyword.put(acc, :attachment_chunk_sizes, :string)
+
+      :attachment_concurrency, acc ->
+        Keyword.put(acc, :attachment_concurrency, :string)
+
+      _, acc ->
+        acc
     end)
   end
 

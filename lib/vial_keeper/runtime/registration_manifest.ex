@@ -1,10 +1,10 @@
 defmodule VialKeeper.Runtime.RegistrationManifest do
   @moduledoc "Atomic, routing-only registration manifest."
 
+  alias VialKeeper.AtomicWrite
   alias VialKeeper.JSON.Canonical
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.PathSafety
-  alias VialKeeper.Runtime.AtomicWrite
 
   @spec path() :: binary()
   def path do

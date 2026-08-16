@@ -1,7 +1,7 @@
 defmodule VialKeeper.Runtime.DeadlineTest do
   use ExUnit.Case, async: true
 
-  alias VialKeeper.Runtime.Deadline
+  alias VialKeeper.Deadline
 
   test "from_timeout maps :infinity to :infinity" do
     assert Deadline.from_timeout(:infinity) == :infinity

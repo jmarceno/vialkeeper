@@ -58,21 +58,20 @@ defmodule VialKeeper.Observability.Instrumentation.Search do
   def rebuild_batch(uuid, index_id, entries, fun)
       when (is_binary(uuid) or is_nil(uuid)) and is_integer(entries) and entries >= 0 and
              is_function(fun, 0) do
-    started = System.monotonic_time()
-
     attrs =
       [index_id: index_id, index_type: :full_text, entries: entries] ++
         if(uuid, do: [db_uuid: uuid], else: [])
 
-    Tracer.with_span(@batch_span, attrs, fn ->
-      result = fun.()
-      duration = System.monotonic_time() - started
-      outcome = if match?({:error, _}, result), do: :failed, else: :ok
-      batch_attrs = attrs ++ [outcome: outcome]
-      Meters.add(@batch_count_metric, batch_attrs)
-      Meters.record(@batch_duration_metric, duration, batch_attrs)
-      result
-    end)
+    started = System.monotonic_time()
+    result = measure_operation(@batch_span, @batch_count_metric, @batch_duration_metric, attrs, fun)
+
+    :telemetry.execute(
+      [:vial_keeper, :search, :rebuild, :batch],
+      %{duration: System.monotonic_time() - started, entries: entries},
+      %{outcome: if(match?({:error, _}, result), do: :failed, else: :ok)}
+    )
+
+    result
   end
 
   @doc "Records one incremental winner-refresh batch without exposing document data."
@@ -80,16 +79,21 @@ defmodule VialKeeper.Observability.Instrumentation.Search do
   def refresh(uuid, entries, fun)
       when (is_binary(uuid) or is_nil(uuid)) and is_integer(entries) and entries >= 0 and
              is_function(fun, 0) do
-    started = System.monotonic_time()
     attrs = [index_type: :full_text, entries: entries] ++ if(uuid, do: [db_uuid: uuid], else: [])
 
-    Tracer.with_span(@refresh_span, attrs, fn ->
+    measure_operation(@refresh_span, @refresh_count_metric, @refresh_duration_metric, attrs, fun)
+  end
+
+  defp measure_operation(span, count_metric, duration_metric, attrs, fun) do
+    started = System.monotonic_time()
+
+    Tracer.with_span(span, attrs, fn ->
       result = fun.()
       duration = System.monotonic_time() - started
       outcome = if match?({:error, _}, result), do: :failed, else: :ok
-      refresh_attrs = attrs ++ [outcome: outcome]
-      Meters.add(@refresh_count_metric, refresh_attrs)
-      Meters.record(@refresh_duration_metric, duration, refresh_attrs)
+      result_attrs = attrs ++ [outcome: outcome]
+      Meters.add(count_metric, result_attrs)
+      Meters.record(duration_metric, duration, result_attrs)
       result
     end)
   end

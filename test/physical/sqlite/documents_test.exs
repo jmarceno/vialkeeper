@@ -94,4 +94,41 @@ defmodule VialKeeper.StorageAdapter.DocumentsTest do
                body: %{"x" => false}
              })
   end
+
+  test "trusted canonical body bytes preserve revision and persistence semantics", %{
+    adapter: adapter
+  } do
+    {:ok, other_bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-canonical")
+    other_path = VialKeeper.TempDatabase.sqlite_path(other_bundle_path)
+    {:ok, other_adapter} = Adapter.create(other_path, %{})
+
+    on_exit(fn ->
+      _ = Adapter.close(other_adapter)
+      VialKeeper.TempDatabase.cleanup(other_bundle_path)
+    end)
+
+    body = %{"z" => [3, 2, 1], "a" => %{"value" => true}}
+    body_json = VialKeeper.JSON.Canonical.encode!(body)
+    history_id = VialKeeper.UUID.v4()
+
+    request = %{
+      operation: :put,
+      document_id: "canonical-body",
+      history_id: history_id,
+      body: body,
+      attachments: %{}
+    }
+
+    assert {:ok, %{revision: revision_without_cache}} =
+             Adapter.apply_local_mutation(adapter, request)
+
+    assert {:ok, %{revision: revision_with_cache}} =
+             Adapter.apply_local_mutation(other_adapter, Map.put(request, :body_json, body_json))
+
+    assert revision_with_cache == revision_without_cache
+    assert {:ok, %{body: ^body}} = Adapter.get_document(adapter, %{document_id: "canonical-body"})
+
+    assert {:ok, %{body: ^body}} =
+             Adapter.get_document(other_adapter, %{document_id: "canonical-body"})
+  end
 end

@@ -63,8 +63,8 @@ defmodule VialKeeper.Bench.Runtime do
 
   @spec close_work_database(Root.t(), binary(), binary()) :: :ok
   def close_work_database(%Root{} = context, uuid, relative) do
-    _ = DatabaseCatalog.close(uuid)
-    _ = DatabaseCatalog.unregister(uuid)
+    _ = safe_catalog_call(fn -> DatabaseCatalog.close(uuid) end)
+    _ = safe_catalog_call(fn -> DatabaseCatalog.unregister(uuid) end)
 
     case Root.resolve(context, Path.split(relative)) do
       {:ok, absolute} ->
@@ -74,6 +74,12 @@ defmodule VialKeeper.Bench.Runtime do
       {:error, _} ->
         :ok
     end
+  end
+
+  defp safe_catalog_call(fun) do
+    fun.()
+  catch
+    :exit, _reason -> :ok
   end
 
   defp ensure_application_stopped! do
