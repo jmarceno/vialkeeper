@@ -65,8 +65,8 @@ defmodule VialKeeper.Bench.Torture do
   end
 
   @doc """
-  Retries a retryable VialKeeper error so concurrent attachment writes wait for
-  coordinator slots instead of aborting the suite.
+  Retries a retryable VialKeeper error so concurrent attachment and document
+  writes wait for coordinator slots instead of aborting the suite.
   """
   @spec retry_retryable((-> result)) :: result
         when result: {:ok, term()} | {:error, VialKeeper.Error.t()}
@@ -198,7 +198,7 @@ defmodule VialKeeper.Bench.Torture do
     body = OpenImages.document_body(image)
 
     {:ok, put} =
-      Documents.put(uuid, %{
+      put_document(uuid, %{
         "id" => image["image_id"],
         "body" => body,
         "attachments" => %{
@@ -247,7 +247,7 @@ defmodule VialKeeper.Bench.Torture do
     {:ok, %{blob: digest}} = upload_stream(uuid, path)
 
     {:ok, _} =
-      Documents.put(uuid, %{
+      put_document(uuid, %{
         "id" => "cw-#{concurrency}-#{index}",
         "body" => %{"image_id" => image["image_id"]},
         "attachments" => %{
@@ -322,7 +322,7 @@ defmodule VialKeeper.Bench.Torture do
       {:ok, %{blob: digest, deduplicated?: dedup?}} = upload_stream(uuid, item.path)
 
       {:ok, _} =
-        Documents.put(uuid, %{
+        put_document(uuid, %{
           "id" => "dedup-#{index}",
           "body" => %{"source" => item.id, "deduplicated" => dedup?},
           "attachments" => %{
@@ -427,7 +427,7 @@ defmodule VialKeeper.Bench.Torture do
   defp mixed_item_op(uuid, item, 2, _n), do: Documents.get(uuid, %{"id" => item.id})
 
   defp mixed_item_op(uuid, _item, 3, n) do
-    Documents.put(uuid, %{"id" => "mixed-#{n}", "body" => %{"n" => n}})
+    put_document(uuid, %{"id" => "mixed-#{n}", "body" => %{"n" => n}})
   end
 
   defp mixed_item_op(uuid, _item, _op, n) do
@@ -460,6 +460,10 @@ defmodule VialKeeper.Bench.Torture do
 
   defp upload_stream(uuid, path) do
     retry_retryable(fn -> Attachments.upload_stream(uuid, IO.file_chunks(path)) end)
+  end
+
+  defp put_document(uuid, attrs) do
+    retry_retryable(fn -> Documents.put(uuid, attrs) end)
   end
 
   defp retry_retryable(fun, attempt) do
