@@ -14,6 +14,7 @@ defmodule VialKeeper.Bench.Stress do
     IO,
     Marker,
     Prepare,
+    Progress,
     Registry,
     Reports,
     Root,
@@ -98,111 +99,115 @@ defmodule VialKeeper.Bench.Stress do
         )
 
       try do
-        write_state!(context, base, %{}, [], "running", "single_document_ingest", nil, opts)
+        Progress.with_run(progress_opts(opts, context, uuid, relative), fn progress ->
+          opts = Keyword.put(opts, :progress, progress)
+          write_state!(context, base, %{}, [], "running", "single_document_ingest", nil, opts)
 
-        single_progress =
-          progress_callback(
-            context,
-            base,
-            %{},
-            [],
-            "single_document_ingest",
-            opts
-          )
+          single_progress =
+            progress_callback(
+              context,
+              base,
+              %{},
+              [],
+              "single_document_ingest",
+              opts
+            )
 
-        single =
-          single_document_ingest(context, run_id, dataset, manifest, single_progress, opts)
+          single =
+            single_document_ingest(context, run_id, dataset, manifest, single_progress, opts)
 
-        results = %{"single_document_ingest" => single}
-        completed = ["single_document_ingest"]
-        write_completed!(context, base, results, completed, opts)
+          results = %{"single_document_ingest" => single}
+          completed = ["single_document_ingest"]
+          write_completed!(context, base, results, completed, opts)
 
-        bulk_progress =
-          progress_callback(context, base, results, completed, "bulk_document_ingest", opts)
+          bulk_progress =
+            progress_callback(context, base, results, completed, "bulk_document_ingest", opts)
 
-        bulk = bulk_document_ingest(uuid, dataset, manifest, bulk_progress, opts)
-        results = Map.put(results, "bulk_document_ingest", bulk.stats)
-        completed = Enum.concat(completed, ["bulk_document_ingest"])
-        write_completed!(context, base, results, completed, opts)
+          bulk = bulk_document_ingest(uuid, dataset, manifest, bulk_progress, opts)
+          results = Map.put(results, "bulk_document_ingest", bulk.stats)
+          completed = Enum.concat(completed, ["bulk_document_ingest"])
+          write_completed!(context, base, results, completed, opts)
 
-        attachment_progress =
-          progress_callback(
-            context,
-            base,
-            results,
-            completed,
-            "attachment_physical_ingest",
-            opts
-          )
+          attachment_progress =
+            progress_callback(
+              context,
+              base,
+              results,
+              completed,
+              "attachment_physical_ingest",
+              opts
+            )
 
-        physical =
-          attachment_physical_ingest(uuid, bulk.attachments, attachment_progress, opts)
+          physical =
+            attachment_physical_ingest(uuid, bulk.attachments, attachment_progress, opts)
 
-        results = Map.put(results, "attachment_physical_ingest", physical.stats)
-        completed = Enum.concat(completed, ["attachment_physical_ingest"])
-        write_completed!(context, base, results, completed, opts)
+          results = Map.put(results, "attachment_physical_ingest", physical.stats)
+          completed = Enum.concat(completed, ["attachment_physical_ingest"])
+          write_completed!(context, base, results, completed, opts)
 
-        reference_progress =
-          progress_callback(
-            context,
-            base,
-            results,
-            completed,
-            "attachment_reference_mutation",
-            opts
-          )
+          reference_progress =
+            progress_callback(
+              context,
+              base,
+              results,
+              completed,
+              "attachment_reference_mutation",
+              opts
+            )
 
-        reference =
-          attachment_reference_mutation(
-            uuid,
-            physical.references,
-            bulk.revisions,
-            reference_progress,
-            opts
-          )
+          reference =
+            attachment_reference_mutation(
+              uuid,
+              physical.references,
+              bulk.revisions,
+              reference_progress,
+              opts
+            )
 
-        results = Map.put(results, "attachment_reference_mutation", reference)
-        completed = Enum.concat(completed, ["attachment_reference_mutation"])
-        write_completed!(context, base, results, completed, opts)
+          results = Map.put(results, "attachment_reference_mutation", reference)
+          completed = Enum.concat(completed, ["attachment_reference_mutation"])
+          write_completed!(context, base, results, completed, opts)
 
-        fts_progress =
-          progress_callback(context, base, results, completed, "fts_build", opts)
+          fts_progress =
+            progress_callback(context, base, results, completed, "fts_build", opts)
 
-        fts = fts_build(uuid, length(manifest["articles"] || []), fts_progress)
-        results = Map.put(results, "fts_build", fts)
-        completed = Enum.concat(completed, ["fts_build"])
-        write_completed!(context, base, results, completed, opts)
+          fts = fts_build(uuid, length(manifest["articles"] || []), fts_progress)
+          results = Map.put(results, "fts_build", fts)
+          completed = Enum.concat(completed, ["fts_build"])
+          write_completed!(context, base, results, completed, opts)
 
-        queries = query_workload["queries"]
+          queries = query_workload["queries"]
 
-        search =
-          measured_phase(context, base, results, completed, "fts_search", opts, fn ->
-            fts_search(uuid, queries, opts)
-          end)
+          search =
+            measured_phase(context, base, results, completed, "fts_search", opts, fn ->
+              fts_search(uuid, queries, opts)
+            end)
 
-        results = Map.put(results, "fts_search", search)
-        completed = Enum.concat(completed, ["fts_search"])
-        write_completed!(context, base, results, completed, opts)
+          results = Map.put(results, "fts_search", search)
+          completed = Enum.concat(completed, ["fts_search"])
+          write_completed!(context, base, results, completed, opts)
 
-        reads =
-          measured_phase(context, base, results, completed, "attachment_read", opts, fn ->
-            attachment_read(uuid, physical.attachment_index, opts)
-          end)
+          reads =
+            measured_phase(context, base, results, completed, "attachment_read", opts, fn ->
+              attachment_read(uuid, physical.attachment_index, opts)
+            end)
 
-        results = Map.put(results, "attachment_read", reads)
-        completed = Enum.concat(completed, ["attachment_read"])
-        write_completed!(context, base, results, completed, opts)
+          results = Map.put(results, "attachment_read", reads)
+          completed = Enum.concat(completed, ["attachment_read"])
+          write_completed!(context, base, results, completed, opts)
 
-        mixed =
-          measured_phase(context, base, results, completed, "mixed", opts, fn ->
-            mixed_workload(uuid, queries, bulk.document_ids, physical.attachment_index, opts)
-          end)
+          mixed =
+            measured_phase(context, base, results, completed, "mixed", opts, fn ->
+              mixed_workload(uuid, queries, bulk.document_ids, physical.attachment_index, opts)
+            end)
 
-        results = Map.put(results, "mixed", mixed)
-        completed = Enum.concat(completed, ["mixed"])
+          results = Map.put(results, "mixed", mixed)
+          completed = Enum.concat(completed, ["mixed"])
 
-        :ok = write_state!(context, base, results, completed, "complete", nil, nil, opts)
-        Root.report_path(context, "simplewiki-stress.json")
+          :ok = write_state!(context, base, results, completed, "complete", nil, nil, opts)
+          Progress.complete(progress)
+          Root.report_path(context, "simplewiki-stress.json")
+        end)
       after
         Runtime.close_work_database(context, uuid, relative)
       end
@@ -211,9 +216,11 @@ defmodule VialKeeper.Bench.Stress do
 
   defp measured_phase(context, base, results, completed, phase, opts, fun) do
     write_state!(context, base, results, completed, "running", phase, nil, opts)
+    Progress.phase(opts[:progress], phase, 1)
     started_at = timestamp()
     started = System.monotonic_time(:microsecond)
     result = fun.()
+    Progress.tick(opts[:progress])
 
     %{
       "started_at" => started_at,
@@ -926,20 +933,11 @@ defmodule VialKeeper.Bench.Stress do
       }
 
       write_state!(context, base, results, completed, "running", phase, progress, opts)
-      emit_progress(phase, progress)
+      Progress.report(opts[:progress], phase, processed, total)
       notify_progress_observer(phase, progress, opts)
       enforce_diagnostic_ceiling!(phase, processed, projected_us, opts)
       :ok
     end
-  end
-
-  defp emit_progress(phase, progress) do
-    Mix.shell().info(
-      "#{phase}: #{progress["processed"]}/#{progress["total"]} " <>
-        "elapsed=#{format_seconds(progress["elapsed_us"])}s " <>
-        "rate=#{progress["current_throughput_per_sec"]}/s " <>
-        "projected=#{format_seconds(progress["projected_total_us"])}s"
-    )
   end
 
   defp enforce_diagnostic_ceiling!(_phase, _processed, nil, _opts), do: :ok
@@ -1043,8 +1041,15 @@ defmodule VialKeeper.Bench.Stress do
 
   defp sample_cas_occupancy(uuid, _sample_point), do: Statistics.cas_bytes(uuid)
 
+  defp progress_opts(opts, context, uuid, relative) do
+    [
+      label: "stress",
+      stall_timeout_ms: Keyword.get(opts, :stall_timeout_ms, Progress.default_stall_timeout_ms()),
+      cleanup: fn -> Runtime.close_work_database(context, uuid, relative) end
+    ]
+  end
+
   defp timestamp, do: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
-  defp format_seconds(nil), do: "unknown"
   defp format_seconds(microseconds), do: Float.round(microseconds / 1_000_000, 1)
 end

@@ -70,6 +70,20 @@ defmodule VialKeeper.Bench.OpenImagesTest do
     assert image["md5"] == Checksums.md5_iodata(@jpeg)
   end
 
+  test "open-images scaling profiles are 1, 1k, 10k, and 100k" do
+    assert Registry.profile("1k") == {:ok, :k1}
+    assert Registry.profile("10k") == {:ok, :k10}
+    assert Registry.ensure_profile("open-images", :k1) == :ok
+
+    assert Registry.ensure_profile("simplewiki", :k1) ==
+             {:error, "dataset simplewiki does not support profile k1; use standard or smoke"}
+
+    assert Registry.selection_count("open-images", :smoke) == 1
+    assert Registry.selection_count("open-images", :k1) == 1_000
+    assert Registry.selection_count("open-images", :k10) == 10_000
+    assert Registry.selection_count("open-images", :standard) == 100_000
+  end
+
   test "generate_from_info_csv selects a stable subset" do
     spec = Registry.fetch!("open-images")
     dir = Path.join(System.tmp_dir!(), "vk-oi-#{System.unique_integer([:positive])}")
@@ -91,5 +105,46 @@ defmodule VialKeeper.Bench.OpenImagesTest do
              Enum.map(second["images"], & &1["image_id"])
 
     assert match?([_, _], first["images"])
+    assert first["profile"] == "standard"
+
+    {:ok, scaled} = OpenImages.generate_from_info_csv(path, spec, 2, "k1")
+    assert scaled["profile"] == "k1"
+  end
+
+  test "official train objects use CVDF S3 bytes instead of Flickr originals" do
+    manifest = %{
+      "images" => [
+        %{
+          "image_id" => "abc123",
+          "url" => "https://farm3.staticflickr.com/x.jpg",
+          "md5" => "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected_size" => 211_079
+        }
+      ]
+    }
+
+    [image] = OpenImages.use_cvdf_bytes(manifest)["images"]
+    assert image["url"] == "https://s3.amazonaws.com/open-images-dataset/train/abc123.jpg"
+    assert image["original_url"] == "https://farm3.staticflickr.com/x.jpg"
+    assert is_nil(image["md5"])
+    assert is_nil(image["expected_size"])
+  end
+
+  test "keep_downloaded retains present JPEGs up to the requested count" do
+    dir = Path.join(System.tmp_dir!(), "vk-oi-keep-#{System.unique_integer([:positive])}")
+    objects = Path.join(dir, "objects")
+    File.mkdir_p!(objects)
+    File.write!(Path.join(objects, "keep.jpg"), @jpeg)
+
+    manifest = %{
+      "images" => [
+        %{"image_id" => "keep"},
+        %{"image_id" => "missing"}
+      ]
+    }
+
+    assert {:ok, kept} = OpenImages.keep_downloaded(manifest, dir, 1)
+    assert Enum.map(kept["images"], & &1["image_id"]) == ["keep"]
+    File.rm_rf(dir)
   end
 end

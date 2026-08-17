@@ -28,8 +28,10 @@ These Mix aliases always run with `--no-start` in `MIX_ENV=test`:
 | `mix bench.torture` | Open Images attachment ingest, concurrent read/write, dedup, delete/GC, mixed torture | 100K JPEGs |
 
 `--profile smoke` prepares a handful of pinned objects so the same code path
-can be checked without downloading the 100K corpora. Quality metrics are
-informational; they are not CI pass/fail thresholds.
+can be checked without downloading the 100K corpora. Open Images also supports
+`--profile 1k` and `--profile 10k` so attachment scaling is measured before a
+100K JPEG download. Quality metrics are informational; they are not CI
+pass/fail thresholds.
 
 Dataset-backed Mix runners raise host limits for the process, including
 `max_search_rebuild_ms` (one hour) so a 171K-document `create_index` is not
@@ -39,6 +41,93 @@ killed by the interactive query budget. Production operators set
 Full-text post-filter candidates are bounded by `[limits].max_search_candidates`;
 the benchmark reports a resource-limit failure rather than accepting silently
 truncated candidates.
+
+### Component diagnostics
+
+`mix bench.diagnostics` measures isolated phases on the same external root
+instead of treating one aggregate runtime as a diagnosis. Fixture preparation
+stays outside timed regions. Default sections are `documents`, `database`,
+`attachments`, and `search`.
+
+```sh
+mix bench.diagnostics
+mix bench.diagnostics --section documents,database
+mix bench.diagnostics --document-mode bulk --counts 100,1000,10000 --batch-sizes 100,500
+```
+
+Use this runner to compare:
+
+- database create (schema applied in one durable transaction)
+- single `Documents.put` versus `Documents.bulk_write`
+- raw durable CAS, `FilesystemStore`, and full attachment upload
+- direct Tantivy indexing versus the VialKeeper search wrapper
+
+Single-write latency is the interactive catalog path (one COMMIT per
+document). Bulk ingest is the 100K path: batches of 500 documents share one
+storage transaction and one search flush. Do not treat put p50 as the ingest
+rate.
+
+Direct Tantivy is the native writer control on the same disk. The VialKeeper
+wrapper should stay within about 2× of that control for a full-text rebuild;
+larger gaps mean extra product work, not Tantivy itself.
+
+### Simple Wikipedia phases
+
+`mix bench.stress` runs a phase-separated catalog workload and writes the
+report after every completed phase (`status: running` until `mixed` finishes).
+An interrupted run still records completed timings, the current phase,
+processed counts, dataset identity, and git revision. Re-running the same
+`--output` path continues from a new work database; the JSON is a progress
+checkpoint, not a resume of the previous database.
+
+Standard phases, in order:
+
+1. `single_document_ingest` — 1,000 `Documents.put` samples (interactive latency)
+2. `bulk_document_ingest` — remaining articles in batches of 500, with a scaling ladder
+3. `attachment_physical_ingest` — 800 locally generated blobs at bounded batch concurrency (default 16, capped by the database write limit)
+4. `attachment_reference_mutation` — one bulk write attaching those blobs
+5. `fts_build` — one full-text `create_index` using `max_search_rebuild_ms`
+6. `fts_search` — precomputed `queries.json` (`simplewiki-query-v2`)
+7. `attachment_read`
+8. `mixed`
+
+The 100K seed does not call `Documents.put` once per article.
+
+### Open Images ladder
+
+Do not jump from smoke to 100K JPEGs. Prepare and run:
+
+```sh
+mix bench.data prepare open-images --profile smoke
+mix bench.torture --profile smoke
+
+mix bench.data prepare open-images --profile 1k --max-concurrency 16
+mix bench.torture --profile 1k
+
+mix bench.data prepare open-images --profile 10k --max-concurrency 16
+mix bench.torture --profile 10k
+```
+
+`mix bench.torture --limit N` slices a larger prepared fixture. Full 100K
+torture is only for after 1K and 10K throughput is understood.
+
+Open Images JPEG bytes come from the CVDF train bucket, not Flickr originals.
+A ranked train-CSV subset is not dense in that bucket, so prepare over-selects
+and stops once the profile's image count is on disk. Missing objects (HTTP
+404/410) are skipped without retry.
+
+The torture work database raises attachment write/read limits to the measured
+concurrency ladder (writes 1/4/8/16, reads 1/4/16/64). Ordinary databases
+still default to 4 concurrent attachment writes.
+
+`--output` must resolve under `<bench-root>/reports/`.
+
+Torture, stress, and FTS start a progress watchdog for the whole run. It prints
+at phase start/end, every 10% (5% on phases smaller than 20 units), and a
+heartbeat at least every 30 seconds. `--stall-timeout-ms` (default 300000)
+kills a countable phase that has not completed a unit of work in that window,
+prints phase/processed/rate/rss diagnostics, and closes the work database.
+`--stall-timeout-ms 0` disables the kill.
 
 ### Why the data root is mandatory
 
@@ -81,12 +170,17 @@ mix bench.data prepare simplewiki          # one archive + local 100K fixture ge
 mix bench.data prepare simplewiki --profile smoke
 mix bench.data prepare open-images
 mix bench.data prepare open-images --profile smoke
+mix bench.data prepare open-images --profile 1k --max-concurrency 16
+mix bench.data prepare open-images --profile 10k --max-concurrency 16
 
 mix bench.fts                         # initializes root, downloads/prepares, then runs all 171K docs
 mix bench.stress                         # initializes root, downloads/prepares, then runs standard 100K Simple Wikipedia
 mix bench.stress --max-concurrency 16    # same workload with faster bounded fixture preparation
 mix bench.stress --profile smoke
 mix bench.torture --profile smoke
+mix bench.torture --profile 1k
+mix bench.torture --profile 1k --stall-timeout-ms 300000
+mix bench.diagnostics
 
 mix bench.data clean trec-covid
 mix bench.data clean pmc

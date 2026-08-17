@@ -16,7 +16,7 @@ defmodule VialKeeper.Bench.Registry do
   @pmc_https "https://pmc-oa-opendata.s3.amazonaws.com"
   @simplewiki_url "https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pages-articles-multistream.xml.bz2"
 
-  @open_images_info_url "https://storage.googleapis.com/openimages/2018_04/train/train-images-with-rotation.csv"
+  @open_images_info_url "https://storage.googleapis.com/openimages/2018_04/train/train-images-with-labels-with-rotation.csv"
   @open_images_labels_url "https://storage.googleapis.com/openimages/v7/oidv7-train-annotations-human-imagelabels.csv"
   @open_images_classes_url "https://storage.googleapis.com/openimages/v7/oidv7-class-descriptions-boxable.csv"
 
@@ -42,16 +42,30 @@ defmodule VialKeeper.Bench.Registry do
     end
   end
 
-  @spec profile(keyword() | binary()) :: {:ok, atom()} | {:error, binary()}
+  @spec profile(keyword() | binary() | atom()) :: {:ok, atom()} | {:error, binary()}
   def profile(opts) when is_list(opts), do: profile(Keyword.get(opts, :profile, :standard))
 
   def profile(:standard), do: {:ok, :standard}
   def profile(:smoke), do: {:ok, :smoke}
+  def profile(:k1), do: {:ok, :k1}
+  def profile(:k10), do: {:ok, :k10}
   def profile("standard"), do: {:ok, :standard}
   def profile("smoke"), do: {:ok, :smoke}
+  def profile("1k"), do: {:ok, :k1}
+  def profile("10k"), do: {:ok, :k10}
 
   def profile(other),
-    do: {:error, "unknown dataset profile #{inspect(other)}; use standard or smoke"}
+    do: {:error, "unknown dataset profile #{inspect(other)}; use standard, smoke, 1k, or 10k"}
+
+  @doc "Returns whether `profile` is valid for `name`."
+  @spec ensure_profile(binary(), atom()) :: :ok | {:error, binary()}
+  def ensure_profile(name, profile) when is_binary(name) and is_atom(profile) do
+    if supported_profile?(name, profile) do
+      :ok
+    else
+      {:error, "dataset #{name} does not support profile #{profile}; #{profile_hint(name)}"}
+    end
+  end
 
   @spec selection_count(binary(), atom()) :: pos_integer()
   def selection_count("pmc", :standard), do: 100_000
@@ -59,8 +73,19 @@ defmodule VialKeeper.Bench.Registry do
   def selection_count("simplewiki", :standard), do: 100_000
   def selection_count("simplewiki", :smoke), do: 3
   def selection_count("open-images", :standard), do: 100_000
+  def selection_count("open-images", :k10), do: 10_000
+  def selection_count("open-images", :k1), do: 1_000
   def selection_count("open-images", :smoke), do: 1
   def selection_count("trec-covid", _), do: 171_332
+
+  defp supported_profile?("open-images", profile) when profile in [:standard, :smoke, :k1, :k10],
+    do: true
+
+  defp supported_profile?(_name, profile) when profile in [:standard, :smoke], do: true
+  defp supported_profile?(_name, _profile), do: false
+
+  defp profile_hint("open-images"), do: "use standard, smoke, 1k, or 10k"
+  defp profile_hint(_name), do: "use standard or smoke"
 
   defp definition("trec-covid") do
     %{

@@ -3,6 +3,8 @@ defmodule VialKeeper.Bench.OpenImages do
 
   alias VialKeeper.Bench.{Checksums, CSV, Select}
 
+  @cvdf_train_prefix "https://s3.amazonaws.com/open-images-dataset/train/"
+
   @spec smoke_manifest(map(), keyword()) :: map()
   def smoke_manifest(spec, opts \\ []) do
     images = Keyword.get(opts, :images, spec["smoke_images"]) |> Enum.map(&normalize_image/1)
@@ -29,10 +31,64 @@ defmodule VialKeeper.Bench.OpenImages do
       "labels" => image["labels"] || [],
       "title" => image["title"] || image["image_id"],
       "source_metadata" => %{
-        "url" => image["url"],
+        "url" => image["original_url"] || image["url"],
         "license" => image["license"]
       }
     }
+  end
+
+  @doc """
+  Points official train objects at the CVDF S3 copies.
+
+  Flickr `OriginalURL` values in the image-info CSV are not a durable byte
+  source; many return HTTP 404. CVDF hosts the same train IDs as JPEG objects.
+  Original MD5/size apply to the Flickr originals, not the CVDF files.
+  """
+  @spec use_cvdf_bytes(map()) :: map()
+  def use_cvdf_bytes(%{"images" => images} = manifest) when is_list(images) do
+    %{manifest | "images" => Enum.map(images, &cvdf_image/1)}
+  end
+
+  defp cvdf_image(image) do
+    image
+    |> Map.put("original_url", image["original_url"] || image["url"])
+    |> Map.put("url", @cvdf_train_prefix <> image["image_id"] <> ".jpg")
+    |> Map.put("md5", nil)
+    |> Map.put("expected_size", nil)
+  end
+
+  @doc "Keeps the first `wanted` images whose JPEG exists under `staging/objects/`."
+  @spec keep_downloaded(map(), Path.t(), pos_integer()) :: {:ok, map()} | {:error, binary()}
+  def keep_downloaded(%{"images" => images} = manifest, staging, wanted)
+      when is_list(images) and is_binary(staging) and is_integer(wanted) and wanted > 0 do
+    present =
+      Enum.filter(images, fn image ->
+        File.regular?(Path.join([staging, "objects", image["image_id"] <> ".jpg"]))
+      end)
+
+    required = min(wanted, length(images))
+    kept = Enum.take(present, required)
+
+    if length(kept) < required do
+      {:error, "open-images downloaded #{length(kept)} images; need #{required}"}
+    else
+      drop_unselected_objects(staging, images, kept)
+      {:ok, %{manifest | "images" => kept}}
+    end
+  end
+
+  defp drop_unselected_objects(staging, images, kept) do
+    keep = MapSet.new(kept, & &1["image_id"])
+
+    Enum.each(images, fn image ->
+      id = image["image_id"]
+
+      if id in keep do
+        :ok
+      else
+        _ = File.rm(Path.join([staging, "objects", id <> ".jpg"]))
+      end
+    end)
   end
 
   @spec rank_key(binary(), binary()) :: binary()
@@ -123,9 +179,11 @@ defmodule VialKeeper.Bench.OpenImages do
   @spec parse_csv_line(binary()) :: {:ok, [binary()]} | :skip | {:error, binary()}
   def parse_csv_line(line) when is_binary(line), do: CSV.parse_line(line)
 
-  @spec generate_from_info_csv(Path.t(), map(), pos_integer()) :: {:ok, map()} | {:error, binary()}
-  def generate_from_info_csv(path, spec, count)
-      when is_binary(path) and is_map(spec) and is_integer(count) and count > 0 do
+  @spec generate_from_info_csv(Path.t(), map(), pos_integer(), binary()) ::
+          {:ok, map()} | {:error, binary()}
+  def generate_from_info_csv(path, spec, count, profile \\ "standard")
+      when is_binary(path) and is_map(spec) and is_integer(count) and count > 0 and
+             is_binary(profile) do
     case stream_info_rows(path) do
       {:error, reason} ->
         {:error, reason}
@@ -137,7 +195,7 @@ defmodule VialKeeper.Bench.OpenImages do
             {rank_key(spec["selection_seed"], image["image_id"]), image["image_id"]}
           end)
 
-        {:ok, manifest_from_images(spec, "standard", images)}
+        {:ok, manifest_from_images(spec, profile, images)}
     end
   end
 

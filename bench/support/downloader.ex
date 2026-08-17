@@ -28,7 +28,7 @@ defmodule VialKeeper.Bench.Downloader do
          :ok <- File.mkdir_p(Path.dirname(object.dest)),
          :ok <- ensure_http() do
       part = object.dest <> ".part"
-      retry_download(object, part, Keyword.get(opts, :max_retries, @max_retries), 0)
+      retry_download(object, part, opts, 0)
     end
   end
 
@@ -89,23 +89,37 @@ defmodule VialKeeper.Bench.Downloader do
   @spec ensure_started() :: :ok | {:error, binary()}
   def ensure_started, do: ensure_http()
 
-  defp retry_download(object, part, max_retries, attempt) do
-    case download_once(object, part) do
+  defp retry_download(object, part, opts, attempt) do
+    max_retries = Keyword.get(opts, :max_retries, @max_retries)
+
+    case download_once(object, part, opts) do
       {:ok, headers} ->
         finalize(object, part, headers)
 
-      {:error, _reason} when attempt + 1 < max_retries ->
-        _ = File.rm(part)
-        retry_download(object, part, max_retries, attempt + 1)
-
       {:error, reason} ->
-        {:error, reason}
+        retry_or_fail(object, part, opts, attempt, max_retries, reason)
     end
   end
 
-  defp download_once(object, part) do
+  defp retry_or_fail(object, part, opts, attempt, max_retries, reason) do
+    if retryable_download_error?(reason) and attempt + 1 < max_retries do
+      _ = File.rm(part)
+      retry_download(object, part, opts, attempt + 1)
+    else
+      {:error, reason}
+    end
+  end
+
+  defp retryable_download_error?(reason) do
+    text = if is_binary(reason), do: reason, else: inspect(reason)
+
+    not (String.contains?(text, "HTTP 404") or String.contains?(text, "HTTP 410"))
+  end
+
+  defp download_once(object, part, opts) do
     offset = existing_size(part)
     request = Finch.build(:get, object.url, range_headers(object, offset))
+    timeout = Keyword.get(opts, :receive_timeout, @receive_timeout)
 
     acc = %{
       status: nil,
@@ -119,7 +133,7 @@ defmodule VialKeeper.Bench.Downloader do
 
     result =
       Finch.stream_while(request, finch_name(), acc, &handle_stream/2,
-        receive_timeout: @receive_timeout,
+        receive_timeout: timeout,
         request_timeout: :infinity
       )
 

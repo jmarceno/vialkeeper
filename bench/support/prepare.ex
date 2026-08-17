@@ -28,6 +28,8 @@ defmodule VialKeeper.Bench.Prepare do
   def prepare(name, opts \\ []) when is_binary(name) do
     with {:ok, spec} <- Registry.fetch(name),
          {:ok, profile} <- Registry.profile(opts),
+         :ok <- Registry.ensure_profile(name, profile),
+         opts <- Keyword.put(opts, :profile, profile),
          {:ok, context} <- Root.load(opts),
          :ok <- preflight(context, spec, profile, opts) do
       prepare_dataset(context, spec, profile, opts)
@@ -225,6 +227,8 @@ defmodule VialKeeper.Bench.Prepare do
          {:ok, manifest} <- resolve_manifest(context, spec, profile, opts),
          :ok <- write_external_manifest(context, staging, manifest),
          :ok <- download_objects(context, spec, staging, manifest, opts),
+         {:ok, manifest} <- finalize_object_manifest(spec, profile, staging, manifest),
+         :ok <- write_external_manifest(context, staging, manifest),
          :ok <-
            Marker.write(context, staging, %{
              "dataset" => spec["name"],
@@ -263,7 +267,8 @@ defmodule VialKeeper.Bench.Prepare do
     {:ok, OpenImages.smoke_manifest(spec, opts)}
   end
 
-  defp resolve_manifest(context, %{"name" => "open-images"} = spec, :standard, opts) do
+  defp resolve_manifest(context, %{"name" => "open-images"} = spec, profile, opts)
+       when profile in [:standard, :k1, :k10] do
     cond do
       is_map(opts[:manifest]) ->
         {:ok, opts[:manifest]}
@@ -272,25 +277,29 @@ defmodule VialKeeper.Bench.Prepare do
         OpenImages.generate_from_info_csv(
           opts[:info_csv],
           spec,
-          Registry.selection_count("open-images", :standard)
+          Registry.selection_count("open-images", profile),
+          Atom.to_string(profile)
         )
 
       true ->
-        generate_open_images_manifest(context, spec, opts)
+        generate_open_images_manifest(context, spec, profile, opts)
     end
   end
 
-  defp generate_open_images_manifest(context, spec, opts) do
+  defp generate_open_images_manifest(context, spec, profile, opts) do
     download = Keyword.get(opts, :download, &Downloader.download/3)
-    count = Registry.selection_count("open-images", :standard)
+    count = open_images_pool_count(profile)
 
     with {:ok, cache} <- Root.cache_path(context, spec["name"], spec["version"]),
          :ok <- File.mkdir_p(cache),
          csv = Path.join(cache, "train-images-with-rotation.csv"),
          :ok <-
            maybe_download(download, context, spec["image_info_url"], csv, opts),
-         {:ok, manifest} <- OpenImages.generate_from_info_csv(csv, spec, count) do
-      maybe_merge_open_images_labels(context, spec, manifest, download, cache, opts)
+         {:ok, manifest} <-
+           OpenImages.generate_from_info_csv(csv, spec, count, Atom.to_string(profile)),
+         {:ok, manifest} <-
+           maybe_merge_open_images_labels(context, spec, manifest, download, cache, opts) do
+      {:ok, OpenImages.use_cvdf_bytes(manifest)}
     end
   end
 
@@ -305,6 +314,21 @@ defmodule VialKeeper.Bench.Prepare do
     end
   end
 
+  defp open_images_pool_count(profile) do
+    wanted = Registry.selection_count("open-images", profile)
+    wanted * 5
+  end
+
+  defp finalize_object_manifest(%{"name" => "open-images"}, profile, staging, manifest) do
+    OpenImages.keep_downloaded(
+      manifest,
+      staging,
+      Registry.selection_count("open-images", profile)
+    )
+  end
+
+  defp finalize_object_manifest(_spec, _profile, _staging, manifest), do: {:ok, manifest}
+
   defp maybe_download(download, context, url, dest, opts) do
     if File.regular?(dest) do
       :ok
@@ -316,6 +340,7 @@ defmodule VialKeeper.Bench.Prepare do
   defp download_objects(context, spec, staging, manifest, opts) do
     download = Keyword.get(opts, :download, &Downloader.download/3)
     concurrency = download_concurrency(opts)
+    opts = object_download_opts(spec, opts)
 
     objects =
       spec["name"]
@@ -326,6 +351,17 @@ defmodule VialKeeper.Bench.Prepare do
       download_object_batches(context, spec, staging, objects, download, concurrency, opts)
     end
   end
+
+  defp object_download_opts(%{"name" => "open-images"}, opts) do
+    wanted = Registry.selection_count("open-images", Keyword.get(opts, :profile, :standard))
+
+    opts
+    |> Keyword.put_new(:max_retries, 3)
+    |> Keyword.put_new(:receive_timeout, 30_000)
+    |> Keyword.put(:object_limit, wanted)
+  end
+
+  defp object_download_opts(_spec, opts), do: opts
 
   defp download_concurrency(opts) do
     value = Keyword.get(opts, :max_concurrency, 4)
@@ -365,19 +401,24 @@ defmodule VialKeeper.Bench.Prepare do
       objects
       |> Enum.chunk_every(64)
       |> Enum.reduce_while(:ok, fn chunk, :ok ->
-        download_object_chunk(context, spec, staging, chunk, download, concurrency, opts)
+        result =
+          download_object_chunk(context, spec, staging, chunk, download, concurrency, opts)
+
+        stop_when_enough(result, staging, opts[:object_limit])
       end)
     end
   end
 
   defp download_object_chunk(context, spec, staging, chunk, download, concurrency, opts) do
     case space_preflight(context, spec, staging, opts) do
-      :ok -> run_object_chunk(context, chunk, download, concurrency, opts)
+      :ok -> run_object_chunk(context, spec, chunk, download, concurrency, opts)
       {:error, reason} -> {:halt, {:error, reason}}
     end
   end
 
-  defp run_object_chunk(context, chunk, download, concurrency, opts) do
+  defp run_object_chunk(context, spec, chunk, download, concurrency, opts) do
+    skip_missing? = spec["name"] == "open-images"
+
     chunk
     |> Task.async_stream(
       fn object -> download.(context, object, opts) end,
@@ -385,18 +426,45 @@ defmodule VialKeeper.Bench.Prepare do
       timeout: :infinity,
       ordered: false
     )
-    |> Enum.reduce_while(:ok, &join_download_task/2)
+    |> Enum.reduce_while(:ok, &join_download_task(&1, &2, skip_missing?))
     |> continue_download()
   end
 
-  defp join_download_task({:ok, :ok}, :ok), do: {:cont, :ok}
-  defp join_download_task({:ok, {:error, reason}}, :ok), do: {:halt, {:error, reason}}
+  defp join_download_task({:ok, :ok}, :ok, _skip_missing?), do: {:cont, :ok}
 
-  defp join_download_task({:exit, reason}, :ok),
+  defp join_download_task({:ok, {:error, reason}}, :ok, true) do
+    if skippable_object_error?(reason), do: {:cont, :ok}, else: {:halt, {:error, reason}}
+  end
+
+  defp join_download_task({:ok, {:error, reason}}, :ok, _skip_missing?),
+    do: {:halt, {:error, reason}}
+
+  defp join_download_task({:exit, reason}, :ok, _skip_missing?),
     do: {:halt, {:error, "download task crashed: #{inspect(reason)}"}}
+
+  defp skippable_object_error?(reason) do
+    text = if is_binary(reason), do: reason, else: inspect(reason)
+
+    String.contains?(text, "HTTP 404") or String.contains?(text, "HTTP 410") or
+      String.contains?(text, "timeout")
+  end
 
   defp continue_download(:ok), do: {:cont, :ok}
   defp continue_download({:error, reason}), do: {:halt, {:error, reason}}
+
+  defp stop_when_enough({:cont, :ok}, staging, wanted)
+       when is_integer(wanted) and wanted > 0 do
+    if downloaded_object_count(staging) >= wanted, do: {:halt, :ok}, else: {:cont, :ok}
+  end
+
+  defp stop_when_enough(result, _staging, _wanted), do: result
+
+  defp downloaded_object_count(staging) do
+    case File.ls(Path.join(staging, "objects")) do
+      {:ok, entries} -> Enum.count(entries, &String.ends_with?(&1, ".jpg"))
+      _ -> 0
+    end
+  end
 
   defp objects_of("pmc", manifest), do: Pmc.objects_for(manifest)
   defp objects_of("open-images", manifest), do: OpenImages.objects_for(manifest)
@@ -444,8 +512,18 @@ defmodule VialKeeper.Bench.Prepare do
 
   defp estimates(_spec, :smoke), do: {32 * 1024 * 1024, 128 * 1024 * 1024}
 
+  defp estimates(spec, :k1), do: scale_estimates(spec, 1_000, 100_000)
+
+  defp estimates(spec, :k10), do: scale_estimates(spec, 10_000, 100_000)
+
   defp estimates(spec, _profile) do
     {spec["estimated_source_bytes"] || 0, spec["estimated_working_bytes"] || 0}
+  end
+
+  defp scale_estimates(spec, count, standard_count) do
+    source = spec["estimated_source_bytes"] || 0
+    working = spec["estimated_working_bytes"] || 0
+    {div(source * count, standard_count), div(working * count, standard_count)}
   end
 
   defp available(context, opts) do

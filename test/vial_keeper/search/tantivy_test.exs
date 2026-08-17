@@ -4,6 +4,7 @@ defmodule VialKeeper.Search.TantivyTest do
   alias VialKeeper.Search.{Owner, Tantivy}
 
   @definition %{"index_id" => "idx_search_tantivy_test", "fields" => ["/title"]}
+  @call_ms 60_000
 
   setup do
     path =
@@ -82,12 +83,12 @@ defmodule VialKeeper.Search.TantivyTest do
     on_exit(fn -> File.rm_rf(root) end)
 
     {:ok, pid} = Owner.start_link({uuid, path})
-    :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition})
+    :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition}, @call_ms)
 
     {:ok, 1} =
       GenServer.call(pid, {:rebuild_batch, "idx", [%{id: "doc", body: %{"title" => "reopen me"}}]})
 
-    {:ok, 1} = GenServer.call(pid, {:finish_rebuild, "idx"})
+    {:ok, 1} = GenServer.call(pid, {:finish_rebuild, "idx"}, @call_ms)
     index_root = Path.join(path, "search/indexes/#{Base.url_encode64("idx", padding: false)}")
     {:ok, manifest} = File.read(Path.join(index_root, "manifest.json"))
 
@@ -113,7 +114,7 @@ defmodule VialKeeper.Search.TantivyTest do
     assert {:ok, [%{id: "doc"}]} = GenServer.call(pid, {:search, "idx", "last", "all"})
     assert {:ok, []} = GenServer.call(pid, {:search, "idx", "first", "all"})
 
-    :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition})
+    :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition}, @call_ms)
 
     {:ok, 1} =
       GenServer.call(
@@ -121,7 +122,7 @@ defmodule VialKeeper.Search.TantivyTest do
         {:rebuild_batch, "idx", [%{id: "doc", body: %{"title" => "new generation"}}]}
       )
 
-    {:ok, 1} = GenServer.call(pid, {:finish_rebuild, "idx"})
+    {:ok, 1} = GenServer.call(pid, {:finish_rebuild, "idx"}, @call_ms)
 
     assert ["generation-2"] =
              Path.wildcard(Path.join(index_root, "generation-*")) |> Enum.map(&Path.basename/1)
@@ -140,13 +141,13 @@ defmodule VialKeeper.Search.TantivyTest do
     on_exit(fn -> File.rm_rf(root) end)
 
     {:ok, pid} = Owner.start_link({uuid, path})
-    :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition})
+    :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition}, @call_ms)
 
     {:ok, 1} =
       GenServer.call(pid, {:rebuild_batch, "idx", [%{id: "doc", body: %{"title" => "old"}}]})
 
-    {:ok, 1} = GenServer.call(pid, {:finish_rebuild, "idx"})
-    :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition})
+    {:ok, 1} = GenServer.call(pid, {:finish_rebuild, "idx"}, @call_ms)
+    :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition}, @call_ms)
 
     assert {:ok, [%{id: "doc"}]} = GenServer.call(pid, {:search, "idx", "old", "all"})
 
@@ -159,10 +160,59 @@ defmodule VialKeeper.Search.TantivyTest do
     assert {:ok, [%{id: "doc"}]} = GenServer.call(pid, {:search, "idx", "old", "all"})
     assert {:ok, []} = GenServer.call(pid, {:search, "idx", "new", "all"})
 
-    {:ok, 1} = GenServer.call(pid, {:finish_rebuild, "idx"})
+    {:ok, 1} = GenServer.call(pid, {:finish_rebuild, "idx"}, @call_ms)
     assert {:ok, [%{id: "doc"}]} = GenServer.call(pid, {:search, "idx", "new", "all"})
     assert {:ok, []} = GenServer.call(pid, {:search, "idx", "old", "all"})
 
+    :ok = GenServer.stop(pid)
+  end
+
+  test "multi-page rebuild adds every page and publishes with one commit" do
+    root =
+      "/mnt/other/downloads/vialkeeper/work/fts/tantivy-multipage-test-" <>
+        Integer.to_string(System.unique_integer([:positive]))
+
+    path = Path.join(root, "tmp")
+    uuid = "tantivy-multipage-test-#{System.unique_integer([:positive])}"
+    File.rm_rf!(root)
+    on_exit(fn -> File.rm_rf(root) end)
+
+    {:ok, pid} = Owner.start_link({uuid, path})
+    :ok = GenServer.call(pid, {:begin_rebuild, "idx", @definition}, @call_ms)
+
+    {:ok, 1} =
+      GenServer.call(
+        pid,
+        {:rebuild_batch, "idx", [%{id: "first", body: %{"title" => "alpha page"}}]},
+        @call_ms
+      )
+
+    {:ok, 1} =
+      GenServer.call(
+        pid,
+        {:rebuild_batch, "idx", [%{id: "second", body: %{"title" => "beta page"}}]},
+        @call_ms
+      )
+
+    rebuilding = :sys.get_state(pid).rebuilds["idx"]
+    assert rebuilding.handle.searcher == nil
+    assert rebuilding.entries == 2
+
+    index_root = Path.join(path, "search/indexes/#{Base.url_encode64("idx", padding: false)}")
+
+    assert ["generation-1"] =
+             Path.wildcard(Path.join(index_root, "generation-*")) |> Enum.map(&Path.basename/1)
+
+    assert {:error, %VialKeeper.Error{code: :index_not_found}} =
+             GenServer.call(pid, {:search, "idx", "alpha", "all"}, @call_ms)
+
+    {:ok, 2} = GenServer.call(pid, {:finish_rebuild, "idx"}, @call_ms)
+
+    assert ["generation-1"] =
+             Path.wildcard(Path.join(index_root, "generation-*")) |> Enum.map(&Path.basename/1)
+
+    assert {:ok, hits} = GenServer.call(pid, {:search, "idx", "page", "all"}, @call_ms)
+    assert Enum.map(hits, & &1.id) |> Enum.sort() == ["first", "second"]
     :ok = GenServer.stop(pid)
   end
 end

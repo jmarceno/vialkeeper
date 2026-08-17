@@ -136,6 +136,19 @@ defmodule VialKeeper.Bench.DownloaderTest do
     refute File.exists?(outside)
   end
 
+  test "does not retry HTTP 404", %{context: ctx} do
+    hits = :atomics.new(1, signed: false)
+    {url, _} = start_status_server(404, hits)
+    {:ok, dest} = Root.resolve(ctx, ["staging", "missing.bin"])
+
+    assert {:error, message} =
+             Downloader.download(ctx, %{url: url <> "/file.bin", dest: dest})
+
+    assert message =~ "HTTP 404"
+    assert :atomics.get(hits, 1) == 1
+    refute File.regular?(dest)
+  end
+
   test "retries a transient HTTP failure", %{context: ctx} do
     body = "retry-ok"
     {:ok, dest} = Root.resolve(ctx, ["staging", "retry.bin"])
@@ -188,8 +201,14 @@ defmodule VialKeeper.Bench.DownloaderTest do
   end
 
   defp start_flaky_server(body, hits) do
-    plug = {__MODULE__.Flaky, [body: body, hits: hits]}
+    start_plug_server({__MODULE__.Flaky, [body: body, hits: hits]})
+  end
 
+  defp start_status_server(status, hits) do
+    start_plug_server({__MODULE__.Status, [status: status, hits: hits]})
+  end
+
+  defp start_plug_server(plug) do
     {:ok, pid} =
       Bandit.start_link(
         plug: plug,
@@ -210,6 +229,17 @@ defmodule VialKeeper.Bench.DownloaderTest do
   end
 
   defp unique_dir(prefix), do: Tmp.dir(prefix)
+
+  defmodule Status do
+    def init(opts), do: opts
+
+    def call(conn, opts) do
+      hits = Keyword.fetch!(opts, :hits)
+      status = Keyword.fetch!(opts, :status)
+      _ = :atomics.add_get(hits, 1, 1)
+      Plug.Conn.send_resp(conn, status, "missing")
+    end
+  end
 
   defmodule Flaky do
     def init(opts), do: opts

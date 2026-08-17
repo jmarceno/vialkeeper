@@ -348,6 +348,11 @@ Admission is separate from database-owner admission. Overrun → retryable
 `attachment_overloaded`. Oversized upload → `payload_too_large` (no revision
 reference). Changing limits does not rewrite stored blobs.
 
+Batch uploads stream independent blobs with bounded concurrency. The product
+default is 16 writers, capped by that database's
+`attachments.max_concurrent_attachment_writes` (ordinary database default 4).
+Raise the database write limit when a host should allow the batch default.
+
 A blob is live if a retained revision manifest references it or an unexpired
 pending upload protects it. After compact removes a manifest, GC deletes
 orphan files under an exclusive coordinator barrier. Crash during GC can leave
@@ -748,6 +753,10 @@ inside bundles, plus a 10 GiB / 15% reserve). Simple Wikipedia prepares one
 Wikimedia archive and generates 800 deterministic attachment objects locally;
 PMC and Open Images standard profiles still use many tens of gigabytes. Use `--profile
 smoke` for a tiny subset of the same code path.
+
+Torture, stress, and FTS print phase progress (10% steps plus a 30-second
+heartbeat). `--stall-timeout-ms` (default 300000) aborts a countable phase
+that stops completing work, with a diagnostic dump.
 
 Prepare and the runners do not accept `--root`. Cleanup is one named dataset
 at a time (`mix bench.data clean trec-covid`). Details, Git vs external

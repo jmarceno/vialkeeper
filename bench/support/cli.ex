@@ -21,7 +21,8 @@ defmodule VialKeeper.Bench.CLI do
   end
 
   @spec run_fts([binary()]) :: :ok
-  def run_fts(argv), do: run_benchmark(&FTS.run/1, argv, "fts", @benchmark_options)
+  def run_fts(argv),
+    do: run_benchmark(&FTS.run/1, argv, "fts", [:stall_timeout_ms | @benchmark_options])
 
   @spec run_diagnostics([binary()]) :: :ok
   def run_diagnostics(argv) do
@@ -51,11 +52,16 @@ defmodule VialKeeper.Bench.CLI do
         &Stress.run/1,
         argv,
         "stress",
-        @benchmark_options ++ [:max_concurrency, :diagnostic_ceiling_seconds]
+        @benchmark_options ++ [:max_concurrency, :diagnostic_ceiling_seconds, :stall_timeout_ms]
       )
 
   @spec run_torture([binary()]) :: :ok
-  def run_torture(argv), do: run_benchmark(&Torture.run/1, argv, "torture", @benchmark_options)
+  def run_torture(argv),
+    do:
+      run_benchmark(&Torture.run/1, argv, "torture", [
+        :limit,
+        :stall_timeout_ms | @benchmark_options
+      ])
 
   defp configure(argv) do
     {opts, positional, invalid} =
@@ -106,7 +112,7 @@ defmodule VialKeeper.Bench.CLI do
   end
 
   defp prepare(name, argv) do
-    case parse_common!(argv, [:profile]) do
+    case parse_common!(argv, [:profile, :max_concurrency]) do
       :help ->
         success(data_usage())
 
@@ -229,6 +235,12 @@ defmodule VialKeeper.Bench.CLI do
       :attachment_concurrency, acc ->
         Keyword.put(acc, :attachment_concurrency, :string)
 
+      :limit, acc ->
+        Keyword.put(acc, :limit, :integer)
+
+      :stall_timeout_ms, acc ->
+        Keyword.put(acc, :stall_timeout_ms, :integer)
+
       _, acc ->
         acc
     end)
@@ -275,7 +287,7 @@ defmodule VialKeeper.Bench.CLI do
     """
     mix bench.data configure --root /mnt/other/downloads/vialkeeper [--reuse-existing]
     mix bench.data status
-    mix bench.data prepare trec-covid|pmc|simplewiki|open-images [--profile standard|smoke]
+    mix bench.data prepare trec-covid|pmc|simplewiki|open-images [--profile standard|smoke|1k|10k] [--max-concurrency 1..16]
     mix bench.data clean trec-covid|pmc|simplewiki|open-images
     """
   end

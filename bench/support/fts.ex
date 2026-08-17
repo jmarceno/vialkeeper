@@ -8,6 +8,7 @@ defmodule VialKeeper.Bench.FTS do
     Marker,
     Metrics,
     Prepare,
+    Progress,
     Registry,
     Reports,
     Root,
@@ -53,31 +54,36 @@ defmodule VialKeeper.Bench.FTS do
          :ok <- File.mkdir_p(Path.join(work, "tmp")),
          db_path = Path.join(work, "database.sqlite3"),
          {:ok, adapter} <- Adapter.create(db_path, %{storage_mode: :disk}) do
-      try do
-        results = measure_adapter(adapter, dataset, opts)
-        {:ok, hash} = Marker.manifest_hash(dataset)
+      Progress.with_run(progress_opts(opts, context, adapter, work), fn progress ->
+        opts = Keyword.put(opts, :progress, progress)
 
-        report =
-          Reports.envelope(
-            context,
-            %{
-              "benchmark" => "fts",
-              "dataset" => spec["name"],
-              "dataset_version" => spec["version"],
-              "fixture_manifest_hash" => hash,
-              "dataset_path" => dataset,
-              "work_path" => work,
-              "warmup" => Keyword.get(opts, :warmup, 2),
-              "iterations" => Keyword.get(opts, :iterations, 5)
-            },
-            results
-          )
+        try do
+          results = measure_adapter(adapter, dataset, opts)
+          Progress.complete(progress)
+          {:ok, hash} = Marker.manifest_hash(dataset)
 
-        {:ok, report}
-      after
-        _ = Adapter.close(adapter)
-        _ = Root.remove_work_run!(context, work)
-      end
+          report =
+            Reports.envelope(
+              context,
+              %{
+                "benchmark" => "fts",
+                "dataset" => spec["name"],
+                "dataset_version" => spec["version"],
+                "fixture_manifest_hash" => hash,
+                "dataset_path" => dataset,
+                "work_path" => work,
+                "warmup" => Keyword.get(opts, :warmup, 2),
+                "iterations" => Keyword.get(opts, :iterations, 5)
+              },
+              results
+            )
+
+          {:ok, report}
+        after
+          _ = Adapter.close(adapter)
+          _ = Root.remove_work_run!(context, work)
+        end
+      end)
     else
       {:error, reason} -> {:error, format(reason)}
     end
@@ -92,8 +98,8 @@ defmodule VialKeeper.Bench.FTS do
   @spec measure_adapter(term(), Path.t(), keyword()) :: map()
   def measure_adapter(adapter, dataset, opts \\ []) do
     ingest = ingest_corpus(adapter, dataset, opts)
-    index = build_index(adapter)
-    quality = evaluate_quality(adapter, dataset)
+    index = build_index(adapter, opts)
+    quality = evaluate_quality(adapter, dataset, opts)
     latency = measure_latency(adapter, dataset, opts)
 
     %{
@@ -104,10 +110,12 @@ defmodule VialKeeper.Bench.FTS do
     }
   end
 
-  defp ingest_corpus(adapter, dataset, _opts) do
+  defp ingest_corpus(adapter, dataset, opts) do
+    progress = opts[:progress]
     {:ok, corpus} = Beir.find_file(dataset, "corpus.jsonl")
     started = System.monotonic_time(:microsecond)
     acc = %{docs: 0, bytes: 0, batch: []}
+    Progress.phase(progress, "ingest", 0)
 
     result =
       corpus
@@ -122,6 +130,7 @@ defmodule VialKeeper.Bench.FTS do
               op = %{operation: :put, document_id: id, body: body}
               bytes = byte_size(body["title"] || "") + byte_size(body["text"] || "")
               acc = %{acc | docs: acc.docs + 1, bytes: acc.bytes + bytes, batch: [op | acc.batch]}
+              Progress.tick(progress)
               flush_batch(adapter, acc, 500)
 
             {:error, _} ->
@@ -162,9 +171,11 @@ defmodule VialKeeper.Bench.FTS do
     end
   end
 
-  defp build_index(adapter) do
+  defp build_index(adapter, opts) do
+    progress = opts[:progress]
     before = Statistics.directory_bytes(Path.dirname(adapter.path))
     started = System.monotonic_time(:microsecond)
+    Progress.phase(progress, "fts_build", 1)
 
     {:ok, created} =
       Adapter.create_index(adapter, %{
@@ -172,6 +183,8 @@ defmodule VialKeeper.Bench.FTS do
         "type" => "full_text",
         "fields" => @fts_fields
       })
+
+    Progress.tick(progress)
 
     elapsed = System.monotonic_time(:microsecond) - started
     after_bytes = Statistics.directory_bytes(Path.dirname(adapter.path))
@@ -185,17 +198,20 @@ defmodule VialKeeper.Bench.FTS do
     }
   end
 
-  defp evaluate_quality(adapter, dataset) do
+  defp evaluate_quality(adapter, dataset, opts) do
+    progress = opts[:progress]
     {:ok, queries_path} = Beir.find_file(dataset, "queries.jsonl")
     {:ok, qrels_path} = Beir.find_file(dataset, "test.tsv")
     {:ok, queries} = Beir.load_queries(queries_path)
     {:ok, qrels} = Beir.load_qrels(qrels_path)
+    Progress.phase(progress, "quality", length(queries))
 
     scores =
       Enum.map(queries, fn query ->
         {:ok, qid, text} = Beir.query_text(query)
         ranked = search_ids(adapter, text, @quality_mode)
         rel = Map.get(qrels, qid, %{})
+        Progress.tick(progress)
 
         %{
           "query_id" => qid,
@@ -218,11 +234,13 @@ defmodule VialKeeper.Bench.FTS do
   end
 
   defp measure_latency(adapter, dataset, opts) do
+    progress = opts[:progress]
     {:ok, queries_path} = Beir.find_file(dataset, "queries.jsonl")
     {:ok, queries} = Beir.load_queries(queries_path)
     texts = Enum.map(queries, fn query -> elem(Beir.query_text(query), 2) end)
     warmup = Keyword.get(opts, :warmup, 2)
     iterations = Keyword.get(opts, :iterations, 5)
+    Progress.phase(progress, "latency", 1)
 
     first_pass =
       Enum.map(texts, fn text ->
@@ -231,6 +249,7 @@ defmodule VialKeeper.Bench.FTS do
       end)
 
     mode_rows = Enum.map(@modes, &latency_for_mode(adapter, texts, &1, warmup, iterations))
+    Progress.tick(progress)
 
     %{
       "first_pass" => Statistics.summarize(first_pass, 1),
@@ -290,6 +309,17 @@ defmodule VialKeeper.Bench.FTS do
       {:error, _} ->
         []
     end
+  end
+
+  defp progress_opts(opts, context, adapter, work) do
+    [
+      label: "fts",
+      stall_timeout_ms: Keyword.get(opts, :stall_timeout_ms, Progress.default_stall_timeout_ms()),
+      cleanup: fn ->
+        _ = Adapter.close(adapter)
+        _ = Root.remove_work_run!(context, work)
+      end
+    ]
   end
 
   defp format(reason) when is_binary(reason), do: reason

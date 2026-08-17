@@ -126,28 +126,23 @@ defmodule VialKeeper.Bench.PrepareTest do
   end
 
   test "prepare open-images standard from a local CSV", %{context: ctx, env: env} do
-    jpeg = <<0xFF, 0xD8, 0xFF, 0xD9>>
-    md5 = Checksums.md5_iodata(jpeg)
-    {url, _} = start_server(%{"/a.jpg" => %{body: jpeg}, "/b.jpg" => %{body: jpeg}})
-
-    csv = """
-    ImageID,Subset,OriginalURL,OriginalLandingURL,License,AuthorProfileURL,Author,Title,OriginalSize,OriginalMD5,Thumbnail300KURL,Rotation
-    img-a,train,#{url}/a.jpg,https://example.test/a,https://creativecommons.org/licenses/by/2.0/,https://example.test/u,A,Title A,#{byte_size(jpeg)},#{md5},,0
-    img-b,train,#{url}/b.jpg,https://example.test/b,https://creativecommons.org/licenses/by/2.0/,https://example.test/u,B,Title B,#{byte_size(jpeg)},#{md5},,0
-    """
-
-    path = Path.join(unique_dir("csv"), "info.csv")
-    File.write!(path, csv)
-
-    assert {:ok, result} =
-             Prepare.prepare(
-               "open-images",
-               env ++ [profile: :standard, info_csv: path]
-             )
-
+    assert {:ok, result} = prepare_open_images_csv(env, :standard)
     assert result["state"] == "ready"
     assert Root.descendant?(result["path"], ctx.root)
     assert File.regular?(Path.join([result["path"], "objects", "img-a.jpg"]))
+  end
+
+  test "open-images 1k preflight is smaller than the 100k budget", %{env: env} do
+    twenty = 20 * 1024 * 1024 * 1024
+    tight = Keyword.put(env, :available_bytes_fun, fn _ -> {:ok, twenty} end)
+
+    assert {:error, message} =
+             Prepare.prepare("open-images", Keyword.put(tight, :profile, :standard))
+
+    assert message =~ "insufficient free space"
+
+    assert {:ok, result} = prepare_open_images_csv(tight, :k1)
+    assert result["state"] == "ready"
   end
 
   test "CLI --help does not continue into status" do
@@ -175,6 +170,22 @@ defmodule VialKeeper.Bench.PrepareTest do
       repo_root: repo,
       available_bytes_fun: fn _ -> {:ok, 1_000_000_000_000} end
     ]
+  end
+
+  defp prepare_open_images_csv(env, profile) do
+    jpeg = <<0xFF, 0xD8, 0xFF, 0xD9>>
+    md5 = Checksums.md5_iodata(jpeg)
+    {url, _} = start_server(%{"/a.jpg" => %{body: jpeg}, "/b.jpg" => %{body: jpeg}})
+
+    csv = """
+    ImageID,Subset,OriginalURL,OriginalLandingURL,License,AuthorProfileURL,Author,Title,OriginalSize,OriginalMD5,Thumbnail300KURL,Rotation
+    img-a,train,#{url}/a.jpg,https://example.test/a,https://creativecommons.org/licenses/by/2.0/,https://example.test/u,A,Title A,#{byte_size(jpeg)},#{md5},,0
+    img-b,train,#{url}/b.jpg,https://example.test/b,https://creativecommons.org/licenses/by/2.0/,https://example.test/u,B,Title B,#{byte_size(jpeg)},#{md5},,0
+    """
+
+    path = Path.join(unique_dir("csv"), "info.csv")
+    File.write!(path, csv)
+    Prepare.prepare("open-images", env ++ [profile: profile, info_csv: path])
   end
 
   test "status reports missing datasets before prepare", %{env: env, context: ctx} do
