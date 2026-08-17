@@ -42,7 +42,7 @@ defmodule VialKeeper.Bench.Torture do
   Restricts a prepared Open Images manifest to the requested torture subset.
 
   `--limit N` wins. Otherwise `--profile smoke|1k|10k` takes that many images
-  from the fixture. `standard` uses the whole prepared manifest.
+  from the fixture. `standard` uses the prepared standard subset (400 JPEGs).
   """
   @spec select_images(map(), keyword()) :: {:ok, [map()]} | {:error, binary()}
   def select_images(manifest, opts) when is_map(manifest) and is_list(opts) do

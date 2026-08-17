@@ -8,12 +8,10 @@ defmodule VialKeeper.Bench.SimpleWiki do
   """
 
   alias VialKeeper.AtomicWrite
-  alias VialKeeper.Bench.{Checksums, Root}
+  alias VialKeeper.Bench.{Checksums, Registry, Root}
 
   @page_start "<page>"
   @page_end "</page>"
-  @standard_count 2_000
-  @smoke_count 3
   @standard_attachment_count 800
   @smoke_attachment_stride 5
   @small_attachment_count 640
@@ -67,8 +65,8 @@ defmodule VialKeeper.Bench.SimpleWiki do
   end
 
   @spec count_for(atom()) :: pos_integer()
-  def count_for(:standard), do: @standard_count
-  def count_for(:smoke), do: @smoke_count
+  def count_for(profile) when profile in [:standard, :smoke],
+    do: Registry.selection_count("simplewiki", profile)
 
   @doc "Returns the deterministic query workload algorithm version."
   @spec query_workload_version() :: binary()

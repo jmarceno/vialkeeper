@@ -69,22 +69,61 @@ defmodule VialKeeper.Bench.Prepare do
 
   defp prepare_dataset(context, spec, profile, opts) do
     with {:ok, dest} <- Root.dataset_path(context, spec["name"], spec["version"]) do
-      expected_profile = Atom.to_string(profile)
+      reuse_or_prepare_fixture(context, spec, profile, dest, opts)
+    end
+  end
 
-      case Marker.read(dest) do
-        {:ok, %{"profile" => ready_profile}}
-        when ready_profile == expected_profile ->
-          ready_prepared_dataset(context, spec, dest)
+  defp reuse_or_prepare_fixture(context, spec, profile, dest, opts) do
+    case Marker.read(dest) do
+      {:ok, marker} ->
+        reuse_or_replace_fixture(context, spec, profile, dest, marker, opts)
 
-        {:ok, _marker} ->
-          replace_dataset(context, spec, profile, opts)
+      {:error, :missing} ->
+        do_prepare_dataset(context, spec, profile, opts)
 
-        {:error, :missing} ->
-          do_prepare_dataset(context, spec, profile, opts)
+      {:error, _reason} ->
+        do_prepare_dataset(context, spec, profile, opts)
+    end
+  end
 
-        {:error, _reason} ->
-          do_prepare_dataset(context, spec, profile, opts)
+  defp reuse_or_replace_fixture(context, spec, profile, dest, marker, opts) do
+    if current_fixture?(spec, profile, dest, marker) do
+      ready_prepared_dataset(context, spec, dest)
+    else
+      replace_dataset(context, spec, profile, opts)
+    end
+  end
+
+  defp current_fixture?(spec, profile, dest, marker) do
+    marker["profile"] == Atom.to_string(profile) and
+      current_selection?(spec["name"], profile, dest, marker)
+  end
+
+  defp current_selection?("trec-covid", _profile, _dest, _marker), do: true
+
+  defp current_selection?(name, profile, dest, marker) do
+    wanted = Registry.selection_count(name, profile)
+
+    case marker["selection_count"] do
+      ^wanted -> true
+      count when is_integer(count) -> false
+      _ -> manifest_selection_count(dest) == wanted
+    end
+  end
+
+  defp manifest_selection_count(dest) do
+    path = Path.join(dest, "manifest.json")
+
+    with {:ok, body} <- File.read(path),
+         {:ok, manifest} when is_map(manifest) <- JSON.decode(body) do
+      cond do
+        is_integer(manifest["selection_count"]) -> manifest["selection_count"]
+        is_list(manifest["articles"]) -> length(manifest["articles"])
+        is_list(manifest["images"]) -> length(manifest["images"])
+        true -> :unknown
       end
+    else
+      _ -> :unknown
     end
   end
 
@@ -138,7 +177,8 @@ defmodule VialKeeper.Bench.Prepare do
            Marker.write(context, staging, %{
              "dataset" => spec["name"],
              "version" => spec["version"],
-             "profile" => "standard"
+             "profile" => "standard",
+             "selection_count" => Registry.selection_count(spec["name"], :standard)
            }),
          :ok <- Downloader.promote_dir(context, staging, dest) do
       {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
@@ -168,7 +208,8 @@ defmodule VialKeeper.Bench.Prepare do
            Marker.write(context, staging, %{
              "dataset" => spec["name"],
              "version" => spec["version"],
-             "profile" => Atom.to_string(profile)
+             "profile" => Atom.to_string(profile),
+             "selection_count" => Registry.selection_count(spec["name"], profile)
            }),
          :ok <- Downloader.promote_dir(context, staging, dest) do
       {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
@@ -237,7 +278,8 @@ defmodule VialKeeper.Bench.Prepare do
              Marker.write(context, staging, %{
                "dataset" => spec["name"],
                "version" => spec["version"],
-               "profile" => Atom.to_string(profile)
+               "profile" => Atom.to_string(profile),
+               "selection_count" => Registry.selection_count(spec["name"], profile)
              }),
            :ok <- Downloader.promote_dir(context, staging, dest) do
         Progress.complete(progress)

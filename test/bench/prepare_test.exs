@@ -148,7 +148,7 @@ defmodule VialKeeper.Bench.PrepareTest do
     assert :atomics.get(hits, 1) >= 1
   end
 
-  test "open-images standard preflight uses the 40-image budget", %{env: env} do
+  test "open-images standard preflight uses the 400-image budget", %{env: env} do
     tight = Keyword.put(env, :available_bytes_fun, fn _ -> {:ok, 1} end)
 
     assert {:error, message} =
@@ -160,6 +160,34 @@ defmodule VialKeeper.Bench.PrepareTest do
     roomy = Keyword.put(env, :available_bytes_fun, fn _ -> {:ok, gig} end)
     assert {:ok, result} = prepare_open_images_csv(roomy, :standard)
     assert result["state"] == "ready"
+  end
+
+  test "prepare replaces a standard fixture whose selection_count is stale", %{
+    context: ctx,
+    env: env
+  } do
+    hits = :atomics.new(1, signed: false)
+
+    download = fn context, object, opts ->
+      :atomics.add_get(hits, 1, 1)
+      Downloader.download(context, object, opts)
+    end
+
+    env = Keyword.put(env, :download, download)
+    assert {:ok, result} = prepare_open_images_csv(env, :standard)
+    first = :atomics.get(hits, 1)
+    assert first >= 1
+
+    assert :ok =
+             Marker.write(ctx, result["path"], %{
+               "dataset" => "open-images",
+               "version" => "v7-100k-v1",
+               "profile" => "standard",
+               "selection_count" => 1
+             })
+
+    assert {:ok, _} = prepare_open_images_csv(env, :standard)
+    assert :atomics.get(hits, 1) > first
   end
 
   test "CLI --help does not continue into status" do

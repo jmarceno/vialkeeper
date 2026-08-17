@@ -28,14 +28,14 @@ defmodule VialKeeper.Bench.Stress do
   alias VialKeeper.Runtime.DatabaseCatalog
 
   @index_name "simplewiki-text"
-  @search_concurrencies [1]
-  @mixed_concurrencies [4]
+  @search_concurrencies [1, 4]
+  @mixed_concurrencies [4, 16]
   @query_algorithm "simplewiki-query-v2"
   @bulk_batch_size 500
   @attachment_batch_size 500
-  @single_document_count 40
-  @scaling_checkpoints [100, 500, 2_000]
-  @max_physical_attachments 40
+  @single_document_count 100
+  @scaling_checkpoints [100, 500, 2_000, 20_000]
+  @max_physical_attachments 800
   @search_batch_event [:vial_keeper, :search, :rebuild, :batch]
 
   @type progress_callback :: (non_neg_integer(), non_neg_integer(), non_neg_integer() -> :ok)
@@ -405,7 +405,6 @@ defmodule VialKeeper.Bench.Stress do
               Statistics.file_size(Path.join(Path.dirname(text_path), name))
         }
       end)
-      |> Enum.reject(&(&1.category == "16_mib"))
 
     %{
       id: id,

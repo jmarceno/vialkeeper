@@ -22,7 +22,7 @@ defmodule VialKeeper.Bench.FTS do
   @fts_fields ["/title", "/text"]
   @quality_mode "all"
   @modes ["all", "prefix"]
-  @concurrencies [1]
+  @concurrencies [1, 4]
   @retrieve_at 100
 
   @spec run(keyword()) :: {:ok, map()} | {:error, binary()}

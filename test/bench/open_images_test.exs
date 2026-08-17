@@ -70,7 +70,7 @@ defmodule VialKeeper.Bench.OpenImagesTest do
     assert image["md5"] == Checksums.md5_iodata(@jpeg)
   end
 
-  test "open-images scaling profiles default to 40 images" do
+  test "open-images scaling profiles default to 400 images" do
     assert Registry.profile("1k") == {:ok, :k1}
     assert Registry.profile("10k") == {:ok, :k10}
     assert Registry.ensure_profile("open-images", :k1) == :ok
@@ -81,9 +81,10 @@ defmodule VialKeeper.Bench.OpenImagesTest do
     assert Registry.selection_count("open-images", :smoke) == 1
     assert Registry.selection_count("open-images", :k1) == 1_000
     assert Registry.selection_count("open-images", :k10) == 10_000
-    assert Registry.selection_count("open-images", :standard) == 40
-    assert Registry.selection_count("trec-covid", :standard) == 4_000
-    assert Registry.selection_count("simplewiki", :standard) == 2_000
+    assert Registry.selection_count("open-images", :standard) == 400
+    assert Registry.selection_count("trec-covid", :standard) == 20_000
+    assert Registry.selection_count("simplewiki", :standard) == 20_000
+    assert Registry.selection_count("pmc", :standard) == 400
   end
 
   test "generate_from_info_csv selects a stable subset" do

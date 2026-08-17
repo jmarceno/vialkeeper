@@ -21,16 +21,15 @@ There are two families:
 
 These Mix aliases always run with `--no-start` in `MIX_ENV=test`:
 
-| Alias | Measures | Standard scale (15-minute suite) |
+| Alias | Measures | Standard scale (bottleneck-finding suite) |
 | --- | --- | --- |
-| `mix bench.fts` | TREC-COVID / BEIR full-text ingest, index build, nDCG/recall/MAP, first-pass and `all`/`prefix` latency at concurrency 1 | 4,000 documents, 50 official queries |
-| `mix bench.stress` | Simple Wikipedia catalog-path ingest, FTS, attachment reads, mixed load | 2,000 articles, 40 single-doc puts, ≤40 attachments (no 16 MiB objects) |
-| `mix bench.torture` | Open Images attachment ingest, concurrent read/write, dedup, delete/GC, mixed torture | 40 JPEGs, write/read concurrency 1 and 4 |
+| `mix bench.fts` | TREC-COVID / BEIR full-text ingest, index build, nDCG/recall/MAP, first-pass and `all`/`prefix` latency at concurrency 1 and 4 | 20,000 documents, 50 official queries |
+| `mix bench.stress` | Simple Wikipedia catalog-path ingest, FTS, attachment reads, mixed load | 20,000 articles, 100 single-doc puts, up to 800 attachments including 16 MiB objects |
+| `mix bench.torture` | Open Images attachment ingest, concurrent read/write, dedup, delete/GC, mixed torture | 400 JPEGs, write/read concurrency 1 and 4 |
 
-The three `standard` runners together must finish in **15 minutes** on the
-spinning-disk benchmark root. `--profile smoke` is a tiny correctness path.
-Open Images `--profile 1k` and `--profile 10k` remain optional large runs; they
-are outside the 15-minute budget and are not part of the default plan.
+`--profile smoke` is a tiny correctness path. Open Images `--profile 1k` and
+`--profile 10k`, full 171K TREC, and PMC 100K remain optional large runs; they
+can take hours on spinning disk and are not the default.
 
 Dataset-backed Mix runners raise host limits for the process, including
 `max_search_rebuild_ms` (one hour) so a larger optional `create_index` is not
@@ -62,7 +61,7 @@ Use this runner to compare:
 - direct Tantivy indexing versus the VialKeeper search wrapper
 
 Single-write latency is the interactive catalog path (one COMMIT per
-document). Bulk ingest is the 2,000-article path: batches of 500 documents share one
+document). Bulk ingest is the 20,000-article path: batches of 500 documents share one
 storage transaction and one search flush. Do not treat put p50 as the ingest
 rate.
 
@@ -81,21 +80,21 @@ checkpoint, not a resume of the previous database.
 
 Standard phases, in order:
 
-1. `single_document_ingest` — 40 `Documents.put` samples (interactive latency)
+1. `single_document_ingest` — 100 `Documents.put` samples (interactive latency)
 2. `bulk_document_ingest` — remaining articles in batches of 500, with a scaling ladder
-3. `attachment_physical_ingest` — at most 40 locally generated blobs (16 MiB objects are dropped) at bounded batch concurrency (default 16, capped by the database write limit)
+3. `attachment_physical_ingest` — up to 800 locally generated blobs, including 16 MiB objects, at bounded batch concurrency (default 16, capped by the database write limit)
 4. `attachment_reference_mutation` — one bulk write attaching those blobs
 5. `fts_build` — one full-text `create_index` using `max_search_rebuild_ms`
-6. `fts_search` — precomputed `queries.json` (`simplewiki-query-v2`)
+6. `fts_search` — precomputed `queries.json` (`simplewiki-query-v2`) at concurrency 1 and 4
 7. `attachment_read`
-8. `mixed`
+8. `mixed` — concurrency 4 and 16
 
-The 2,000-article seed does not call `Documents.put` once per article.
+The 20,000-article seed does not call `Documents.put` once per article.
 
 ### Open Images default
 
-Default torture is 40 JPEGs. Optional `--profile 1k` / `--profile 10k` are
-outside the 15-minute suite.
+Default torture is 400 JPEGs. Optional `--profile 1k` / `--profile 10k` are
+hour-scale ladders, not the default.
 
 ```sh
 mix bench.data prepare open-images
@@ -104,7 +103,7 @@ mix bench.torture
 
 Open Images JPEG bytes come from the CVDF train bucket, not Flickr originals.
 Prepare takes the first CSV rows (not a full-file rank), over-selects 12×, and
-stops once 40 images are on disk. Missing objects (HTTP 404/410) are skipped
+stops once 400 images are on disk. Missing objects (HTTP 404/410) are skipped
 without retry.
 
 The torture work database raises attachment write/read limits to the measured
@@ -156,16 +155,16 @@ mix bench.data configure --root /mnt/other/downloads/vialkeeper --reuse-existing
 mix bench.data status
 
 mix bench.data prepare trec-covid     # optional: prepare separately
-mix bench.data prepare pmc                 # standard 100K; first use freezes an inventory snapshot
+mix bench.data prepare pmc                 # standard 400 articles; first use freezes an inventory snapshot
 mix bench.data prepare pmc --profile smoke
-mix bench.data prepare simplewiki          # archive + local articles; standard run uses 2,000
+mix bench.data prepare simplewiki          # archive + local articles; standard run uses 20,000
 mix bench.data prepare simplewiki --profile smoke
-mix bench.data prepare open-images         # 40 JPEGs
+mix bench.data prepare open-images         # 400 JPEGs
 
-mix bench.fts                              # 4,000 TREC-COVID documents
-mix bench.stress                           # 2,000 Simple Wikipedia articles
+mix bench.fts                              # 20,000 TREC-COVID documents
+mix bench.stress                           # 20,000 Simple Wikipedia articles
 mix bench.stress --profile smoke
-mix bench.torture                          # 40 Open Images JPEGs
+mix bench.torture                          # 400 Open Images JPEGs
 mix bench.diagnostics
 
 mix bench.data clean trec-covid
@@ -179,7 +178,9 @@ and the runners read the pointer. Cleanup removes one named dataset directory
 under `datasets/`; there is no `clean all`, and the tools never `rm -rf` the
 benchmark root.
 
-Re-running `prepare` on a READY fixture is a no-op. Interrupted downloads stay
+Re-running `prepare` on a READY fixture is a no-op when the recorded profile
+and `selection_count` still match. A stale count (for example an older 40-JPEG
+or 2,000-article fixture) is deleted and rebuilt.
 as `.part` files in `staging/` or `cache/` until that object is completed.
 
 ### What Git contains vs what is downloaded
