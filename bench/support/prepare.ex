@@ -15,6 +15,7 @@ defmodule VialKeeper.Bench.Prepare do
     OpenImages,
     Pmc,
     PmcInventory,
+    Progress,
     Registry,
     Root,
     SimpleWiki,
@@ -221,23 +222,28 @@ defmodule VialKeeper.Bench.Prepare do
   defp prepare_object_dataset(context, spec, profile, opts) do
     unique = unique_id()
 
-    with {:ok, staging} <- Root.staging_path(context, spec["name"], unique),
-         {:ok, dest} <- Root.dataset_path(context, spec["name"], spec["version"]),
-         :ok <- File.mkdir_p(Path.join(staging, "objects")),
-         {:ok, manifest} <- resolve_manifest(context, spec, profile, opts),
-         :ok <- write_external_manifest(context, staging, manifest),
-         :ok <- download_objects(context, spec, staging, manifest, opts),
-         {:ok, manifest} <- finalize_object_manifest(spec, profile, staging, manifest),
-         :ok <- write_external_manifest(context, staging, manifest),
-         :ok <-
-           Marker.write(context, staging, %{
-             "dataset" => spec["name"],
-             "version" => spec["version"],
-             "profile" => Atom.to_string(profile)
-           }),
-         :ok <- Downloader.promote_dir(context, staging, dest) do
-      {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
-    end
+    Progress.with_run(prepare_progress_opts(opts), fn progress ->
+      opts = Keyword.put(opts, :progress, progress)
+
+      with {:ok, staging} <- Root.staging_path(context, spec["name"], unique),
+           {:ok, dest} <- Root.dataset_path(context, spec["name"], spec["version"]),
+           :ok <- File.mkdir_p(Path.join(staging, "objects")),
+           {:ok, manifest} <- resolve_manifest(context, spec, profile, opts),
+           :ok <- write_external_manifest(context, staging, manifest),
+           :ok <- download_objects(context, spec, staging, manifest, opts),
+           {:ok, manifest} <- finalize_object_manifest(spec, profile, staging, manifest),
+           :ok <- write_external_manifest(context, staging, manifest),
+           :ok <-
+             Marker.write(context, staging, %{
+               "dataset" => spec["name"],
+               "version" => spec["version"],
+               "profile" => Atom.to_string(profile)
+             }),
+           :ok <- Downloader.promote_dir(context, staging, dest) do
+        Progress.complete(progress)
+        {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
+      end
+    end)
   end
 
   defp resolve_manifest(context, %{"name" => "pmc"} = spec, :smoke, opts) do
@@ -363,6 +369,14 @@ defmodule VialKeeper.Bench.Prepare do
 
   defp object_download_opts(_spec, opts), do: opts
 
+  defp prepare_progress_opts(opts) do
+    [
+      label: "prepare",
+      stall_timeout_ms: Keyword.get(opts, :stall_timeout_ms, Progress.default_stall_timeout_ms()),
+      printer: Keyword.get(opts, :progress_printer)
+    ]
+  end
+
   defp download_concurrency(opts) do
     value = Keyword.get(opts, :max_concurrency, 4)
 
@@ -397,6 +411,9 @@ defmodule VialKeeper.Bench.Prepare do
   end
 
   defp download_object_batches(context, spec, staging, objects, download, concurrency, opts) do
+    wanted = opts[:object_limit] || length(objects)
+    Progress.phase(opts[:progress], "download_objects", wanted)
+
     with :ok <- Downloader.ensure_started() do
       objects
       |> Enum.chunk_every(64)
@@ -426,20 +443,23 @@ defmodule VialKeeper.Bench.Prepare do
       timeout: :infinity,
       ordered: false
     )
-    |> Enum.reduce_while(:ok, &join_download_task(&1, &2, skip_missing?))
+    |> Enum.reduce_while(:ok, &join_download_task(&1, &2, skip_missing?, opts[:progress]))
     |> continue_download()
   end
 
-  defp join_download_task({:ok, :ok}, :ok, _skip_missing?), do: {:cont, :ok}
+  defp join_download_task({:ok, :ok}, :ok, _skip_missing?, progress) do
+    Progress.tick(progress)
+    {:cont, :ok}
+  end
 
-  defp join_download_task({:ok, {:error, reason}}, :ok, true) do
+  defp join_download_task({:ok, {:error, reason}}, :ok, true, _progress) do
     if skippable_object_error?(reason), do: {:cont, :ok}, else: {:halt, {:error, reason}}
   end
 
-  defp join_download_task({:ok, {:error, reason}}, :ok, _skip_missing?),
+  defp join_download_task({:ok, {:error, reason}}, :ok, _skip_missing?, _progress),
     do: {:halt, {:error, reason}}
 
-  defp join_download_task({:exit, reason}, :ok, _skip_missing?),
+  defp join_download_task({:exit, reason}, :ok, _skip_missing?, _progress),
     do: {:halt, {:error, "download task crashed: #{inspect(reason)}"}}
 
   defp skippable_object_error?(reason) do

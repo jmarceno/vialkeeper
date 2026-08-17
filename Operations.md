@@ -754,9 +754,9 @@ Wikimedia archive and generates 800 deterministic attachment objects locally;
 PMC and Open Images standard profiles still use many tens of gigabytes. Use `--profile
 smoke` for a tiny subset of the same code path.
 
-Torture, stress, and FTS print phase progress (10% steps plus a 30-second
-heartbeat). `--stall-timeout-ms` (default 300000) aborts a countable phase
-that stops completing work, with a diagnostic dump.
+Torture, stress, FTS, and dataset prepare print phase progress (10% steps plus
+a 30-second heartbeat). `--stall-timeout-ms` (default 300000) aborts a
+countable phase that stops completing work, with a diagnostic dump.
 
 Prepare and the runners do not accept `--root`. Cleanup is one named dataset
 at a time (`mix bench.data clean trec-covid`). Details, Git vs external

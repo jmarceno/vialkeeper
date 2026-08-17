@@ -132,6 +132,22 @@ defmodule VialKeeper.Bench.PrepareTest do
     assert File.regular?(Path.join([result["path"], "objects", "img-a.jpg"]))
   end
 
+  test "open-images prepare ticks the download progress watchdog", %{env: env} do
+    hits = :atomics.new(1, signed: false)
+
+    printer = fn _level, message ->
+      if String.contains?(message, "download_objects") do
+        :atomics.add_get(hits, 1, 1)
+      end
+    end
+
+    assert {:ok, result} =
+             prepare_open_images_csv(Keyword.put(env, :progress_printer, printer), :standard)
+
+    assert result["state"] == "ready"
+    assert :atomics.get(hits, 1) >= 1
+  end
+
   test "open-images 1k preflight is smaller than the 100k budget", %{env: env} do
     twenty = 20 * 1024 * 1024 * 1024
     tight = Keyword.put(env, :available_bytes_fun, fn _ -> {:ok, twenty} end)

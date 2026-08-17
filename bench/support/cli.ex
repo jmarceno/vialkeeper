@@ -112,7 +112,7 @@ defmodule VialKeeper.Bench.CLI do
   end
 
   defp prepare(name, argv) do
-    case parse_common!(argv, [:profile, :max_concurrency]) do
+    case parse_common!(argv, [:profile, :max_concurrency, :stall_timeout_ms]) do
       :help ->
         success(data_usage())
 

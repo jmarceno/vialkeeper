@@ -122,11 +122,12 @@ still default to 4 concurrent attachment writes.
 
 `--output` must resolve under `<bench-root>/reports/`.
 
-Torture, stress, and FTS start a progress watchdog for the whole run. It prints
-at phase start/end, every 10% (5% on phases smaller than 20 units), and a
-heartbeat at least every 30 seconds. `--stall-timeout-ms` (default 300000)
-kills a countable phase that has not completed a unit of work in that window,
-prints phase/processed/rate/rss diagnostics, and closes the work database.
+Torture, stress, FTS, and `mix bench.data prepare` start a progress watchdog
+for the whole run. It prints at phase start/end, every 10% (5% on phases
+smaller than 20 units), and a heartbeat at least every 30 seconds.
+`--stall-timeout-ms` (default 300000) kills a countable phase that has not
+completed a unit of work in that window, prints phase/processed/rate/rss
+diagnostics, and for torture/stress/FTS closes the work database.
 `--stall-timeout-ms 0` disables the kill.
 
 ### Why the data root is mandatory
