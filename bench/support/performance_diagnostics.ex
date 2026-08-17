@@ -1013,7 +1013,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
 
     try do
       %{
-        "disk_expected" => %{"journal_mode" => "wal", "synchronous" => "full"},
+        "disk_expected" => %{"journal_mode" => "wal", "synchronous" => "normal"},
         "memory_observed" => connection_pragmas(adapter.conn),
         "busy_timeout_ms" => 0
       }

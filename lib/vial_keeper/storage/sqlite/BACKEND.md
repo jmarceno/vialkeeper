@@ -50,10 +50,16 @@ recovery finishes. Reopening a crashed bundle replays the WAL automatically.
 ## Open WAL and snapshot readers
 
 While a disk database is open, the writer connection uses WAL and
-`synchronous=FULL`. Classified product reads open additional readonly
+`synchronous=NORMAL`. Classified product reads open additional readonly
 connections (`query_only`) against the same artifact; each logical read holds
 one deferred snapshot. Memory SQLite and the in-process memory backend do not
 open extra connections.
+
+`synchronous=NORMAL` keeps the WAL consistent on application crash and fsyncs
+it at checkpoints (close and auto-checkpoint); a power/OS failure can lose the
+last committed transactions, which SQLite replays or discards on reopen. This
+is an explicit durability trade-off: `FULL` added one WAL fsync per commit and
+capped write throughput at disk fsync latency.
 
 Close order is drain in-flight snapshots, close readers, checkpoint the writer
 (`wal_checkpoint(TRUNCATE)`), close the writer, then remove empty `-wal`/`-shm`

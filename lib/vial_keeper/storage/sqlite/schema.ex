@@ -665,7 +665,11 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   defp journal_mode_sql(:disk), do: "PRAGMA journal_mode = WAL"
   defp journal_mode_sql(:memory), do: "PRAGMA journal_mode = MEMORY"
 
-  defp synchronous_sql(:disk), do: "PRAGMA synchronous = FULL"
+  # WAL NORMAL keeps every acknowledged transaction consistent on app crash
+  # and fsyncs the WAL at checkpoints; the last transactions can be lost on
+  # OS/power failure. FULL added one WAL fsync per commit, which caps write
+  # throughput at disk fsync latency.
+  defp synchronous_sql(:disk), do: "PRAGMA synchronous = NORMAL"
   defp synchronous_sql(:memory), do: "PRAGMA synchronous = NORMAL"
 
   # 64 MiB page cache. Negative values are KiB, independent of page size.
@@ -674,7 +678,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   defp temp_store_sql, do: "PRAGMA temp_store = MEMORY"
 
   defp valid_storage_pragmas?(:disk, journal_mode, synchronous, locking_mode, trusted_schema) do
-    String.downcase(to_string(journal_mode)) == "wal" and synchronous in [2, "2"] and
+    String.downcase(to_string(journal_mode)) == "wal" and synchronous in [1, "1"] and
       String.downcase(to_string(locking_mode)) == "normal" and trusted_schema in [0, "0"]
   end
 
