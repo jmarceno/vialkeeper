@@ -29,7 +29,7 @@ defmodule VialKeeper.Search.Tantivy do
   def create(path, definition) when is_binary(path) and is_map(definition) do
     with :ok <- File.mkdir_p(path),
          schema <- schema(),
-         {:ok, index} <- TantivyEx.Index.create_in_dir(path, schema),
+         {:ok, index} <- TantivyEx.Index.create_in_dir_nosync(path, schema),
          {:ok, writer} <- TantivyEx.IndexWriter.new(index, writer_memory_bytes()) do
       {:ok,
        %{
@@ -52,7 +52,7 @@ defmodule VialKeeper.Search.Tantivy do
   @spec open(binary(), map()) :: {:ok, handle()} | {:error, term()}
   def open(path, definition) when is_binary(path) and is_map(definition) do
     with schema <- schema(),
-         {:ok, index} <- TantivyEx.Index.open(path),
+         {:ok, index} <- TantivyEx.Index.open_nosync(path),
          {:ok, writer} <- TantivyEx.IndexWriter.new(index, writer_memory_bytes()),
          {:ok, searcher} <- TantivyEx.Searcher.new(index) do
       {:ok,
@@ -73,8 +73,28 @@ defmodule VialKeeper.Search.Tantivy do
       {:error, error("Tantivy index open failed", exception)}
   end
 
+  @doc """
+  Durable commit: flushes the writer, fsyncs every index file and the
+  directory, then builds a fresh searcher. Used at rebuild completion and
+  other explicit durability points.
+  """
   @spec commit(handle()) :: {:ok, handle()} | {:error, term()}
-  def commit(%{index: index, writer: writer} = handle) do
+  def commit(%{index: index, writer: writer, path: path} = handle) do
+    with :ok <- checked(:commit, fn -> TantivyEx.IndexWriter.commit(writer) end),
+         :ok <- checked(:sync, fn -> TantivyEx.Index.sync_all(path) end),
+         {:ok, searcher} <- TantivyEx.Searcher.new(index) do
+      {:ok, %{handle | searcher: searcher}}
+    end
+  end
+
+  @doc """
+  Fast publish: flushes the writer and builds a fresh searcher without
+  fsyncing. The index is a rebuildable cache — SQLite is authoritative — so
+  refresh publishes skip fsync; durability is restored by `commit/1` at
+  rebuild completion and by the manifest write.
+  """
+  @spec publish(handle()) :: {:ok, handle()} | {:error, term()}
+  def publish(%{index: index, writer: writer} = handle) do
     with :ok <- checked(:commit, fn -> TantivyEx.IndexWriter.commit(writer) end),
          {:ok, searcher} <- TantivyEx.Searcher.new(index) do
       {:ok, %{handle | searcher: searcher}}

@@ -28,3 +28,9 @@ erl_crash.dump
 ### Elixir Patch ###
 
 plans/
+
+# Vendored tantivy_ex build artifacts (target symlinked to spinning disk)
+/native/tantivy_ex/_build
+/native/tantivy_ex/deps
+/native/tantivy_ex/priv/native
+/native/tantivy_ex/native/tantivy_ex/target

@@ -1,0 +1,45 @@
+# The directory Mix will write compiled artifacts to.
+/_build/
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# The directory Mix downloads your dependencies sources to.
+/deps/
+
+# Where third-party dependencies like ExDoc output generated docs.
+/doc/
+
+# If the VM crashes, it generates a dump, let's ignore it too.
+erl_crash.dump
+
+# Also ignore archive artifacts (built via "mix archive.build").
+*.ez
+
+# Ignore package tarball (built via "mix hex.build").
+tantivy_ex-*.tar
+
+# Ignore log files
+/log/
+
+# Ignore test result files
+/test/result_files/*
+
+# Temporary files, for example, from tests.
+/tmp/
+
+# Ignore Rust native libraries
+/priv/native/*
+
+# Ignore the Rust build directory
+/native/tantivy_ex/target
+
+# MacOS Finder directory attributes
+.DS_Store
+
+# Examples
+
+examples/giggle/priv/giggle
+examples/giggle/priv/crawled_content
+examples/giggle/priv/search_index*
+examples/giggle/dets_simple_storage

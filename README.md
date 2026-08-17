@@ -275,8 +275,9 @@ Matching uses Tantivy's native inverted index, not a SQLite FTS table or an
 Elixir tokenization layer. A rebuild writes a fresh generation under the
 bundle `tmp/search/indexes/` directory and publishes it only after commit;
 the previous generation remains searchable while the rebuild is in progress.
-Winner changes are applied as bounded Tantivy writer updates and committed
-incrementally.
+Winner changes are applied as bounded Tantivy writer updates and published
+without fsync (cache-level durability); the index is rebuildable from SQLite.
+Rebuild completion performs a durable commit with explicit sync.
 
 ```typescript
 await postJson(`/v1/databases/${uuid}/indexes`, {

@@ -337,7 +337,7 @@ defmodule VialKeeper.Search.Owner do
   defp refresh_one(state, index_id, entry, handle, updates) do
     case apply_updates(handle, updates) do
       {:ok, updated} ->
-        case Tantivy.commit(updated) do
+        case Tantivy.publish(updated) do
           {:ok, committed} ->
             {:cont, {:ok, put_in(state.indexes[index_id], %{entry | handle: committed})}}
 

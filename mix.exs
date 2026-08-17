@@ -65,7 +65,9 @@ defmodule VialKeeper.MixProject do
       # the strict binary64 overflow and underflow checks at the Elixir boundary.
       {:rustyjson, "0.3.13"},
       # Tantivy owns full-text analysis, indexing, ranking, and persistence.
-      {:tantivy_ex, "0.4.1"},
+      # Vendored fork adds a no-sync directory mode so search cache publishes
+      # can skip fsyncs while durability points stay explicit.
+      {:tantivy_ex, path: "native/tantivy_ex"},
       {:decimal, "3.1.1"},
       {:plug, "1.20.3"},
       {:bandit, "1.12.4"},
