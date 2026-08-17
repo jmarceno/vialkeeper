@@ -25,9 +25,19 @@ defmodule VialKeeper.Storage.SQLite.ChangeLog do
          winner <- MapAccess.get(entry, :winner),
          leaf_json when is_binary(leaf_json) <- MapAccess.get(entry, :leaf_json),
          origin when is_binary(origin) <- MapAccess.get(entry, :origin, "local"),
-         doc_key <- MapAccess.get(entry, :backend_meta) |> meta_doc_key() do
+         doc_key <- MapAccess.get(entry, :backend_meta) |> meta_doc_key(),
+         leaves <- MapAccess.get(entry, :leaves) do
       Errors.wrap(
-        Changes.insert(adapter.conn, sequence, doc_key, document_id, winner, leaf_json, origin)
+        Changes.insert(
+          adapter.conn,
+          sequence,
+          doc_key,
+          document_id,
+          winner,
+          leaf_json,
+          origin,
+          leaves
+        )
       )
     else
       {:error, reason} ->
@@ -128,8 +138,9 @@ defmodule VialKeeper.Storage.SQLite.ChangeLog do
          winner <- MapAccess.get(entry, :winner),
          leaf_json when is_binary(leaf_json) <- MapAccess.get(entry, :leaf_json),
          origin when is_binary(origin) <- MapAccess.get(entry, :origin, "local"),
-         doc_key <- MapAccess.get(entry, :backend_meta) |> meta_doc_key() do
-      {:ok, {sequence, doc_key, document_id, winner, leaf_json, origin}}
+         doc_key <- MapAccess.get(entry, :backend_meta) |> meta_doc_key(),
+         leaves <- MapAccess.get(entry, :leaves) do
+      {:ok, {sequence, doc_key, document_id, winner, leaf_json, origin, leaves}}
     else
       _ -> {:error, VialKeeper.Error.invalid_request("change log entry fields are invalid")}
     end

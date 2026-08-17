@@ -177,6 +177,50 @@ defmodule VialKeeper.Storage.SQLite.Documents do
   end
 
   @doc """
+  Inserts many new document rows with first winning revisions materialized.
+
+  `rows` carry the already computed `body` and `body_term` so a document and
+  its revision share one term encoding. Returns the `doc_key` per document id
+  in input order via `RETURNING`.
+  """
+  @spec insert_many_with_winners(
+          Connection.handle(),
+          [{binary(), Revision.t(), non_neg_integer(), binary() | nil, binary() | nil}]
+        ) :: {:ok, [{integer(), binary()}]} | {:error, term()}
+  def insert_many_with_winners(_conn, []), do: {:ok, []}
+
+  def insert_many_with_winners(conn, rows) when is_list(rows) do
+    placeholders = Enum.map_join(rows, ",", fn _row -> "(?, ?, ?, ?, ?, ?)" end)
+
+    params =
+      Enum.flat_map(rows, fn {id, winner, sequence, body, body_term} ->
+        [
+          id,
+          winner.revision_id,
+          body,
+          TermBlob.bind(body_term),
+          if(winner.deleted, do: 1, else: 0),
+          sequence
+        ]
+      end)
+
+    case Connection.query(
+           conn,
+           "INSERT INTO documents(document_id, winning_revision, winning_body_json, winning_body_term, winning_deleted, update_sequence) VALUES " <>
+             placeholders <> " RETURNING doc_key",
+           params
+         ) do
+      {:ok, keys} ->
+        {:ok,
+         Enum.zip(keys, rows)
+         |> Enum.map(fn {[key], {id, _winner, _seq, _body, _term}} -> {key, id} end)}
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  @doc """
   Materializes the winning revision onto the document row.
   """
   @spec update(Connection.handle(), integer(), Revision.t(), integer()) ::
@@ -260,9 +304,15 @@ defmodule VialKeeper.Storage.SQLite.Documents do
   defp normalize_error(reason),
     do: VialKeeper.Error.internal_error("SQLite operation failed", %{cause: inspect(reason)})
 
-  defp materialized_body_term(%Revision{deleted: true}, _body), do: {:ok, nil}
+  @doc """
+  Encodes the materialized body term for a revision, sharing one encoding
+  between the document row and its revision row.
+  """
+  @spec materialized_body_term(Revision.t(), binary() | nil) ::
+          {:ok, binary() | nil} | {:error, VialKeeper.Error.t()}
+  def materialized_body_term(%Revision{deleted: true}, _body), do: {:ok, nil}
 
-  defp materialized_body_term(%Revision{body: body}, body_json) when is_binary(body_json),
+  def materialized_body_term(%Revision{body: body}, body_json) when is_binary(body_json),
     do: TermBlob.encode(body, body_json)
 
   defp document_from_row([key, id, winning, body, deleted, sequence]) do

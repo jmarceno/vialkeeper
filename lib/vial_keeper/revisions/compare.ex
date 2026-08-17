@@ -17,17 +17,19 @@ defmodule VialKeeper.Revisions.Compare do
         a.parent_revision == b.parent_revision and a.history_id == b.history_id and
         a.deleted == b.deleted and a.body == b.body and a.attachments == b.attachments
 
+  @doc "Projects leaf revisions to their plain-map change-feed shape."
+  @spec leaf_maps([Revision.t()]) :: [map()]
+  def leaf_maps(leaves),
+    do:
+      Enum.map(leaves, fn leaf ->
+        %{
+          "revision" => leaf.revision_id,
+          "history_id" => leaf.history_id,
+          "deleted" => leaf.deleted
+        }
+      end)
+
   @doc "Encodes leaf revisions for a change-feed `leaf_set_json` payload."
   @spec encode_leaf_set([Revision.t()]) :: {:ok, binary()} | {:error, term()}
-  def encode_leaf_set(leaves),
-    do:
-      Canonical.encode(
-        Enum.map(leaves, fn leaf ->
-          %{
-            "revision" => leaf.revision_id,
-            "history_id" => leaf.history_id,
-            "deleted" => leaf.deleted
-          }
-        end)
-      )
+  def encode_leaf_set(leaves), do: Canonical.encode(leaf_maps(leaves))
 end

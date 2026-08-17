@@ -521,7 +521,8 @@ defmodule VialKeeper.Storage.Services.Mutations do
                  winner,
                  leaf_json,
                  "local",
-                 Facts.backend_meta(doc)
+                 Facts.backend_meta(doc),
+                 all_leaves
                )
              )
            end),
@@ -976,53 +977,94 @@ defmodule VialKeeper.Storage.Services.Mutations do
   end
 
   defp finalize_fast_bulk_documents(context, entries, sequences, ready_indexes) do
-    result =
-      Enum.zip(entries, sequences)
-      |> Enum.reduce_while({:ok, %{}, []}, fn
-        {{document_id, %{fast_candidate: %{revision: candidate, body_json: body_json}}}, sequence},
-        {:ok, results, changes} ->
-          case materialize_new_bulk_document(
-                 context,
-                 document_id,
-                 candidate,
-                 body_json,
-                 ready_indexes,
-                 sequence
-               ) do
-            {:ok, document, leaf_json} ->
-              result =
-                publishless_result(
-                  document_id,
-                  candidate.revision_id,
-                  sequence,
-                  candidate.deleted,
-                  []
-                )
+    zipped = Enum.zip(entries, sequences)
 
-              change =
-                new_bulk_change(
-                  document_id,
-                  candidate,
-                  sequence,
-                  leaf_json,
-                  document
-                )
+    with {:ok, prepared} <- prepare_fast_bulk_materials(zipped),
+         {:ok, documents} <-
+           Facts.insert_documents_with_revisions(context, prepared.entries),
+         {:ok, results, changes} <-
+           finalize_fast_bulk_pipeline(
+             context,
+             zipped,
+             prepared.leaf_sets,
+             documents,
+             ready_indexes
+           ),
+         :ok <- Facts.append_changes(context, changes) do
+      {:ok, results}
+    end
+  end
 
-              {:cont, {:ok, Map.put(results, document_id, result), [change | changes]}}
+  defp prepare_fast_bulk_materials(zipped) do
+    Enum.reduce_while(zipped, {:ok, %{entries: [], leaf_sets: []}}, fn
+      {{document_id, %{fast_candidate: %{revision: candidate, body_json: body_json}}}, sequence},
+      {:ok, %{entries: entries, leaf_sets: leaf_sets}} ->
+        case Facts.encode_leaf_set([candidate]) do
+          {:ok, leaf_json} ->
+            {:cont,
+             {:ok,
+              %{
+                entries: [
+                  %{
+                    document_id: document_id,
+                    revision: candidate,
+                    body_json: body_json,
+                    sequence: sequence
+                  }
+                  | entries
+                ],
+                leaf_sets: [leaf_json | leaf_sets]
+              }}}
 
-            {:error, error} ->
-              {:halt, {:error, error}}
-          end
-      end)
-
-    case result do
-      {:ok, results, changes} ->
-        with :ok <- Facts.append_changes(context, Enum.reverse(changes)) do
-          {:ok, results}
+          {:error, error} ->
+            {:halt, {:error, error}}
         end
+    end)
+    |> case do
+      {:ok, %{entries: entries, leaf_sets: leaf_sets}} ->
+        {:ok, %{entries: Enum.reverse(entries), leaf_sets: Enum.reverse(leaf_sets)}}
 
-      {:error, _} = error ->
+      error ->
         error
+    end
+  end
+
+  defp finalize_fast_bulk_pipeline(context, zipped, leaf_sets, documents, ready_indexes) do
+    Enum.zip([zipped, leaf_sets, documents])
+    |> Enum.map(fn {zipped_entry, leaf_json, document} ->
+      {{document_id, %{fast_candidate: %{revision: candidate}}}, sequence} = zipped_entry
+      {document_id, candidate, sequence, leaf_json, document}
+    end)
+    |> Enum.reduce_while({:ok, %{}, []}, fn
+      {document_id, candidate, sequence, leaf_json, document}, {:ok, results, changes} ->
+        with :ok <- Facts.clear_pending_for_manifest(context, candidate.attachments),
+             :ok <- refresh_ready_indexes(context, document_id, candidate, ready_indexes) do
+          result =
+            publishless_result(
+              document_id,
+              candidate.revision_id,
+              sequence,
+              candidate.deleted,
+              []
+            )
+
+          change =
+            new_bulk_change(
+              document_id,
+              candidate,
+              sequence,
+              leaf_json,
+              document
+            )
+
+          {:cont, {:ok, Map.put(results, document_id, result), [change | changes]}}
+        else
+          {:error, error} -> {:halt, {:error, error}}
+        end
+    end)
+    |> case do
+      {:ok, results, changes} -> {:ok, results, Enum.reverse(changes)}
+      error -> error
     end
   end
 
@@ -1118,7 +1160,8 @@ defmodule VialKeeper.Storage.Services.Mutations do
         candidate,
         leaf_json,
         "local",
-        Facts.backend_meta(document)
+        Facts.backend_meta(document),
+        [candidate]
       )
 
   defp publishless_result(document_id, revision_id, sequence, deleted, conflicts),

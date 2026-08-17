@@ -770,7 +770,8 @@ defmodule VialKeeper.Storage.Services.Import do
                    winner,
                    leaf_json,
                    "replication",
-                   Facts.backend_meta(doc)
+                   Facts.backend_meta(doc),
+                   leaves_now
                  )
                ) do
           {:cont,

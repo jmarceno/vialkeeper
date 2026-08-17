@@ -9,6 +9,7 @@ defmodule VialKeeper.Storage.SQLite.Changes do
 
   alias VialKeeper.Domain.Change
   alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Revisions.Compare
   alias VialKeeper.Storage.SQLite.Adapter
   alias VialKeeper.Storage.SQLite.{Connection, TermBlob}
 
@@ -59,6 +60,9 @@ defmodule VialKeeper.Storage.SQLite.Changes do
 
   @doc """
   Inserts one change-feed row for an affected document.
+
+  `leaves` carries the decoded leaf-set term when the caller already holds it;
+  the row BLOB is then derived without re-decoding `leaf_json`.
   """
   @spec insert(
           Connection.handle(),
@@ -67,11 +71,11 @@ defmodule VialKeeper.Storage.SQLite.Changes do
           binary(),
           VialKeeper.Domain.Revision.t(),
           binary(),
-          binary()
+          binary(),
+          [VialKeeper.Domain.Revision.t()] | nil
         ) :: :ok | {:error, term()}
-  def insert(conn, sequence, doc_key, document_id, winner, leaf_json, origin) do
-    with {:ok, leaves} <- StrictDecoder.decode(leaf_json),
-         {:ok, leaf_term} <- TermBlob.encode(leaves, leaf_json) do
+  def insert(conn, sequence, doc_key, document_id, winner, leaf_json, origin, leaves \\ nil) do
+    with {:ok, leaf_term} <- leaf_term(leaves, leaf_json) do
       Connection.execute(
         conn,
         "INSERT INTO changes(sequence, doc_key, document_id, winning_revision, winning_deleted, leaf_set_json, leaf_set_term, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -91,7 +95,8 @@ defmodule VialKeeper.Storage.SQLite.Changes do
 
   @doc "Inserts an ordered batch of change-feed rows."
   @spec insert_many(Connection.handle(), [
-          {integer(), integer() | nil, binary(), VialKeeper.Domain.Revision.t(), binary(), binary()}
+          {integer(), integer() | nil, binary(), VialKeeper.Domain.Revision.t(), binary(), binary(),
+           [VialKeeper.Domain.Revision.t()] | nil}
         ]) :: :ok | {:error, term()}
   def insert_many(_conn, []), do: :ok
 
@@ -220,30 +225,40 @@ defmodule VialKeeper.Storage.SQLite.Changes do
 
   defp encode_change_rows(entries) do
     Enum.reduce_while(entries, {:ok, []}, fn
-      {sequence, doc_key, document_id, winner, leaf_json, origin}, {:ok, rows} ->
-        with {:ok, leaves} <- StrictDecoder.decode(leaf_json),
-             {:ok, leaf_term} <- TermBlob.encode(leaves, leaf_json) do
-          {:cont,
-           {:ok,
-            [
+      {sequence, doc_key, document_id, winner, leaf_json, origin, leaves}, {:ok, rows} ->
+        case leaf_term(leaves, leaf_json) do
+          {:ok, leaf_term} ->
+            {:cont,
+             {:ok,
               [
-                sequence,
-                doc_key,
-                document_id,
-                winner.revision_id,
-                if(winner.deleted, do: 1, else: 0),
-                leaf_json,
-                TermBlob.bind(leaf_term),
-                origin
-              ]
-              | rows
-            ]}}
-        else
-          {:error, _} = error -> {:halt, error}
+                [
+                  sequence,
+                  doc_key,
+                  document_id,
+                  winner.revision_id,
+                  if(winner.deleted, do: 1, else: 0),
+                  leaf_json,
+                  TermBlob.bind(leaf_term),
+                  origin
+                ]
+                | rows
+              ]}}
+
+          {:error, _} = error ->
+            {:halt, error}
         end
     end)
     |> reverse_rows()
   end
+
+  defp leaf_term(nil, leaf_json) do
+    with {:ok, leaves} <- StrictDecoder.decode(leaf_json) do
+      TermBlob.encode(leaves, leaf_json)
+    end
+  end
+
+  defp leaf_term(leaves, leaf_json) when is_list(leaves),
+    do: TermBlob.encode(Compare.leaf_maps(leaves), leaf_json)
 
   defp reverse_rows({:ok, rows}), do: {:ok, Enum.reverse(rows)}
   defp reverse_rows(error), do: error

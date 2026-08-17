@@ -112,6 +112,38 @@ defmodule VialKeeper.Storage.Memory.DocumentFacts do
   end
 
   @impl true
+  def insert_documents_with_revisions(%BackendContext{} = context, entries)
+      when is_list(entries) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      insert_documents_loop(adapter, entries)
+    end
+  end
+
+  defp insert_documents_loop(adapter, entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, documents} ->
+      case insert_memory_document(adapter, entry) do
+        {:ok, document} -> {:cont, {:ok, [document | documents]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> reverse_documents()
+  end
+
+  defp reverse_documents({:ok, documents}), do: {:ok, Enum.reverse(documents)}
+  defp reverse_documents(error), do: error
+
+  defp insert_memory_document(adapter, entry) do
+    Store.update(adapter.store, fn state ->
+      Store.insert_document_with_revision(
+        state,
+        entry.document_id,
+        entry.revision,
+        entry.sequence
+      )
+    end)
+  end
+
+  @impl true
   def ensure_parent(%BackendContext{}, document_id, nil)
       when is_binary(document_id),
       do: :ok

@@ -18,7 +18,8 @@ defmodule VialKeeper.Storage.Services.Facts do
           required(:winner) => Revision.t(),
           required(:leaf_json) => binary(),
           required(:origin) => binary(),
-          required(:backend_meta) => map()
+          required(:backend_meta) => map(),
+          optional(:leaves) => [Revision.t()]
         }
 
   @doc "Loads one document fact or `nil`."
@@ -92,6 +93,12 @@ defmodule VialKeeper.Storage.Services.Facts do
           sequence,
           body_json
         )
+
+  @doc "Inserts new documents with their first winning revisions in one port call."
+  @spec insert_documents_with_revisions(BackendContext.t(), [map()]) ::
+          {:ok, [map()]} | {:error, VialKeeper.Error.t()}
+  def insert_documents_with_revisions(%BackendContext{} = ctx, entries),
+    do: Access.port(ctx, :document_facts).insert_documents_with_revisions(ctx, entries)
 
   @doc "Ensures a parent revision exists when required."
   @spec ensure_parent(BackendContext.t(), binary(), binary() | nil) ::
@@ -207,10 +214,20 @@ defmodule VialKeeper.Storage.Services.Facts do
     do: Access.port(ctx, :change_log).allocate_sequences(ctx, count)
 
   @doc "Builds the backend-neutral change entry accepted by the change-log port."
-  @spec change_entry(pos_integer(), binary(), Revision.t(), binary(), binary(), map()) ::
-          change_entry()
-  def change_entry(sequence, document_id, winner, leaf_json, origin, backend_meta) do
-    %{
+  @spec change_entry(
+          pos_integer(),
+          binary(),
+          Revision.t(),
+          binary(),
+          binary(),
+          map(),
+          [
+            Revision.t()
+          ]
+          | nil
+        ) :: change_entry()
+  def change_entry(sequence, document_id, winner, leaf_json, origin, backend_meta, leaves \\ nil) do
+    entry = %{
       sequence: sequence,
       document_id: document_id,
       winner: winner,
@@ -218,6 +235,8 @@ defmodule VialKeeper.Storage.Services.Facts do
       origin: origin,
       backend_meta: backend_meta
     }
+
+    if is_nil(leaves), do: entry, else: Map.put(entry, :leaves, leaves)
   end
 
   @doc "Appends one change-log entry."

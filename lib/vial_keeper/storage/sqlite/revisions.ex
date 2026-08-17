@@ -348,6 +348,47 @@ defmodule VialKeeper.Storage.SQLite.Revisions do
   end
 
   @doc """
+  Inserts many root revisions with empty manifests in one statement.
+
+  `rows` carry the already computed `body` and `body_term` shared with the
+  document row. Only root revisions with empty manifests are eligible; the
+  caller must fall back to per-row `insert/4` otherwise.
+  """
+  @spec insert_many(Connection.handle(), [
+          {integer(), Revision.t(), binary() | nil, binary() | nil}
+        ]) :: :ok | {:error, VialKeeper.Error.t()}
+  def insert_many(_conn, []), do: :ok
+
+  def insert_many(conn, rows) when is_list(rows) do
+    placeholders = Enum.map_join(rows, ",", fn _row -> "(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)" end)
+
+    params =
+      Enum.flat_map(rows, fn {doc_key, revision, body, body_term} ->
+        [
+          doc_key,
+          revision.revision_id,
+          revision.generation,
+          revision.parent_revision,
+          revision.history_id,
+          revision.digest,
+          if(revision.deleted, do: 1, else: 0),
+          body,
+          TermBlob.bind(body_term)
+        ]
+      end)
+
+    case Connection.execute(
+           conn,
+           "INSERT INTO revisions(doc_key, revision_id, generation, parent_revision, history_id, digest, deleted, body_json, body_term, insertion_sequence, is_leaf) VALUES " <>
+             placeholders,
+           params
+         ) do
+      :ok -> :ok
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  @doc """
   Inserts a revision, or accepts an identical existing row (import/replay).
   """
   @spec insert_or_accept(Connection.handle(), integer(), Revision.t()) ::

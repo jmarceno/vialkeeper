@@ -590,6 +590,113 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
     )
   end
 
+  @impl true
+  def insert_documents_with_revisions(%BackendContext{} = context, entries)
+      when is_list(entries) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, entries} <- shape_entries(entries) do
+      if Enum.all?(entries, &fast_new_document_entry?/1) do
+        insert_documents_with_revisions_batched(adapter.conn, entries)
+      else
+        insert_documents_with_revisions_fallback(context, entries)
+      end
+    end
+  end
+
+  defp shape_entries(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, shaped} ->
+      case shape_entry(entry) do
+        {:ok, value} -> {:cont, {:ok, [value | shaped]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, shaped} -> {:ok, Enum.reverse(shaped)}
+      error -> error
+    end
+  end
+
+  defp shape_entry(%{
+         document_id: document_id,
+         revision: %Revision{} = revision,
+         sequence: sequence,
+         body_json: body_json
+       })
+       when is_binary(document_id) and is_integer(sequence) and sequence >= 0 do
+    {:ok, %{document_id: document_id, revision: revision, sequence: sequence, body_json: body_json}}
+  end
+
+  defp shape_entry(_entry),
+    do: {:error, VialKeeper.Error.invalid_request("bulk document insert entries are invalid")}
+
+  defp fast_new_document_entry?(%{
+         revision: %Revision{parent_revision: nil, attachments: attachments}
+       })
+       when map_size(attachments) == 0,
+       do: true
+
+  defp fast_new_document_entry?(_entry), do: false
+
+  defp insert_documents_with_revisions_batched(conn, entries) do
+    with {:ok, rows} <- prepare_document_rows(entries),
+         {:ok, keyed} <- Documents.insert_many_with_winners(conn, rows),
+         :ok <- Revisions.insert_many(conn, revision_rows(keyed, rows)) do
+      {:ok,
+       Enum.map(Enum.zip(keyed, rows), fn
+         {{doc_key, document_id}, {_id, revision, sequence, body, _term}} ->
+           materialized_document(document_id, doc_key, revision, sequence, body)
+       end)}
+    end
+  end
+
+  defp revision_rows(keyed, rows) do
+    Enum.map(Enum.zip(keyed, rows), fn {{doc_key, _document_id}, {_id, revision, _seq, body, term}} ->
+      {doc_key, revision, body, term}
+    end)
+  end
+
+  defp insert_documents_with_revisions_fallback(context, entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, documents} ->
+      case insert_document_with_revision(
+             context,
+             entry.document_id,
+             entry.revision,
+             entry.sequence,
+             entry.body_json
+           ) do
+        {:ok, document} -> {:cont, {:ok, [document | documents]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, documents} -> {:ok, Enum.reverse(documents)}
+      error -> error
+    end
+  end
+
+  defp prepare_document_rows(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, rows} ->
+      body = materialized_body_json(entry.revision, entry.body_json)
+
+      case Documents.materialized_body_term(entry.revision, body) do
+        {:ok, body_term} ->
+          {:cont,
+           {:ok,
+            [
+              {entry.document_id, entry.revision, entry.sequence, body, body_term}
+              | rows
+            ]}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, rows} -> {:ok, Enum.reverse(rows)}
+      error -> error
+    end
+  end
+
   defp shape_document(nil), do: nil
 
   defp shape_document(doc) do

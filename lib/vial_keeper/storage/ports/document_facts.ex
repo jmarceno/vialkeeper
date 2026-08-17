@@ -47,6 +47,7 @@ defmodule VialKeeper.Storage.Ports.DocumentFacts do
               non_neg_integer(),
               binary() | nil
             ) :: result(document_fact())
+  @callback insert_documents_with_revisions(BackendContext.t(), [map()]) :: result([map()])
   @callback ensure_parent(BackendContext.t(), binary(), binary() | nil) ::
               :ok | {:error, VialKeeper.Error.t()}
   @callback insert_revision(BackendContext.t(), binary(), Revision.t()) ::
