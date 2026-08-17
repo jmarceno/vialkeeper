@@ -187,12 +187,15 @@ defmodule VialKeeper.Bench.FTS do
     started = System.monotonic_time(:microsecond)
     Progress.phase(progress, "fts_build", 1)
 
-    {:ok, created} =
-      Adapter.create_index(adapter, %{
-        "name" => @index_name,
-        "type" => "full_text",
-        "fields" => @fts_fields
-      })
+    created =
+      case Adapter.create_index(adapter, %{
+             "name" => @index_name,
+             "type" => "full_text",
+             "fields" => @fts_fields
+           }) do
+        {:ok, created} -> created
+        {:error, error} -> Mix.raise("FTS index build failed: #{inspect(error)}")
+      end
 
     Progress.tick(progress)
 

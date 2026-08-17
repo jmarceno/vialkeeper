@@ -155,21 +155,32 @@ pub fn sync_all(root: &Path) -> io::Result<()> {
         return Ok(());
     }
     sync_tree(root)?;
-    let dir_handle = File::open(root)?;
-    dir_handle.sync_all()?;
-    Ok(())
+    match File::open(root) {
+        Ok(dir_handle) => dir_handle.sync_all(),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 fn sync_tree(dir: &Path) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+
+    for entry in entries {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             sync_tree(&path)?;
         } else {
-            let handle = File::open(&path)?;
-            handle.sync_all()?;
+            match File::open(&path) {
+                Ok(handle) => handle.sync_all()?,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err),
+            }
         }
     }
     Ok(())

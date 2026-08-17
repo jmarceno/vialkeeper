@@ -8,7 +8,7 @@ defmodule VialKeeper.Bench.SimpleWiki do
   """
 
   alias VialKeeper.AtomicWrite
-  alias VialKeeper.Bench.{Checksums, Registry, Root}
+  alias VialKeeper.Bench.{Checksums, Progress, Registry, Root}
 
   @page_start "<page>"
   @page_end "</page>"
@@ -36,10 +36,12 @@ defmodule VialKeeper.Bench.SimpleWiki do
       when is_binary(archive) and is_map(spec) and profile in [:standard, :smoke] and
              is_binary(staging) and is_list(opts) do
     count = Keyword.get(opts, :article_count, count_for(profile))
+    progress = Keyword.get(opts, :progress)
+    Progress.phase(progress, "generate_articles", count)
 
     with {:ok, archive_size} <- archive_size(archive),
          {:ok, archive_md5} <- Checksums.md5_file(archive),
-         {:ok, state} <- generate_articles(archive, staging, profile, count),
+         {:ok, state} <- generate_articles(archive, staging, profile, count, progress),
          :ok <- write_query_workload(staging, query_workload(state.token_counts)) do
       articles = Enum.reverse(state.articles)
 
@@ -151,7 +153,7 @@ defmodule VialKeeper.Bench.SimpleWiki do
     end
   end
 
-  defp generate_articles(archive, staging, profile, count) do
+  defp generate_articles(archive, staging, profile, count, progress) do
     state = %{
       articles: [],
       selected: 0,
@@ -163,7 +165,7 @@ defmodule VialKeeper.Bench.SimpleWiki do
     }
 
     stream_pages(archive, state, fn page, state ->
-      generate_article(staging, profile, page, state, count)
+      generate_article(staging, profile, page, state, count, progress)
     end)
     |> case do
       {:ok, %{selected: selected} = state} when selected == count ->
@@ -177,15 +179,22 @@ defmodule VialKeeper.Bench.SimpleWiki do
     end
   end
 
-  defp generate_article(_staging, _profile, _page, %{selected: selected} = state, count)
+  defp generate_article(_staging, _profile, _page, %{selected: selected} = state, count, _progress)
        when selected >= count,
        do: {:halt, state}
 
-  defp generate_article(staging, profile, page, state, count) do
+  defp generate_article(staging, profile, page, state, count, progress) do
     case write_article(staging, profile, page, state) do
-      {:ok, %{selected: selected} = next} when selected >= count -> {:halt, next}
-      {:ok, next} -> {:cont, next}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{selected: selected} = next} when selected >= count ->
+        Progress.tick(progress)
+        {:halt, next}
+
+      {:ok, next} ->
+        Progress.tick(progress)
+        {:cont, next}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

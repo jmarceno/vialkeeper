@@ -1,7 +1,7 @@
 defmodule VialKeeper.Bench.SimpleWikiTest do
   use ExUnit.Case, async: false
 
-  alias VialKeeper.Bench.{SimpleWiki, Tmp}
+  alias VialKeeper.Bench.{Progress, SimpleWiki, Tmp}
 
   test "parses current main-namespace pages and rejects redirects" do
     page = """
@@ -60,5 +60,45 @@ defmodule VialKeeper.Bench.SimpleWikiTest do
     assert workload["query_workload_version"] == "simplewiki-query-v2"
     assert "beta" in workload["categories"]["common"]
     assert workload["categories"]["zero_match"] == ["zzzzzxxyy-no-such-term"]
+  end
+
+  test "generate_fixture ticks the article-generation watchdog" do
+    root = Tmp.dir("simplewiki-progress")
+    xml = Path.join(root, "pages.xml")
+    archive = Path.join(root, "pages.xml.bz2")
+    staging = Path.join(root, "staging")
+    hits = :atomics.new(1, signed: false)
+
+    File.write!(xml, """
+    <mediawiki>
+      <page><title>One</title><ns>0</ns><id>1</id><revision><text>alpha beta</text></revision></page>
+      <page><title>Two</title><ns>0</ns><id>2</id><revision><text>beta gamma</text></revision></page>
+      <page><title>Three</title><ns>0</ns><id>3</id><revision><text>gamma delta</text></revision></page>
+    </mediawiki>
+    """)
+
+    {compressed, 0} = System.cmd("bzip2", ["-c", xml])
+    File.write!(archive, compressed)
+
+    printer = fn _level, message ->
+      if String.contains?(message, "generate_articles") do
+        :atomics.add_get(hits, 1, 1)
+      end
+    end
+
+    {:ok, progress} = Progress.start(owner: self(), printer: printer)
+
+    assert {:ok, manifest} =
+             SimpleWiki.generate_fixture(
+               archive,
+               %{"version" => "v1", "source_url" => "local"},
+               :smoke,
+               staging,
+               progress: progress
+             )
+
+    Progress.stop(progress)
+    assert [_, _, _] = manifest["articles"]
+    assert :atomics.get(hits, 1) >= 1
   end
 end

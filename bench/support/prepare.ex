@@ -188,32 +188,38 @@ defmodule VialKeeper.Bench.Prepare do
   defp prepare_simplewiki(context, spec, profile, opts) do
     unique = unique_id()
 
-    with {:ok, staging} <- Root.staging_path(context, spec["name"], unique),
-         {:ok, dest} <- Root.dataset_path(context, spec["name"], spec["version"]),
-         {:ok, cache} <- Root.cache_path(context, spec["name"], spec["version"]),
-         :ok <- File.mkdir_p(Path.join(staging, "objects")),
-         :ok <- File.mkdir_p(cache),
-         archive = Path.join(cache, spec["archive_name"]),
-         :ok <- ensure_simplewiki_archive(context, spec, archive, staging, opts),
-         {:ok, manifest} <-
-           SimpleWiki.generate_fixture(
-             archive,
-             spec,
-             profile,
-             staging,
-             article_count: Registry.selection_count("simplewiki", profile)
-           ),
-         :ok <- write_external_manifest(context, staging, manifest),
-         :ok <-
-           Marker.write(context, staging, %{
-             "dataset" => spec["name"],
-             "version" => spec["version"],
-             "profile" => Atom.to_string(profile),
-             "selection_count" => Registry.selection_count(spec["name"], profile)
-           }),
-         :ok <- Downloader.promote_dir(context, staging, dest) do
-      {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
-    end
+    Progress.with_run(prepare_progress_opts(opts), fn progress ->
+      opts = Keyword.put(opts, :progress, progress)
+
+      with {:ok, staging} <- Root.staging_path(context, spec["name"], unique),
+           {:ok, dest} <- Root.dataset_path(context, spec["name"], spec["version"]),
+           {:ok, cache} <- Root.cache_path(context, spec["name"], spec["version"]),
+           :ok <- File.mkdir_p(Path.join(staging, "objects")),
+           :ok <- File.mkdir_p(cache),
+           archive = Path.join(cache, spec["archive_name"]),
+           :ok <- ensure_simplewiki_archive(context, spec, archive, staging, opts),
+           {:ok, manifest} <-
+             SimpleWiki.generate_fixture(
+               archive,
+               spec,
+               profile,
+               staging,
+               article_count: Registry.selection_count("simplewiki", profile),
+               progress: progress
+             ),
+           :ok <- write_external_manifest(context, staging, manifest),
+           :ok <-
+             Marker.write(context, staging, %{
+               "dataset" => spec["name"],
+               "version" => spec["version"],
+               "profile" => Atom.to_string(profile),
+               "selection_count" => Registry.selection_count(spec["name"], profile)
+             }),
+           :ok <- Downloader.promote_dir(context, staging, dest) do
+        Progress.complete(progress)
+        {:ok, %{"dataset" => spec["name"], "path" => dest, "state" => "ready"}}
+      end
+    end)
   end
 
   defp ensure_simplewiki_archive(context, spec, archive, staging, opts) do
