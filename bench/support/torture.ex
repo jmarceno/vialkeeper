@@ -18,8 +18,8 @@ defmodule VialKeeper.Bench.Torture do
   alias VialKeeper.Documents
   alias VialKeeper.Runtime.DatabaseCatalog
 
-  @write_conc [1, 4, 8, 16]
-  @read_conc [1, 4, 16, 64]
+  @write_conc [1, 4]
+  @read_conc [1, 4]
   @retryable_attempts 40
 
   @spec run(keyword()) :: {:ok, map()} | {:error, binary()}
@@ -259,7 +259,7 @@ defmodule VialKeeper.Bench.Torture do
   defp concurrent_read(_uuid, [], _opts, _progress), do: %{"skipped" => true}
 
   defp concurrent_read(uuid, items, opts, progress) do
-    iterations = Keyword.get(opts, :iterations, 3)
+    iterations = Keyword.get(opts, :iterations, 1)
 
     Enum.map(@read_conc, fn concurrency ->
       read_concurrency_row(uuid, items, concurrency, iterations, progress)
@@ -381,24 +381,24 @@ defmodule VialKeeper.Bench.Torture do
   end
 
   defp mixed_torture(uuid, dataset, items, _opts, progress) do
-    Progress.phase(progress, "mixed_torture", 64)
+    Progress.phase(progress, "mixed_torture", 16)
 
     {elapsed, _} =
       :timer.tc(fn ->
-        1..64
+        1..16
         |> Task.async_stream(
           fn n ->
             _ = mixed_op(uuid, dataset, items, n)
             Progress.tick(progress)
           end,
-          max_concurrency: 8,
+          max_concurrency: 4,
           timeout: :infinity,
           ordered: false
         )
         |> Stream.run()
       end)
 
-    %{"elapsed_us" => elapsed, "operations" => 64, "concurrency" => 8}
+    %{"elapsed_us" => elapsed, "operations" => 16, "concurrency" => 4}
   end
 
   defp mixed_op(uuid, _dataset, items, n) do

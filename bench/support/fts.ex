@@ -21,8 +21,8 @@ defmodule VialKeeper.Bench.FTS do
   @index_name "trec-covid-text"
   @fts_fields ["/title", "/text"]
   @quality_mode "all"
-  @modes ["any", "all", "prefix"]
-  @concurrencies [1, 4, 16]
+  @modes ["all", "prefix"]
+  @concurrencies [1]
   @retrieve_at 100
 
   @spec run(keyword()) :: {:ok, map()} | {:error, binary()}
@@ -72,8 +72,8 @@ defmodule VialKeeper.Bench.FTS do
                 "fixture_manifest_hash" => hash,
                 "dataset_path" => dataset,
                 "work_path" => work,
-                "warmup" => Keyword.get(opts, :warmup, 2),
-                "iterations" => Keyword.get(opts, :iterations, 5)
+                "warmup" => Keyword.get(opts, :warmup, 0),
+                "iterations" => Keyword.get(opts, :iterations, 1)
               },
               results
             )
@@ -112,17 +112,21 @@ defmodule VialKeeper.Bench.FTS do
 
   defp ingest_corpus(adapter, dataset, opts) do
     progress = opts[:progress]
+    limit = ingest_limit(opts)
     {:ok, corpus} = Beir.find_file(dataset, "corpus.jsonl")
     started = System.monotonic_time(:microsecond)
     acc = %{docs: 0, bytes: 0, batch: []}
-    Progress.phase(progress, "ingest", 0)
+    Progress.phase(progress, "ingest", limit)
 
     result =
       corpus
       |> Beir.stream_jsonl()
-      |> Enum.reduce(acc, fn
+      |> Enum.reduce_while(acc, fn
         {:error, _}, acc ->
-          acc
+          {:cont, acc}
+
+        _row, %{docs: docs} = acc when docs >= limit ->
+          {:halt, acc}
 
         row, acc ->
           case Beir.document_body(row) do
@@ -131,10 +135,10 @@ defmodule VialKeeper.Bench.FTS do
               bytes = byte_size(body["title"] || "") + byte_size(body["text"] || "")
               acc = %{acc | docs: acc.docs + 1, bytes: acc.bytes + bytes, batch: [op | acc.batch]}
               Progress.tick(progress)
-              flush_batch(adapter, acc, 500)
+              {:cont, flush_batch(adapter, acc, 500)}
 
             {:error, _} ->
-              acc
+              {:cont, acc}
           end
       end)
 
@@ -159,6 +163,12 @@ defmodule VialKeeper.Bench.FTS do
     else
       acc
     end
+  end
+
+  defp ingest_limit(opts) do
+    Keyword.get_lazy(opts, :document_limit, fn ->
+      Registry.selection_count("trec-covid", Keyword.get(opts, :profile, :standard))
+    end)
   end
 
   defp write_batch(_adapter, []), do: :ok
@@ -238,8 +248,8 @@ defmodule VialKeeper.Bench.FTS do
     {:ok, queries_path} = Beir.find_file(dataset, "queries.jsonl")
     {:ok, queries} = Beir.load_queries(queries_path)
     texts = Enum.map(queries, fn query -> elem(Beir.query_text(query), 2) end)
-    warmup = Keyword.get(opts, :warmup, 2)
-    iterations = Keyword.get(opts, :iterations, 5)
+    warmup = Keyword.get(opts, :warmup, 0)
+    iterations = Keyword.get(opts, :iterations, 1)
     Progress.phase(progress, "latency", 1)
 
     first_pass =

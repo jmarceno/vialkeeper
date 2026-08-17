@@ -28,13 +28,14 @@ defmodule VialKeeper.Bench.Stress do
   alias VialKeeper.Runtime.DatabaseCatalog
 
   @index_name "simplewiki-text"
-  @search_concurrencies [1, 4, 16]
-  @mixed_concurrencies [4, 16, 32]
+  @search_concurrencies [1]
+  @mixed_concurrencies [4]
   @query_algorithm "simplewiki-query-v2"
   @bulk_batch_size 500
   @attachment_batch_size 500
-  @single_document_count 1_000
-  @scaling_checkpoints [100, 1_000, 10_000, 25_000, 50_000, 100_000]
+  @single_document_count 40
+  @scaling_checkpoints [100, 500, 2_000]
+  @max_physical_attachments 40
   @search_batch_event [:vial_keeper, :search, :rebuild, :batch]
 
   @type progress_callback :: (non_neg_integer(), non_neg_integer(), non_neg_integer() -> :ok)
@@ -78,6 +79,7 @@ defmodule VialKeeper.Bench.Stress do
 
   defp measure(context, spec, dataset, manifest, query_workload, opts) do
     run_id = Integer.to_string(System.unique_integer([:positive]))
+    manifest = slice_manifest(manifest, opts)
 
     with {:ok, work} <- Root.work_run_path(context, "simplewiki", run_id),
          {:ok, uuid, relative} <- Runtime.create_work_database(context, "simplewiki", run_id),
@@ -212,6 +214,12 @@ defmodule VialKeeper.Bench.Stress do
         Runtime.close_work_database(context, uuid, relative)
       end
     end
+  end
+
+  defp slice_manifest(manifest, opts) do
+    profile = Keyword.get(opts, :profile, :standard)
+    wanted = Registry.selection_count("simplewiki", profile)
+    Map.put(manifest, "articles", Enum.take(manifest["articles"] || [], wanted))
   end
 
   defp measured_phase(context, base, results, completed, phase, opts, fun) do
@@ -380,7 +388,8 @@ defmodule VialKeeper.Bench.Stress do
     id = article_id(article)
 
     attachments =
-      Enum.map(article["attachments"] || [], fn attachment ->
+      (article["attachments"] || [])
+      |> Enum.map(fn attachment ->
         name = attachment["name"]
 
         %{
@@ -396,6 +405,7 @@ defmodule VialKeeper.Bench.Stress do
               Statistics.file_size(Path.join(Path.dirname(text_path), name))
         }
       end)
+      |> Enum.reject(&(&1.category == "16_mib"))
 
     %{
       id: id,
@@ -464,6 +474,7 @@ defmodule VialKeeper.Bench.Stress do
   end
 
   defp attachment_physical_ingest(uuid, sources, progress, opts) do
+    sources = Enum.take(sources, @max_physical_attachments)
     total = length(sources)
     before_bytes = sample_cas_occupancy(uuid, :before)
     started_at = timestamp()

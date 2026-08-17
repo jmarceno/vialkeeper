@@ -148,16 +148,17 @@ defmodule VialKeeper.Bench.PrepareTest do
     assert :atomics.get(hits, 1) >= 1
   end
 
-  test "open-images 1k preflight is smaller than the 100k budget", %{env: env} do
-    twenty = 20 * 1024 * 1024 * 1024
-    tight = Keyword.put(env, :available_bytes_fun, fn _ -> {:ok, twenty} end)
+  test "open-images standard preflight uses the 40-image budget", %{env: env} do
+    tight = Keyword.put(env, :available_bytes_fun, fn _ -> {:ok, 1} end)
 
     assert {:error, message} =
              Prepare.prepare("open-images", Keyword.put(tight, :profile, :standard))
 
     assert message =~ "insufficient free space"
 
-    assert {:ok, result} = prepare_open_images_csv(tight, :k1)
+    gig = 20 * 1024 * 1024 * 1024
+    roomy = Keyword.put(env, :available_bytes_fun, fn _ -> {:ok, gig} end)
+    assert {:ok, result} = prepare_open_images_csv(roomy, :standard)
     assert result["state"] == "ready"
   end
 

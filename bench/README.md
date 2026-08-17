@@ -21,20 +21,19 @@ There are two families:
 
 These Mix aliases always run with `--no-start` in `MIX_ENV=test`:
 
-| Alias | Measures | Standard scale |
+| Alias | Measures | Standard scale (15-minute suite) |
 | --- | --- | --- |
-| `mix bench.fts` | TREC-COVID / BEIR full-text ingest, index build, nDCG/recall/MAP, first-pass and warm latency (`any`/`all`/`prefix`, concurrency 1/4/16) | 171K documents, 50 official queries |
-| `mix bench.stress` | Simple Wikipedia catalog-path ingest, FTS, attachment reads, mixed load | 100K articles plus 800 locally generated deterministic attachments (~800 MiB) |
-| `mix bench.torture` | Open Images attachment ingest, concurrent read/write, dedup, delete/GC, mixed torture | 100K JPEGs |
+| `mix bench.fts` | TREC-COVID / BEIR full-text ingest, index build, nDCG/recall/MAP, first-pass and `all`/`prefix` latency at concurrency 1 | 4,000 documents, 50 official queries |
+| `mix bench.stress` | Simple Wikipedia catalog-path ingest, FTS, attachment reads, mixed load | 2,000 articles, 40 single-doc puts, ≤40 attachments (no 16 MiB objects) |
+| `mix bench.torture` | Open Images attachment ingest, concurrent read/write, dedup, delete/GC, mixed torture | 40 JPEGs, write/read concurrency 1 and 4 |
 
-`--profile smoke` prepares a handful of pinned objects so the same code path
-can be checked without downloading the 100K corpora. Open Images also supports
-`--profile 1k` and `--profile 10k` so attachment scaling is measured before a
-100K JPEG download. Quality metrics are informational; they are not CI
-pass/fail thresholds.
+The three `standard` runners together must finish in **15 minutes** on the
+spinning-disk benchmark root. `--profile smoke` is a tiny correctness path.
+Open Images `--profile 1k` and `--profile 10k` remain optional large runs; they
+are outside the 15-minute budget and are not part of the default plan.
 
 Dataset-backed Mix runners raise host limits for the process, including
-`max_search_rebuild_ms` (one hour) so a 171K-document `create_index` is not
+`max_search_rebuild_ms` (one hour) so a larger optional `create_index` is not
 killed by the interactive query budget. Production operators set
 `[limits].max_search_rebuild_ms` in `host.toml` and restart.
 
@@ -63,7 +62,7 @@ Use this runner to compare:
 - direct Tantivy indexing versus the VialKeeper search wrapper
 
 Single-write latency is the interactive catalog path (one COMMIT per
-document). Bulk ingest is the 100K path: batches of 500 documents share one
+document). Bulk ingest is the 2,000-article path: batches of 500 documents share one
 storage transaction and one search flush. Do not treat put p50 as the ingest
 rate.
 
@@ -82,43 +81,35 @@ checkpoint, not a resume of the previous database.
 
 Standard phases, in order:
 
-1. `single_document_ingest` — 1,000 `Documents.put` samples (interactive latency)
+1. `single_document_ingest` — 40 `Documents.put` samples (interactive latency)
 2. `bulk_document_ingest` — remaining articles in batches of 500, with a scaling ladder
-3. `attachment_physical_ingest` — 800 locally generated blobs at bounded batch concurrency (default 16, capped by the database write limit)
+3. `attachment_physical_ingest` — at most 40 locally generated blobs (16 MiB objects are dropped) at bounded batch concurrency (default 16, capped by the database write limit)
 4. `attachment_reference_mutation` — one bulk write attaching those blobs
 5. `fts_build` — one full-text `create_index` using `max_search_rebuild_ms`
 6. `fts_search` — precomputed `queries.json` (`simplewiki-query-v2`)
 7. `attachment_read`
 8. `mixed`
 
-The 100K seed does not call `Documents.put` once per article.
+The 2,000-article seed does not call `Documents.put` once per article.
 
-### Open Images ladder
+### Open Images default
 
-Do not jump from smoke to 100K JPEGs. Prepare and run:
+Default torture is 40 JPEGs. Optional `--profile 1k` / `--profile 10k` are
+outside the 15-minute suite.
 
 ```sh
-mix bench.data prepare open-images --profile smoke
-mix bench.torture --profile smoke
-
-mix bench.data prepare open-images --profile 1k --max-concurrency 16
-mix bench.torture --profile 1k
-
-mix bench.data prepare open-images --profile 10k --max-concurrency 16
-mix bench.torture --profile 10k
+mix bench.data prepare open-images
+mix bench.torture
 ```
 
-`mix bench.torture --limit N` slices a larger prepared fixture. Full 100K
-torture is only for after 1K and 10K throughput is understood.
-
 Open Images JPEG bytes come from the CVDF train bucket, not Flickr originals.
-A ranked train-CSV subset is not dense in that bucket, so prepare over-selects
-and stops once the profile's image count is on disk. Missing objects (HTTP
-404/410) are skipped without retry.
+Prepare takes the first CSV rows (not a full-file rank), over-selects 12×, and
+stops once 40 images are on disk. Missing objects (HTTP 404/410) are skipped
+without retry.
 
 The torture work database raises attachment write/read limits to the measured
-concurrency ladder (writes 1/4/8/16, reads 1/4/16/64). Ordinary databases
-still default to 4 concurrent attachment writes.
+concurrency ladder (writes 1/4, reads 1/4). Ordinary databases still default
+to 4 concurrent attachment writes.
 
 `--output` must resolve under `<bench-root>/reports/`.
 
@@ -167,20 +158,14 @@ mix bench.data status
 mix bench.data prepare trec-covid     # optional: prepare separately
 mix bench.data prepare pmc                 # standard 100K; first use freezes an inventory snapshot
 mix bench.data prepare pmc --profile smoke
-mix bench.data prepare simplewiki          # one archive + local 100K fixture generation
+mix bench.data prepare simplewiki          # archive + local articles; standard run uses 2,000
 mix bench.data prepare simplewiki --profile smoke
-mix bench.data prepare open-images
-mix bench.data prepare open-images --profile smoke
-mix bench.data prepare open-images --profile 1k --max-concurrency 16
-mix bench.data prepare open-images --profile 10k --max-concurrency 16
+mix bench.data prepare open-images         # 40 JPEGs
 
-mix bench.fts                         # initializes root, downloads/prepares, then runs all 171K docs
-mix bench.stress                         # initializes root, downloads/prepares, then runs standard 100K Simple Wikipedia
-mix bench.stress --max-concurrency 16    # same workload with faster bounded fixture preparation
+mix bench.fts                              # 4,000 TREC-COVID documents
+mix bench.stress                           # 2,000 Simple Wikipedia articles
 mix bench.stress --profile smoke
-mix bench.torture --profile smoke
-mix bench.torture --profile 1k
-mix bench.torture --profile 1k --stall-timeout-ms 300000
+mix bench.torture                          # 40 Open Images JPEGs
 mix bench.diagnostics
 
 mix bench.data clean trec-covid

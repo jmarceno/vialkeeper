@@ -68,15 +68,16 @@ defmodule VialKeeper.Bench.Registry do
   end
 
   @spec selection_count(binary(), atom()) :: pos_integer()
-  def selection_count("pmc", :standard), do: 100_000
+  def selection_count("pmc", :standard), do: 40
   def selection_count("pmc", :smoke), do: 3
-  def selection_count("simplewiki", :standard), do: 100_000
+  def selection_count("simplewiki", :standard), do: 2_000
   def selection_count("simplewiki", :smoke), do: 3
-  def selection_count("open-images", :standard), do: 100_000
+  def selection_count("open-images", :standard), do: 40
   def selection_count("open-images", :k10), do: 10_000
   def selection_count("open-images", :k1), do: 1_000
   def selection_count("open-images", :smoke), do: 1
-  def selection_count("trec-covid", _), do: 171_332
+  def selection_count("trec-covid", :smoke), do: 50
+  def selection_count("trec-covid", _), do: 4_000
 
   defp supported_profile?("open-images", profile) when profile in [:standard, :smoke, :k1, :k10],
     do: true
@@ -96,7 +97,7 @@ defmodule VialKeeper.Bench.Registry do
       "expected_size_bytes" => @trec_size,
       "md5" => @trec_md5,
       "archive_name" => "trec-covid-v1.zip",
-      "expected_documents" => 171_332,
+      "expected_documents" => 4_000,
       "expected_queries" => 50,
       "estimated_source_bytes" => @trec_size,
       "estimated_working_bytes" => 5 * gib(),
@@ -151,7 +152,7 @@ defmodule VialKeeper.Bench.Registry do
       "image_info_url" => @open_images_info_url,
       "labels_url" => @open_images_labels_url,
       "classes_url" => @open_images_classes_url,
-      "selection_algorithm" => "sha256-rank-v1",
+      "selection_algorithm" => "first-n-csv-v1",
       "selection_seed" => "vialkeeper-open-images-v7-100k-v1",
       "estimated_source_bytes" => 60 * gib(),
       "estimated_working_bytes" => 70 * gib(),

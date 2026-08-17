@@ -12,7 +12,7 @@ defmodule VialKeeper.Bench.SimpleWiki do
 
   @page_start "<page>"
   @page_end "</page>"
-  @standard_count 100_000
+  @standard_count 2_000
   @smoke_count 3
   @standard_attachment_count 800
   @smoke_attachment_stride 5

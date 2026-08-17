@@ -258,6 +258,10 @@ defmodule VialKeeper.Observability.ReplicationTraceTest do
         replication_id
       )
 
+    # Periodic metric export can deliver a prior remote test's samples after
+    # setup reset. Local endpoints must still emit no wire metrics.
+    TestMetricExporter.reset()
+
     assert {:ok, pid} =
              Worker.start_link(%{
                source: source,
@@ -277,8 +281,14 @@ defmodule VialKeeper.Observability.ReplicationTraceTest do
       message: "local batch duration was not exported"
     )
 
-    assert TestMetricExporter.datapoints("vial_keeper.replication.wire.bytes") == []
-    assert TestMetricExporter.datapoints("vial_keeper.replication.wire.codec.duration") == []
+    assert TestMetricExporter.datapoints_matching("vial_keeper.replication.wire.bytes", %{
+             endpoint_kind: :local
+           }) == []
+
+    assert TestMetricExporter.datapoints_matching(
+             "vial_keeper.replication.wire.codec.duration",
+             %{endpoint_kind: :local}
+           ) == []
 
     # A remote one-shot replication records every JSON and blob boundary.
     server_b = TestServer.start_supervised!()

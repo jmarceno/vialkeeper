@@ -749,10 +749,11 @@ mix bench.fts
 
 `status` prints free space and each dataset's expected source size, local
 size, and estimated VialKeeper working space (source plus a second copy
-inside bundles, plus a 10 GiB / 15% reserve). Simple Wikipedia prepares one
-Wikimedia archive and generates 800 deterministic attachment objects locally;
-PMC and Open Images standard profiles still use many tens of gigabytes. Use `--profile
-smoke` for a tiny subset of the same code path.
+inside bundles, plus a 10 GiB / 15% reserve). The default `standard` profiles
+are sized so `mix bench.fts`, `mix bench.stress`, and `mix bench.torture`
+finish together in 15 minutes (4,000 TREC docs, 2,000 Simple Wikipedia
+articles, 40 Open Images JPEGs). Use `--profile smoke` for a tiny subset of
+the same code path.
 
 Torture, stress, FTS, and dataset prepare print phase progress (10% steps plus
 a 30-second heartbeat). `--stall-timeout-ms` (default 300000) aborts a

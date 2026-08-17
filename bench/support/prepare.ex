@@ -302,27 +302,14 @@ defmodule VialKeeper.Bench.Prepare do
          :ok <-
            maybe_download(download, context, spec["image_info_url"], csv, opts),
          {:ok, manifest} <-
-           OpenImages.generate_from_info_csv(csv, spec, count, Atom.to_string(profile)),
-         {:ok, manifest} <-
-           maybe_merge_open_images_labels(context, spec, manifest, download, cache, opts) do
+           OpenImages.generate_from_info_csv(csv, spec, count, Atom.to_string(profile)) do
       {:ok, OpenImages.use_cvdf_bytes(manifest)}
-    end
-  end
-
-  defp maybe_merge_open_images_labels(context, spec, manifest, download, cache, opts) do
-    labels = Path.join(cache, "oidv7-train-annotations-human-imagelabels.csv")
-    classes = Path.join(cache, "oidv7-class-descriptions-boxable.csv")
-
-    with :ok <- maybe_download(download, context, spec["labels_url"], labels, opts),
-         :ok <- maybe_download(download, context, spec["classes_url"], classes, opts) do
-      images = OpenImages.merge_labels(manifest["images"], labels, classes)
-      {:ok, %{manifest | "images" => images}}
     end
   end
 
   defp open_images_pool_count(profile) do
     wanted = Registry.selection_count("open-images", profile)
-    wanted * 5
+    wanted * 12
   end
 
   defp finalize_object_manifest(%{"name" => "open-images"}, profile, staging, manifest) do
@@ -532,12 +519,12 @@ defmodule VialKeeper.Bench.Prepare do
 
   defp estimates(_spec, :smoke), do: {32 * 1024 * 1024, 128 * 1024 * 1024}
 
-  defp estimates(spec, :k1), do: scale_estimates(spec, 1_000, 100_000)
-
-  defp estimates(spec, :k10), do: scale_estimates(spec, 10_000, 100_000)
-
-  defp estimates(spec, _profile) do
+  defp estimates(%{"name" => "trec-covid"} = spec, _profile) do
     {spec["estimated_source_bytes"] || 0, spec["estimated_working_bytes"] || 0}
+  end
+
+  defp estimates(%{"name" => name} = spec, profile) do
+    scale_estimates(spec, Registry.selection_count(name, profile), 100_000)
   end
 
   defp scale_estimates(spec, count, standard_count) do

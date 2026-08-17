@@ -189,12 +189,7 @@ defmodule VialKeeper.Bench.OpenImages do
         {:error, reason}
 
       stream ->
-        images =
-          stream
-          |> Select.smallest(count, fn image ->
-            {rank_key(spec["selection_seed"], image["image_id"]), image["image_id"]}
-          end)
-
+        images = Enum.take(stream, count)
         {:ok, manifest_from_images(spec, profile, images)}
     end
   end
