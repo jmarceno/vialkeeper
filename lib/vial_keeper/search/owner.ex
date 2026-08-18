@@ -17,6 +17,8 @@ defmodule VialKeeper.Search.Owner do
   @search_root "search/indexes"
   @manifest "manifest.json"
   @backend "tantivy_ex"
+  @open_attempts 8
+  @open_retry_ms 25
 
   @type args :: {binary(), binary() | nil}
 
@@ -227,6 +229,22 @@ defmodule VialKeeper.Search.Owner do
     load_manifests(state, rest)
   end
 
+  defp open_published_generation(path, definition),
+    do: open_published_generation(path, definition, @open_attempts)
+
+  defp open_published_generation(path, definition, 1), do: Tantivy.open(path, definition)
+
+  defp open_published_generation(path, definition, remaining) do
+    case Tantivy.open(path, definition) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, _} ->
+        Process.sleep(@open_retry_ms)
+        open_published_generation(path, definition, remaining - 1)
+    end
+  end
+
   defp load_manifest(state, _manifest_path, binary) do
     with {:ok,
           %{
@@ -242,7 +260,7 @@ defmodule VialKeeper.Search.Owner do
          true <- is_binary(index_id) and is_integer(generation) and is_map(definition),
          {:ok, root} <- index_root(state.tmp_path, index_id),
          generation_path = Path.join(root, "generation-#{generation}"),
-         {:ok, handle} <- Tantivy.open(generation_path, definition) do
+         {:ok, handle} <- open_published_generation(generation_path, definition) do
       entry = %IndexGeneration{
         definition: definition,
         generation: generation,

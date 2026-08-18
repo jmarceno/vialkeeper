@@ -1,6 +1,10 @@
 defmodule VialKeeper.JSON.Canonical do
   @moduledoc "RFC 8785-style canonical JSON for validated JSON values."
   alias VialKeeper.Error
+  alias VialKeeper.JSON.StrictDecoder
+
+  @safe_integer_max 9_007_199_254_740_991
+  @default_max_depth 100
 
   @spec encode(term()) :: {:ok, binary()} | {:error, Error.t()}
   def encode(value) do
@@ -19,11 +23,34 @@ defmodule VialKeeper.JSON.Canonical do
     end
   end
 
+  @doc """
+  Recovers the StrictDecoder term for `json` produced by `encode/1`.
+
+  Elixir maps, lists, binaries, booleans, nil, and safe integers already match
+  that term, so those values skip a second JSON parse. Floats and over-deep
+  trees still round-trip through `StrictDecoder` so `1.0` becomes `1` and depth
+  limits stay identical.
+  """
+  @spec decode_encoded(term(), binary(), keyword()) :: {:ok, term()} | {:error, Error.t()}
+  def decode_encoded(value, json, opts \\ [])
+
+  def decode_encoded(value, json, opts) when is_binary(json) and is_list(opts) do
+    max_depth = Keyword.get(opts, :max_depth, @default_max_depth)
+
+    case term_kind(value, 0, max_depth) do
+      :canonical -> {:ok, value}
+      :roundtrip -> StrictDecoder.decode(json, opts)
+    end
+  end
+
+  def decode_encoded(_value, _json, _opts),
+    do: {:error, Error.invalid_request("canonical JSON body must be UTF-8 text")}
+
   defp encode_value(nil), do: "null"
   defp encode_value(true), do: "true"
   defp encode_value(false), do: "false"
 
-  defp encode_value(value) when is_integer(value) and abs(value) <= 9_007_199_254_740_991,
+  defp encode_value(value) when is_integer(value) and abs(value) <= @safe_integer_max,
     do: Integer.to_string(value)
 
   defp encode_value(value) when is_float(value), do: encode_float(value)
@@ -157,5 +184,48 @@ defmodule VialKeeper.JSON.Canonical do
 
     exponent_sign = if exponent_value >= 0, do: "+", else: "-"
     coefficient <> "e" <> exponent_sign <> Integer.to_string(abs(exponent_value))
+  end
+
+  defp term_kind(_value, depth, max_depth) when depth > max_depth, do: :roundtrip
+  defp term_kind(value, _depth, _max_depth) when is_nil(value) or is_boolean(value), do: :canonical
+
+  defp term_kind(value, _depth, _max_depth)
+       when is_integer(value) and abs(value) <= @safe_integer_max,
+       do: :canonical
+
+  defp term_kind(value, _depth, _max_depth) when is_float(value), do: :roundtrip
+
+  defp term_kind(value, _depth, _max_depth) when is_binary(value) do
+    if String.valid?(value), do: :canonical, else: :roundtrip
+  end
+
+  defp term_kind(value, depth, max_depth) when is_list(value),
+    do: list_kind(value, depth, max_depth)
+
+  defp term_kind(value, depth, max_depth) when is_map(value),
+    do: map_kind(value, depth, max_depth)
+
+  defp term_kind(_value, _depth, _max_depth), do: :roundtrip
+
+  defp list_kind([], _depth, _max_depth), do: :canonical
+
+  defp list_kind([head | tail], depth, max_depth) do
+    case term_kind(head, depth + 1, max_depth) do
+      :canonical -> list_kind(tail, depth, max_depth)
+      kind -> kind
+    end
+  end
+
+  defp map_kind(map, depth, max_depth) do
+    Enum.reduce_while(map, :canonical, fn
+      {key, value}, :canonical when is_binary(key) ->
+        case term_kind(value, depth + 1, max_depth) do
+          :canonical -> {:cont, :canonical}
+          kind -> {:halt, kind}
+        end
+
+      _entry, _acc ->
+        {:halt, :roundtrip}
+    end)
   end
 end

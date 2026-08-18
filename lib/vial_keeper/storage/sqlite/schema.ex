@@ -16,6 +16,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
     with :ok <- Connection.execute(conn, journal_mode_sql(storage_mode)),
          :ok <- Connection.execute(conn, synchronous_sql(storage_mode)),
+         :ok <- wal_autocheckpoint(conn, storage_mode),
          :ok <- Connection.execute(conn, "PRAGMA foreign_keys = ON"),
          :ok <- Connection.execute(conn, "PRAGMA locking_mode = NORMAL"),
          :ok <- Connection.execute(conn, "PRAGMA trusted_schema = OFF"),
@@ -671,6 +672,18 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   # throughput at disk fsync latency.
   defp synchronous_sql(:disk), do: "PRAGMA synchronous = NORMAL"
   defp synchronous_sql(:memory), do: "PRAGMA synchronous = NORMAL"
+
+  # 16 384 pages × 4 KiB = 64 MiB, matching the page cache. The SQLite default
+  # (1 000 pages, 4 MiB) fsyncs the WAL inside ordinary commits on spinning
+  # disk and produces the bulk-write p95 tail. Close still TRUNCATEs. App-crash
+  # durability is unchanged under NORMAL; a larger checkpoint interval only
+  # widens the already-documented power/OS-loss window.
+  @wal_autocheckpoint_pages 16_384
+
+  defp wal_autocheckpoint(conn, :disk),
+    do: Connection.execute(conn, "PRAGMA wal_autocheckpoint = #{@wal_autocheckpoint_pages}")
+
+  defp wal_autocheckpoint(_conn, :memory), do: :ok
 
   # 64 MiB page cache. Negative values are KiB, independent of page size.
   defp cache_size_sql, do: "PRAGMA cache_size = -65536"

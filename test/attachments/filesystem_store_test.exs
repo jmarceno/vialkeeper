@@ -35,6 +35,23 @@ defmodule VialKeeper.Attachments.FilesystemStoreTest do
     assert FilesystemStore.verify(bundle.root, digest, size) == :ok
   end
 
+  test "buffered finish becomes durable after sync_digests", %{bundle: bundle} do
+    payload = :crypto.strong_rand_bytes(2048)
+
+    assert {:ok, writer} =
+             FilesystemStore.begin_put(bundle.root, byte_size(payload) + 1, %{durable: false})
+
+    assert :ok = FilesystemStore.write_chunk(writer, payload)
+
+    assert {:ok, %{digest: digest, logical_size: size, deduplicated?: false}} =
+             FilesystemStore.finish_put(writer)
+
+    assert FilesystemStore.exists?(bundle.root, digest)
+    assert :ok = FilesystemStore.sync_digests(bundle.root, [digest])
+    assert :ok = FilesystemStore.sync_digests(bundle.root, [])
+    assert FilesystemStore.verify(bundle.root, digest, size) == :ok
+  end
+
   test "accepts exact max size and rejects max plus one", %{bundle: bundle} do
     max = 1_024
     exact = :binary.copy(<<1>>, max)

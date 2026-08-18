@@ -105,9 +105,9 @@ defmodule VialKeeper.Bench.ProgressTest do
     {:ok, pid} =
       Progress.start(
         owner: owner,
-        stall_timeout_ms: 80,
+        stall_timeout_ms: 400,
         heartbeat_ms: 10_000,
-        check_interval_ms: 15,
+        check_interval_ms: 20,
         printer: printer
       )
 

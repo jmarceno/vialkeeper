@@ -62,6 +62,7 @@ defmodule VialKeeper.StorageAdapter.MemoryModeTest do
     assert adapter.storage_mode == :disk
     assert {:ok, [["wal"]]} = Connection.pragma(adapter.conn, "journal_mode")
     assert {:ok, [[1]]} = Connection.pragma(adapter.conn, "synchronous")
+    assert {:ok, [[16_384]]} = Connection.pragma(adapter.conn, "wal_autocheckpoint")
 
     assert {:ok, _} =
              Adapter.apply_local_mutation(adapter, %{

@@ -31,12 +31,12 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   @type representation_reader :: {:representation_reader, reference()}
 
   @impl true
-  def begin_put(store_ref, max_bytes, _options)
-      when is_integer(max_bytes) and max_bytes > 0 do
-    AttachmentStore.phase(:begin, fn -> do_begin_put(store_ref, max_bytes) end)
+  def begin_put(store_ref, max_bytes, options)
+      when is_integer(max_bytes) and max_bytes > 0 and is_map(options) do
+    AttachmentStore.phase(:begin, fn -> do_begin_put(store_ref, max_bytes, options) end)
   end
 
-  defp do_begin_put(store_ref, max_bytes) do
+  defp do_begin_put(store_ref, max_bytes, options) do
     with {:ok, ref} <- writable_ref(store_ref),
          {:ok, bundle} <- bundle_for(ref),
          {:ok, tmp_path} <- exclusive_tmp(bundle.tmp_path),
@@ -56,7 +56,8 @@ defmodule VialKeeper.Attachments.FilesystemStore do
           max_bytes: max_bytes,
           phase: :probing,
           probe_buffer: <<>>,
-          compression_ctx: nil
+          compression_ctx: nil,
+          durable?: Map.get(options, :durable, true)
         }
       )
 
@@ -96,11 +97,16 @@ defmodule VialKeeper.Attachments.FilesystemStore do
              AttachmentStore.phase(:digest_finalize, fn -> original_descriptor(state) end),
            {:ok, trailer} <- Representation.encode_trailer(descriptor),
            :ok <- AttachmentStore.phase(:trailer_write, fn -> write_trailer(state.fd, trailer) end),
-           :ok <- AttachmentStore.phase(:file_sync, fn -> sync_file(state.fd) end),
+           :ok <- maybe_sync_writer(state),
            :ok <- AttachmentStore.phase(:file_close, fn -> close_fd(state.fd) end),
            {:ok, install_kind} <-
              AttachmentStore.phase(:cas_install, fn ->
-               install_blob(state.store_ref, state.tmp_path, descriptor.logical_digest)
+               install_blob(
+                 state.store_ref,
+                 state.tmp_path,
+                 descriptor.logical_digest,
+                 state.durable?
+               )
              end) do
         {:ok,
          %{
@@ -185,10 +191,10 @@ defmodule VialKeeper.Attachments.FilesystemStore do
            :ok <- finalize_representation_payload(state),
            {:ok, trailer} <- Representation.encode_trailer(state.descriptor),
            :ok <- write_trailer(state.fd, trailer),
-           :ok <- sync_file(state.fd),
+           :ok <- DurableFS.sync_fd(state.fd),
            :ok <- close_fd(state.fd),
            {:ok, install_kind} <-
-             install_blob(state.store_ref, state.tmp_path, state.descriptor.logical_digest) do
+             install_blob(state.store_ref, state.tmp_path, state.descriptor.logical_digest, true) do
         {:ok,
          %{
            digest: state.descriptor.logical_digest,
@@ -238,6 +244,26 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   end
 
   def writer_tmp_path(_), do: nil
+
+  @doc """
+  Makes newly installed CAS blobs durable after a buffered `finish_put`.
+
+  Each digest is `fdatasync`'d, then each unique prefix directory is synced so
+  the directory entry is durable. Missing paths are ignored because a
+  concurrent installer may have lost a CAS race after the caller observed
+  `:new`.
+  """
+  @spec sync_digests(StoreRef.t() | Path.t(), [binary()]) :: :ok | {:error, Error.t()}
+  def sync_digests(_store_ref, []), do: :ok
+
+  def sync_digests(store_ref, digests) when is_list(digests) do
+    unique = Enum.uniq(digests)
+
+    with {:ok, bundle} <- bundle_for(store_ref),
+         :ok <- sync_blob_inodes(bundle, unique) do
+      sync_blob_directories(bundle, unique)
+    end
+  end
 
   @impl true
   def exists?(store_ref, digest) do
@@ -835,11 +861,11 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   defp encoding_from_phase({:writing, encoding}), do: encoding
   defp encoding_from_phase(:probing), do: :raw
 
-  defp install_blob(store_ref, tmp_path, digest) do
+  defp install_blob(store_ref, tmp_path, digest, durable?) do
     case bundle_for(store_ref) do
       {:ok, bundle} ->
         with :ok <- ensure_blob_directory(bundle, digest) do
-          install_into_bundle(bundle, tmp_path, digest)
+          install_into_bundle(bundle, tmp_path, digest, durable?)
         end
 
       {:error, _} = error ->
@@ -847,7 +873,7 @@ defmodule VialKeeper.Attachments.FilesystemStore do
     end
   end
 
-  defp install_into_bundle(bundle, tmp_path, digest) do
+  defp install_into_bundle(bundle, tmp_path, digest, durable?) do
     dest = blob_path(bundle.blobs_path, digest)
 
     case blob_file_kind(dest) do
@@ -859,7 +885,7 @@ defmodule VialKeeper.Attachments.FilesystemStore do
         {:error, Error.integrity_violation("attachment blob representation is a symlink")}
 
       :missing ->
-        install_new_blob(bundle, tmp_path, dest, digest)
+        install_new_blob(bundle, tmp_path, dest, digest, durable?)
 
       {:error, reason} ->
         _ = File.rm(tmp_path)
@@ -877,13 +903,10 @@ defmodule VialKeeper.Attachments.FilesystemStore do
     end
   end
 
-  defp install_new_blob(_bundle, tmp_path, dest, digest) do
+  defp install_new_blob(_bundle, tmp_path, dest, digest, durable?) do
     case atomic_install(tmp_path, dest) do
       :ok ->
-        case DurableFS.sync_directory(Path.dirname(dest)) do
-          :ok -> {:ok, :new}
-          {:error, reason} -> {:error, reason}
-        end
+        persist_new_blob(dest, durable?)
 
       {:error, :collision} ->
         _ = File.rm(tmp_path)
@@ -891,6 +914,15 @@ defmodule VialKeeper.Attachments.FilesystemStore do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp persist_new_blob(_dest, false), do: {:ok, :new}
+
+  defp persist_new_blob(dest, _durable?) do
+    case DurableFS.sync_directory(Path.dirname(dest)) do
+      :ok -> {:ok, :new}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -1369,7 +1401,61 @@ defmodule VialKeeper.Attachments.FilesystemStore do
     end
   end
 
-  defp sync_file(fd), do: :file.sync(fd)
+  defp maybe_sync_writer(%{durable?: false}), do: :ok
+
+  defp maybe_sync_writer(%{fd: fd}) do
+    AttachmentStore.phase(:file_sync, fn -> DurableFS.sync_fd(fd) end)
+  end
+
+  defp sync_blob_inodes(bundle, digests) do
+    concurrency = min(length(digests), 16)
+
+    Task.async_stream(
+      digests,
+      fn digest ->
+        AttachmentStore.phase(:file_sync, fn ->
+          DurableFS.sync_file(blob_path(bundle.blobs_path, digest))
+        end)
+      end,
+      max_concurrency: concurrency,
+      timeout: 120_000,
+      ordered: false
+    )
+    |> Enum.reduce_while(:ok, &reduce_sync_result/2)
+  end
+
+  defp reduce_sync_result({:ok, :ok}, :ok), do: {:cont, :ok}
+
+  defp reduce_sync_result({:ok, {:error, :enoent}}, :ok), do: {:cont, :ok}
+
+  defp reduce_sync_result({:ok, {:error, %Error{}} = error}, :ok), do: {:halt, error}
+
+  defp reduce_sync_result({:ok, {:error, reason}}, :ok) do
+    {:halt,
+     {:error, Error.internal_error("attachment fdatasync failed", %{reason: inspect(reason)})}}
+  end
+
+  defp reduce_sync_result({:exit, reason}, :ok) do
+    {:halt,
+     {:error, Error.internal_error("attachment fdatasync worker failed", %{cause: inspect(reason)})}}
+  end
+
+  defp sync_blob_directories(bundle, digests) do
+    digests
+    |> Enum.map(&Path.dirname(blob_path(bundle.blobs_path, &1)))
+    |> Enum.uniq()
+    |> Enum.reduce_while(:ok, fn directory, :ok ->
+      case DurableFS.sync_directory(directory) do
+        :ok ->
+          {:cont, :ok}
+
+        {:error, reason} ->
+          {:halt,
+           {:error,
+            Error.internal_error("attachment directory sync failed", %{reason: inspect(reason)})}}
+      end
+    end)
+  end
 
   defp close_fd(fd) when is_pid(fd) or is_reference(fd) do
     _ = File.close(fd)

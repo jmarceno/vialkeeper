@@ -97,6 +97,7 @@ defmodule VialKeeper.Search.TantivyTest do
 
     assert fingerprint == Tantivy.schema_fingerprint()
     :ok = GenServer.stop(pid)
+    :erlang.garbage_collect()
 
     {:ok, pid} = Owner.start_link({uuid, path})
     assert {:ok, [%{id: "doc"}]} = GenServer.call(pid, {:search, "idx", "reopen", "all"})

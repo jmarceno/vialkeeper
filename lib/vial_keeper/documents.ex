@@ -4,7 +4,6 @@ defmodule VialKeeper.Documents do
   alias VialKeeper.Attachments.Manifest
   alias VialKeeper.Error
   alias VialKeeper.JSON.Canonical
-  alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Mutation
   alias VialKeeper.Runtime.DatabaseCatalog
@@ -366,10 +365,7 @@ defmodule VialKeeper.Documents do
 
     with :ok <- validate_id(id),
          true <- is_map(body),
-         {:ok, canonical} <-
-           Mutation.phase(:put, :canonical_encode, fn -> Canonical.encode(body) end),
-         {:ok, normalized} <-
-           Mutation.phase(:put, :strict_decode, fn -> StrictDecoder.decode(canonical) end),
+         {:ok, canonical, normalized} <- canonicalize_body(body, :put),
          {:ok, revision} <- expected_revision(request),
          {:ok, attachments} <- parse_attachments_field(request) do
       {:ok,
@@ -455,7 +451,7 @@ defmodule VialKeeper.Documents do
 
   defp normalize_resolution_body(false, body) do
     with {:ok, canonical} <- Canonical.encode(body) do
-      StrictDecoder.decode(canonical)
+      Canonical.decode_encoded(body, canonical, json_decode_opts())
     end
   end
 
@@ -642,10 +638,7 @@ defmodule VialKeeper.Documents do
   end
 
   defp normalize_bulk_put(id, body, operation) do
-    with {:ok, canonical} <-
-           Mutation.phase(:bulk_write, :canonical_encode, fn -> Canonical.encode(body) end),
-         {:ok, normalized} <-
-           Mutation.phase(:bulk_write, :strict_decode, fn -> StrictDecoder.decode(canonical) end),
+    with {:ok, canonical, normalized} <- canonicalize_body(body, :bulk_write),
          {:ok, attachments} <- parse_attachments_field(operation) do
       {:ok,
        %{
@@ -657,6 +650,23 @@ defmodule VialKeeper.Documents do
          attachments: attachments
        }}
     end
+  end
+
+  defp canonicalize_body(body, operation) do
+    opts = json_decode_opts()
+
+    with {:ok, canonical} <-
+           Mutation.phase(operation, :canonical_encode, fn -> Canonical.encode(body) end),
+         {:ok, normalized} <-
+           Mutation.phase(operation, :strict_decode, fn ->
+             Canonical.decode_encoded(body, canonical, opts)
+           end) do
+      {:ok, canonical, normalized}
+    end
+  end
+
+  defp json_decode_opts do
+    [max_depth: VialKeeper.Config.host_limits()[:max_json_nesting_depth] || 100]
   end
 
   defp bulk_if_revision(operation), do: MapAccess.get(operation, :if_revision)

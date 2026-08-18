@@ -61,6 +61,12 @@ last committed transactions, which SQLite replays or discards on reopen. This
 is an explicit durability trade-off: `FULL` added one WAL fsync per commit and
 capped write throughput at disk fsync latency.
 
+Disk writers set `wal_autocheckpoint=16384` (64 MiB at the default 4 KiB page
+size) so ordinary commits are not stalled by the SQLite default 4 MiB
+checkpoint fsync. Close still runs `wal_checkpoint(TRUNCATE)`. A power/OS
+failure can therefore lose a larger suffix of unsynced WAL frames than the
+SQLite default; application-crash consistency is unchanged.
+
 Close order is drain in-flight snapshots, close readers, checkpoint the writer
 (`wal_checkpoint(TRUNCATE)`), close the writer, then remove empty `-wal`/`-shm`
 sidecars. Exclusive commands (compact, integrity, rebuild, live-digest, blob
