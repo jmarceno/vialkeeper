@@ -119,7 +119,8 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
          {:ok, metadata} <- find_index(indexes, MapAccess.get(request, :index_id)),
          true <- is_binary(text),
          :ok <- Executor.check_deadline(deadline),
-         {:ok, hits} <- search_hits(context, metadata, text, to_string(mode)),
+         search_limit <- full_text_search_limit(request),
+         {:ok, hits} <- search_hits(context, metadata, text, to_string(mode), search_limit),
          hits <- page_hits(hits, request),
          :ok <- enforce_full_text_candidate_bound(hits, request),
          :ok <- Executor.check_deadline(deadline),
@@ -450,16 +451,16 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
     |> Map.put(:backend_meta, %{doc_key: doc_key})
   end
 
-  defp search_hits(context, metadata, text, mode) do
+  defp search_hits(context, metadata, text, mode, limit) do
     index_id = MapAccess.get(metadata, :index_id)
 
-    case Search.search(context, index_id, text, mode) do
+    case Search.search_page(context, index_id, text, mode, limit) do
       {:ok, hits} ->
         {:ok, hits}
 
       {:error, %VialKeeper.Error{code: :index_not_found}} ->
         with :ok <- SearchIndexes.rebuild(context, metadata, metadata, :cache_miss) do
-          Search.search(context, index_id, text, mode)
+          Search.search_page(context, index_id, text, mode, limit)
         end
 
       {:error, _} = error ->
@@ -495,14 +496,14 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
 
   defp full_text_requires_post_filter?(request) do
     not blank_filter?(MapAccess.get(request, :selector)) or
-      not is_nil(MapAccess.get(request, :predicate)) or
+      predicate_requires_post_filter?(MapAccess.get(request, :predicate)) or
       MapAccess.get(request, :sort, []) not in [nil, []]
   end
 
   defp pageable_full_text?(sort, request, limit)
        when sort in [nil, []] and is_integer(limit) and limit >= 0 do
     blank_filter?(MapAccess.get(request, :selector)) and
-      is_nil(MapAccess.get(request, :predicate))
+      not predicate_requires_post_filter?(MapAccess.get(request, :predicate))
   end
 
   defp pageable_full_text?(_sort, _request, _limit), do: false
@@ -510,6 +511,23 @@ defmodule VialKeeper.Storage.SQLite.IndexCandidates do
   defp blank_filter?(nil), do: true
   defp blank_filter?(selector) when selector == %{}, do: true
   defp blank_filter?(_selector), do: false
+
+  defp predicate_requires_post_filter?(nil), do: false
+  defp predicate_requires_post_filter?(:match_all), do: false
+  defp predicate_requires_post_filter?(_predicate), do: true
+
+  defp full_text_search_limit(request) do
+    if pageable_full_text?(
+         MapAccess.get(request, :sort, []),
+         request,
+         MapAccess.get(request, :limit)
+       ) and is_nil(MapAccess.get(request, :after_id)) and
+         is_nil(MapAccess.get(request, :after_ordering)) do
+      min(MapAccess.get(request, :limit) + 1, Config.search_candidate_limit() + 1)
+    else
+      Config.search_candidate_limit() + 1
+    end
+  end
 
   defp drop_before_cursor(hits, nil), do: hits
 

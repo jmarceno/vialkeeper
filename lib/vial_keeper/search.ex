@@ -151,6 +151,15 @@ defmodule VialKeeper.Search do
     call(context, {:search, index_id, text, mode})
   end
 
+  @doc "Searches one index for a ranked candidate window, expanding score ties when needed."
+  @spec search_page(BackendContext.t(), binary(), binary(), binary(), pos_integer()) ::
+          {:ok, [map()]} | {:error, VialKeeper.Error.t()}
+  def search_page(%BackendContext{} = context, index_id, text, mode, limit)
+      when is_binary(index_id) and is_binary(text) and is_binary(mode) and is_integer(limit) and
+             limit > 0 do
+    call(context, {:search, index_id, text, mode, limit})
+  end
+
   @spec record_winner(binary(), map()) :: :ok
   def record_winner(document_id, winner) when is_binary(document_id) and is_map(winner) do
     {body, deleted} = winner_payload(winner)

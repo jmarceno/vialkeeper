@@ -7,6 +7,8 @@ defmodule VialKeeper.Search.Tantivy do
   supplies the stable document id and the configured JSON-pointer field values.
   """
 
+  alias TantivyEx.Searcher
+  alias VialKeeper.Config
   alias VialKeeper.JSON.Pointer
   alias VialKeeper.MapAccess
 
@@ -148,18 +150,17 @@ defmodule VialKeeper.Search.Tantivy do
   end
 
   @spec search(handle(), binary(), binary()) :: {:ok, [map()]} | {:error, term()}
-  def search(%{searcher: nil}, _text, _mode),
+  def search(handle, text, mode),
+    do: search(handle, text, mode, Config.search_candidate_limit() + 1)
+
+  @spec search(handle(), binary(), binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
+  def search(%{searcher: nil}, _text, _mode, _limit),
     do: {:error, VialKeeper.Error.index_not_found("full-text index is not committed")}
 
-  def search(%{schema: schema, searcher: searcher}, text, mode)
-      when is_binary(text) and is_binary(mode) do
+  def search(%{schema: schema, searcher: searcher}, text, mode, limit)
+      when is_binary(text) and is_binary(mode) and is_integer(limit) and limit > 0 do
     with {:ok, query} <- query(schema, text, mode),
-         {:ok, results} <-
-           TantivyEx.Searcher.search_documents(
-             searcher,
-             query,
-             VialKeeper.Config.search_candidate_limit() + 1
-           ) do
+         {:ok, results} <- search_ranked_documents(searcher, query, limit) do
       hits = results |> Enum.map(&hit/1) |> Enum.sort_by(&hit_sort_key/1)
       {:ok, hits}
     else
@@ -171,6 +172,54 @@ defmodule VialKeeper.Search.Tantivy do
        VialKeeper.Error.internal_error("full-text search failed", %{
          cause: inspect(exception)
        })}
+  end
+
+  defp search_ranked_documents(searcher, query, limit) do
+    max_limit = Config.search_candidate_limit() + 1
+    target_limit = min(limit, max_limit)
+    search_ranked_documents(searcher, query, target_limit, target_limit, max_limit)
+  end
+
+  defp search_ranked_documents(searcher, query, target_limit, current_limit, max_limit) do
+    with {:ok, results} <- Searcher.search(searcher, query, current_limit, false) do
+      cond do
+        length(results) < current_limit or current_limit >= max_limit ->
+          Searcher.search_documents(searcher, query, current_limit)
+
+        boundary_resolved?(results, target_limit) ->
+          Searcher.search_documents(searcher, query, current_limit)
+
+        true ->
+          search_ranked_documents(
+            searcher,
+            query,
+            target_limit,
+            min(current_limit * 2, max_limit),
+            max_limit
+          )
+      end
+    end
+  end
+
+  defp boundary_resolved?(results, target_limit) do
+    {boundary, last} = boundary_and_last(results, target_limit)
+
+    with boundary when is_map(boundary) <- boundary,
+         last when is_map(last) <- last,
+         boundary_score when is_number(boundary_score) <- Map.get(boundary, "score"),
+         last_score when is_number(last_score) <- Map.get(last, "score") do
+      last_score < boundary_score
+    else
+      _ -> true
+    end
+  end
+
+  defp boundary_and_last(results, target_limit) do
+    Enum.reduce(results, {nil, nil, 0}, fn result, {boundary, _last, index} ->
+      boundary = if index == target_limit - 1, do: result, else: boundary
+      {boundary, result, index + 1}
+    end)
+    |> then(fn {boundary, last, _index} -> {boundary, last} end)
   end
 
   @spec schema() :: TantivyEx.Schema.t()

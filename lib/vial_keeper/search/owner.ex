@@ -187,11 +187,23 @@ defmodule VialKeeper.Search.Owner do
   end
 
   def handle_call({:search, index_id, text, mode}, _from, state) do
+    search_reply(state, index_id, text, mode, nil)
+  end
+
+  def handle_call({:search, index_id, text, mode, limit}, _from, state)
+      when is_integer(limit) and limit > 0 do
+    search_reply(state, index_id, text, mode, limit)
+  end
+
+  def handle_call(:has_indexes, _from, state),
+    do: {:reply, map_size(state.indexes) > 0, state}
+
+  defp search_reply(state, index_id, text, mode, limit) do
     reply =
       SearchInstrumentation.query(state.uuid, mode, fn ->
         case Map.get(state.indexes, index_id) do
           %{handle: %{searcher: searcher} = handle} when not is_nil(searcher) ->
-            Tantivy.search(handle, text, mode)
+            search_handle(handle, text, mode, limit)
 
           %{handle: nil} ->
             {:error, VialKeeper.Error.index_not_found("full-text index is not built")}
@@ -204,8 +216,8 @@ defmodule VialKeeper.Search.Owner do
     {:reply, reply, state}
   end
 
-  def handle_call(:has_indexes, _from, state),
-    do: {:reply, map_size(state.indexes) > 0, state}
+  defp search_handle(handle, text, mode, nil), do: Tantivy.search(handle, text, mode)
+  defp search_handle(handle, text, mode, limit), do: Tantivy.search(handle, text, mode, limit)
 
   @impl true
   def terminate(_reason, _state), do: :ok
