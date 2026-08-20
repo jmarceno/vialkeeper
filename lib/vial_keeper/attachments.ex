@@ -925,24 +925,16 @@ defmodule VialKeeper.Attachments do
   defp upload_physical_batch(uuid, bundle_root, sources, concurrency, opts) do
     buffered_opts = Keyword.put(opts, :durable, false)
 
-    sources
-    |> Enum.chunk_every(concurrency)
-    |> Enum.reduce_while({:ok, []}, fn wave, {:ok, acc} ->
-      case upload_physical_wave(uuid, bundle_root, wave, concurrency, buffered_opts) do
-        {:ok, descriptors} -> {:cont, {:ok, Enum.reverse(descriptors, acc)}}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
-      {:error, _} = error -> error
-    end
-  end
-
-  defp upload_physical_wave(uuid, bundle_root, wave, concurrency, opts) do
     with {:ok, descriptors} <-
-           upload_physical_wave_workers(uuid, bundle_root, wave, concurrency, opts) do
-      persist_wave_blobs(bundle_root, descriptors)
+           upload_physical_wave_workers(
+             uuid,
+             bundle_root,
+             sources,
+             concurrency,
+             buffered_opts
+           ),
+         :ok <- sync_physical_descriptors(bundle_root, descriptors) do
+      {:ok, descriptors}
     end
   end
 
@@ -976,7 +968,7 @@ defmodule VialKeeper.Attachments do
     end
   end
 
-  defp persist_wave_blobs(bundle_root, descriptors) do
+  defp sync_physical_descriptors(bundle_root, descriptors) do
     digests =
       descriptors
       |> Enum.reject(& &1.deduplicated?)
@@ -984,7 +976,7 @@ defmodule VialKeeper.Attachments do
       |> Enum.uniq()
 
     case FilesystemStore.sync_digests(bundle_root, digests) do
-      :ok -> {:ok, descriptors}
+      :ok -> :ok
       {:error, _} = error -> error
     end
   end
