@@ -34,3 +34,6 @@ plans/
 /native/tantivy_ex/deps
 /native/tantivy_ex/priv/native
 /native/tantivy_ex/native/tantivy_ex/target
+
+# Others
+.directory
