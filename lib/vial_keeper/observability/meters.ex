@@ -37,6 +37,7 @@ defmodule VialKeeper.Observability.Meters do
   | `vial_keeper.search.query.count` | counter |
   | `vial_keeper.search.query.duration` | histogram |
   | `vial_keeper.replication.batch.duration` | histogram |
+  | `vial_keeper.replication.runtime_summary.duration` | histogram |
   | `vial_keeper.replication.transfer.count` | counter |
   | `vial_keeper.replication.transfer.duration` | histogram |
   | `vial_keeper.replication.checkpoint.count` | counter |
@@ -89,6 +90,7 @@ defmodule VialKeeper.Observability.Meters do
     {:"vial_keeper.search.query.count", :counter},
     {:"vial_keeper.search.query.duration", :histogram},
     {:"vial_keeper.replication.batch.duration", :histogram},
+    {:"vial_keeper.replication.runtime_summary.duration", :histogram},
     {:"vial_keeper.replication.transfer.count", :counter},
     {:"vial_keeper.replication.transfer.duration", :histogram},
     {:"vial_keeper.replication.checkpoint.count", :counter},

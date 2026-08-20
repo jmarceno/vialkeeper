@@ -5,6 +5,8 @@ defmodule VialKeeper.Observability.Instrumentation.Replication do
     * `vial_keeper.replication.batch`      — span + histogram (started/ended by
       `VialKeeper.Replication.Worker` so it wraps the full batch cycle and phase
       tasks inherit its trace context)
+    * `vial_keeper.replication.runtime_summary.duration` — histogram for the
+      bounded runtime-state projection used by local dashboards and close checks
     * `vial_keeper.replication.checkpoint` — span + counter (wraps each
       `put_checkpoint` CAS write)
     * `vial_keeper.replication.transfer` — span + histogram for one transfer barrier
@@ -30,6 +32,12 @@ defmodule VialKeeper.Observability.Instrumentation.Replication do
   @blob_transfer_duration :"vial_keeper.replication.blob.transfer.duration"
   @wire_bytes :"vial_keeper.replication.wire.bytes"
   @wire_codec_duration :"vial_keeper.replication.wire.codec.duration"
+
+  @doc "Records the duration of a bounded runtime replication summary."
+  @spec runtime_summary(non_neg_integer()) :: :ok
+  def runtime_summary(duration) when is_integer(duration) and duration >= 0 do
+    Meters.record(:"vial_keeper.replication.runtime_summary.duration", duration)
+  end
 
   @doc """
   Wraps a checkpoint CAS write (`put_checkpoint`) in the

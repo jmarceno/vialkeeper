@@ -55,7 +55,8 @@ defmodule VialKeeper.Benchmarks.Runner do
     "vial_keeper.search.rebuild.duration",
     "vial_keeper.search.rebuild.batch.duration",
     "vial_keeper.search.refresh.duration",
-    "vial_keeper.search.query.duration"
+    "vial_keeper.search.query.duration",
+    "vial_keeper.replication.runtime_summary.duration"
   ]
 
   @default_iterations 15

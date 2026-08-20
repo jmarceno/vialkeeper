@@ -7,6 +7,7 @@ defmodule VialKeeper.Replication.JobManager do
   alias VialKeeper.Error
   alias VialKeeper.JSON.Stringify
   alias VialKeeper.MapAccess
+  alias VialKeeper.Observability.Instrumentation.Replication, as: ReplicationInstrumentation
   alias VialKeeper.Replication.Id
   alias VialKeeper.Replication.LocalEndpoint
   alias VialKeeper.Replication.RemoteEndpoint
@@ -29,6 +30,11 @@ defmodule VialKeeper.Replication.JobManager do
     :report_peer,
     :waiting,
     :backoff
+  ]
+
+  @runtime_state_match_specs [
+    {{:"$1", :"$2", :"$3", :"$4", :"$5", :"$6"}, [], [:"$2"]},
+    {{:"$1", :"$2", :"$3", :"$4", :"$5"}, [], [:"$2"]}
   ]
 
   @spec start_link() :: GenServer.on_start()
@@ -103,12 +109,8 @@ defmodule VialKeeper.Replication.JobManager do
   @spec active?(binary()) :: boolean()
   def active?(uuid) do
     ensure_table()
-    |> :ets.tab2list()
-    |> Enum.any?(fn
-      {_job_id, state, _pid, ^uuid, _replication_id, _details} -> active_state?(state)
-      {_job_id, state, _pid, ^uuid, _replication_id} -> active_state?(state)
-      _ -> false
-    end)
+    |> :ets.select(active_state_match_specs(uuid))
+    |> Enum.any?(&active_state?/1)
   end
 
   @doc """
@@ -123,21 +125,44 @@ defmodule VialKeeper.Replication.JobManager do
           by_state: %{optional(atom()) => non_neg_integer()}
         }
   def runtime_summary do
-    entries = ensure_table() |> :ets.tab2list()
+    started = System.monotonic_time()
+    entries = runtime_states(ensure_table())
 
-    Enum.reduce(entries, %{tracked: 0, active: 0, by_state: %{}}, fn entry, acc ->
-      state =
-        case entry do
-          {_job_id, state, _pid, _uuid, _replication_id, _details} -> state
-          {_job_id, state, _pid, _uuid, _replication_id} -> state
-          _ -> :unknown
-        end
+    result =
+      Enum.reduce(entries, %{tracked: 0, active: 0, by_state: %{}}, fn entry, acc ->
+        by_state = Map.update(acc.by_state, entry, 1, &(&1 + 1))
+        active = if active_state?(entry), do: acc.active + 1, else: acc.active
 
-      by_state = Map.update(acc.by_state, state, 1, &(&1 + 1))
-      active = if active_state?(state), do: acc.active + 1, else: acc.active
+        %{tracked: acc.tracked + 1, active: active, by_state: by_state}
+      end)
 
-      %{tracked: acc.tracked + 1, active: active, by_state: by_state}
-    end)
+    ReplicationInstrumentation.runtime_summary(System.monotonic_time() - started)
+    result
+  end
+
+  defp runtime_states(table) do
+    states = :ets.select(table, @runtime_state_match_specs)
+
+    if length(states) == :ets.info(table, :size) do
+      states
+    else
+      table
+      |> :ets.tab2list()
+      |> Enum.map(&runtime_state_from_entry/1)
+    end
+  end
+
+  defp runtime_state_from_entry({_job_id, state, _pid, _uuid, _replication_id, _details}),
+    do: state
+
+  defp runtime_state_from_entry({_job_id, state, _pid, _uuid, _replication_id}), do: state
+  defp runtime_state_from_entry(_entry), do: :unknown
+
+  defp active_state_match_specs(uuid) do
+    [
+      {{:"$1", :"$2", :"$3", :"$4", :"$5", :"$6"}, [{:==, :"$4", uuid}], [:"$2"]},
+      {{:"$1", :"$2", :"$3", :"$4", :"$5"}, [{:==, :"$4", uuid}], [:"$2"]}
+    ]
   end
 
   @spec put(binary(), map()) :: job_reply()
