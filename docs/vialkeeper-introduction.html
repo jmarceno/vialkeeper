@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A gentle technical introduction to VialKeeper, a revisioned JSON document database.">
+  <link rel="icon" href="../img/logo.svg" type="image/svg+xml">
+  <title>VialKeeper — a technical introduction</title>
+  <style>
+    :root {
+      --paper: #f8f6f1;
+      --paper-deep: #eeeae1;
+      --ink: #202022;
+      --muted: #5d5a59;
+      --rule: #d8d1c5;
+      --red: #941e1e;
+      --red-soft: #f2dddd;
+      --blue: #183f5e;
+      --blue-soft: #dce8ef;
+      --green: #23604d;
+      --green-soft: #dcebe2;
+      --yellow: #7a5c16;
+      --yellow-soft: #f3e8c8;
+      --sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 16px/1.55 var(--sans);
+    }
+    a { color: inherit; }
+    .page { max-width: 1180px; margin: 0 auto; padding: 0 34px; }
+    .topbar {
+      display: flex; justify-content: space-between; align-items: center;
+      min-height: 82px; border-bottom: 1px solid var(--rule);
+      font-size: 13px; letter-spacing: .04em; text-transform: uppercase;
+    }
+    .brand { display: flex; align-items: center; gap: 11px; font-weight: 750; letter-spacing: .01em; text-transform: none; font-size: 17px; }
+    .brand img { width: 35px; height: 35px; object-fit: contain; }
+    .toc { display: flex; gap: 20px; color: var(--muted); }
+    .toc a { text-decoration: none; }
+    .toc a:hover { color: var(--red); }
+
+    .hero { min-height: 640px; display: grid; grid-template-columns: 1.04fr .96fr; gap: 70px; align-items: center; padding: 92px 0 84px; }
+    .hero h1 { max-width: 680px; margin: 0 0 27px; font-size: clamp(48px, 7.2vw, 92px); line-height: .98; letter-spacing: -.065em; font-weight: 760; }
+    .hero h1 em { color: var(--red); font-style: normal; }
+    .hero .lede { max-width: 590px; margin: 0; color: var(--muted); font-size: 21px; line-height: 1.45; }
+    .hero-note { margin-top: 35px; padding: 14px 17px; border-left: 3px solid var(--red); max-width: 500px; color: var(--muted); font-size: 14px; }
+    .hero-visual { position: relative; min-height: 420px; display: grid; place-items: center; }
+    .runtime-map { width: min(445px, 92vw); aspect-ratio: 1; position: relative; display: grid; place-items: center; }
+    .runtime-ring { position: absolute; border-radius: 50%; display: grid; place-items: center; }
+    .runtime-ring-outer { inset: 2%; border: 1px solid var(--rule); }
+    .runtime-ring-outer::before { content: "DATABASES · ONE OR MANY PER HOST"; position: absolute; top: 18px; left: 50%; transform: translateX(-50%); white-space: nowrap; color: var(--red); font: 700 10px var(--mono); letter-spacing: .08em; }
+    .runtime-ring-middle { inset: 20%; border: 1px dashed var(--blue); }
+    .runtime-ring-middle::before { display: none; }
+    .host-node { position: absolute; z-index: 5; width: 102px; padding: 9px 7px; border: 1px solid var(--blue); background: var(--paper); text-align: center; }
+    .host-node strong, .host-node small, .route-node strong, .route-node small { display: block; }
+    .host-node strong { font-size: 12px; line-height: 1.15; }
+    .host-node small { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.2; }
+    .host-node .shadow-chip { margin: 6px auto 0; width: max-content; padding: 2px 4px; background: var(--green-soft); color: var(--green); font: 700 9px var(--mono); }
+    .host-a { top: 54px; left: 50%; transform: translateX(-50%); }
+    .host-b { right: 17px; bottom: 60px; }
+    .host-c { left: 17px; bottom: 60px; }
+    .route-node { position: absolute; z-index: 8; width: 88px; padding: 7px 5px; border: 1px solid var(--blue); background: var(--blue-soft); text-align: center; }
+    .route-node strong { color: var(--blue); font-size: 11px; line-height: 1.15; }
+    .route-node small { margin-top: 2px; color: var(--muted); font-size: 9px; line-height: 1.15; }
+    .route-replication { top: 45px; left: 13px; }
+    .route-federation { right: 13px; bottom: 40px; border-color: var(--green); background: var(--green-soft); }
+    .route-federation strong { color: var(--green); }
+    .runtime-core { width: 125px; height: 125px; display: grid; place-content: center; text-align: center; border-radius: 50%; background: var(--red); color: #fff; box-shadow: 0 0 0 11px var(--red-soft); transform: translateZ(0); }
+    .runtime-core strong { font-size: 15px; line-height: 1.05; }
+    .runtime-core small { margin-top: 6px; color: #f4dada; font-size: 10px; line-height: 1.2; }
+
+    .section { padding: 82px 0; border-top: 1px solid var(--rule); }
+    .section-heading { display: grid; grid-template-columns: .45fr 1fr; gap: 50px; margin-bottom: 42px; }
+    .section-heading h2 { margin: 0; font-size: clamp(29px, 4vw, 48px); line-height: 1.05; letter-spacing: -.04em; }
+    .section-heading p { max-width: 620px; margin: 2px 0 0; color: var(--muted); font-size: 18px; }
+    .label { margin: 0 0 11px; color: var(--red); font: 700 12px/1.2 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+
+    .flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
+    .flow-step { min-height: 178px; padding: 24px 22px 22px 0; position: relative; }
+    .flow-step + .flow-step { border-left: 1px solid var(--rule); padding-left: 22px; }
+    .flow-step:not(:last-child)::after { content: "→"; position: absolute; right: -12px; top: 63px; z-index: 1; background: var(--paper); padding: 0 3px; color: var(--red); font-size: 22px; }
+    .step-number { color: var(--red); font: 700 13px var(--mono); }
+    .flow h3, .card h3, .limit h3 { margin: 19px 0 6px; font-size: 19px; line-height: 1.2; }
+    .flow p, .card p, .limit p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
+
+    .architecture-layout { display: grid; grid-template-columns: 1.42fr .58fr; gap: 22px; align-items: stretch; }
+    .architecture-canvas, .shadow-canvas { padding: 22px; background: var(--blue-soft); border: 1px solid #c7d8e3; }
+    .architecture-canvas svg, .shadow-canvas svg { display: block; width: 100%; height: auto; }
+    .architecture-notes { display: grid; align-content: center; gap: 18px; padding: 8px 0; }
+    .architecture-notes h3, .shadow-notes h3 { margin: 0 0 6px; font-size: 20px; line-height: 1.2; }
+    .architecture-notes p, .shadow-notes p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
+    .diagram-key { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+    .diagram-key li { display: flex; gap: 9px; align-items: center; }
+    .key-dot { flex: 0 0 10px; width: 10px; height: 10px; border-radius: 50%; background: var(--red); }
+    .key-dot.blue { background: var(--blue); } .key-line { flex: 0 0 20px; height: 0; border-top: 1px solid var(--blue); }
+    .shadow-layout { display: grid; grid-template-columns: 1.35fr .65fr; gap: 22px; align-items: center; }
+    .shadow-canvas { background: var(--green-soft); border-color: #c8ded1; }
+    .shadow-notes { display: grid; gap: 16px; }
+    .shadow-note { padding-left: 14px; border-left: 3px solid var(--green); }
+    .svg-label { fill: var(--ink); font: 700 15px var(--sans); }
+    .svg-small { fill: var(--muted); font: 12px var(--sans); }
+    .svg-mono { fill: var(--blue); font: 700 12px var(--mono); letter-spacing: .04em; }
+    .svg-node { fill: var(--paper); stroke: var(--blue); stroke-width: 1.5; }
+    .svg-source { fill: var(--paper); stroke: var(--green); stroke-width: 1.5; }
+    .svg-shadow { fill: #f6fbf7; stroke: var(--green); stroke-width: 1.5; }
+
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+    .card { padding: 26px; border: 1px solid var(--rule); background: rgba(255,255,255,.38); }
+    .card.accent { border-top: 4px solid var(--red); }
+    .card.blue { border-top: 4px solid var(--blue); }
+    .card.green { border-top: 4px solid var(--green); }
+    .card.yellow { border-top: 4px solid var(--yellow); }
+    .card h3 { margin-top: 0; }
+    .mono-block { margin: 20px 0 0; padding: 18px; overflow-x: auto; background: #252326; color: #f7f2e9; font: 12px/1.65 var(--mono); }
+    .json-key { color: #e9acac; } .json-value { color: #bde0bf; } .json-punct { color: #aaa3a0; }
+
+    .revision-map { display: grid; grid-template-columns: 1fr 1.2fr; gap: 25px; align-items: stretch; }
+    .revision-copy { padding: 25px 0; }
+    .revision-copy h3 { font-size: 22px; margin: 0 0 10px; }
+    .revision-copy p { color: var(--muted); margin: 0 0 20px; }
+    .revision-list { display: grid; gap: 10px; list-style: none; padding: 0; margin: 0; }
+    .revision-list li { display: flex; gap: 12px; align-items: flex-start; }
+    .revision-list span { flex: 0 0 23px; display: grid; place-items: center; height: 23px; border-radius: 50%; background: var(--red-soft); color: var(--red); font: 700 12px var(--mono); }
+    .revision-canvas { min-height: 320px; padding: 28px; background: var(--blue-soft); display: grid; place-items: center; }
+    .tree { width: 100%; max-width: 560px; position: relative; display: grid; gap: 42px; }
+    .tree-row { display: flex; justify-content: center; gap: 43px; position: relative; }
+    .tree-row::before { content: ""; position: absolute; top: -23px; left: 25%; right: 25%; border-top: 1px solid var(--blue); }
+    .tree-row:first-child::before { display: none; }
+    .rev { padding: 11px 14px; min-width: 132px; background: var(--paper); border: 1px solid var(--blue); text-align: center; font: 12px var(--mono); position: relative; }
+    .rev::before { content: ""; position: absolute; left: 50%; top: -43px; height: 42px; border-left: 1px solid var(--blue); }
+    .tree-row:first-child .rev::before { display: none; }
+    .rev strong { display: block; color: var(--blue); font-size: 14px; }
+    .rev small { color: var(--muted); font-family: var(--sans); }
+    .rev.conflict { border-color: var(--red); } .rev.conflict strong { color: var(--red); }
+
+    .capability-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .capability-table th, .capability-table td { text-align: left; padding: 17px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+    .capability-table th { color: var(--muted); font: 700 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .capability-table td:first-child { width: 24%; font-weight: 700; }
+    .capability-table td:nth-child(2) { width: 43%; color: var(--muted); }
+    .status { display: inline-block; padding: 3px 8px; font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: .04em; }
+    .status.yes { background: var(--green-soft); color: var(--green); } .status.boundary { background: var(--yellow-soft); color: var(--yellow); }
+
+    .limits { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+    .limit { padding: 22px; border: 1px solid var(--rule); background: var(--paper-deep); }
+    .limit h3 { margin-top: 0; }
+    .limit h3::before { content: "↳"; color: var(--red); margin-right: 8px; }
+    .closing { display: grid; grid-template-columns: .75fr 1.25fr; gap: 58px; align-items: start; }
+    .closing h2 { margin: 0; font-size: 40px; line-height: 1.06; letter-spacing: -.04em; }
+    .closing p { color: var(--muted); margin-top: 0; }
+    .checklist { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 25px; margin: 0; padding: 0; list-style: none; }
+    .checklist li { border-top: 1px solid var(--rule); padding-top: 11px; font-size: 14px; }
+    .checklist li::before { content: "✓"; color: var(--green); font-weight: 700; margin-right: 8px; }
+    footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px 0 48px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 12px; }
+    footer strong { color: var(--ink); }
+
+    @media (max-width: 800px) {
+      .page { padding: 0 20px; } .topbar { min-height: 68px; } .toc { gap: 9px; font-size: 11px; } .toc a:nth-child(3) { display: none; }
+      .hero, .section-heading, .revision-map, .closing, .architecture-layout, .shadow-layout { grid-template-columns: 1fr; gap: 28px; } .hero { padding: 60px 0; min-height: auto; } .hero-visual { min-height: 320px; }
+      .flow { grid-template-columns: 1fr 1fr; } .flow-step:nth-child(3) { border-left: 0; padding-left: 0; } .flow-step:nth-child(-n+2) { border-bottom: 1px solid var(--rule); }
+      .flow-step:nth-child(2)::after { display: none; } .split, .limits { grid-template-columns: 1fr; } .closing h2 { font-size: 32px; }
+      .capability-table { min-width: 650px; } .table-wrap { overflow-x: auto; } footer { flex-direction: column; }
+    }
+    @media print {
+      @page { size: A4; margin: 15mm 13mm; }
+      body { background: #fff; font-size: 10.5pt; } .page { max-width: none; padding: 0; } .topbar { min-height: 50px; }
+      .toc { display: none; } .hero { min-height: 0; padding: 35px 0 40px; grid-template-columns: 1fr .8fr; gap: 25px; } .hero h1 { font-size: 48px; }
+      .hero-visual { min-height: 260px; } .section { padding: 38px 0; break-inside: avoid; } .section-heading { gap: 25px; margin-bottom: 24px; }
+      .section-heading h2 { font-size: 28px; } .section-heading p { font-size: 12pt; } .flow-step { min-height: 125px; padding-top: 15px; } .flow h3 { margin-top: 10px; font-size: 14px; }
+      .flow p, .card p, .limit p, .capability-table { font-size: 9pt; } .card, .limit { padding: 16px; } .revision-canvas { min-height: 240px; }
+      .limits { grid-template-columns: repeat(3, 1fr); } .closing { grid-template-columns: .75fr 1.25fr; gap: 30px; } footer { padding-bottom: 0; }
+      a { text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <a class="brand" href="#top"><img src="../img/logo.svg" alt=""> <span>VialKeeper</span></a>
+      <nav class="toc" aria-label="Page sections"><a href="#architecture">Architecture</a><a href="#capacity">Capacity</a><a href="#limits">Limits</a></nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="title">
+        <div>
+          <p class="label">A technical introduction</p>
+          <h1 id="title">A document database for <em>many databases.</em></h1>
+          <p class="lede">VialKeeper is an Elixir/OTP runtime for one or many revisioned JSON document databases. It connects them with replication and federation, and can expand read capacity with shadow copies.</p>
+          <p class="hero-note">Databases are portable files: you can copy one to another location without a special migration procedure. Backups are just as straightforward.</p>
+        </div>
+        <div class="hero-visual" aria-label="Three-level VialKeeper architecture: databases and shadow copies on the outside, replication and federation in the middle, and the Elixir BEAM runtime at the center">
+          <div class="runtime-map">
+            <div class="runtime-ring runtime-ring-outer">
+              <div class="host-node host-a"><strong>Host A</strong><small>1+ databases</small><span class="shadow-chip">+ shadows</span></div>
+              <div class="host-node host-b"><strong>Host B</strong><small>1+ databases</small><span class="shadow-chip">+ shadows</span></div>
+              <div class="host-node host-c"><strong>Host C</strong><small>1+ databases</small><span class="shadow-chip">+ shadows</span></div>
+              <div class="runtime-ring runtime-ring-middle">
+                <div class="route-node route-replication"><strong>Replication</strong><small>push / pull</small></div>
+                <div class="route-node route-federation"><strong>Federation</strong><small>read across</small></div>
+                <div class="runtime-core"><strong>VialKeeper<br>runtime</strong><small>Elixir / BEAM</small></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="model" aria-labelledby="model-title">
+        <div class="section-heading"><div><p class="label">01 / The mental model</p><h2 id="model-title">Four pieces, one path.</h2></div><p>Your application speaks to a stable VialKeeper boundary. The storage engine stays behind it, so clients do not need to know which backend holds the bytes.</p></div>
+        <div class="flow">
+          <article class="flow-step"><span class="step-number">01</span><h3>Application</h3><p>Send a JSON request over HTTP, or call Elixir modules in the same process.</p></article>
+          <article class="flow-step"><span class="step-number">02</span><h3>VialKeeper host</h3><p>Checks the request, assigns an ID, and coordinates supervised work.</p></article>
+          <article class="flow-step"><span class="step-number">03</span><h3>Database bundle</h3><p>A registered path on disk holds one portable database and its durable state.</p></article>
+          <article class="flow-step"><span class="step-number">04</span><h3>Read models</h3><p>Use documents, changes, indexes, views, search, or replication as needed.</p></article>
+        </div>
+      </section>
+
+      <section class="section" id="architecture" aria-labelledby="architecture-title">
+        <div class="section-heading"><div><p class="label">02 / The reason for the system</p><h2 id="architecture-title">Many masters, one view.</h2></div><p>VialKeeper is built for more than one database. Each database can accept writes. Replication moves changes between peers, while federation lets one read span several database UUIDs.</p></div>
+        <div class="architecture-layout">
+          <div class="architecture-canvas" aria-label="Diagram of three writable VialKeeper databases connected by multi-master replication with a federated query reading across all three">
+            <svg viewBox="0 0 900 370" role="img" aria-labelledby="multi-master-title multi-master-desc">
+              <title id="multi-master-title">Multi-master replication and federation</title>
+              <desc id="multi-master-desc">Three databases can all accept writes. Push and pull replication connects them. A federated query reads across all three.</desc>
+              <defs>
+                <marker id="replication-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#183f5e"></path></marker>
+                <marker id="federation-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#23604d"></path></marker>
+              </defs>
+              <text x="450" y="22" text-anchor="middle" class="svg-mono">MULTI-MASTER REPLICATION · PUSH / PULL</text>
+              <path d="M230 88 L410 72" fill="none" stroke="#183f5e" stroke-width="1.5" marker-end="url(#replication-arrow)"></path>
+              <path d="M410 82 L230 98" fill="none" stroke="#183f5e" stroke-width="1.5" marker-end="url(#replication-arrow)"></path>
+              <path d="M490 72 L670 88" fill="none" stroke="#183f5e" stroke-width="1.5" marker-end="url(#replication-arrow)"></path>
+              <path d="M670 98 L490 82" fill="none" stroke="#183f5e" stroke-width="1.5" marker-end="url(#replication-arrow)"></path>
+              <path d="M190 126 C285 178 610 178 710 126" fill="none" stroke="#183f5e" stroke-width="1.5" marker-end="url(#replication-arrow)"></path>
+              <path d="M710 138 C600 194 300 194 190 138" fill="none" stroke="#183f5e" stroke-width="1.5" marker-end="url(#replication-arrow)"></path>
+              <rect x="60" y="67" width="170" height="72" rx="2" class="svg-node"></rect>
+              <rect x="365" y="51" width="170" height="72" rx="2" class="svg-node"></rect>
+              <rect x="670" y="67" width="170" height="72" rx="2" class="svg-node"></rect>
+              <text x="145" y="94" text-anchor="middle" class="svg-label">Database A</text><text x="145" y="116" text-anchor="middle" class="svg-small">can accept writes</text>
+              <text x="450" y="78" text-anchor="middle" class="svg-label">Database B</text><text x="450" y="100" text-anchor="middle" class="svg-small">can accept writes</text>
+              <text x="755" y="94" text-anchor="middle" class="svg-label">Database C</text><text x="755" y="116" text-anchor="middle" class="svg-small">can accept writes</text>
+              <path d="M145 139 L145 245" fill="none" stroke="#23604d" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#federation-arrow)"></path>
+              <path d="M450 123 L450 245" fill="none" stroke="#23604d" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#federation-arrow)"></path>
+              <path d="M755 139 L755 245" fill="none" stroke="#23604d" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#federation-arrow)"></path>
+              <rect x="285" y="245" width="330" height="75" rx="2" fill="#f6fbf7" stroke="#23604d" stroke-width="1.5"></rect>
+              <text x="450" y="274" text-anchor="middle" class="svg-label">Federated query</text><text x="450" y="297" text-anchor="middle" class="svg-small">one read across several database UUIDs</text>
+            </svg>
+          </div>
+          <div class="architecture-notes">
+            <div><h3>Writes can happen at more than one place.</h3><p>This is the multi-master shape: databases are peers, not a single primary plus passive copies.</p></div>
+            <div><h3>Reads can cross database boundaries.</h3><p>Federation is a query path across selected databases. It is not a live stream and it does not make a multi-database transaction.</p></div>
+            <ul class="diagram-key" aria-label="Diagram key"><li><span class="key-line"></span>replication between peers</li><li><span class="key-line" style="border-top-style: dashed; border-color: var(--green)"></span>federated read path</li></ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="capacity" aria-labelledby="capacity-title">
+        <div class="section-heading"><div><p class="label">03 / More reads without more writers</p><h2 id="capacity-title">Shadow clones expand read capacity.</h2></div><p>A shadow is a read-only materialization of one source database. When enabled and ready, read traffic can use one or more shadows while the source remains the authority for writes.</p></div>
+        <div class="shadow-layout">
+          <div class="shadow-canvas" aria-label="Diagram of a source database feeding two read-only shadow databases which serve read traffic"><svg viewBox="0 0 900 260" role="img" aria-labelledby="shadow-title shadow-desc"><title id="shadow-title">Shadow databases for read capacity</title><desc id="shadow-desc">A source database feeds read-only shadow databases. Read traffic can be served by shadows, with a fallback to the source when a shadow is behind.</desc><defs><marker id="shadow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#23604d"></path></marker></defs><rect x="32" y="78" width="210" height="88" rx="2" class="svg-source"></rect><text x="137" y="110" text-anchor="middle" class="svg-label">Source database</text><text x="137" y="133" text-anchor="middle" class="svg-small">writes + canonical state</text><path d="M242 102 L370 68" fill="none" stroke="#23604d" stroke-width="1.5" marker-end="url(#shadow-arrow)"></path><path d="M242 142 L370 190" fill="none" stroke="#23604d" stroke-width="1.5" marker-end="url(#shadow-arrow)"></path><rect x="370" y="35" width="205" height="66" rx="2" class="svg-shadow"></rect><rect x="370" y="165" width="205" height="66" rx="2" class="svg-shadow"></rect><text x="472" y="63" text-anchor="middle" class="svg-label">Shadow 1</text><text x="472" y="84" text-anchor="middle" class="svg-small">read-only materialization</text><text x="472" y="193" text-anchor="middle" class="svg-label">Shadow 2</text><text x="472" y="214" text-anchor="middle" class="svg-small">read-only materialization</text><path d="M575 68 L700 102" fill="none" stroke="#23604d" stroke-width="1.5" marker-end="url(#shadow-arrow)"></path><path d="M575 198 L700 158" fill="none" stroke="#23604d" stroke-width="1.5" marker-end="url(#shadow-arrow)"></path><rect x="700" y="94" width="168" height="72" rx="2" fill="#f6fbf7" stroke="#23604d" stroke-width="1.5"></rect><text x="784" y="123" text-anchor="middle" class="svg-label">Read traffic</text><text x="784" y="146" text-anchor="middle" class="svg-small">eventual by default</text><text x="450" y="251" text-anchor="middle" class="svg-mono">lag or miss → fall back to source</text></svg></div>
+          <div class="shadow-notes"><div class="shadow-note"><h3>Scale reads, not writes.</h3><p>Shadows can take pressure off the source for document, revision, and attachment reads. They do not become new write authorities.</p></div><div class="shadow-note"><h3>Keep the consistency choice visible.</h3><p>Ready shadows serve eventual reads. A caller can request the primary, and a lagging or missing result falls back to the source.</p></div></div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="surface-title">
+        <div class="section-heading"><div><p class="label">04 / A small example</p><h2 id="surface-title">The client sees JSON.</h2></div><p>Document IDs live in the request body. Responses use an envelope with a request ID and either data or an error. Unknown JSON fields are rejected.</p></div>
+        <div class="split">
+          <article class="card accent"><h3>Put a document</h3><p>A conditional write can say which revision it expects. This makes a lost update visible instead of silently overwriting it.</p><pre class="mono-block"><span class="json-punct">POST</span> /v1/databases/{uuid}/documents/put
+
+<span class="json-punct">{</span>
+  <span class="json-key">"id"</span><span class="json-punct">:</span> <span class="json-value">"note-1"</span><span class="json-punct">,</span>
+  <span class="json-key">"if_revision"</span><span class="json-punct">:</span> <span class="json-value">"sha256:…"</span><span class="json-punct">,</span>
+  <span class="json-key">"body"</span><span class="json-punct">:</span> <span class="json-punct">{</span> <span class="json-key">"done"</span><span class="json-punct">:</span> <span class="json-value">true</span> <span class="json-punct">}</span>
+<span class="json-punct">}</span></pre></article>
+          <article class="card blue"><h3>Read the result</h3><p>The revision is part of the result. A caller can keep it and use it for the next compare-and-set update.</p><pre class="mono-block"><span class="json-punct">200</span>
+
+<span class="json-punct">{</span>
+  <span class="json-key">"request_id"</span><span class="json-punct">:</span> <span class="json-value">"req_…"</span><span class="json-punct">,</span>
+  <span class="json-key">"data"</span><span class="json-punct">:</span> <span class="json-punct">{</span>
+    <span class="json-key">"revision"</span><span class="json-punct">:</span> <span class="json-value">"sha256:…"</span>
+  <span class="json-punct">}</span>
+<span class="json-punct">}</span></pre></article>
+        </div>
+      </section>
+
+      <section class="section" id="revisions" aria-labelledby="revision-title">
+        <div class="section-heading"><div><p class="label">05 / The consistency layer</p><h2 id="revision-title">Revisions make peers safe.</h2></div><p>Multi-master replication needs a way to carry changes and detect concurrent edits without losing them. Revisions are that consistency layer. Branch preservation and temporary winner selection are automatic. Conflict resolution is explicit. Normal local writes use CAS and report a conflict instead of silently creating one; independent replicas or non-CAS writes can produce the branches shown in the image.</p></div>
+        <div class="revision-map">
+          <div class="revision-copy"><h3>Why keep branches?</h3><p>Conflicts are information. VialKeeper does not silently choose a winner just because two writes arrived close together.</p><ul class="revision-list"><li><span>A</span><div><strong>Put</strong><br>creates a new revision</div></li><li><span>B</span><div><strong>Compare</strong><br>checks the expected parent</div></li><li><span>C</span><div><strong>Resolve</strong><br>selects a winner explicitly</div></li></ul></div>
+          <div class="revision-canvas" aria-label="Revision graph showing one base revision branching into two conflict revisions and resolving to a winner"><div class="tree"><div class="tree-row"><div class="rev"><strong>rev 01</strong><small>base</small></div></div><div class="tree-row"><div class="rev conflict"><strong>rev 02a</strong><small>writer A</small></div><div class="rev conflict"><strong>rev 02b</strong><small>writer B</small></div></div><div class="tree-row"><div class="rev"><strong>rev 03</strong><small>chosen winner</small></div></div></div></div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="capability-title">
+        <div class="section-heading"><div><p class="label">06 / The surface area</p><h2 id="capability-title">Useful depth, clear edges.</h2></div><p>The core is document storage. Around it are read and coordination tools that can be adopted one at a time.</p></div>
+        <div class="table-wrap"><table class="capability-table"><thead><tr><th>Capability</th><th>What it means</th><th>Available</th></tr></thead><tbody>
+          <tr><td>Documents</td><td>Put, get, delete, and resolve revisioned JSON documents.</td><td><span class="status yes">Core</span></td></tr>
+          <tr><td>Changes feed</td><td>Poll or stream public changes from a sequence using NDJSON.</td><td><span class="status yes">Core</span></td></tr>
+          <tr><td>Structured query</td><td>Selectors, sort, projection, bookmarks, and named full-text indexes.</td><td><span class="status yes">Core</span></td></tr>
+          <tr><td>Multi-master replication</td><td>One-shot or continuous push/pull between registered databases that can each accept writes.</td><td><span class="status yes">Core</span></td></tr>
+          <tr><td>Federated reads</td><td>Run a structured query across selected database UUIDs. The query is limited in scope and is not a live stream.</td><td><span class="status boundary">Limited scope</span></td></tr>
+          <tr><td>Shadow reads</td><td>Serve read traffic from generation-fenced, read-only materializations of a source database.</td><td><span class="status yes">Core</span></td></tr>
+          <tr><td>Attachments</td><td>Upload bytes and reference content-addressed representations from documents.</td><td><span class="status yes">Core</span></td></tr>
+        </tbody></table></div>
+      </section>
+
+      <section class="section" id="limits" aria-labelledby="limits-title">
+        <div class="section-heading"><div><p class="label">07 / Limits are part of the design</p><h2 id="limits-title">Know what it does not try to be.</h2></div><p>A good fit depends on the shape of the problem.<br>These are intentional boundaries, not hidden footnotes.</p></div>
+        <div class="limits"><article class="limit"><h3>No raw engine language</h3><p>Clients submit structured requests. They do not send backend-specific query commands or raw full-text syntax.</p></article><article class="limit"><h3>No wire compatibility</h3><p>VialKeeper is not CouchDB or PouchDB wire compatible. Its API and document rules are its own.</p></article><article class="limit"><h3>No broad transactions</h3><p>There are no multi-database transactions and no live federation streams. Federation only covers a limited set of databases at a time.</p></article><article class="limit"><h3>No custom view code</h3><p>Views use declarative map/reduce. Custom JavaScript or Elixir map functions are not part of the model.</p></article><article class="limit"><h3>Register your bundles</h3><p>A bundle copied under the root is not adopted automatically. Registration is an explicit safety step.</p></article><article class="limit"><h3>Copy is not clone</h3><p>A copied bundle keeps the same database UUID. Treat copy and identity as separate decisions.</p></article></div>
+      </section>
+
+      <section class="section" aria-labelledby="storage-title">
+        <div class="section-heading"><div><p class="label">08 / Storage engine</p><h2 id="storage-title">A stable boundary over storage.</h2></div><p>VialKeeper uses a pluggable storage engine. By default, it is backed by battle-tested SQLite. The rest of the system talks to VialKeeper’s document and storage interfaces, so the backend can change without changing the client model.</p></div>
+        <div class="split">
+          <article class="card green"><h3>Default path: SQLite</h3><p>SQLite is an embedded database stored with the VialKeeper bundle. It gives the default installation a durable, local engine without a separate database service.</p></article>
+          <article class="card blue"><h3>Why keep the boundary?</h3><p>The API, revision rules, and document model do not need to expose backend commands. This keeps client code stable and leaves room for another storage backend when a workload needs one.</p></article>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="fit-title">
+        <div class="closing"><div><p class="label">09 / A reasonable place to start</p><h2 id="fit-title">A reasonable place to start.</h2></div><div><p>VialKeeper is a fit when you want portable document bundles, explicit revision history, structured APIs, and an OTP runtime that can run locally or as a host service.</p><ul class="checklist"><li>Keep document history visible</li><li>Use HTTP or in-process Elixir</li><li>Move registered bundles between hosts</li><li>Add search or replication when needed</li><li>Make conflicts explicit</li><li>Keep backend details behind the API</li></ul></div></div>
+      </section>
+    </main>
+    <footer><span><strong>VialKeeper</strong> · a revisioned JSON document database</span><span>Read next: README.md · Operations.md</span></footer>
+  </div>
+</body>
+</html>
