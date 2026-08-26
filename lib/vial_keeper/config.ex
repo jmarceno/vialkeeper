@@ -1,5 +1,6 @@
 defmodule VialKeeper.Config do
   @moduledoc "Host and database configuration with host-enforced safety limits."
+  alias VialKeeper.HostConfig
   alias VialKeeper.JSON.Stringify
 
   @defaults %{
@@ -120,8 +121,12 @@ defmodule VialKeeper.Config do
   end
 
   @spec database_root() :: binary()
-  def database_root,
-    do: Application.get_env(:vial_keeper, :database_root, Path.expand("data", File.cwd!()))
+  def database_root do
+    case Application.get_env(:vial_keeper, :database_root) do
+      root when is_binary(root) and root != "" -> root
+      _ -> HostConfig.database_root()
+    end
+  end
 
   @spec database_defaults() :: map()
   def database_defaults, do: @defaults

@@ -11,32 +11,20 @@ defmodule VialKeeper.WebUI.ReleaseSmokeTest do
   @moduletag :integration
 
   alias VialKeeper.Eventual
+  alias VialKeeper.TestSupport.ProdRelease
   alias VialKeeper.WebUI.Assets
 
   @moduletag :slow
 
   test "release serves embedded UI without repository assets tree" do
-    project = File.cwd!()
-
     work =
       Path.join(System.tmp_dir!(), "vialkeeper-ui-release-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(work)
     on_exit(fn -> File.rm_rf(work) end)
 
-    {output, status} =
-      System.cmd("mix", ["release.build"],
-        cd: project,
-        env: [{"MIX_ENV", "prod"}],
-        stderr_to_stdout: true
-      )
-
-    assert status == 0, output
-    release_src = Path.join(project, "_build/prod/rel/vial_keeper")
-    assert File.dir?(release_src)
-
     release_dst = Path.join(work, "rel")
-    File.cp_r!(release_src, release_dst)
+    ProdRelease.copy_to!(release_dst)
 
     db_root = Path.join(work, "data")
     File.mkdir_p!(db_root)
@@ -44,42 +32,14 @@ defmodule VialKeeper.WebUI.ReleaseSmokeTest do
     refute File.exists?(Path.join(work, "assets"))
     refute File.exists?(Path.join(release_dst, "assets/web_ui"))
 
-    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
-    {:ok, {_ip, port}} = :inet.sockname(listen)
-    :ok = :gen_tcp.close(listen)
+    port = ProdRelease.allocate_loopback_port!()
+    ProdRelease.write_host_toml!(db_root, port, web_ui: true)
+    assert File.exists?(ProdRelease.bin_path(release_dst))
+    assert :ok = ProdRelease.start_daemon!(release_dst, db_root)
 
-    File.write!(
-      Path.join(db_root, "host.toml"),
-      """
-      [listener]
-      ip = "127.0.0.1"
-      port = #{port}
+    on_exit(fn -> ProdRelease.stop_daemon!(release_dst, db_root) end)
 
-      [web_ui]
-      enabled = true
-
-      [auth]
-      enabled = false
-      tokens = []
-      """
-    )
-
-    bin = Path.join(release_dst, "bin/vial_keeper")
-    assert File.exists?(bin)
-
-    {start_out, start_status} =
-      System.cmd(bin, ["daemon"],
-        env: [{"VIAL_KEEPER_ROOT", db_root}],
-        stderr_to_stdout: true
-      )
-
-    assert start_status == 0, start_out
-
-    on_exit(fn ->
-      _ = System.cmd(bin, ["stop"], env: [{"VIAL_KEEPER_ROOT", db_root}], stderr_to_stdout: true)
-    end)
-
-    base = "http://127.0.0.1:#{port}"
+    base = ProdRelease.base_url(port)
 
     Eventual.eventually(
       fn ->

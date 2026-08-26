@@ -221,13 +221,19 @@ Public identity is the UUID, never the path. Duplicate UUID →
 
 ## Offline copy, move, and restore
 
+Normative recovery policy (replica vs backup vs archive, RPO/RTO, failure
+matrix) is [[VialKeeper Recovery Strategy]]
+(`doc-id:1e0d4259-e08e-4751-be89-2d74f130adb1`). This section is the
+operator procedure.
+
 ```mermaid
 flowchart LR
   A[Stop writers / disable continuous deps] --> B[Close database]
-  B --> C[Copy whole .vialkeeper dir]
-  C --> D[Place under destination root]
-  D --> E[POST /v1/registrations]
-  E --> F[Use UUID as before]
+  B --> C[Integrity-check]
+  C --> D[Copy whole .vialkeeper dir]
+  D --> E[Place under destination root]
+  E --> F[POST /v1/registrations]
+  F --> G[Integrity-check again]
 ```
 
 1. Stop writes. Disable continuous replication that needs the DB open.
@@ -236,25 +242,65 @@ flowchart LR
    first.
 2. `POST /v1/databases/:uuid/close`. Live subscriptions end with `closed`.
    Confirm no attachment upload/download/GC is still running.
-3. Copy the complete closed `.vialkeeper` directory with ordinary OS tools.
-4. Ignore `.lease` — it is transient ownership, not data.
-5. At the destination: place the bundle, then register the relative path.
-6. Traffic addresses the same UUID (document routes auto-open, or open via
-   catalog).
+3. Run `POST /v1/databases/:uuid/integrity-check`. Do not treat a failing
+   bundle as a verified backup generation.
+4. Copy the complete closed `.vialkeeper` directory with ordinary OS tools.
+   Record SHA-256 of the backend durable data artifact and of `blobs/` (or a tree hash),
+   plus VialKeeper release identity from `Diagnostics.runtime/0`. Store that
+   sidecar manifest **next to** the copy, not inside the bundle. Omit `.lease`.
+   `tmp/` may be omitted (rebuildable search cache and incomplete uploads).
+5. Keep generations off the live host and off live replica disks. Ordinary
+   backup rotation and longer **archive** retention are separate clocks.
+6. At the destination (relocation) or on a **clean** restore host: place the
+   bundle, then register the relative path.
+7. Traffic addresses the same UUID (document routes auto-open, or open via
+   catalog). After restore, run integrity-check again, read a sample of
+   documents and attachments, rebuild full-text indexes if search is required,
+   and inspect replication jobs / materializations **before** enabling them.
 
 A copy keeps the original UUID. Two copies of the same UUID on one host are
 rejected. Copying is backup/relocation, **not** cloning.
 
+A **replica** is a different UUID that receives replicated revisions and
+blobs. Logical deletes replicate. Jobs, views, indexes, FTS generations, and
+`host.toml` do not. Do not use replication as protection from application
+mistakes; keep independent backups.
+
 Do not copy an active crash-recoverable bundle piecemeal: keep every
 backend-owned recovery artifact with the durable data until recovery finishes.
-SQLite-specific journal pairing is documented in
+Reopen, close, then copy. SQLite-specific journal pairing is documented in
 [lib/vial_keeper/storage/sqlite/BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).
+
+Disk WAL uses `synchronous=NORMAL` and a 64 MiB autocheckpoint. Application
+crash recovers committed WAL frames. OS/power loss can drop a suffix of
+acknowledged commits. Clean close is the portability point with no WAL
+sidecars.
 
 Derived bundles are often created as
 `_derived/<slug>--<short-uuid>.derived.vialkeeper`. Path and suffix are
 operator hints; `database_kind = derived` is authoritative. A clean derived
 bundle can be moved/renamed and re-registered; materialization state stays
-inside the bundle.
+inside the bundle. Back up derived bundles if rematerializing from sources
+is unacceptable.
+
+### Clean-host restore drill (`mix check.full`)
+
+`mix check.full` includes MAINT-007 release evidence:
+`test/end_to_end/clean_host_restore_drill_test.exs`. It requires a working
+**Docker or Podman** daemon (`docker info` / `podman info`); the gate fails
+closed when neither engine responds.
+
+The drill seeds a closed bundle on a production release daemon, copies it to a
+fresh destination root, and restores it inside a glibc container that has only
+the OTP release and a bind-mounted `VIAL_KEEPER_ROOT` (not an overlay data
+directory). Assertions use HTTP `/v1` only: register, integrity-check, sample
+document and attachment round-trip, full-text rebuild and query, replication
+jobs present but not enabled, and non-empty `Diagnostics.runtime/0`
+`app_version`. The test prints `restore_ms` for RTO evidence.
+
+First run on a machine may pull container images. When the host-built release
+is not ABI-compatible with the pinned restore image, the test builds a portable
+release inside the matching Elixir builder container before the drill proceeds.
 
 ---
 
@@ -739,6 +785,9 @@ OTLP collection is configured via `otlp_endpoint` only.
 [ ] Put TLS cert/key under the database root when enabled
 [ ] Register bundles explicitly; do not rely on auto-scan
 [ ] Close before offline copy; copy whole .vialkeeper; skip .lease
+[ ] Integrity-check before treating a copy as a backup generation
+[ ] Keep backups off the live host and off replica disks; replica is not a backup
+[ ] Restore drills: clean host, register, integrity-check, sample reads
 [ ] Disable materialized views before closing their sources
 [ ] Point otlp_endpoint only if a collector is ready
 [ ] Prefer Diagnostics.runtime/0 + integrity-check for support dumps

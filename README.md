@@ -26,6 +26,7 @@ boundaries, not a supported embedding API.
 | HTTP API and security | *VialKeeper HTTP API & Security* (`doc-id:fa42473a-99f2-4d7b-b5d2-006a7661fe3d`) |
 | Administration and console | *VialKeeper Administration & Console* (`doc-id:0ea47618-839d-488e-b776-49584cbd0a87`) |
 | Integrity, backup, and maintenance | *VialKeeper Integrity, Backup & Maintenance* (`doc-id:dfc9e4dc-75c1-495a-939f-814235e9794b`) |
+| Recovery strategy and failure-mode matrix | *VialKeeper Recovery Strategy* (`doc-id:1e0d4259-e08e-4751-be89-2d74f130adb1`) |
 | Observability, performance, and release acceptance | *VialKeeper Observability, Performance & Release* (`doc-id:a0807935-918b-42b2-a6e8-d1eb5414b54c`) |
 | Aggregate requirement proof | *Requirement proof index* (`doc-id:ec1434b5-aa83-43e1-9db0-aff886555b46`) |
 
@@ -709,8 +710,11 @@ When a limit is hit you typically see `resource_limit`, `payload_too_large`,
    with `{ "path": "notes.vialkeeper" }`.
 
 Do not treat `.lease` as data. Copying keeps the same UUID — two copies on
-one host are rejected. Full procedures:
-[Operations.md](Operations.md#offline-copy-move-and-restore).
+one host are rejected. A replica is not a backup: logical deletes replicate.
+Full procedures:
+[Operations.md](Operations.md#offline-copy-move-and-restore). Recovery
+policy: *VialKeeper Recovery Strategy*
+(`doc-id:1e0d4259-e08e-4751-be89-2d74f130adb1`).
 
 ---
 
@@ -742,11 +746,18 @@ one host are rejected. Full procedures:
 mix deps.get
 mix check.fast          # while iterating (excludes :slow and :integration)
 mix check.integration   # integration-tagged tests only
-mix check.full          # before handoff (integration, :slow, Doctor, Reach dead-code)
+mix check.full          # before handoff (integration, :slow, Doctor, Reach dead-code; requires Docker or Podman)
 MIX_ENV=prod mix release.build
 ```
 
-The full gate includes the repository storage-boundary scan. Run it directly
+The full gate includes the repository storage-boundary scan and the MAINT-007
+clean-host restore drill (`test/end_to_end/clean_host_restore_drill_test.exs`).
+That drill requires a working **Docker or Podman** daemon (`docker info` /
+`podman info`). The restore host is a glibc container with only the OTP release
+and a bind-mounted destination `VIAL_KEEPER_ROOT` (not an overlay data dir). The
+first run on a machine may pull container images and, when the host-built release
+is not ABI-compatible with the restore image, build a portable release inside the
+pinned Elixir builder container.
 when changing storage, runtime, domain, or product-model code:
 
 ```sh
