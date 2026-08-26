@@ -2,7 +2,9 @@ Always use elixir-safe-code skill when writing code.
 
 When receiving a document as a wiki link, doc-id, folder-id, column-id, card-id or event-id, this means that you should retrieve the data from the user's UnboundMark workspace, use the UnboundMark MCP to retrieve the document.
 
-**Techinical Spec at UnboundMark document doc-id:36d4783d-b2b4-4b37-8d61-5ef189368861**
+**The authoritative specification is the maintained UnboundMark wiki in `folder-id:4007e0d9-3cf2-4f17-a694-5680200d6547`. Start at VialKeeper Wiki Home (`doc-id:898c633d-1b46-472b-b0b8-1080034313de`) and use VialKeeper Requirement Ownership Map (`doc-id:1219e090-a3c6-4df1-9cba-4f36cf1b693d`) to locate the single owning document for each requirement. Requirement proof is aggregated at `doc-id:ec1434b5-aa83-43e1-9db0-aff886555b46`.**
+
+**The monolithic specification (`doc-id:36d4783d-b2b4-4b37-8d61-5ef189368861`) is superseded, non-authoritative, and stored only as history in `folder-id:9ec9f3fc-5394-4685-bfa4-0bcd8a698c47`. Do not update it or use it as current product evidence.**
 
 **Authoritative source docs and plans are inside folder `folder-id:4007e0d9-3cf2-4f17-a694-5680200d6547` in UnboundMark.**
 **All supporting docs must be created and maintained inside UnboundMark and not on this repo. Execeptions are READMEs and Operations.md, those docs must be kept local**

@@ -1,5 +1,7 @@
 # VialKeeper operations
 
+> **Authoritative specification:** The maintained wiki is in UnboundMark folder `4007e0d9-3cf2-4f17-a694-5680200d6547` starting at *VialKeeper Wiki Home* (`doc-id:898c633d-1b46-472b-b0b8-1080034313de`), with the requirement ownership map at `doc-id:1219e090-a3c6-4df1-9cba-4f36cf1b693d`. The superseded monolith (`doc-id:36d4783d-b2b4-4b37-8d61-5ef189368861`) is historical and stored in UnboundMark folder `9ec9f3fc-5394-4685-bfa4-0bcd8a698c47`. Normative contracts, requirement proof, and release acceptance are in the wiki; this runbook owns administration procedures and operator drills without duplicating normative behavior.
+
 Runbook for deploying and running a Version 1 VialKeeper host. Applications
 consume the host through the versioned HTTP `/v1` API; see [README.md](README.md)
 for the client-facing route examples. Elixir modules are internal services, not
