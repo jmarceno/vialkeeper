@@ -153,4 +153,36 @@ defmodule VialKeeper.Query.SubscriptionProcessTest do
     assert :ok = Subscriptions.close(pid)
     assert :ok = Subscriptions.close(pid)
   end
+
+  test "a supervisor shutdown wakes a waiting next caller with closed", %{uuid: uuid} do
+    assert {:ok, pid} =
+             Subscriptions.open(
+               uuid,
+               %{"query" => %{"selector" => %{"/type" => "missing"}}, "heartbeat_ms" => 30_000},
+               self()
+             )
+
+    assert {:ok, %{type: :caught_up}} = Subscriptions.next(pid, 5_000)
+    parent = self()
+
+    waiter =
+      spawn(fn ->
+        send(parent, {:waiter_result, Subscriptions.next(pid, 5_000)})
+      end)
+
+    Eventual.eventually(
+      fn ->
+        case :sys.get_state(pid).waiter do
+          nil -> false
+          _from -> :ok
+        end
+      end,
+      message: "expected subscription to hold the next caller"
+    )
+
+    Process.exit(pid, :shutdown)
+
+    assert_receive {:waiter_result, {:closed, %{type: :closed}}}, 5_000
+    refute Process.alive?(waiter)
+  end
 end

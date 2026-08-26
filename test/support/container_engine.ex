@@ -10,7 +10,7 @@ defmodule VialKeeper.TestSupport.ContainerEngine do
 
   @image "docker.io/library/debian@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f"
 
-  @builder_image "docker.io/hexpm/elixir:1.20.2-erlang-29.0.4-debian-trixie-20260713-slim"
+  @builder_image "docker.io/hexpm/elixir@sha256:9804c9fd6cefea19e2b1095763057d08d634cac29a0994503a468427a64e5e12"
 
   @missing_engine_message """
   mix check.full requires Docker or Podman with a running daemon (docker info / podman info).
@@ -99,12 +99,14 @@ defmodule VialKeeper.TestSupport.ContainerEngine do
   @spec ensure_image!() :: :ok
   def ensure_image! do
     cmd = require_engine!()
+    ensure_image!(cmd, @image)
+  end
 
-    {output, status} =
-      System.cmd(cmd, ["pull", @image], stderr_to_stdout: true)
-
-    assert status == 0, "failed to pull #{@image}: #{output}"
-    :ok
+  @doc "Ensures the digest-pinned portable-release builder image is present locally."
+  @spec ensure_builder_image!() :: :ok
+  def ensure_builder_image! do
+    cmd = require_engine!()
+    ensure_image!(cmd, @builder_image)
   end
 
   @doc """
@@ -225,6 +227,18 @@ defmodule VialKeeper.TestSupport.ContainerEngine do
       _executable ->
         {_output, status} = System.cmd(command, ["info"], stderr_to_stdout: true)
         status == 0
+    end
+  end
+
+  defp ensure_image!(cmd, image) do
+    case System.cmd(cmd, ["image", "inspect", image], stderr_to_stdout: true) do
+      {_output, 0} ->
+        :ok
+
+      {_output, _status} ->
+        {output, status} = System.cmd(cmd, ["pull", image], stderr_to_stdout: true)
+        assert status == 0, "failed to pull #{image}: #{output}"
+        :ok
     end
   end
 

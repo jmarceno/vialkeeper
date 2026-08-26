@@ -7,6 +7,7 @@ defmodule VialKeeper.HostConfigTest do
   use ExUnit.Case, async: false
   use ExUnitProperties
 
+  alias VialKeeper.Config
   alias VialKeeper.Federation.SavedQueries
   alias VialKeeper.HostConfig
   alias VialKeeper.TestSupport.GarbageGenerators
@@ -64,6 +65,17 @@ defmodule VialKeeper.HostConfigTest do
 
     assert {:ok, _} = HostConfig.load_from(nested)
     assert File.exists?(Path.join(nested, "host.toml"))
+  end
+
+  test "runtime database root follows VIAL_KEEPER_ROOT when application config omits it", %{
+    dir: dir
+  } do
+    configured_root = Application.fetch_env!(:vial_keeper, :database_root)
+    on_exit(fn -> Application.put_env(:vial_keeper, :database_root, configured_root) end)
+
+    Application.delete_env(:vial_keeper, :database_root)
+
+    assert Config.database_root() == Path.expand(dir)
   end
 
   test "non-UTF-8 host.toml returns an error", %{dir: dir} do

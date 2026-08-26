@@ -37,7 +37,7 @@ defmodule VialKeeper.WebUI.ReleaseSmokeTest do
     assert File.exists?(ProdRelease.bin_path(release_dst))
     assert :ok = ProdRelease.start_daemon!(release_dst, db_root)
 
-    on_exit(fn -> ProdRelease.stop_daemon!(release_dst, db_root) end)
+    on_exit(fn -> ProdRelease.stop_daemon(release_dst, db_root) end)
 
     base = ProdRelease.base_url(port)
 

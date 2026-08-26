@@ -10,27 +10,24 @@ defmodule VialKeeper.TestSupport.ProdRelease do
   @release_rel_path "_build/prod/rel/vial_keeper"
 
   @doc """
-  Returns the project-relative release directory, building it when absent.
+  Returns the project-relative release directory after rebuilding it from the
+  current checkout.
   """
   @spec ensure_built!() :: String.t()
   def ensure_built! do
     project = File.cwd!()
     release_src = Path.join(project, @release_rel_path)
 
-    if File.dir?(release_src) do
-      release_src
-    else
-      {output, status} =
-        System.cmd("mix", ["release.build"],
-          cd: project,
-          env: [{"MIX_ENV", "prod"}],
-          stderr_to_stdout: true
-        )
+    {output, status} =
+      System.cmd("mix", ["release.build"],
+        cd: project,
+        env: [{"MIX_ENV", "prod"}],
+        stderr_to_stdout: true
+      )
 
-      assert status == 0, output
-      assert File.dir?(release_src)
-      release_src
-    end
+    assert status == 0, output
+    assert File.dir?(release_src)
+    release_src
   end
 
   @doc """
@@ -53,8 +50,7 @@ defmodule VialKeeper.TestSupport.ProdRelease do
     _cmd = ContainerEngine.require_engine!()
     :ok = File.mkdir_p!(dest_dir)
 
-    project = File.cwd!()
-    host_release = Path.join(project, @release_rel_path)
+    host_release = ensure_built!()
 
     cond do
       ContainerEngine.release_runs?(dest_dir) ->
@@ -130,7 +126,22 @@ defmodule VialKeeper.TestSupport.ProdRelease do
   @spec stop_daemon!(String.t(), String.t()) :: :ok
   def stop_daemon!(release_dir, root) do
     bin = bin_path(release_dir)
-    _ = System.cmd(bin, ["stop"], env: [{"VIAL_KEEPER_ROOT", root}], stderr_to_stdout: true)
+
+    {output, status} =
+      System.cmd(bin, ["stop"],
+        env: [{"VIAL_KEEPER_ROOT", root}],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+    :ok
+  end
+
+  @doc "Stops a test daemon during cleanup, ignoring an already-stopped release."
+  @spec stop_daemon(String.t(), String.t()) :: :ok
+  def stop_daemon(release_dir, root) do
+    bin = bin_path(release_dir)
+    _result = System.cmd(bin, ["stop"], env: [{"VIAL_KEEPER_ROOT", root}], stderr_to_stdout: true)
     :ok
   end
 
@@ -143,11 +154,7 @@ defmodule VialKeeper.TestSupport.ProdRelease do
   defp build_portable_release!(dest_dir) do
     cmd = ContainerEngine.require_engine!()
     project = File.cwd!()
-
-    {pull_out, pull_status} =
-      System.cmd(cmd, ["pull", ContainerEngine.builder_image()], stderr_to_stdout: true)
-
-    assert pull_status == 0, "failed to pull builder image: #{pull_out}"
+    :ok = ContainerEngine.ensure_builder_image!()
 
     script = """
     set -euo pipefail
@@ -159,7 +166,7 @@ defmodule VialKeeper.TestSupport.ProdRelease do
     rm -rf /build
     cp -a /project/. /build/
     cd /build
-    rm -f native/tantivy_ex/native/tantivy_ex/target
+    rm -rf _build native/tantivy_ex/native/tantivy_ex/target
     mkdir -p /tmp/tantivy-target
     ln -sfn /tmp/tantivy-target native/tantivy_ex/native/tantivy_ex/target
     MIX_ENV=prod mix local.hex --force

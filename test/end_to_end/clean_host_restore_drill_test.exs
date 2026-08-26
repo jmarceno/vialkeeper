@@ -15,8 +15,8 @@ defmodule VialKeeper.EndToEnd.CleanHostRestoreDrillTest do
   alias VialKeeper.Eventual
   alias VialKeeper.TestSupport.{ContainerEngine, ProdRelease}
 
-  @tag timeout: 300_000
-  test "closed bundle restores on a container host over HTTP /v1 only" do
+  @tag timeout: 600_000
+  test "closed bundle restores through HTTP /v1 data operations on a container host" do
     ContainerEngine.require_engine!()
 
     work =
@@ -45,7 +45,7 @@ defmodule VialKeeper.EndToEnd.CleanHostRestoreDrillTest do
     ProdRelease.write_host_toml!(source_root, source_port)
     assert :ok = ProdRelease.start_daemon!(release_dir, source_root)
 
-    on_exit(fn -> ProdRelease.stop_daemon!(release_dir, source_root) end)
+    on_exit(fn -> ProdRelease.stop_daemon(release_dir, source_root) end)
 
     source_base = ProdRelease.base_url(source_port)
 

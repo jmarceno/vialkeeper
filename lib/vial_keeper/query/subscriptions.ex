@@ -46,6 +46,9 @@ defmodule VialKeeper.Query.Subscriptions do
   catch
     :exit, {:noproc, _} -> {:closed, Events.closed()}
     :exit, {{:noproc, _}, _} -> {:closed, Events.closed()}
+    :exit, :shutdown -> {:closed, Events.closed()}
+    :exit, {:shutdown, _} -> {:closed, Events.closed()}
+    :exit, {{:shutdown, _}, _} -> {:closed, Events.closed()}
   end
 
   @spec close(pid()) :: :ok

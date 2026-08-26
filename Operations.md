@@ -293,9 +293,10 @@ closed when neither engine responds.
 The drill seeds a closed bundle on a production release daemon, copies it to a
 fresh destination root, and restores it inside a glibc container that has only
 the OTP release and a bind-mounted `VIAL_KEEPER_ROOT` (not an overlay data
-directory). Assertions use HTTP `/v1` only: register, integrity-check, sample
-document and attachment round-trip, full-text rebuild and query, replication
-jobs present but not enabled, and non-empty `Diagnostics.runtime/0`
+directory). Restored-data assertions use HTTP `/v1` only: register,
+integrity-check, sample document and attachment round-trip, full-text rebuild
+and query, and replication jobs present but not enabled. An operator-only
+release `eval` also verifies that `Diagnostics.runtime/0` reports a non-empty
 `app_version`. The test prints `restore_ms` for RTO evidence.
 
 First run on a machine may pull container images. When the host-built release

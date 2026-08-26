@@ -64,7 +64,12 @@ defmodule VialKeeper.TestSupport.GarbageGenerators do
   end
 
   defp junk_map(depth) when depth > 0 do
-    StreamData.map_of(junk_key(), junk_term(depth - 1), max_length: @max_map_size)
+    entry = StreamData.tuple({junk_key(), junk_term(depth - 1)})
+
+    StreamData.map(
+      StreamData.list_of(entry, max_length: @max_map_size),
+      &Map.new/1
+    )
   end
 
   defp scalar_junk do
