@@ -214,7 +214,7 @@
       <section class="section" id="model" aria-labelledby="model-title">
         <div class="section-heading"><div><p class="label">01 / The mental model</p><h2 id="model-title">Four pieces, one path.</h2></div><p>Your application speaks to a stable VialKeeper boundary. The storage engine stays behind it, so clients do not need to know which backend holds the bytes.</p></div>
         <div class="flow">
-          <article class="flow-step"><span class="step-number">01</span><h3>Application</h3><p>Send a JSON request over HTTP, or call Elixir modules in the same process.</p></article>
+          <article class="flow-step"><span class="step-number">01</span><h3>Application</h3><p>Send a JSON request over the versioned HTTP API.</p></article>
           <article class="flow-step"><span class="step-number">02</span><h3>VialKeeper host</h3><p>Checks the request, assigns an ID, and coordinates supervised work.</p></article>
           <article class="flow-step"><span class="step-number">03</span><h3>Database bundle</h3><p>A registered path on disk holds one portable database and its durable state.</p></article>
           <article class="flow-step"><span class="step-number">04</span><h3>Read models</h3><p>Use documents, changes, indexes, views, search, or replication as needed.</p></article>
@@ -298,15 +298,20 @@
       </section>
 
       <section class="section" aria-labelledby="capability-title">
-        <div class="section-heading"><div><p class="label">06 / The surface area</p><h2 id="capability-title">Useful depth, clear edges.</h2></div><p>The core is document storage. Around it are read and coordination tools that can be adopted one at a time.</p></div>
+        <div class="section-heading"><div><p class="label">06 / The surface area</p><h2 id="capability-title">Useful depth, clear edges.</h2></div><p>Core includes the data model and VialKeeper's deliberate read, coordination, and scaling mechanisms. Full-text search is a rebuildable sidecar; the console is administration.</p></div>
         <div class="table-wrap"><table class="capability-table"><thead><tr><th>Capability</th><th>What it means</th><th>Available</th></tr></thead><tbody>
           <tr><td>Documents</td><td>Put, get, delete, and resolve revisioned JSON documents.</td><td><span class="status yes">Core</span></td></tr>
           <tr><td>Changes feed</td><td>Poll or stream public changes from a sequence using NDJSON.</td><td><span class="status yes">Core</span></td></tr>
-          <tr><td>Structured query</td><td>Selectors, sort, projection, bookmarks, and named full-text indexes.</td><td><span class="status yes">Core</span></td></tr>
+          <tr><td>Structured query</td><td>Selectors, sort, projection, bookmarks, and structured indexes.</td><td><span class="status yes">Core</span></td></tr>
+          <tr><td>Full-text search</td><td>Named rebuildable Tantivy indexes composed with the structured query result path.</td><td><span class="status boundary">Sidecar</span></td></tr>
+          <tr><td>Live subscriptions</td><td>Bounded snapshot and update streams for structured queries.</td><td><span class="status yes">Core</span></td></tr>
+          <tr><td>Declarative views</td><td>Durable local map/reduce read models without user-supplied code.</td><td><span class="status yes">Core</span></td></tr>
           <tr><td>Multi-master replication</td><td>One-shot or continuous push/pull between registered databases that can each accept writes.</td><td><span class="status yes">Core</span></td></tr>
-          <tr><td>Federated reads</td><td>Run a structured query across selected database UUIDs. The query is limited in scope and is not a live stream.</td><td><span class="status boundary">Limited scope</span></td></tr>
+          <tr><td>Federated reads</td><td>Run a bounded structured query across selected database UUIDs. The query is not a live stream.</td><td><span class="status yes">Core</span></td></tr>
+          <tr><td>Materialized views</td><td>Maintain a derived read-only database from several source databases.</td><td><span class="status yes">Core</span></td></tr>
           <tr><td>Shadow reads</td><td>Serve read traffic from generation-fenced, read-only materializations of a source database.</td><td><span class="status yes">Core</span></td></tr>
           <tr><td>Attachments</td><td>Upload bytes and reference content-addressed representations from documents.</td><td><span class="status yes">Core</span></td></tr>
+          <tr><td>Administration console</td><td>Required shipped operator UI over the same application services; configurable per host.</td><td><span class="status boundary">Administration</span></td></tr>
         </tbody></table></div>
       </section>
 
@@ -324,7 +329,7 @@
       </section>
 
       <section class="section" aria-labelledby="fit-title">
-        <div class="closing"><div><p class="label">09 / A reasonable place to start</p><h2 id="fit-title">A reasonable place to start.</h2></div><div><p>VialKeeper is a fit when you want portable document bundles, explicit revision history, structured APIs, and an OTP runtime that can run locally or as a host service.</p><ul class="checklist"><li>Keep document history visible</li><li>Use HTTP or in-process Elixir</li><li>Move registered bundles between hosts</li><li>Add search or replication when needed</li><li>Make conflicts explicit</li><li>Keep backend details behind the API</li></ul></div></div>
+        <div class="closing"><div><p class="label">09 / A reasonable place to start</p><h2 id="fit-title">A reasonable place to start.</h2></div><div><p>VialKeeper is a fit when you want portable document bundles, explicit revision history, structured APIs, and an OTP service reached through HTTP.</p><ul class="checklist"><li>Keep document history visible</li><li>Use the versioned HTTP API</li><li>Move registered bundles between hosts</li><li>Add search or replication when needed</li><li>Make conflicts explicit</li><li>Keep backend details behind the API</li></ul></div></div>
       </section>
     </main>
     <footer><span><strong>VialKeeper</strong> · a revisioned JSON document database</span><span>Read next: README.md · Operations.md</span></footer>

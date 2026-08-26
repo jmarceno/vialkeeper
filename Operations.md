@@ -3,6 +3,13 @@
 Runbook for deploying and running a Version 1 VialKeeper host. For API usage
 from applications, see [README.md](README.md).
 
+VialKeeper's product data model, structured query, subscriptions, views,
+replication, federation, materialized views, and shadow read semantics are
+**core**. Full-text search is a supported, rebuildable **sidecar**. Deployment,
+configuration, lifecycle, security, maintenance, observability, shadow control,
+and the required shipped console are **administration**. This runbook owns the
+administration procedures; it does not define alternate core semantics.
+
 Production and staging run an assembled OTP release. `mix` is for local
 development and CI only.
 
@@ -259,8 +266,9 @@ the console; it stays in browser `sessionStorage` and is sent as
 `Authorization: Bearer` on state-bearing requests. No server UI session /
 cookie. Logout or closing the tab clears the token.
 
-The console calls the same application facades as `/v1`. Status pages use
-bounded HTMX polling (no second WebSocket stack).
+The console calls the same project-owned application services as `/v1`; it is
+not a second data API. Status pages use bounded HTMX polling (no second
+WebSocket stack).
 
 ---
 
@@ -707,7 +715,7 @@ revision bodies, full remote URLs, tokens, or raw codec error text.
 - Finch client telemetry is bridged to OTel. Bandit server is **not** bridged
   (would double-span with `vial_keeper.http.request`).
 
-### Optional in-process snapshot
+### Optional local observability snapshot
 
 `GET /v1/observability/snapshot` exists only when application env
 `:observability_dashboard` is `true`. That flag is **not** a `host.toml` key;

@@ -2,8 +2,9 @@
 
 VialKeeper is a revisioned JSON document database that runs as one Elixir OTP
 application. Each database is a portable `.vialkeeper` bundle on disk. Clients
-talk JSON over HTTP `/v1`, or call Elixir modules in-process. Clients submit
-structured requests rather than backend engine commands.
+talk JSON over the versioned HTTP `/v1` API. Clients submit structured requests
+rather than backend engine commands. Elixir modules are internal implementation
+boundaries, not a supported embedding API.
 
 ```text
 Your app  ──HTTP /v1──►  VialKeeper host
@@ -29,20 +30,26 @@ Deploy, auth, TLS, copy/move, leases, and host limits: see
 
 ## What you get
 
-| Capability | Notes |
-| ---------- | ----- |
-| Documents | Put / get / delete with content-addressed revisions |
-| Conflicts | Branches are kept; resolve explicitly |
-| Changes feed | Poll or NDJSON stream from a sequence |
-| Structured query | Selector predicates, sort, projection, bookmarks |
-| Full-text search | Named `full_text` indexes backed by TantivyEx |
-| Live subscriptions | NDJSON stream of matching documents |
-| Attachments | Upload bytes, reference digests on documents |
-| Replication | One-shot or continuous push/pull between databases |
-| Local views | Declarative map/reduce (no custom code) |
-| Federation | Bounded query across several database UUIDs |
-| Materialized views | Derived read-only database from several sources |
-| Admin console | Optional offline HTMX UI at `/ui` |
+VialKeeper classifies shipped behavior by responsibility. **Core** owns the
+authoritative data model and deliberate scalability/read-model mechanisms.
+**Sidecar** functionality is supported but rebuildable from core state.
+**Administration** owns deployment, lifecycle, security, maintenance,
+diagnostics, and operator interaction.
+
+| Capability | Tier | Notes |
+| ---------- | ---- | ----- |
+| Documents, revisions and conflicts | Core | Put / get / delete; branches are preserved and resolved explicitly |
+| Changes feed | Core | Poll or NDJSON stream from a durable sequence |
+| Structured query and indexes | Core | Selector predicates, sort, projection, bookmarks |
+| Live subscriptions | Core | NDJSON stream of matching documents |
+| Attachments | Core | Upload bytes and reference content-addressed blobs from revisions |
+| Replication | Core | One-shot or continuous push/pull between databases |
+| Local views | Core | Declarative map/reduce without custom code |
+| Federation | Core | Bounded query across several database UUIDs |
+| Materialized views | Core | Derived read-only database from several sources |
+| Shadows | Core | Generation-fenced read scaling with source fallback |
+| Full-text search | Sidecar | Named rebuildable `full_text` indexes backed by TantivyEx |
+| Admin console | Administration | Required shipped HTMX console at `/ui`; host-configurable at runtime |
 
 ## What it does not do
 
@@ -57,7 +64,7 @@ Deploy, auth, TLS, copy/move, leases, and host limits: see
 
 ## Quick start
 
-### HTTP (TypeScript)
+### TypeScript
 
 Default listener: `http://127.0.0.1:4000` (loopback, auth off). When
 `[auth] enabled = true` in `host.toml`, send the raw token from
@@ -118,42 +125,6 @@ Successful responses: `{"request_id","data"}`. Failures:
 `{"request_id","error":{"code","message","retryable",…}}`. Document IDs live
 in the JSON body, not the URL path. Unknown JSON fields are rejected.
 
-### Elixir (in-process)
-
-```elixir
-alias VialKeeper.Runtime.DatabaseCatalog
-alias VialKeeper.Documents
-
-{:ok, %{database_uuid: uuid}} = DatabaseCatalog.create("notes.vialkeeper")
-
-{:ok, %{revision: rev1}} =
-  Documents.put(uuid, %{id: "note-1", body: %{"title" => "Hello", "done" => false}})
-
-{:ok, %{revision: rev2}} =
-  Documents.put(uuid, %{
-    id: "note-1",
-    if_revision: rev1,
-    body: %{"title" => "Hello", "done" => true}
-  })
-
-{:ok, %{revision: ^rev2, body: %{"done" => true}}} =
-  Documents.get(uuid, %{id: "note-1"})
-
-:ok = DatabaseCatalog.close(uuid)
-```
-
-Embed as a Mix dependency:
-
-```elixir
-# mix.exs
-defp deps do
-  [
-    {:vial_keeper, path: "../vialkeeper"}
-    # or: {:vial_keeper, git: "https://git.example.com/owner/vialkeeper.git"}
-  ]
-end
-```
-
 Databases live under `VIAL_KEEPER_ROOT` (default `./data`). Paths in create /
 register are **relative** to that root.
 
@@ -193,9 +164,6 @@ await postJson(`/v1/databases/${uuid}/documents/resolve`, {
 
 Bulk helpers: `POST …/documents/bulk-get` and `…/documents/bulk-write`
 (JSON arrays).
-
-**Elixir:** `Documents.get/2`, `put/2`, `delete/2`, `resolve/2`, `bulk_get/2`,
-`bulk_write/2`.
 
 ---
 
@@ -260,9 +228,6 @@ List / delete / rebuild: `GET …/indexes`, `DELETE …/indexes/:index_id`,
 `POST …/indexes/:index_id/rebuild`. Structured fields are `{path, type,
 direction}` objects. Full-text fields are JSON Pointers.
 
-**Elixir:** `VialKeeper.Query.create_index/2`, `list_indexes/1`,
-`delete_index/2`, `rebuild_index/2`.
-
 ### Full-text search
 
 Create a named `full_text` index over JSON Pointers into the document body.
@@ -313,23 +278,6 @@ const page = await postJson<{
 });
 ```
 
-```elixir
-{:ok, %{"index_id" => _index_id}} =
-  VialKeeper.Query.create_index(uuid, %{
-    name: "body_fts",
-    type: "full_text",
-    fields: ["/title", "/body"]
-  })
-
-{:ok, %{documents: hits, examined: examined}} =
-  VialKeeper.Query.execute(uuid, %{
-    selector: %{"/status" => "open"},
-    search: %{index: "body_fts", text: "hello world", mode: "phrase"},
-    fields: ["/title", "/body"],
-    limit: 20
-  })
-```
-
 ### Search as you type
 
 Typeahead is a client recipe on the same `/query` contract. The server does
@@ -343,8 +291,8 @@ still too broad.
 When the user commits a finished phrase, switch to `all` or `phrase` and a
 larger limit (25–50). If list snippets must contain the hit, store smaller
 documents (for example one paragraph per document) and project that field.
-In-process callers skip `:skip` queries and ignore stale `Query.execute/2`
-replies the same way HTTP clients abort in-flight fetches.
+Clients skip empty prefix queries and ignore stale responses the same way the
+example aborts an in-flight HTTP request.
 
 ```typescript
 const minToken = 3;
@@ -409,46 +357,6 @@ await postJson(`/v1/databases/${uuid}/query`, {
 });
 ```
 
-```elixir
-prefix_query = fn input ->
-  tokens =
-    Regex.scan(~r/[\p{L}\p{N}]+/u, String.downcase(input))
-    |> List.flatten()
-
-  ready =
-    case List.last(tokens) do
-      token when is_binary(token) and String.length(token) >= 3 -> tokens
-      _ -> Enum.drop(tokens, -1)
-    end
-
-  case Enum.filter(ready, &(String.length(&1) >= 3)) do
-    [] -> :skip
-    kept -> {:ok, Enum.join(kept, " ")}
-  end
-end
-
-case prefix_query.(input) do
-  :skip ->
-    {:ok, []}
-
-  {:ok, text} ->
-    VialKeeper.Query.execute(uuid, %{
-      search: %{index: "body_fts", text: text, mode: "prefix"},
-      fields: ["/title", "/body"],
-      limit: 10
-    })
-end
-
-{:ok, %{documents: _hits}} =
-  VialKeeper.Query.execute(uuid, %{
-    search: %{index: "body_fts", text: "hello world", mode: "phrase"},
-    fields: ["/title", "/body"],
-    limit: 50
-  })
-```
-
-**Elixir:** `VialKeeper.Query.execute/2`, `explain/2`.
-
 ---
 
 ## Changes feed
@@ -471,8 +379,6 @@ const stream = await fetch(`${baseUrl}/v1/databases/${uuid}/changes/stream`, {
   body: JSON.stringify({ since: 0, limit: 100, heartbeat_ms: 15000 }),
 });
 ```
-
-**Elixir:** `VialKeeper.Changes.read/2`, `wait/2`.
 
 ---
 
@@ -514,8 +420,7 @@ const download = await fetch(`${baseUrl}/v1/databases/${uuid}/attachments/get`, 
 });
 ```
 
-**Elixir:** `VialKeeper.Attachments.upload_stream/2`, `open_stream/2`. Attachment
-names are metadata, not filesystem paths.
+Attachment names are metadata, not filesystem paths.
 
 ---
 
@@ -556,8 +461,6 @@ const res = await fetch(`${baseUrl}/v1/databases/${uuid}/query/stream`, {
 Subscription state is **not** stored in the database. After reopen, clients
 must subscribe again.
 
-**Elixir:** `VialKeeper.Query.Subscriptions.open/3`, `next/2`, `close/1`.
-
 ---
 
 ## Local declarative views
@@ -583,9 +486,6 @@ await postJson(`/v1/databases/${uuid}/views/${view.envelope.data!.view_id}/query
 
 Other routes: `GET …/views`, `DELETE …/views/:view_id`,
 `POST …/views/:view_id/rebuild`.
-
-**Elixir:** `VialKeeper.Views.create/2`, `query/3`, `rebuild/2`, `list/1`,
-`delete/2`.
 
 ---
 
@@ -629,9 +529,6 @@ Attachment payloads transfer as the stored representation byte for byte — raw 
 Zstandard as chosen at ingest — using
 `application/vnd.vialkeeper.blob-representation` without HTTP `Content-Encoding`,
 and the target installs them without probing or re-encoding.
-
-**Elixir:** `VialKeeper.Replication.JobManager` (`put/2`, `start/2`, …) and
-`VialKeeper.Replication`.
 
 Operator details (job states, transfer limits, peer auth):
 [Operations.md](Operations.md).
@@ -710,8 +607,6 @@ Named saved queries live in `host.toml` (`[[federation.saved_query]]`). List /
 run: `GET /v1/federation/saved-queries`,
 `POST /v1/federation/saved-queries/execute` with `{ name, limit?, bookmark? }`.
 
-**Elixir:** `VialKeeper.Federation.query/1`, `VialKeeper.Federation.SavedQueries`.
-
 ---
 
 ## Materialized federated views
@@ -751,9 +646,6 @@ await postJson(`/v1/materialized-views/${derived}/disable`, {});
 Disable materialization before closing a source or the derived database.
 Bundles are usually created under `_derived/…derived.vialkeeper` (path is a
 hint; `database_kind = derived` in metadata is authoritative).
-
-**Elixir:** `VialKeeper.MaterializedViews.create/1`, `enable/1`, `disable/1`,
-`refresh/1`, `rebuild/1`, `get/1`, `list/0`.
 
 ---
 
