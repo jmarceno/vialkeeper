@@ -1,7 +1,9 @@
 # VialKeeper operations
 
-Runbook for deploying and running a Version 1 VialKeeper host. For API usage
-from applications, see [README.md](README.md).
+Runbook for deploying and running a Version 1 VialKeeper host. Applications
+consume the host through the versioned HTTP `/v1` API; see [README.md](README.md)
+for the client-facing route examples. Elixir modules are internal services, not
+an application integration surface.
 
 VialKeeper's product data model, structured query, subscriptions, views,
 replication, federation, materialized views, and shadow read semantics are
@@ -46,7 +48,9 @@ target host (same OS/ABI as the build machine).
 ```
 
 `Diagnostics.runtime/0` reports Mix app version and runtime / selected-backend
-identity from the BEAMs. It does not read git metadata.
+identity from the BEAMs. This `eval` invocation is an operator-only release
+diagnostic; it does not make the underlying Elixir module a supported client
+API and it does not read git metadata.
 
 ---
 

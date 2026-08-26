@@ -63,7 +63,7 @@ button {
 .client-title,
 .client-status,
 .button-row,
-.native-content,
+.peer-content,
 .workspace-footer {
   display: flex;
   align-items: center;
@@ -91,8 +91,8 @@ button {
 .intro-row h2,
 .intro-row p,
 .panel-heading h2,
-.native-title,
-.native-copy {
+.peer-title,
+.peer-copy {
   margin: 0;
 }
 
@@ -536,7 +536,7 @@ button {
 }
 
 .client-panel,
-.native-panel {
+.peer-panel {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: linear-gradient(145deg, rgba(29, 41, 49, 0.98), rgba(19, 28, 34, 0.98));
@@ -848,7 +848,7 @@ button {
   text-align: right;
 }
 
-.native-panel {
+.peer-panel {
   margin-top: 18px;
   padding: 18px;
 }
@@ -880,12 +880,12 @@ button {
   color: var(--teal);
 }
 
-.native-content {
+.peer-content {
   gap: 16px;
   padding-top: 16px;
 }
 
-.native-signal {
+.peer-signal {
   display: grid;
   gap: 4px;
   width: 32px;
@@ -913,13 +913,13 @@ button {
   transform: scaleX(0.48);
 }
 
-.native-title {
+.peer-title {
   font-family: var(--mono);
   font-size: 12px;
   font-weight: 600;
 }
 
-.native-copy {
+.peer-copy {
   max-width: 720px;
   margin-top: 5px;
   color: var(--muted);
@@ -927,7 +927,7 @@ button {
   line-height: 1.55;
 }
 
-.native-details {
+.peer-details {
   display: grid;
   gap: 4px;
   margin-left: auto;
@@ -937,7 +937,7 @@ button {
   text-align: right;
 }
 
-.native-details strong {
+.peer-details strong {
   color: var(--text);
   font-weight: 500;
 }
@@ -1309,13 +1309,13 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .native-content,
+  .peer-content,
   .workspace-footer {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .native-details {
+  .peer-details {
     margin-left: 0;
     text-align: left;
   }

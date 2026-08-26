@@ -1,5 +1,5 @@
 defmodule VialKeeper.Query.Subscriptions do
-  @moduledoc "Public service boundary for transient live query subscriptions."
+  @moduledoc "Internal service boundary for transient live query subscriptions used by HTTP routes."
 
   alias VialKeeper.Query.{
     Subscription,

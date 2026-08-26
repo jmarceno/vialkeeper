@@ -1,5 +1,5 @@
 defmodule VialKeeper.Views do
-  @moduledoc "Public facade for declarative map/reduce views."
+  @moduledoc "Internal declarative map/reduce service used by HTTP and console routes; not a client API."
 
   alias VialKeeper.Runtime.DatabaseCatalog
   alias VialKeeper.View.{Builder, Manager}

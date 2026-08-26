@@ -1,5 +1,5 @@
 defmodule VialKeeper.MaterializedViews do
-  @moduledoc "Application facade for creating materialized federated views."
+  @moduledoc "Internal materialized-view service used by HTTP and administration routes; not a client API."
 
   alias VialKeeper.DatabaseKind
   alias VialKeeper.DerivedView.{Definition, Path}

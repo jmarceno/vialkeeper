@@ -12,12 +12,12 @@ else
 fi
 
 main_root="$run_root/web-data"
-cli_root="$run_root/native-data"
+peer_root="$run_root/http-peer-data"
 worker_a_root="$run_root/shadow-worker-a-data"
 worker_b_root="$run_root/shadow-worker-b-data"
 state_root="$run_root/state"
 main_config="$state_root/main.json"
-cli_config="$state_root/cli.json"
+peer_config="$state_root/http-peer.json"
 worker_a_config="$state_root/worker-a.json"
 worker_b_config="$state_root/worker-b.json"
 ready_config="$state_root/ready.json"
@@ -25,19 +25,19 @@ private_config="$state_root/private.json"
 results_root="$state_root/results"
 
 server_port="${VIALKEEPER_DEMO_DB_PORT:-4100}"
-cli_port="${VIALKEEPER_DEMO_CLI_PORT:-4101}"
+peer_port="${VIALKEEPER_DEMO_PEER_PORT:-4101}"
 worker_a_port="${VIALKEEPER_DEMO_WORKER_A_PORT:-4102}"
 worker_b_port="${VIALKEEPER_DEMO_WORKER_B_PORT:-4103}"
 web_port="${VIALKEEPER_DEMO_WEB_PORT:-4180}"
 
 main_log="$run_root/web-node.log"
-cli_log="$run_root/native-cli.log"
+peer_log="$run_root/http-peer.log"
 worker_a_log="$run_root/shadow-worker-a.log"
 worker_b_log="$run_root/shadow-worker-b.log"
 web_log="$run_root/ui-server.log"
 
 main_pid=""
-cli_pid=""
+peer_pid=""
 worker_a_pid=""
 worker_b_pid=""
 web_pid=""
@@ -46,12 +46,12 @@ source_token="${VIALKEEPER_DEMO_SOURCE_TOKEN:-vialkeeper-demo-source-$run_id}"
 worker_a_token="${VIALKEEPER_DEMO_WORKER_A_TOKEN:-vialkeeper-demo-worker-a-$run_id}"
 worker_b_token="${VIALKEEPER_DEMO_WORKER_B_TOKEN:-vialkeeper-demo-worker-b-$run_id}"
 
-mkdir -p "$main_root" "$cli_root" "$worker_a_root" "$worker_b_root" "$state_root" "$results_root"
-rm -f -- "$main_config" "$cli_config" "$worker_a_config" "$worker_b_config" "$ready_config" "$private_config"
+mkdir -p "$main_root" "$peer_root" "$worker_a_root" "$worker_b_root" "$state_root" "$results_root"
+rm -f -- "$main_config" "$peer_config" "$worker_a_config" "$worker_b_config" "$ready_config" "$private_config"
 
 cleanup() {
   trap - EXIT INT TERM
-  for pid in "$web_pid" "$cli_pid" "$main_pid" "$worker_b_pid" "$worker_a_pid"; do
+  for pid in "$web_pid" "$peer_pid" "$main_pid" "$worker_b_pid" "$worker_a_pid"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill -TERM "$pid" 2>/dev/null || true
     fi
@@ -60,7 +60,7 @@ cleanup() {
   deadline=$((SECONDS + 5))
   while (( SECONDS < deadline )); do
     alive=0
-    for pid in "$web_pid" "$cli_pid" "$main_pid" "$worker_b_pid" "$worker_a_pid"; do
+    for pid in "$web_pid" "$peer_pid" "$main_pid" "$worker_b_pid" "$worker_a_pid"; do
       if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
         alive=1
       fi
@@ -73,13 +73,13 @@ cleanup() {
     sleep 0.1
   done
 
-  for pid in "$web_pid" "$cli_pid" "$main_pid" "$worker_b_pid" "$worker_a_pid"; do
+  for pid in "$web_pid" "$peer_pid" "$main_pid" "$worker_b_pid" "$worker_a_pid"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill -KILL "$pid" 2>/dev/null || true
     fi
   done
 
-  for pid in "$web_pid" "$cli_pid" "$main_pid" "$worker_b_pid" "$worker_a_pid"; do
+  for pid in "$web_pid" "$peer_pid" "$main_pid" "$worker_b_pid" "$worker_a_pid"; do
     if [[ -n "$pid" ]]; then
       wait "$pid" 2>/dev/null || true
     fi
@@ -119,7 +119,7 @@ trap cleanup EXIT INT TERM
 
 echo "Starting VialKeeper replication harness"
 echo "  Database HTTP: http://127.0.0.1:$server_port"
-echo "  Native CLI HTTP wire: http://127.0.0.1:$cli_port"
+echo "  HTTP peer: http://127.0.0.1:$peer_port"
 echo "  Shadow workers: http://127.0.0.1:$worker_a_port and http://127.0.0.1:$worker_b_port"
 echo "  Web UI: http://127.0.0.1:$web_port"
 
@@ -171,7 +171,7 @@ wait_for_file "$worker_b_config" "$worker_b_pid"
   DEMO_WORKER_B_ENDPOINT="http://127.0.0.1:$worker_b_port" \
   DEMO_WORKER_B_CONTROL_TOKEN="$worker_b_token" \
   DEMO_MAIN_CONFIG="$main_config" \
-  DEMO_C_CONFIG="$cli_config" \
+  DEMO_PEER_CONFIG="$peer_config" \
   DEMO_WORKER_A_CONFIG="$worker_a_config" \
   DEMO_WORKER_B_CONFIG="$worker_b_config" \
   DEMO_READY_CONFIG="$ready_config" \
@@ -185,16 +185,16 @@ wait_for_file "$main_config" "$main_pid"
 (
   cd "$project_root"
   MIX_ENV=dev \
-  VIAL_KEEPER_ROOT="$cli_root" \
-  VIAL_KEEPER_PORT="$cli_port" \
+  VIAL_KEEPER_ROOT="$peer_root" \
+  VIAL_KEEPER_PORT="$peer_port" \
   DEMO_SOURCE_TOKEN="$source_token" \
-  DEMO_C_CONFIG="$cli_config" \
+  DEMO_PEER_CONFIG="$peer_config" \
   DEMO_READY_CONFIG="$ready_config" \
-  mix run --no-start demo/replication_harness/node.exs cli
-) >"$cli_log" 2>&1 &
-cli_pid=$!
+  mix run --no-start demo/replication_harness/node.exs peer
+) >"$peer_log" 2>&1 &
+peer_pid=$!
 
-wait_for_file "$ready_config" "$main_pid" "$cli_pid" "$worker_a_pid" "$worker_b_pid"
+wait_for_file "$ready_config" "$main_pid" "$peer_pid" "$worker_a_pid" "$worker_b_pid"
 
 (
   cd "$project_root"
@@ -210,14 +210,14 @@ web_pid=$!
 echo
 echo "Harness is ready: http://127.0.0.1:$web_port"
 echo "Write in Client A or Client B, then use Burst writes to stress the feed."
-echo "Native CLI output: $cli_log"
+echo "HTTP peer output: $peer_log"
 echo "Worker logs: $worker_a_log and $worker_b_log"
 echo "Scenario artifacts: $results_root"
 echo "Press Ctrl-C to stop all harness processes."
 echo
 
 while :; do
-  for pid in "$main_pid" "$cli_pid" "$web_pid"; do
+  for pid in "$main_pid" "$peer_pid" "$web_pid"; do
     if ! kill -0 "$pid" 2>/dev/null; then
       echo "A harness process stopped unexpectedly; inspect $run_root" >&2
       exit 1

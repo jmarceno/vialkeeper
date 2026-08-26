@@ -1,5 +1,5 @@
 defmodule VialKeeper.Documents do
-  @moduledoc "Validated document operations over the database runtime."
+  @moduledoc "Internal document service used by HTTP routes and runtime workers; not a client API."
   alias VialKeeper.Attachments
   alias VialKeeper.Attachments.Manifest
   alias VialKeeper.Error

@@ -18,9 +18,9 @@ const elements = {
   globalStatus: document.querySelector("#global-status"),
   globalStatusText: document.querySelector("#global-status-text"),
   eventCount: document.querySelector("#event-count"),
-  nativeTitle: document.querySelector("#native-title"),
-  nativeCopy: document.querySelector("#native-copy"),
-  nativeDetails: document.querySelector("#native-details"),
+  peerTitle: document.querySelector("#peer-title"),
+  peerCopy: document.querySelector("#peer-copy"),
+  peerDetails: document.querySelector("#peer-details"),
   observabilityStatus: document.querySelector("#observability-status"),
   observabilityStatusText: document.querySelector("#observability-status-text"),
   observabilityNote: document.querySelector("#observability-note"),
@@ -203,10 +203,10 @@ function renderLabState(data) {
       status: "online",
     },
     {
-      label: "Native node",
+      label: "HTTP peer",
       value: "C",
-      detail: data.native_client?.database_uuid || "Waiting for native UUID",
-      status: data.native_client ? "online" : "starting",
+      detail: data.http_peer?.database_uuid || "Waiting for peer UUID",
+      status: data.http_peer ? "online" : "starting",
     },
     ...workers.map((worker) => ({
       label: worker.label || `Shadow worker ${worker.key}`,
@@ -372,7 +372,7 @@ async function refreshObservability() {
 
   const requests = [
     ["web", "/api/observability/web"],
-    ["native", "/api/observability/native"],
+    ["peer", "/api/observability/peer"],
   ];
   const results = await Promise.allSettled(requests.map(([, path]) => fetchTelemetry(path)));
   const successes = [];
@@ -686,14 +686,14 @@ function showError(client, message) {
   setClientStatus(client, "error", message);
 }
 
-function renderNativeInfo(nativeClient) {
-  if (!nativeClient) return;
-  elements.nativeTitle.textContent = "Native client attached · replication output is in the launcher terminal";
-  elements.nativeCopy.textContent =
-    "Database C is owned by a separate Elixir process. It receives A's revisions over the remote wire and prints each change from VialKeeper.Changes.wait/2.";
-  elements.nativeDetails.innerHTML = `
-    <span>Database <strong>${escapeHtml(nativeClient.database_uuid)}</strong></span>
-    <span>Endpoint <strong>${escapeHtml(nativeClient.endpoint)}</strong></span>
+function renderPeerInfo(httpPeer) {
+  if (!httpPeer) return;
+  elements.peerTitle.textContent = "HTTP peer attached · replication output is in the launcher terminal";
+  elements.peerCopy.textContent =
+    "Database C is owned by a separate VialKeeper host. It receives A's revisions over the HTTP replication wire and prints each change from the authenticated /v1 changes route.";
+  elements.peerDetails.innerHTML = `
+    <span>Database <strong>${escapeHtml(httpPeer.database_uuid)}</strong></span>
+    <span>Endpoint <strong>${escapeHtml(httpPeer.endpoint)}</strong></span>
   `;
 }
 
@@ -971,7 +971,7 @@ async function start() {
       });
     }
     renderClients();
-    renderNativeInfo(state.config.native_client);
+    renderPeerInfo(state.config.http_peer);
     bindFtsSearch();
     await Promise.all([loadScenarios(), refreshLabState()]);
 

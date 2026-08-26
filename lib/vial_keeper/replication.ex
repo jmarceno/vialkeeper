@@ -1,5 +1,5 @@
 defmodule VialKeeper.Replication do
-  @moduledoc "One-shot and continuous replication orchestration."
+  @moduledoc "Internal one-shot and continuous replication service used by HTTP and workers."
   alias VialKeeper.Changes.Request
   alias VialKeeper.Domain.BoundaryPage
   alias VialKeeper.Error

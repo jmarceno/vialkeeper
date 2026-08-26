@@ -1,7 +1,7 @@
 defmodule VialKeeper.Replication.AuthTokenRedactionTest do
   @moduledoc """
   Guards that raw stored replication `auth_token` values never leak through the
-  public `VialKeeper.Replication.JobManager` read API, while round-trips and
+  internal `VialKeeper.Replication.JobManager` read service, while round-trips and
   lifecycle paths keep operating with the real credential.
   """
 

@@ -23,6 +23,14 @@ Your app  ──HTTP /v1──►  VialKeeper host
 `mix.lock`). Production hosts run an OTP release. Mix is for development and
 CI only.
 
+### Product interface
+
+Applications integrate with a running VialKeeper host through the versioned
+HTTP `/v1` API. The embedded `/ui` surface is for administration. Elixir
+modules and application services remain internal implementation boundaries for
+the HTTP router, console, workers, and internal tests; they are not a
+supported client API, and this repository is not an embeddable Mix dependency.
+
 Deploy, auth, TLS, copy/move, leases, and host limits: see
 [Operations.md](Operations.md).
 
@@ -722,8 +730,9 @@ when changing storage, runtime, domain, or product-model code:
 mix storage.boundary_check
 ```
 
-`VialKeeper.Diagnostics.runtime/0` reports application / Elixir / OTP /
-selected-backend / protocol versions from the assembled BEAMs.
+The assembled release reports its runtime and selected-backend identity through
+the operator-only diagnostic command described in [Operations.md](Operations.md);
+that diagnostic does not define a client integration surface.
 
 Operator runbook: [Operations.md](Operations.md). SQLite backend layout and
 controls: [lib/vial_keeper/storage/sqlite/BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).

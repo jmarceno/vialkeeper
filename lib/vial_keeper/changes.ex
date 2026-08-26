@@ -1,5 +1,5 @@
 defmodule VialKeeper.Changes do
-  @moduledoc "Bounded and race-free changes feed operations."
+  @moduledoc "Internal changes-feed service used by HTTP routes and runtime workers; not a client API."
   alias VialKeeper.Changes.Request
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Changes, as: ChangesModule

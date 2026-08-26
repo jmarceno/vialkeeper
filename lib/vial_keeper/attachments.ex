@@ -1,6 +1,7 @@
 defmodule VialKeeper.Attachments do
   @moduledoc """
-  Storage-neutral attachment orchestration for HTTP and local mutation paths.
+  Internal storage-neutral attachment orchestration for HTTP and local mutation
+  paths; this module is not a client API.
 
   Coordinates `AttachmentCoordinator` guards, short owner metadata commands, and
   `FilesystemStore` byte I/O. Never holds database admission or `DatabaseOwner`

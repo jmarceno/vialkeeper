@@ -278,7 +278,7 @@ async function runShadowRouting(context, steps) {
 async function runReplicationQueries(context, steps) {
   const source = sourceDatabase(context);
   const target = clientDatabase(context, "b");
-  const native = context.privateConfig.native_client;
+  const peer = context.privateConfig.http_peer;
   const documentId = `query-${context.runId}`;
   const body = { kind: "query-lab", run_id: context.runId, value: 7 };
 
@@ -304,11 +304,11 @@ async function runReplicationQueries(context, steps) {
     return { status: response.status, id: response.body?.data?.id, sequence: put.sequence };
   });
 
-  await step(steps, "observe A to native C replication", async () => {
-    if (!native) throw new ScenarioError("native client configuration is missing");
+  await step(steps, "observe A to HTTP peer C replication", async () => {
+    if (!peer) throw new ScenarioError("HTTP peer configuration is missing");
     const response = await waitFor(
       "C receives query fixture",
-      () => endpointRequest(context, native.endpoint, `/v1/databases/${native.database_uuid}/documents/get`, {
+      () => endpointRequest(context, peer.endpoint, `/v1/databases/${peer.database_uuid}/documents/get`, {
         method: "POST",
         body: { id: documentId },
       }),
@@ -369,7 +369,7 @@ async function runReplicationQueries(context, steps) {
     return { status: response.status, event_types: types.slice(0, 12), headers: selectedHeaders(response.headers) };
   });
 
-  return { document_id: documentId, index: indexName, native_database_uuid: native?.database_uuid };
+  return { document_id: documentId, index: indexName, peer_database_uuid: peer?.database_uuid };
 }
 
 async function runFederationMaterializedViews(context, steps) {
@@ -520,13 +520,13 @@ async function runRetentionAdmissionIntegrity(context, steps) {
 async function runPortabilityAndWire(context, steps) {
   const source = sourceDatabase(context);
   const target = clientDatabase(context, "b");
-  const native = context.privateConfig.native_client;
+  const peer = context.privateConfig.http_peer;
 
   const identities = await step(steps, "read authenticated replication identities", async () => {
     const endpoints = [
       ["a", context.privateConfig.source_endpoint, source.uuid, context.privateConfig.source_token],
       ["b", target.endpoint, target.uuid, context.privateConfig.source_token],
-      ["c", native?.endpoint, native?.database_uuid, context.privateConfig.source_token],
+      ["c", peer?.endpoint, peer?.database_uuid, context.privateConfig.source_token],
     ];
     const values = {};
     for (const [key, endpoint, uuid, token] of endpoints) {

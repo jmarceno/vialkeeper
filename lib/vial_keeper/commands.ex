@@ -2,7 +2,7 @@ defmodule VialKeeper.Commands do
   @moduledoc """
   Typed command envelopes used at the database-owner boundary.
 
-  Public catalog/document callers may still pass tagged `{:command, ...}` tuples;
+  Internal application services may pass tagged `{:command, ...}` tuples;
   `normalize/1` converts those into these structs before `DatabaseOwner` dispatches.
 
   The nested structs are intentionally undocumented internal envelopes rather than

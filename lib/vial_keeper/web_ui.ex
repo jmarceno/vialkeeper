@@ -2,7 +2,8 @@ defmodule VialKeeper.WebUI do
   @moduledoc """
   Embedded offline administration console served under `/ui`.
 
-  The console is a presentation layer over existing application facades. It is
+  The console is a presentation layer over existing internal application
+  services. It is
   compiled into the release with vendored HTMX and project-owned CSS/JS so a
   production OTP node needs no Internet access and no runtime frontend source
   tree.

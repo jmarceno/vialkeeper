@@ -13,8 +13,8 @@ Then open <http://127.0.0.1:4180>.
 The launcher starts five cooperating processes:
 
 1. A web/database BEAM node on port `4100`, owning Database A and Database B.
-2. A separate native-client BEAM node on port `4101`, owning Database C and
-   printing its `VialKeeper.Changes.wait/2` feed to the terminal.
+2. A separate HTTP peer BEAM node on port `4101`, owning Database C and
+   printing its authenticated `/v1/databases/:uuid/changes` feed to the terminal.
 3. A managed shadow-worker BEAM node on port `4102`.
 4. A second managed shadow-worker BEAM node on port `4103`.
 5. A dependency-free Node.js static server on port `4180`. Its small local
@@ -27,7 +27,7 @@ The database node enables continuous remote replication in this topology:
 ```text
 Client A / Database A  <──HTTP──>  Client B / Database B
           │
-          └──────────────HTTP──────────────>  Native Elixir / Database C
+          └──────────────HTTP──────────────>  HTTP peer / Database C
 ```
 
 The browser panels use different database UUIDs. Write a document in either
@@ -35,9 +35,10 @@ panel and watch the other panel’s changes feed update. `Burst writes` sends a
 bounded series of real mutations to exercise owner serialization, SQLite
 transactions, changes delivery, checkpointing, and replication retries.
 
-The native process owns Database C directly in Elixir; it does not use the web
-UI or an HTTP client to observe its changes. Its output is written to the
-terminal and to the run directory’s `native-cli.log`.
+The peer process owns Database C as a VialKeeper host, then uses the same
+authenticated HTTP `/v1` interface as an external application to create the
+database and observe its changes. Its output is written to the terminal and to
+the run directory’s `http-peer.log`.
 
 ## Scenario lab
 
@@ -90,7 +91,7 @@ Optional environment variables:
 
 ```sh
 VIALKEEPER_DEMO_DB_PORT=4200 \
-VIALKEEPER_DEMO_CLI_PORT=4201 \
+VIALKEEPER_DEMO_PEER_PORT=4201 \
 VIALKEEPER_DEMO_WORKER_A_PORT=4202 \
 VIALKEEPER_DEMO_WORKER_B_PORT=4203 \
 VIALKEEPER_DEMO_WEB_PORT=4280 \

@@ -1,7 +1,7 @@
 defmodule VialKeeper.EndToEnd.ReadPoolScenarioTest do
   @moduledoc """
   End-to-end HTTP composition for concurrent snapshot reads, a concurrent
-  write, and portable close through the public API.
+  write, and portable close through the HTTP API.
 
   The read-pool probes provide deterministic overlap evidence without relying
   on elapsed-time assertions.

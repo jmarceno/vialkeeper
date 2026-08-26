@@ -348,7 +348,7 @@ async function labState() {
   return {
     topology: {
       source: "A / B web node",
-      native: "C native node",
+      peer: "C HTTP peer",
       shadows: workers.map((worker) => worker.key),
     },
     source_database_uuid: sourceUuid,
@@ -356,7 +356,7 @@ async function labState() {
     shadow_error: shadowError,
     workers,
     clients: config.clients,
-    native_client: config.native_client,
+    http_peer: config.http_peer,
   };
 }
 
@@ -433,12 +433,12 @@ const server = createServer(async (request, response) => {
       return await proxyEndpoint(request, response, config.server_url, "/v1/observability/snapshot", privateConfig.source_token);
     }
 
-    if (url.pathname === "/api/observability/native") {
+    if (url.pathname === "/api/observability/peer") {
       const [config, privateConfig] = await Promise.all([readConfig(), readPrivateConfig()]);
       return await proxyEndpoint(
         request,
         response,
-        config.native_client?.endpoint,
+        config.http_peer?.endpoint,
         "/v1/observability/snapshot",
         privateConfig.source_token,
       );

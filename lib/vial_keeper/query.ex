@@ -1,5 +1,5 @@
 defmodule VialKeeper.Query do
-  @moduledoc "Query service and logical index lifecycle."
+  @moduledoc "Internal query and logical-index service used by HTTP and console routes; not a client API."
 
   alias VialKeeper.Config
   alias VialKeeper.JSON.{Canonical, Pointer}

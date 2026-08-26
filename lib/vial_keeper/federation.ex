@@ -1,5 +1,5 @@
 defmodule VialKeeper.Federation do
-  @moduledoc "Public facade for bounded stateless cross-database queries."
+  @moduledoc "Internal bounded cross-database query service used by HTTP routes; not a client API."
 
   alias VialKeeper.Federation.Executor
   alias VialKeeper.MapAccess

@@ -14,7 +14,7 @@
         <span class="brand-mark" aria-hidden="true">×</span>
         <div>
           <h1>VialKeeper Replication Lab</h1>
-          <p>Manual HTTP and native-client stress bench</p>
+          <p>Manual HTTP and peer stress bench</p>
         </div>
       </div>
       <div class="topbar-status" id="global-status" data-state="starting">
@@ -34,8 +34,8 @@
           <h2>Change one database. Watch the other clients catch up.</h2>
         </div>
         <p class="intro-copy">
-          Client A and Client B use the real versioned HTTP API. The native Elixir
-          client owns a third database and reports replicated changes in the terminal.
+          Client A, Client B, and the peer use the real versioned HTTP API. The peer
+          owns a third database and reports replicated changes in the terminal.
         </p>
       </section>
 
@@ -98,11 +98,11 @@
             <p class="telemetry-sample" data-role="telemetry-sample">No sample yet</p>
           </article>
 
-          <article class="telemetry-node" data-telemetry-node="native">
+          <article class="telemetry-node" data-telemetry-node="peer">
             <div class="telemetry-node-heading">
               <div>
                 <p class="eyebrow">BEAM node</p>
-                <h3>Native node · C</h3>
+                <h3>HTTP peer · C</h3>
               </div>
               <span class="telemetry-node-status" data-role="telemetry-status" data-state="starting">
                 <span class="status-dot" aria-hidden="true"></span>
@@ -221,7 +221,7 @@
             <p class="eyebrow">Scenario controller · persisted result artifacts</p>
             <h2 id="lab-heading">General feature lab</h2>
             <p class="lab-copy">
-              These recipes drive the same authenticated HTTP and native paths as the app above.
+              These recipes drive the same authenticated HTTP paths as the app above.
               Each run records bounded evidence, response headers, and the first failing step.
             </p>
           </div>
@@ -266,27 +266,27 @@
 
       <section class="client-grid" id="client-grid" aria-label="HTTP database clients"></section>
 
-      <section class="native-panel" aria-label="Native Elixir client">
+      <section class="peer-panel" aria-label="HTTP peer client">
         <div class="panel-heading">
           <div>
-            <h2>Native Elixir CLI</h2>
+            <h2>HTTP peer client</h2>
           </div>
           <span class="badge badge-teal"><span class="status-dot"></span> Printing in terminal</span>
         </div>
-        <div class="native-content">
-          <div class="native-signal" aria-hidden="true">
+        <div class="peer-content">
+          <div class="peer-signal" aria-hidden="true">
             <span class="signal-line"></span>
             <span class="signal-line"></span>
             <span class="signal-line"></span>
           </div>
           <div>
-            <p class="native-title" id="native-title">Waiting for the native node…</p>
-            <p class="native-copy" id="native-copy">
-              The launcher starts a separate BEAM process. It owns Database C natively,
-              while the web server only exposes the HTTP clients.
+            <p class="peer-title" id="peer-title">Waiting for the HTTP peer…</p>
+            <p class="peer-copy" id="peer-copy">
+              The launcher starts a separate BEAM process that uses the authenticated
+              HTTP interface to own and observe Database C.
             </p>
           </div>
-          <div class="native-details" id="native-details"></div>
+          <div class="peer-details" id="peer-details"></div>
         </div>
       </section>
 

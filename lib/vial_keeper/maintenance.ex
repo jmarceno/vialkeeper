@@ -1,5 +1,5 @@
 defmodule VialKeeper.Maintenance do
-  @moduledoc "Application facade for database integrity, retention, and attachment maintenance."
+  @moduledoc "Internal maintenance service used by HTTP and administration routes; not a client API."
 
   alias VialKeeper.Attachments
   alias VialKeeper.Error

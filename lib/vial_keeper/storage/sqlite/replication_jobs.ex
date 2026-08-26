@@ -2,8 +2,8 @@ defmodule VialKeeper.Storage.SQLite.ReplicationJobs do
   @moduledoc """
   Replication-job SQL helpers for the Version 1 SQLite adapter.
 
-  Owns list/put/delete against the `replication_jobs` table. Public API entry
-  points still route through the adapter behaviour implementation.
+  Owns list/put/delete against the `replication_jobs` table. HTTP and internal
+  service entry points still route through the adapter behaviour implementation.
   """
 
   alias VialKeeper.JSON.{Canonical, StrictDecoder}
