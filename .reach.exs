@@ -19,6 +19,7 @@
       "VialKeeper.Replication.WireCompression",
       "VialKeeper.Attachments",
       "VialKeeper.Maintenance",
+      "VialKeeper.Backup.*",
       "VialKeeper.Observability.Dashboard"
     ],
     runtime: [

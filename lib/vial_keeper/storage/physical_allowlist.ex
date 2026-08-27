@@ -10,6 +10,7 @@ defmodule VialKeeper.Storage.PhysicalAllowlist do
 
   @path_prefixes [
     "lib/vial_keeper/storage/sqlite/",
+    "lib/vial_keeper/backup/",
     "priv/sqlite/",
     "test/physical/sqlite/",
     "test/vial_keeper/storage/sqlite/",
@@ -24,6 +25,7 @@ defmodule VialKeeper.Storage.PhysicalAllowlist do
     "lib/vial_keeper/storage/physical_allowlist.ex",
     "lib/vial_keeper/storage/ports.ex",
     "lib/vial_keeper/storage/sentinel/context.ex",
+    "lib/mix/tasks/vialkeeper.backup.manifest.ex",
     "bench/sqlite_exqlite_overhead_benchmark.exs",
     "bench/product_benchmark.exs",
     "bench/README.md",

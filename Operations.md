@@ -229,8 +229,8 @@ operator procedure.
 ```mermaid
 flowchart LR
   A[Stop writers / disable continuous deps] --> B[Close database]
-  B --> C[Integrity-check]
-  C --> D[Copy whole .vialkeeper dir]
+  B --> C[Copy whole .vialkeeper dir]
+  C --> D[Offline integrity-check + manifest]
   D --> E[Place under destination root]
   E --> F[POST /v1/registrations]
   F --> G[Integrity-check again]
@@ -242,21 +242,115 @@ flowchart LR
    first.
 2. `POST /v1/databases/:uuid/close`. Live subscriptions end with `closed`.
    Confirm no attachment upload/download/GC is still running.
-3. Run `POST /v1/databases/:uuid/integrity-check`. Do not treat a failing
-   bundle as a verified backup generation.
-4. Copy the complete closed `.vialkeeper` directory with ordinary OS tools.
-   Record SHA-256 of the backend durable data artifact and of `blobs/` (or a tree hash),
-   plus VialKeeper release identity from `Diagnostics.runtime/0`. Store that
-   sidecar manifest **next to** the copy, not inside the bundle. Omit `.lease`.
-   `tmp/` may be omitted (rebuildable search cache and incomplete uploads).
-5. Keep generations off the live host and off live replica disks. Ordinary
-   backup rotation and longer **archive** retention are separate clocks.
-6. At the destination (relocation) or on a **clean** restore host: place the
+3. Copy the complete closed `.vialkeeper` directory with ordinary OS tools.
+   Omit `.lease`; `tmp/` may be omitted (rebuildable search cache and incomplete uploads).
+4. Immediately run the offline logical and physical integrity check and generate a sidecar
+   **backup manifest** `notes.vialkeeper.manifest.json`
+   **next to** the copy (never inside `blobs/` or `tmp/`) that records generation id,
+   UTC time, source UUID and relative path, `Diagnostics.runtime/0`, storage versions,
+   bundle sizes, SHA-256 of the backend artifact and of `blobs/`, and that post-close
+   integrity result. Do not treat a failing bundle as a verified generation. See
+   `Backup generation manifest (MAINT-006)` below and
+   `VialKeeper.Backup.Manifest`. Keep generations off the live host and off live replica disks.
+   Ordinary backup rotation and longer **archive** retention are separate clocks.
+5. At the destination (relocation) or on a **clean** restore host: place the
    bundle, then register the relative path.
-7. Traffic addresses the same UUID (document routes auto-open, or open via
+6. Traffic addresses the same UUID (document routes auto-open, or open via
    catalog). After restore, run integrity-check again, read a sample of
    documents and attachments, rebuild full-text indexes if search is required,
    and inspect replication jobs / materializations **before** enabling them.
+
+### Backup generation manifest (MAINT-006)
+
+A backup generation is a closed-bundle copy plus a sidecar JSON manifest
+that makes the generation auditable. The manifest is stored **next to** the
+bundle directory, never inside it. For a bundle `notes.vialkeeper` the
+manifest is `notes.vialkeeper.manifest.json` in the same parent directory.
+When a generation directory contains one bundle, the same file may be named
+`manifest.json` inside the generation directory as long as it is not placed
+under `blobs/` or `tmp/`.
+
+The manifest format is versioned. Version 1 is the only version in V1 and
+is defined by `VialKeeper.Backup.Manifest`.
+
+Required fields:
+
+- `manifest_version` — `1`
+- `generation_id` — UUID v4 for this generation (operator or `mix` generated)
+- `created_at` — ISO8601 UTC (e.g. `2026-08-27T14:20:00Z`)
+- `database_uuid` — source database UUID (`db_meta.database_uuid`)
+- `source_path` — relative bundle path as registered (e.g. `notes.vialkeeper`)
+- `bundle_bytes` — total bytes of the bundle directory
+- `diagnostics` — `VialKeeper.Diagnostics.runtime/0` map (at least `app_version`)
+- `storage` — `file_format_version`, `logical_schema_version`,
+  `revision_algorithm_version`, `canonicalization_version`,
+  `replication_protocol_major` from `db_meta`
+- `artifacts.sqlite` — `relative_path` (backend artifact), `bytes`, `sha256`
+  (lowercase hex of the file)
+- `artifacts.blobs` — `count`, `bytes`, `sha256` (tree hash over sorted
+  `digest:bytes:sha256` lines), and `entries` with per-blob `digest`, `bytes`,
+  `sha256`, `relative_path`
+- `integrity` — the offline logical and physical integrity result taken from
+  the closed copy; `ok` must be `true`
+
+Example (truncated):
+
+```json
+{
+  "manifest_version": 1,
+  "generation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "created_at": "2026-08-27T14:20:00Z",
+  "database_uuid": "123e4567-e89b-12d3-a456-426614174000",
+  "source_path": "notes.vialkeeper",
+  "bundle_bytes": 1234567,
+  "diagnostics": {
+    "app_version": "0.1.0",
+    "elixir": "1.20.2",
+    "otp": "29",
+    "protocol_major": 1,
+    "storage_backend": "<storage-backend>",
+    "backend": {"engine": "sqlite", "sqlite": "3.45.0"}
+  },
+  "storage": {
+    "file_format_version": 1,
+    "logical_schema_version": 1,
+    "revision_algorithm_version": 1,
+    "canonicalization_version": 1,
+    "replication_protocol_major": 1
+  },
+  "artifacts": {
+    "sqlite": {"relative_path": "<backend-artifact>", "bytes": 123456, "sha256": "abc..."},
+    "blobs": {"count": 2, "bytes": 9876, "sha256": "def...", "entries": [
+      {"digest": "abc...", "bytes": 123, "sha256": "fff...", "relative_path": "blobs/ab/abc....blob"}
+    ]}
+  },
+  "integrity": {"ok": true, "checked_at": "2026-08-27T14:19:55Z"}
+}
+```
+
+Operator procedure with the Mix task (offline, no product API):
+
+```sh
+# after POST /v1/databases/<uuid>/close and copying the closed bundle
+mix vialkeeper.backup.manifest /backups/2026-08-27T142000Z/notes.vialkeeper \
+  --source-path notes.vialkeeper
+# writes /backups/2026-08-27T142000Z/notes.vialkeeper.manifest.json
+
+# verify the physical inventory later from an assembled release
+/opt/vial_keeper/bin/vial_keeper eval 'IO.inspect(VialKeeper.Backup.Manifest.verify("/backups/.../notes.vialkeeper", "/backups/.../notes.vialkeeper.manifest.json"))'
+```
+
+Manifest generation runs the complete logical and physical integrity check
+against the immutable closed copy. Later physical verification checks that
+the bundle has no `.lease` or hot journal, that
+`bundle_bytes`, `sqlite` bytes/sha, and `blobs` count/bytes/tree-hash plus
+per-entry hashes match the files, and that `manifest_version`, UUIDs, and
+`integrity.ok` are valid. Storage versions are recorded for audit; a full
+logical re-check is `POST /v1/databases/:uuid/integrity-check` after restore.
+
+Retain generations off the live `VIAL_KEEPER_ROOT` and off live replica disks.
+A generation that has never been restored is unverified. Checksums prove the
+copy; only a restore drill proves the bits open.
 
 A copy keeps the original UUID. Two copies of the same UUID on one host are
 rejected. Copying is backup/relocation, **not** cloning.
