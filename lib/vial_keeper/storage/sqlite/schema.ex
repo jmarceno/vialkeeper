@@ -8,6 +8,12 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   alias VialKeeper.UUID
 
   @application_id 0x45584442
+  @sqlite_magic "SQLite format 3\0"
+  @required_tables ~w(
+    db_meta documents revisions changes local_records replication_jobs
+    index_definitions revision_attachments pending_blobs view_definitions
+    view_state view_rows
+  )
   @type storage_mode :: :disk | :memory
 
   @spec configure(Connection.handle(), keyword()) :: :ok | {:error, term()}
@@ -39,6 +45,80 @@ defmodule VialKeeper.Storage.SQLite.Schema do
          :ok <- Connection.execute(conn, "PRAGMA trusted_schema = OFF"),
          :ok <- Connection.execute(conn, cache_size_sql()) do
       Connection.execute(conn, temp_store_sql())
+    end
+  end
+
+  @spec required_tables_present(Connection.handle()) :: :ok | {:error, :missing_tables}
+  def required_tables_present(conn) do
+    case Connection.query(conn, "SELECT name FROM sqlite_master WHERE type = 'table'") do
+      {:ok, rows} ->
+        present = MapSet.new(rows, &List.first/1)
+
+        if Enum.all?(@required_tables, &MapSet.member?(present, &1)),
+          do: :ok,
+          else: {:error, :missing_tables}
+
+      {:error, _reason} ->
+        {:error, :missing_tables}
+    end
+  end
+
+  @doc """
+  Rejects empty or non-SQLite artifacts without opening the engine.
+
+  Version fields live in page 1 and may exist only in WAL until checkpoint, so
+  `application_id` / `user_version` are confirmed after open via `recognize_v1/1`.
+  """
+  @spec recognize_artifact(binary()) :: :ok | {:error, Error.t()}
+  def recognize_artifact(path) when is_binary(path) do
+    case File.stat(path) do
+      {:ok, %{type: :regular, size: size}} when size >= 16 ->
+        recognize_sqlite_magic(path)
+
+      {:ok, %{type: :regular}} ->
+        {:error, unrecognized_v1_error()}
+
+      {:ok, _stat} ->
+        :ok
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         Error.unsupported_format("SQLite schema validation failed", %{cause: inspect(reason)})}
+    end
+  end
+
+  @doc """
+  Confirms Version 1 identity, metadata, and required tables on an open connection.
+
+  Does not set persistent pragmas. Call this before `configure/2` on open so a
+  foreign or future-format file is not rewritten to WAL.
+  """
+  @spec recognize_v1(Connection.handle()) :: :ok | {:error, Error.t()}
+  def recognize_v1(conn) do
+    with {:ok, [[application_id]]} <- Connection.pragma(conn, "application_id"),
+         {:ok, [[user_version]]} <- Connection.pragma(conn, "user_version"),
+         :ok <- recognize_header_versions(application_id, user_version),
+         :ok <- required_tables_as_format(conn),
+         {:ok, [row]} <-
+           Connection.query(
+             conn,
+             "SELECT file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major FROM db_meta WHERE id = 1"
+           ),
+         :ok <- recognize_version_row(row) do
+      :ok
+    else
+      {:ok, []} ->
+        {:error, Error.unsupported_format("SQLite file has no VialKeeper metadata")}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error,
+         Error.unsupported_format("SQLite schema validation failed", %{cause: inspect(reason)})}
     end
   end
 
@@ -708,6 +788,49 @@ defmodule VialKeeper.Storage.SQLite.Schema do
          _trusted_schema
        ),
        do: false
+
+  defp required_tables_as_format(conn) do
+    case required_tables_present(conn) do
+      :ok ->
+        :ok
+
+      {:error, :missing_tables} ->
+        {:error, unrecognized_v1_error()}
+    end
+  end
+
+  defp recognize_version_row([1, 1, 1, 1, 1]), do: :ok
+  defp recognize_version_row(_row), do: {:error, unrecognized_v1_error()}
+
+  defp recognize_header_versions(@application_id, 1), do: :ok
+
+  defp recognize_header_versions(_application_id, _user_version),
+    do: {:error, unrecognized_v1_error()}
+
+  defp recognize_sqlite_magic(path) do
+    case File.open(path, [:read, :raw, :binary]) do
+      {:ok, io} ->
+        magic =
+          try do
+            IO.binread(io, 16)
+          after
+            File.close(io)
+          end
+
+        if magic == @sqlite_magic do
+          :ok
+        else
+          {:error, unrecognized_v1_error()}
+        end
+
+      {:error, reason} ->
+        {:error,
+         Error.unsupported_format("SQLite schema validation failed", %{cause: inspect(reason)})}
+    end
+  end
+
+  defp unrecognized_v1_error,
+    do: Error.unsupported_format("SQLite file is not a Version 1 VialKeeper database")
 
   defp execute_script(conn, script) do
     script

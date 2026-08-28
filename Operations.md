@@ -397,6 +397,25 @@ First run on a machine may pull container images. When the host-built release
 is not ABI-compatible with the pinned restore image, the test builds a portable
 release inside the matching Elixir builder container before the drill proceeds.
 
+### Format upgrade and rollback (MAINT-008)
+
+V1 opens only V1. A foreign, future, empty, or partial bundle is
+`unsupported_format` (HTTP 409, not retryable) and is not rewritten. There is
+no in-place migrator and no in-place downgrade. This is not a compatibility
+promise.
+
+Before any later format change:
+
+1. Take a verified closed-bundle backup generation (MAINT-006) and keep it
+   off the live host.
+2. Upgrade the release only after that generation exists.
+3. Rollback is: run the **previous** release against that pre-upgrade
+   generation. Do not open a migrated file with the old binary.
+4. If open returns `unsupported_format`, restore the pre-upgrade generation.
+   Do not repair the backend metadata artifact in place.
+
+Policy: [[VialKeeper Recovery Strategy]] (`doc-id:1e0d4259-e08e-4751-be89-2d74f130adb1`).
+
 ---
 
 ## Admin console (`/ui`)
@@ -882,6 +901,7 @@ OTLP collection is configured via `otlp_endpoint` only.
 [ ] Close before offline copy; copy whole .vialkeeper; skip .lease
 [ ] Integrity-check before treating a copy as a backup generation
 [ ] Keep backups off the live host and off replica disks; replica is not a backup
+[ ] Take a verified closed-bundle backup before any format-changing upgrade
 [ ] Restore drills: clean host, register, integrity-check, sample reads
 [ ] Disable materialized views before closing their sources
 [ ] Point otlp_endpoint only if a collector is ready

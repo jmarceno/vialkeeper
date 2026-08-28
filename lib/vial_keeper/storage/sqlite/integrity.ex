@@ -19,6 +19,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
     Indexes,
     Meta,
     RetentionRecords,
+    Schema,
     TermBlob
   }
 
@@ -93,7 +94,7 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
   def physical_integrity_check(conn, indexes, bundle_root \\ nil) when is_list(indexes) do
     with {:ok, [["ok"]]} <- Connection.pragma(conn, "integrity_check"),
          {:ok, []} <- Connection.pragma(conn, "foreign_key_check"),
-         :ok <- required_tables_present(conn),
+         :ok <- Schema.required_tables_present(conn),
          {:ok, attachment_report} <- validate_physical_attachment_blobs(conn, bundle_root),
          :ok <- validate_index_rows(conn, indexes),
          {:ok, view_report} <- view_metadata(conn) do
@@ -112,28 +113,14 @@ defmodule VialKeeper.Storage.SQLite.Integrity do
       {:ok, rows} when is_list(rows) ->
         {:error, Error.integrity_violation("SQLite integrity check failed", %{results: rows})}
 
+      {:error, :missing_tables} ->
+        {:error, Error.integrity_violation("required SQLite tables are missing")}
+
       {:error, %Error{} = error} ->
         {:error, error}
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
-    end
-  end
-
-  defp required_tables_present(conn) do
-    required =
-      ~w(db_meta documents revisions changes local_records replication_jobs index_definitions revision_attachments pending_blobs view_definitions view_state view_rows)
-
-    with {:ok, rows} <-
-           Connection.query(
-             conn,
-             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('db_meta', 'documents', 'revisions', 'changes', 'local_records', 'replication_jobs', 'index_definitions', 'revision_attachments', 'pending_blobs', 'view_definitions', 'view_state', 'view_rows')"
-           ) do
-      present = MapSet.new(rows, &List.first/1)
-
-      if Enum.all?(required, &MapSet.member?(present, &1)),
-        do: :ok,
-        else: {:error, Error.integrity_violation("required SQLite tables are missing")}
     end
   end
 

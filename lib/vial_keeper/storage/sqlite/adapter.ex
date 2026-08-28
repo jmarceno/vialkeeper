@@ -90,23 +90,8 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
          {:ok, bounded_config} <- VialKeeper.Config.merge_and_bound(config),
          {:ok, config_json} <- Canonical.encode(bounded_config),
          :ok <- ensure_parent_directory(path, storage_mode),
-         {:ok, conn} <- Connection.open(connection_path(path, storage_mode)),
-         :ok <- Schema.configure(conn, storage_mode: storage_mode),
-         :ok <-
-           Schema.create(conn, uuid, config_json,
-             storage_mode: storage_mode,
-             database_kind: MapAccess.get(options, :database_kind, :ordinary),
-             initial_derived_view: MapAccess.get(options, :initial_derived_view),
-             shadow_metadata: MapAccess.get(options, :shadow_metadata)
-           ),
-         {:ok, identity} <- Schema.validate(conn, storage_mode: storage_mode) do
-      {:ok,
-       Context.bind(%__MODULE__{
-         path: path,
-         conn: conn,
-         identity: decode_identity(identity),
-         storage_mode: storage_mode
-       })}
+         {:ok, conn} <- Connection.open(connection_path(path, storage_mode)) do
+      finish_create(conn, path, uuid, config_json, storage_mode, options)
     else
       false ->
         {:error, Error.invalid_request("database UUID must be a UUID")}
@@ -211,18 +196,9 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
 
   def open_reader(%__MODULE__{storage_mode: :disk, path: path, identity: writer_identity})
       when is_binary(path) and path != ":memory:" do
-    with {:ok, conn} <- Connection.open(path, mode: [:readonly]),
-         :ok <- Schema.configure_reader(conn),
-         {:ok, uuid} <- Schema.read_database_uuid(conn),
-         :ok <- match_reader_uuid(uuid, writer_identity) do
-      {:ok,
-       Context.bind(%__MODULE__{
-         path: path,
-         conn: conn,
-         identity: writer_identity,
-         storage_mode: :disk,
-         reader?: true
-       })}
+    with :ok <- Schema.recognize_artifact(path),
+         {:ok, conn} <- Connection.open(path, mode: [:readonly]) do
+      finish_open_reader(conn, path, writer_identity)
     else
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -242,10 +218,9 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
 
   @impl true
   def open(path, _options \\ %{}) do
-    with {:ok, conn} <- Connection.open(path, mode: [:readwrite]),
-         :ok <- Schema.configure(conn),
-         {:ok, identity} <- Schema.validate(conn) do
-      {:ok, Context.bind(%__MODULE__{path: path, conn: conn, identity: decode_identity(identity)})}
+    with :ok <- Schema.recognize_artifact(path),
+         {:ok, conn} <- Connection.open(path, mode: [:readwrite]) do
+      finish_open(conn, path)
     else
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -259,6 +234,61 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   def close(%__MODULE__{conn: conn, context_ref: context_ref} = adapter) do
     Search.stop(to_context(adapter))
     close_sqlite(adapter, conn, context_ref)
+  end
+
+  defp finish_create(conn, path, uuid, config_json, storage_mode, options) do
+    with :ok <- Schema.configure(conn, storage_mode: storage_mode),
+         :ok <-
+           Schema.create(conn, uuid, config_json,
+             storage_mode: storage_mode,
+             database_kind: MapAccess.get(options, :database_kind, :ordinary),
+             initial_derived_view: MapAccess.get(options, :initial_derived_view),
+             shadow_metadata: MapAccess.get(options, :shadow_metadata)
+           ),
+         {:ok, identity} <- Schema.validate(conn, storage_mode: storage_mode) do
+      {:ok,
+       Context.bind(%__MODULE__{
+         path: path,
+         conn: conn,
+         identity: decode_identity(identity),
+         storage_mode: storage_mode
+       })}
+    else
+      {:error, reason} ->
+        _ = Connection.close(conn)
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp finish_open(conn, path) do
+    with :ok <- Schema.recognize_v1(conn),
+         :ok <- Schema.configure(conn),
+         {:ok, identity} <- Schema.validate(conn) do
+      {:ok, Context.bind(%__MODULE__{path: path, conn: conn, identity: decode_identity(identity)})}
+    else
+      {:error, reason} ->
+        _ = Connection.close(conn)
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp finish_open_reader(conn, path, writer_identity) do
+    with :ok <- Schema.configure_reader(conn),
+         {:ok, uuid} <- Schema.read_database_uuid(conn),
+         :ok <- match_reader_uuid(uuid, writer_identity) do
+      {:ok,
+       Context.bind(%__MODULE__{
+         path: path,
+         conn: conn,
+         identity: writer_identity,
+         storage_mode: :disk,
+         reader?: true
+       })}
+    else
+      {:error, reason} ->
+        _ = Connection.close(conn)
+        {:error, normalize_error(reason)}
+    end
   end
 
   defp close_sqlite(adapter, conn, context_ref) do

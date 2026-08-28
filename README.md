@@ -91,6 +91,9 @@ diagnostics, and operator interaction.
 - No multi-database transactions or live federation streams.
 - No custom JavaScript/Elixir map functions in views.
 - No cloning by copy: a copied bundle keeps the same UUID.
+- No in-place format migration and no format-compatibility promise. V1
+  rejects other formats (`unsupported_format`). Rollback is the previous
+  release against a pre-upgrade closed-bundle backup.
 
 ---
 

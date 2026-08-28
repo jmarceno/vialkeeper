@@ -82,6 +82,16 @@ surface as `integrity_violation`. Full-text indexes are Tantivy generations
 outside SQLite under the bundle `tmp/search/indexes/` directory; integrity
 records them as external rather than comparing FTS rows.
 
+## Format recognition
+
+Open recognizes Version 1 before applying persistent pragmas. Empty files and
+non-SQLite bytes are rejected without opening the engine. A SQLite file is
+opened, then `application_id`, `user_version`, `db_meta` versions, and required
+tables are confirmed. Only then does open set `journal_mode=WAL`. Header fields
+are not trusted from the raw file because page 1 may still live in WAL after a
+crash. A foreign, future, or partial schema is `unsupported_format` and is not
+rewritten. There is no in-place migrator in V1.
+
 ## Diagnostics
 
 `VialKeeper.Diagnostics.runtime/0` includes an opaque selected-backend
