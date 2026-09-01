@@ -1,6 +1,5 @@
 # TantivyEx
 
-[![Elixir CI](https://github.com/alexiob/tantivy_ex/actions/workflows/ci.yml/badge.svg)](https://github.com/alexiob/tantivy_ex/actions)
 [![Hex Version](https://img.shields.io/hexpm/v/tantivy_ex.svg)](https://hex.pm/packages/tantivy_ex)
 [![Hex Docs](https://img.shields.io/badge/hex-docs-lightgreen.svg)](https://hexdocs.pm/tantivy_ex/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
@@ -352,8 +351,7 @@ IO.puts("Active nodes: #{cluster_stats.active_nodes}/#{cluster_stats.total_nodes
 ### Development Setup
 
 ```bash
-git clone https://github.com/alexiob/tantivy_ex.git
-cd tantivy_ex
+cd native/tantivy_ex
 mix deps.get
 mix test
 ```

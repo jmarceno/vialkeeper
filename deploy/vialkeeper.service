@@ -1,0 +1,33 @@
+[Unit]
+Description=VialKeeper OTP document database
+Documentation=file:///opt/vial_keeper/Operations.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vialkeeper
+Group=vialkeeper
+Environment=VIAL_KEEPER_ROOT=/var/lib/vialkeeper
+Environment=LANG=C.UTF-8
+WorkingDirectory=/var/lib/vialkeeper
+ExecStart=/opt/vial_keeper/bin/vial_keeper start
+ExecStop=/opt/vial_keeper/bin/vial_keeper stop
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStartSec=120
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/vialkeeper
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+
+[Install]
+WantedBy=multi-user.target

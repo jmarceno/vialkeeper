@@ -89,6 +89,10 @@ defmodule VialKeeper.TestSupport.ContainerEngine do
     end
   end
 
+  @doc "Returns the digest-pinned Debian runtime image used for portable release probes."
+  @spec runtime_image() :: String.t()
+  def runtime_image, do: @image
+
   @doc "Returns the digest-pinned Elixir builder image for portable release builds."
   @spec builder_image() :: String.t()
   def builder_image, do: @builder_image

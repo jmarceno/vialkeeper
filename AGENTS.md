@@ -1,64 +1,34 @@
-Always use elixir-safe-code skill when writing code.
+# Contributor instructions
 
-When receiving a document as a wiki link, doc-id, folder-id, column-id, card-id or event-id, this means that you should retrieve the data from the user's UnboundMark workspace, use the UnboundMark MCP to retrieve the document.
+This file contains repository-safe guidance only.
 
-**The authoritative specification is the maintained UnboundMark wiki in `folder-id:4007e0d9-3cf2-4f17-a694-5680200d6547`. Start at VialKeeper Wiki Home (`doc-id:898c633d-1b46-472b-b0b8-1080034313de`) and use VialKeeper Requirement Ownership Map (`doc-id:1219e090-a3c6-4df1-9cba-4f36cf1b693d`) to locate the single owning document for each requirement. Requirement proof is aggregated at `doc-id:ec1434b5-aa83-43e1-9db0-aff886555b46`.**
+Do not add internal specifications, private document identifiers, personal
+filesystem paths, credentials, tokens, or other non-public project material to
+tracked files.
 
-**The monolithic specification (`doc-id:36d4783d-b2b4-4b37-8d61-5ef189368861`) is superseded, non-authoritative, and stored only as history in `folder-id:9ec9f3fc-5394-4685-bfa4-0bcd8a698c47`. Do not update it or use it as current product evidence.**
+## Validation
 
-**Authoritative source docs and plans are inside folder `folder-id:4007e0d9-3cf2-4f17-a694-5680200d6547` in UnboundMark.**
-**All supporting docs must be created and maintained inside UnboundMark and not on this repo. Execeptions are READMEs and Operations.md, those docs must be kept local**
+- Keep test guarantees intact; never weaken checks, thresholds, or coverage to make a gate pass.
+- Use `mix check.fast` while iterating.
+- Run `mix check.full` before handoff. A change is incomplete while that gate is red.
+- Use the narrowest focused checks that cover the files being changed during iteration.
 
-**READ doc-id:f16c093b-2c0f-4e1f-814b-6a282431461c before you start working**
+## Documentation
 
-**This in an unreleased product no backward compatibility is needed.**
-
-When done with a change, check if it has any effect on README.md or Operations.md, if so, update the affected section.
-When a new feature lands, be sure to update README.md and/OR Operations.md, each document has it target audience, only update the one that makes sense or both if Developers and DevOps needs to know about this new feature.
-A bug fix must never be documented in those files.
-
-Never weaken test guarantees.
-
-Use the validation ladder in elixir-safe-coding: focused checks while iterating; full project gate only before handoff or wave commit. Adversarial review uses severity tiers (BLOCKER / PLAN_GAP / NIT); do not restart full review for NITs alone.
-
-When editing any documents locally or user UnboundMark workspace, you must not make edits or comments — you should integrate the changes as if they were always there, user may tell you to break this rule, this is fine and if explicitly asked, you should break this rule. This will show any conflict or incompatibility.
-
-
-We do not work with PRs or any other GitHub features.
-
-**NEVER PUSH ANYTHING IF NOT EXPLICITLY ASKED.**
-
-**Never add  `@moduledoc false` just to satisfy requirements, every ` @moduledoc false` must be justifiable, otherwise insert a real documentation.**
-
-Never add comments with the plan/wave/phase that a code satisfies, this kind of comment is strictly forbidden.
-
-`mix check.full` is the non-negotiable completion gate. An implementation is incomplete until that alias passes. Do not respond to a red gate by removing checks, weakening thresholds, adding suppressions, broadening types to `term()`, or excluding tests. A suppression, `term()` contract, or test exclusion is allowed only when the design independently requires it and a `# quality:reason` records why.
+- Keep `README.md` focused on the public product and developer interface.
+- Keep `Operations.md` focused on public deployment and operator procedures.
+- Update the appropriate public document when a new public feature changes its contract.
+- Do not document bug fixes in those files unless the public contract itself changed.
 
 ## Elixir
 
-- Normalize external maps once at the boundary. Do not thread atom/string key variants through internals.
+- Normalize external maps once at the boundary.
 - Prefer pattern matching and function clauses over defensive branching.
-- Treat `{:ok, _} | {:error, _}` contracts explicitly. Do not discard result tuples.
-- Do not blanket-rescue exceptions.
-- Use supervised concurrency (`Task.Supervisor`, `DynamicSupervisor`, or an existing worker). Do not `spawn` production work.
-- Never rely unintentionally on OTP's default 5-second `GenServer.call` / `Task.await` timeouts. Pass an explicit timeout.
-- Avoid repeated Enum traversals and `acc ++ [item]`.
-- Use streams or iodata when the workload can be large.
-- Add precise `@spec`s to new public APIs. Do not invent `@doc` prose just to raise coverage.
-- Keep backend-specific APIs inside their boundary module. `TantivyEx` stays in `VialKeeper.Search.Tantivy`, except `VialKeeper.Bench.PerformanceDiagnostics`, which is the raw native control on the same-disk diagnostic ladder rather than a product search implementation. SQLite/Exqlite stay behind the storage SQLite backend.
+- Handle `{:ok, _} | {:error, _}` results explicitly.
+- Do not blanket-rescue exceptions or use unsupervised production concurrency.
+- Pass explicit timeouts to blocking calls.
+- Keep backend-specific APIs inside their boundary modules.
+- Add precise `@spec`s to new public APIs.
 
-When a mistake keeps recurring, encode it as a quality rule in this order: an existing Credo/ExSlop/Reach check; otherwise a VialKeeper Reach smell under `quality/`; otherwise a bounded StreamData property in the ordinary `mix test` suite.
-
-Keeping all docs and supporting harnesses up to date, is as important as writting correct code, so after every task, ask yourself the following questions, and proceed accordainly.
-
-After each change, verify if the following documents need any update:
-- It is a performance sensible item? 
-    - If yes, it needs an OTEL metric.
-- It is an item that complex and performance sensible enough that we may want to optimize in the future?
-    - If yes, benchmark needs to report its number by default
-- Does it change anything meaningful that enough to require updating any of those documents?
-    - `README.md`
-	- `bench/README.md`
-	- Documents inside folder UnboundMark folder-id:4007e0d9-3cf2-4f17-a694-5680200d6547
-
-# IMPORTANT - Always consult .agents/MEMORIES.md to learn more about the repository, application, past discoveries and issues
+Do not publish or push changes automatically. Review the complete diff and
+remove any secrets or personal data before distribution.

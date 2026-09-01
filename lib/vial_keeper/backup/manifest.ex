@@ -21,9 +21,8 @@ defmodule VialKeeper.Backup.Manifest do
   `VialKeeper.Storage.SQLite.BackupManifest` to run the offline integrity check
   and write a manifest that follows this JSON contract.
 
-  See `VialKeeper Recovery Strategy` (`doc-id:1e0d4259-e08e-4751-be89-2d74f130adb1`)
-  and `VialKeeper Integrity, Backup & Maintenance` MAINT-006 for the normative
-  procedure. `Operations.md` `Offline copy, move, and restore` is the runbook.
+  See `Operations.md`, `Offline copy, move, and restore`, for the operator
+  procedure and the integrity requirements for a verified generation.
   """
 
   alias VialKeeper.Diagnostics

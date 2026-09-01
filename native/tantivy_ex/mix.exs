@@ -2,8 +2,6 @@ defmodule TantivyEx.MixProject do
   use Mix.Project
 
   @version "0.5.0"
-  @source_url "https://github.com/jmarceno/tantivy_ex"
-
   def project do
     [
       app: :tantivy_ex,
@@ -19,9 +17,7 @@ defmodule TantivyEx.MixProject do
 
       # Documentation
       name: "TantivyEx",
-      docs: docs(),
-      source_url: @source_url,
-      homepage_url: @source_url
+      docs: docs()
     ]
   end
 
@@ -81,14 +77,7 @@ defmodule TantivyEx.MixProject do
       name: "tantivy_ex",
       files:
         ~w(lib priv native/tantivy_ex/src native/tantivy_ex/Cargo.toml native/tantivy_ex/Cargo.lock native/tantivy_ex/Cross.toml docs .formatter.exs mix.exs README* LICENSE* CHANGELOG* checksum-Elixir.TantivyEx.Native.exs),
-      licenses: ["MIT"],
-      links: %{
-        "GitHub" => @source_url,
-        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
-        "Guides" => "#{@source_url}/tree/main/docs"
-      },
-      submitter: "jmarceno",
-      maintainer: "alessandro@iob.dev"
+      licenses: ["MIT"]
     ]
   end
 
@@ -96,7 +85,6 @@ defmodule TantivyEx.MixProject do
     [
       main: "readme",
       source_ref: "v#{@version}",
-      source_url: @source_url,
       assets: %{"docs/assets" => "assets"},
       extras: [
         "README.md",

@@ -1,7 +1,5 @@
 # VialKeeper operations
 
-> **Authoritative specification:** The maintained wiki is in UnboundMark folder `4007e0d9-3cf2-4f17-a694-5680200d6547` starting at *VialKeeper Wiki Home* (`doc-id:898c633d-1b46-472b-b0b8-1080034313de`), with the requirement ownership map at `doc-id:1219e090-a3c6-4df1-9cba-4f36cf1b693d`. The superseded monolith (`doc-id:36d4783d-b2b4-4b37-8d61-5ef189368861`) is historical and stored in UnboundMark folder `9ec9f3fc-5394-4685-bfa4-0bcd8a698c47`. Normative contracts, requirement proof, and release acceptance are in the wiki; this runbook owns administration procedures and operator drills without duplicating normative behavior.
-
 Runbook for deploying and running a Version 1 VialKeeper host. Applications
 consume the host through the versioned HTTP `/v1` API; see [README.md](README.md)
 for the client-facing route examples. Elixir modules are internal services, not
@@ -80,7 +78,41 @@ address requires `[auth] enabled = true` or `[tls] enabled = true`, unless
 you set `[security] allow_insecure_remote = true` (risky).
 
 Stop with `bin/vial_keeper stop` or SIGTERM. Open databases close; each runtime
-releases its ownership lease.
+releases its ownership lease. Prove SIGTERM closes bundles before the process
+exits: after stop, no `.lease` holders remain and `-wal`/`-shm` are absent on a
+clean close.
+
+### systemd (co-located host)
+
+Ship `deploy/vialkeeper.service` with the OTP release. Create a dedicated
+`vialkeeper` user and group. Install the unit so systemd supervises the release
+foreground command (`bin/vial_keeper start`):
+
+```sh
+sudo useradd --system --home /var/lib/vialkeeper --shell /usr/sbin/nologin vialkeeper
+sudo install -d -o vialkeeper -g vialkeeper -m 0750 /var/lib/vialkeeper
+sudo ./deploy/install-release.sh /path/to/rel/vial_keeper 2026-08-29T120000Z
+sudo systemctl status vialkeeper
+```
+
+Unit settings of note:
+
+- `User`/`Group` = `vialkeeper`
+- `Environment=VIAL_KEEPER_ROOT=/var/lib/vialkeeper`
+- `TimeoutStartSec` / `TimeoutStopSec` = 120
+- `LimitNOFILE=65536`
+- `ProtectSystem=strict` with `ReadWritePaths=/var/lib/vialkeeper`
+- Restart policy `on-failure`
+
+Runtime package on Debian: `libncurses6` (required by the clean-host restore
+drill). Prefer the **Debian portable** CI artifact (`debian_portable_release`
+job), not the `ubuntu-latest` host-built release, when the production OS is
+Debian.
+
+Optional helper: `deploy/install-release.sh` copies the release under
+`/opt/vial_keeper-releases/<id>`, symlinks `/opt/vial_keeper`, restarts the
+unit, and optionally health-checks `GET /v1/databases` when `VIALKEEPER_TOKEN`
+is set. Do not auto-deploy VialKeeper on every application commit.
 
 ### Development only
 
@@ -221,10 +253,9 @@ Public identity is the UUID, never the path. Duplicate UUID →
 
 ## Offline copy, move, and restore
 
-Normative recovery policy (replica vs backup vs archive, RPO/RTO, failure
-matrix) is [[VialKeeper Recovery Strategy]]
-(`doc-id:1e0d4259-e08e-4751-be89-2d74f130adb1`). This section is the
-operator procedure.
+This section is the operator procedure for copying, moving, and restoring a
+closed bundle. Keep the complete bundle and its verification artifacts together
+throughout the procedure.
 
 ```mermaid
 flowchart LR
@@ -413,8 +444,6 @@ Before any later format change:
    generation. Do not open a migrated file with the old binary.
 4. If open returns `unsupported_format`, restore the pre-upgrade generation.
    Do not repair the backend metadata artifact in place.
-
-Policy: [[VialKeeper Recovery Strategy]] (`doc-id:1e0d4259-e08e-4751-be89-2d74f130adb1`).
 
 ---
 

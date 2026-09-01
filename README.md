@@ -6,30 +6,6 @@ talk JSON over the versioned HTTP `/v1` API. Clients submit structured requests
 rather than backend engine commands. Elixir modules are internal implementation
 boundaries, not a supported embedding API.
 
-> **Authoritative specification:** The maintained wiki is in UnboundMark folder `4007e0d9-3cf2-4f17-a694-5680200d6547` starting at *VialKeeper Wiki Home* (`doc-id:898c633d-1b46-472b-b0b8-1080034313de`), with the requirement ownership map at `doc-id:1219e090-a3c6-4df1-9cba-4f36cf1b693d`. The superseded monolith (`doc-id:36d4783d-b2b4-4b37-8d61-5ef189368861`) is historical and stored in UnboundMark folder `9ec9f3fc-5394-4685-bfa4-0bcd8a698c47`. This README is an application overview and does not duplicate normative contracts; see the wiki for normative behavior, proof, and release acceptance. The operator runbook is `Operations.md`.
-
-### Specification wiki
-
-| Topic | Authoritative UnboundMark document |
-| ----- | ---------------------------------- |
-| Navigation and maintenance rules | *VialKeeper Wiki Home* (`doc-id:898c633d-1b46-472b-b0b8-1080034313de`) |
-| Product tiers and capability boundaries | *VialKeeper Product Capability Boundaries* (`doc-id:ace5219f-cce9-4298-afff-56fd34f9b19d`) |
-| Terminology and conventions | *VialKeeper Terminology & Conventions* (`doc-id:647b9d70-df56-441d-9840-05356e0968ff`) |
-| Requirement ownership | *VialKeeper Requirement Ownership Map* (`doc-id:1219e090-a3c6-4df1-9cba-4f36cf1b693d`) |
-| Architecture, configuration, and lifecycle | *VialKeeper System Architecture & Lifecycle* (`doc-id:ac5c396e-db37-495e-91e3-b5878f6b68ce`) |
-| Bundle, storage, and durability | *VialKeeper Bundle, Storage & Durability* (`doc-id:460e8754-4a57-44a4-a3b7-0d6a0e25163b`) |
-| Documents, revisions, and changes | *VialKeeper Documents, Revisions & Changes* (`doc-id:bf7cd39e-5d5a-4fc1-841c-06e5dcb24f80`) |
-| Attachments | *VialKeeper Attachments* (`doc-id:d6ccab8d-df51-4efc-9ed8-282bbc1c052c`) |
-| Queries, indexes, search, and subscriptions | *VialKeeper Queries, Indexes, Search & Subscriptions* (`doc-id:16575fb8-be14-49ba-96f5-624e00f489f9`) |
-| Replication | *VialKeeper Replication* (`doc-id:2086b2a5-205c-47eb-bb36-708ec137cba8`) |
-| Views, federation, materialized views, and shadows | *VialKeeper Views, Federation & Shadows* (`doc-id:ecc8d616-c16f-46cb-92dd-31ec445c3ac6`) |
-| HTTP API and security | *VialKeeper HTTP API & Security* (`doc-id:fa42473a-99f2-4d7b-b5d2-006a7661fe3d`) |
-| Administration and console | *VialKeeper Administration & Console* (`doc-id:0ea47618-839d-488e-b776-49584cbd0a87`) |
-| Integrity, backup, and maintenance | *VialKeeper Integrity, Backup & Maintenance* (`doc-id:dfc9e4dc-75c1-495a-939f-814235e9794b`) |
-| Recovery strategy and failure-mode matrix | *VialKeeper Recovery Strategy* (`doc-id:1e0d4259-e08e-4751-be89-2d74f130adb1`) |
-| Observability, performance, and release acceptance | *VialKeeper Observability, Performance & Release* (`doc-id:a0807935-918b-42b2-a6e8-d1eb5414b54c`) |
-| Aggregate requirement proof | *Requirement proof index* (`doc-id:ec1434b5-aa83-43e1-9db0-aff886555b46`) |
-
 ```text
 Your app  ──HTTP /v1──►  VialKeeper host
                 │
@@ -715,9 +691,7 @@ When a limit is hit you typically see `resource_limit`, `payload_too_large`,
 Do not treat `.lease` as data. Copying keeps the same UUID — two copies on
 one host are rejected. A replica is not a backup: logical deletes replicate.
 Full procedures:
-[Operations.md](Operations.md#offline-copy-move-and-restore). Recovery
-policy: *VialKeeper Recovery Strategy*
-(`doc-id:1e0d4259-e08e-4751-be89-2d74f130adb1`).
+[Operations.md](Operations.md#offline-copy-move-and-restore).
 
 ---
 

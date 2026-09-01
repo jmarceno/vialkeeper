@@ -45,3 +45,95 @@ jobs:
         with:
           name: vialkeeper-release
           path: _build/prod/rel/vial_keeper
+
+  # Debian-compatible OTP release for co-located production hosts.
+  # Do not deploy the ubuntu-latest artifact from the checks job to Debian LXCs.
+  debian_portable_release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29.0.4'
+          elixir-version: '1.20.2'
+          version-type: strict
+      - run: mix deps.get
+
+      - name: Build portable release in digest-pinned builder
+        env:
+          OUT_DIR: ${{ runner.temp }}/vialkeeper-portable
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR" artifacts
+          BUILDER_IMAGE=$(mix run -e 'IO.puts(VialKeeper.TestSupport.ContainerEngine.builder_image())')
+          RUNTIME_IMAGE=$(mix run -e 'IO.puts(VialKeeper.TestSupport.ContainerEngine.runtime_image())')
+          printf '%s\n' "$BUILDER_IMAGE" > artifacts/builder-image.txt
+          printf '%s\n' "$RUNTIME_IMAGE" > artifacts/runtime-image.txt
+          printf '%s\n' "$(git rev-parse HEAD)" > artifacts/source-commit.txt
+
+          docker pull "$BUILDER_IMAGE"
+          docker pull "$RUNTIME_IMAGE"
+
+          docker run --rm \
+            -v "$PWD:/project:ro" \
+            -v "$OUT_DIR:/out" \
+            -w /project \
+            "$BUILDER_IMAGE" \
+            /bin/bash -lc '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq curl build-essential pkg-config libssl-dev >/dev/null
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+              . "$HOME/.cargo/env"
+              rm -rf /build
+              cp -a /project/. /build/
+              cd /build
+              rm -rf _build native/tantivy_ex/native/tantivy_ex/target
+              mkdir -p /tmp/tantivy-target
+              ln -sfn /tmp/tantivy-target native/tantivy_ex/native/tantivy_ex/target
+              MIX_ENV=prod mix local.hex --force
+              MIX_ENV=prod mix local.rebar --force
+              MIX_ENV=prod mix deps.get
+              MIX_ENV=prod mix release.build
+              rm -rf /out/*
+              cp -a _build/prod/rel/vial_keeper/. /out/
+            '
+
+          test -x "$OUT_DIR/bin/vial_keeper"
+          sha256sum "$OUT_DIR/bin/vial_keeper" | awk '{print $1}' > artifacts/release-sha256.txt
+          find "$OUT_DIR" -type f -print0 | sort -z | xargs -0 sha256sum > artifacts/release-tree.sha256
+
+          PROBE_ROOT=$(mktemp -d)
+          docker run --rm \
+            -v "$OUT_DIR:/opt/vial_keeper:ro" \
+            -v "$PROBE_ROOT:/var/lib/vialkeeper" \
+            -e VIAL_KEEPER_ROOT=/var/lib/vialkeeper \
+            "$RUNTIME_IMAGE" \
+            /bin/sh -lc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq libncurses6 util-linux >/dev/null
+              /opt/vial_keeper/bin/vial_keeper eval "IO.puts(:portable_ok)"
+            ' | tee artifacts/portable-probe.txt
+          grep -q portable_ok artifacts/portable-probe.txt
+
+          docker run --rm \
+            -v "$OUT_DIR:/opt/vial_keeper:ro" \
+            -v "$PROBE_ROOT:/var/lib/vialkeeper" \
+            -e VIAL_KEEPER_ROOT=/var/lib/vialkeeper \
+            "$RUNTIME_IMAGE" \
+            /bin/sh -lc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq libncurses6 util-linux >/dev/null
+              /opt/vial_keeper/bin/vial_keeper eval "IO.inspect(VialKeeper.Diagnostics.runtime(), pretty: true)"
+            ' > artifacts/runtime-diagnostics.txt
+
+          tar -C "$(dirname "$OUT_DIR")" -czf artifacts/vialkeeper-debian-portable.tar.gz "$(basename "$OUT_DIR")"
+
+      - name: Upload Debian portable release
+        uses: actions/upload-artifact@v4
+        with:
+          name: vialkeeper-debian-portable
+          path: artifacts/
