@@ -8,8 +8,11 @@ defmodule VialKeeper.Search.TantivyTest do
 
   setup do
     path =
-      "/mnt/other/downloads/vialkeeper/work/fts/tantivy-adapter-test-" <>
-        Integer.to_string(System.unique_integer([:positive]))
+      Path.join(
+        System.tmp_dir!(),
+        "vialkeeper-fts-tantivy-adapter-test-" <>
+          Integer.to_string(System.unique_integer([:positive]))
+      )
 
     File.rm_rf!(path)
     on_exit(fn -> File.rm_rf(path) end)
@@ -74,8 +77,11 @@ defmodule VialKeeper.Search.TantivyTest do
 
   test "owner reopens a committed generation from its manifest" do
     root =
-      "/mnt/other/downloads/vialkeeper/work/fts/tantivy-owner-test-" <>
-        Integer.to_string(System.unique_integer([:positive]))
+      Path.join(
+        System.tmp_dir!(),
+        "vialkeeper-fts-tantivy-owner-test-" <>
+          Integer.to_string(System.unique_integer([:positive]))
+      )
 
     path = Path.join(root, "tmp")
     uuid = "tantivy-owner-test-#{System.unique_integer([:positive])}"
@@ -133,8 +139,11 @@ defmodule VialKeeper.Search.TantivyTest do
 
   test "old generation remains searchable until replacement publication" do
     root =
-      "/mnt/other/downloads/vialkeeper/work/fts/tantivy-generation-test-" <>
-        Integer.to_string(System.unique_integer([:positive]))
+      Path.join(
+        System.tmp_dir!(),
+        "vialkeeper-fts-tantivy-generation-test-" <>
+          Integer.to_string(System.unique_integer([:positive]))
+      )
 
     path = Path.join(root, "tmp")
     uuid = "tantivy-generation-test-#{System.unique_integer([:positive])}"
@@ -170,8 +179,11 @@ defmodule VialKeeper.Search.TantivyTest do
 
   test "multi-page rebuild adds every page and publishes with one commit" do
     root =
-      "/mnt/other/downloads/vialkeeper/work/fts/tantivy-multipage-test-" <>
-        Integer.to_string(System.unique_integer([:positive]))
+      Path.join(
+        System.tmp_dir!(),
+        "vialkeeper-fts-tantivy-multipage-test-" <>
+          Integer.to_string(System.unique_integer([:positive]))
+      )
 
     path = Path.join(root, "tmp")
     uuid = "tantivy-multipage-test-#{System.unique_integer([:positive])}"

@@ -81,7 +81,9 @@ defmodule VialKeeper.Bench.CLI do
 
       true ->
         result =
-          Root.configure(opts[:root], reuse_existing: opts[:reuse_existing] || false)
+          Root.configure(Path.expand(opts[:root]),
+            reuse_existing: opts[:reuse_existing] || false
+          )
 
         case result do
           {:ok, context} ->
@@ -285,10 +287,14 @@ defmodule VialKeeper.Bench.CLI do
 
   defp data_usage do
     """
-    mix bench.data configure --root /mnt/other/downloads/vialkeeper [--reuse-existing]
+    mix bench.data configure --root PATH [--reuse-existing]
     mix bench.data status
     mix bench.data prepare trec-covid|pmc|simplewiki|open-images [--profile standard|smoke|1k|10k] [--max-concurrency 1..16]
     mix bench.data clean trec-covid|pmc|simplewiki|open-images
+
+    The benchmark root must live under tmp/bench/ in the repository checkout
+    (tmp/bench/vialkeeper by default). PATH may be absolute or relative to
+    the current directory.
     """
   end
 

@@ -7,14 +7,14 @@ every developer test run fail.
 There are two families:
 
 - **Synthetic product controls** — small isolated databases, Tantivy
-  generations, and JSON reports under `/mnt/other/downloads/vialkeeper/`.
+  generations, and JSON reports under `tmp/bench/vialkeeper/` in the checkout.
   See the sections below.
 - **ExQLite controls** — direct SQLite diagnostics with their own temporary
   runtime and report conventions.
 - **Dataset-backed suites** — TREC-COVID FTS, Simple Wikipedia stress, and Open
   Images torture. Source data, generated manifests, work databases, caches, and
-  reports live only under a mandatory external root
-  (`/mnt/other/downloads/vialkeeper/` by default). Nothing from those suites is
+  reports live only under the repo-local bench root
+  (`tmp/bench/vialkeeper` by default). Nothing from those suites is
   committed to Git.
 
 ## Dataset-backed suites
@@ -127,13 +127,13 @@ uses one archive plus generated text and attachment objects, while Open Images
 has tens of gigabytes of source objects and a second copy inside VialKeeper
 bundles (SQLite, CAS blobs, FTS postings).
 Budget **source bytes + generated working space + max(10 GiB, 15%)** before
-`prepare`. There is no fallback to the repository, `bench/`, `output/`,
-`tmp/`, `/tmp`, `$HOME`, or the current working directory.
+`prepare`. There is no fallback outside `tmp/bench/` in the checkout.
 
-The approved parent is `/mnt/other/downloads/`. The standard root is:
+The approved parent is `tmp/bench/` under the repository root. The standard
+root is:
 
 ```text
-/mnt/other/downloads/vialkeeper/
+tmp/bench/vialkeeper/
   .vialkeeper-bench-root.json
   datasets/     # prepared fixtures (trec-covid/v1, simplewiki/v1, open-images/v7-100k-v1)
   staging/      # incomplete downloads
@@ -148,9 +148,9 @@ must match the destination marker UUID.
 ### Configure, status, prepare, run, clean
 
 ```sh
-mix bench.data configure --root /mnt/other/downloads/vialkeeper
+mix bench.data configure --root tmp/bench/vialkeeper
 # attaching a second checkout to an already-marked root:
-mix bench.data configure --root /mnt/other/downloads/vialkeeper --reuse-existing
+mix bench.data configure --root tmp/bench/vialkeeper --reuse-existing
 
 mix bench.data status
 
@@ -221,19 +221,19 @@ MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
   --dataset 500 \
   --batch 100 \
   --reads 100 \
-  --root /mnt/other/downloads/vialkeeper/work/product-benchmark-baseline \
-  --output /mnt/other/downloads/vialkeeper/reports/product-baseline.json
+  --root tmp/bench/vialkeeper/work/product-benchmark-baseline \
+  --output tmp/bench/vialkeeper/reports/product-baseline.json
 ```
 
-The command writes JSON under the approved external root and prints a short
+The command writes JSON under the approved bench root and prints a short
 summary. A later run can compare the median latency for every
 storage-mode/scenario pair:
 
 ```sh
 MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
   --mode both \
-  --root /mnt/other/downloads/vialkeeper/work/product-benchmark-baseline \
-  --baseline /mnt/other/downloads/vialkeeper/reports/product-baseline.json \
+  --root tmp/bench/vialkeeper/work/product-benchmark-baseline \
+  --baseline tmp/bench/vialkeeper/reports/product-baseline.json \
   --max-regression 20
 ```
 
@@ -289,16 +289,16 @@ dataset. They are trend evidence, not portable hardware-independent promises.
 MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
   --mode disk \
   --scenario concurrent_point_read \
-  --root /mnt/other/downloads/vialkeeper/work/product-benchmark-concurrent \
-  --output /mnt/other/downloads/vialkeeper/reports/concurrent-point-read.json
+  --root tmp/bench/vialkeeper/work/product-benchmark-concurrent \
+  --output tmp/bench/vialkeeper/reports/concurrent-point-read.json
 ```
 
 ```sh
 MIX_ENV=test mix run --no-start bench/product_benchmark.exs -- \
   --mode disk \
   --scenario multi_writer \
-  --root /mnt/other/downloads/vialkeeper/work/product-benchmark-multi-writer \
-  --output /mnt/other/downloads/vialkeeper/reports/multi-writer.json
+  --root tmp/bench/vialkeeper/work/product-benchmark-multi-writer \
+  --output tmp/bench/vialkeeper/reports/multi-writer.json
 ```
 
 Use `--scenario bulk_write,indexed_query` to select a sequential subset. `--mode disk`
@@ -323,7 +323,7 @@ with an ephemeral listener and an isolated database root below the approved
 benchmark root. This prevents registered databases, materializers, and host
 configuration from contaminating measurements. The isolated runtime is
 removed after the report is written; the small report remains under
-`/mnt/other/downloads/vialkeeper/reports/`.
+`tmp/bench/vialkeeper/reports/`.
 
 ## ExQLite overhead control (SQLite backend diagnostic)
 

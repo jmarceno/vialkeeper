@@ -28,12 +28,14 @@ defmodule VialKeeper.Bench.RootTest do
     assert message =~ "absolute"
   end
 
-  test "rejects /mnt/other/downloads-evil as a prefix escape" do
+  test "rejects a lookalike sibling of the approved parent as a prefix escape", %{
+    approved_parent: parent,
+    repo_root: repo
+  } do
+    evil = parent <> "-evil"
+
     assert {:error, message} =
-             Root.configure("/mnt/other/downloads-evil/vk",
-               approved_parent: "/mnt/other/downloads",
-               repo_root: unique_dir("repo")
-             )
+             Root.configure(Path.join(evil, "vk"), approved_parent: parent, repo_root: repo)
 
     assert message =~ "canonical descendant"
   end
@@ -171,7 +173,8 @@ defmodule VialKeeper.Bench.RootTest do
     assert {:error, message} = Root.configure(".", env(parent, repo))
     assert message =~ "absolute"
 
-    assert {:error, _} = Root.configure("/mnt/other/downloads/../downloads/vk", env(parent, repo))
+    assert {:error, _} =
+             Root.configure(Path.join([parent, "sub", "..", "vk"]), env(parent, repo))
   end
 
   test "rejects a forged destination marker schema", %{approved_parent: parent, repo_root: repo} do
@@ -199,18 +202,46 @@ defmodule VialKeeper.Bench.RootTest do
     assert File.regular?(marker)
   end
 
-  test "hard-coded approved parent rejects /mnt/other/downloads-evil" do
-    assert {:error, message} =
-             Root.configure("/mnt/other/downloads-evil/vk", repo_root: unique_dir("repo"))
+  test "default approved parent rejects a lookalike sibling directory" do
+    repo = unique_dir("repo")
+    evil = Root.approved_parent(repo_root: repo) <> "-evil"
+
+    assert {:error, message} = Root.configure(Path.join(evil, "vk"), repo_root: repo)
 
     assert message =~ "canonical descendant"
   end
 
-  test "hard-coded approved parent rejects a path outside /mnt/other/downloads" do
-    assert {:error, message} =
-             Root.configure("/var/tmp/vk-bench-outside", repo_root: unique_dir("repo"))
+  test "default approved parent rejects a path outside tmp/bench" do
+    outside =
+      Path.join(
+        System.tmp_dir!(),
+        "vk-bench-outside-#{System.unique_integer([:positive])}"
+      )
+
+    assert {:error, message} = Root.configure(outside, repo_root: unique_dir("repo"))
 
     assert message =~ "canonical descendant"
+  end
+
+  test "default approved parent is the repo-local tmp/bench directory" do
+    repo = unique_dir("repo")
+
+    assert Root.approved_parent(repo_root: repo) ==
+             Path.expand(Path.join([repo, "tmp", "bench"]))
+
+    assert Root.default_root(repo_root: repo) ==
+             Path.expand(Path.join([repo, "tmp", "bench", "vialkeeper"]))
+  end
+
+  test "configure accepts a root under the repo-local sanctioned bench dir" do
+    repo = unique_dir("repo")
+    root = Path.join([repo, "tmp", "bench", "vialkeeper"])
+
+    assert {:ok, ctx} = Root.configure(root, repo_root: repo)
+    assert ctx.root == Path.expand(root)
+    assert File.regular?(ctx.marker_path)
+    assert {:ok, loaded} = Root.load(repo_root: repo)
+    assert loaded.root_id == ctx.root_id
   end
 
   defp env(parent, repo) do

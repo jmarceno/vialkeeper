@@ -941,15 +941,15 @@ OTLP collection is configured via `otlp_endpoint` only.
 
 TREC-COVID FTS, Simple Wikipedia stress, PMC, and Open Images torture are opt-in Mix commands.
 They are not part of the release or the ExUnit gate. All source objects,
-generated manifests, work databases, caches, and reports stay under a
-mandatory external root. The standard location is
-`/mnt/other/downloads/vialkeeper/`. The repository, `/tmp`, `$HOME`, and the
-current working directory are rejected.
+generated manifests, work databases, caches, and reports stay under the
+repo-local bench root. The standard location is
+`tmp/bench/vialkeeper/` in the checkout. Anything outside `tmp/bench/` is
+rejected.
 
-First-use workflow:
+First-use workflow (run from the repository root):
 
 ```sh
-mix bench.data configure --root /mnt/other/downloads/vialkeeper
+mix bench.data configure --root tmp/bench/vialkeeper
 mix bench.data status
 mix bench.data prepare trec-covid
 mix bench.fts

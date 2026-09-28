@@ -1,11 +1,11 @@
 defmodule VialKeeper.Bench.Root do
   @moduledoc """
-  Two-sided external benchmark-root identity and path containment.
+  Two-sided benchmark-root identity and path containment.
 
-  Dataset bytes, generated databases, staging, caches, and reports never live
-  in the repository. Every data-backed command verifies a repo-local pointer
-  against a destination marker under a canonical descendant of
-  `/mnt/other/downloads/` before any network request or large write.
+  Dataset bytes, generated databases, staging, caches, and reports live under
+  the repo-local `tmp/bench/` directory. Every data-backed command verifies a
+  repo-local pointer against a destination marker under a canonical descendant
+  of that directory before any network request or large write.
   """
 
   alias VialKeeper.AtomicWrite
@@ -13,8 +13,8 @@ defmodule VialKeeper.Bench.Root do
   alias VialKeeper.PathSafety
   alias VialKeeper.UUID
 
-  @approved_parent "/mnt/other/downloads"
-  @default_root "/mnt/other/downloads/vialkeeper"
+  @tmp_bench_segments ["tmp", "bench"]
+  @default_root_name "vialkeeper"
   @schema_version 1
   @project "vialkeeper"
   @pointer_basename ".vialkeeper-bench-root"
@@ -40,13 +40,17 @@ defmodule VialKeeper.Bench.Root do
     :approved_parent
   ]
 
-  @doc "Hard-coded approved parent used by production commands."
-  @spec approved_parent() :: binary()
-  def approved_parent, do: @approved_parent
+  @doc "Sanctioned benchmark parent (`tmp/bench` under the repository root)."
+  @spec approved_parent(keyword()) :: binary()
+  def approved_parent(opts \\ []) when is_list(opts) do
+    [detect_repo_root(opts) | @tmp_bench_segments] |> Path.join() |> Path.expand()
+  end
 
   @doc "Fixed default root used by self-contained dataset benchmark runners."
-  @spec default_root() :: binary()
-  def default_root, do: @default_root
+  @spec default_root(keyword()) :: binary()
+  def default_root(opts \\ []) when is_list(opts) do
+    Path.join(approved_parent(opts), @default_root_name)
+  end
 
   @spec pointer_basename() :: binary()
   def pointer_basename, do: @pointer_basename
@@ -105,7 +109,7 @@ defmodule VialKeeper.Bench.Root do
         ok
 
       {:error, "benchmark root is not configured; run mix bench.data configure --root PATH"} ->
-        configure(@default_root, Keyword.put(opts, :reuse_existing, true))
+        configure(default_root(opts), Keyword.put(opts, :reuse_existing, true))
 
       {:error, _reason} = error ->
         error
@@ -211,10 +215,10 @@ defmodule VialKeeper.Bench.Root do
   end
 
   defp environment(opts) do
-    approved = Keyword.get(opts, :approved_parent, @approved_parent)
+    repo_root = detect_repo_root(opts)
+    approved = Keyword.get(opts, :approved_parent, approved_parent(opts))
 
     with :ok <- validate_approved_parent(approved),
-         repo_root <- detect_repo_root(opts),
          pointer_path <- Keyword.get(opts, :pointer_path, Path.join(repo_root, @pointer_basename)) do
       {:ok,
        %{
@@ -284,14 +288,10 @@ defmodule VialKeeper.Bench.Root do
   defp reject_forbidden_locations(canonical, env) do
     approved = String.trim_trailing(env.approved_parent, "/")
     repo = String.trim_trailing(env.repo_root, "/")
-    locs = %{approved: approved, repo: repo, home: home_dir(), tmp: tmp_dir(), cwd: cwd_dir()}
 
-    with :ok <- require_approved_descendant(canonical, locs.approved),
-         :ok <- reject_inside_repo(canonical, locs.repo),
-         :ok <- reject_contains_repo(canonical, locs.repo),
-         :ok <- reject_tmp(canonical, locs),
-         :ok <- reject_home(canonical, locs) do
-      reject_cwd(canonical, locs)
+    with :ok <- require_approved_descendant(canonical, approved),
+         :ok <- reject_inside_repo(canonical, repo, sanctioned_bench_dir(repo)) do
+      reject_contains_repo(canonical, repo)
     end
   end
 
@@ -303,8 +303,15 @@ defmodule VialKeeper.Bench.Root do
     end
   end
 
-  defp reject_inside_repo(canonical, repo) do
-    if canonical == repo or descendant?(canonical, repo) do
+  # The sanctioned repo-local bench directory is the one place benchmark data
+  # may live inside the checkout; anything else under the repo is rejected.
+  defp sanctioned_bench_dir(repo) do
+    [repo | @tmp_bench_segments] |> Path.join() |> Path.expand() |> String.trim_trailing("/")
+  end
+
+  defp reject_inside_repo(canonical, repo, sanctioned) do
+    if (canonical == repo or descendant?(canonical, repo)) and canonical != sanctioned and
+         not descendant?(canonical, sanctioned) do
       {:error, "benchmark root must not be inside the VialKeeper repository"}
     else
       :ok
@@ -316,48 +323,6 @@ defmodule VialKeeper.Bench.Root do
       {:error, "benchmark root must not contain the VialKeeper repository"}
     else
       :ok
-    end
-  end
-
-  defp reject_tmp(canonical, locs) do
-    if production_parent?(locs.approved) and
-         (canonical == locs.tmp or descendant?(canonical, locs.tmp)) do
-      {:error, "benchmark root must not be under /tmp or the system temporary directory"}
-    else
-      :ok
-    end
-  end
-
-  defp reject_home(canonical, locs) do
-    if production_parent?(locs.approved) and is_binary(locs.home) and
-         (canonical == locs.home or descendant?(canonical, locs.home)) do
-      {:error, "benchmark root must not be under the home directory"}
-    else
-      :ok
-    end
-  end
-
-  defp reject_cwd(canonical, locs) do
-    if production_parent?(locs.approved) and canonical == locs.cwd do
-      {:error, "benchmark root must not be the current working directory"}
-    else
-      :ok
-    end
-  end
-
-  # quality:reason this helper only compares candidate roots against the system temp directory so they can be rejected
-  # reach:disable-next-line vial_keeper_benchmark_external_root -- reject roots under the system temp directory
-  defp tmp_dir, do: String.trim_trailing(Path.expand(System.tmp_dir!()), "/")
-  defp cwd_dir, do: String.trim_trailing(Path.expand(File.cwd!()), "/")
-
-  defp production_parent?(approved) do
-    String.trim_trailing(approved, "/") == @approved_parent
-  end
-
-  defp home_dir do
-    case System.get_env("HOME") do
-      path when is_binary(path) and path != "" -> String.trim_trailing(Path.expand(path), "/")
-      _ -> nil
     end
   end
 

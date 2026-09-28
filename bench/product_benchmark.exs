@@ -8,6 +8,7 @@ defmodule VialKeeper.Benchmarks.Runner do
   make the instrumentation visible in the result file.
   """
 
+  alias VialKeeper.Bench.Root
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.Observability.Instrumentation.{Changes, Database}
   alias VialKeeper.Runtime.DatabaseCatalog
@@ -65,7 +66,9 @@ defmodule VialKeeper.Benchmarks.Runner do
   @default_batch_size 100
   @default_read_count 100
   @default_max_regression_pct 20.0
-  @approved_benchmark_root "/mnt/other/downloads/vialkeeper"
+  # Sanctioned repo-local benchmark root; the single source of truth lives in
+  # VialKeeper.Bench.Root (tmp/bench/vialkeeper under the repository root).
+  defp approved_benchmark_root, do: Root.default_root()
 
   @doc false
   @spec main([binary()]) :: :ok
@@ -1240,17 +1243,17 @@ defmodule VialKeeper.Benchmarks.Runner do
   end
 
   defp benchmark_root!(nil),
-    do: Path.join(@approved_benchmark_root, "work/product-benchmark-#{unique_suffix()}")
+    do: Path.join(approved_benchmark_root(), "work/product-benchmark-#{unique_suffix()}")
 
   defp benchmark_root!(root) when is_binary(root) do
     root = Path.expand(root)
 
     if not Enum.any?(Path.split(root), &(&1 in [".", ".."])) and
-         VialKeeper.PathSafety.within_root?(root, @approved_benchmark_root) and
+         VialKeeper.PathSafety.within_root?(root, approved_benchmark_root()) and
          VialKeeper.PathSafety.no_symlink_components?(root) do
       root
     else
-      Mix.raise("benchmark root must be a non-symlink descendant of #{@approved_benchmark_root}")
+      Mix.raise("benchmark root must be a non-symlink descendant of #{approved_benchmark_root()}")
     end
   end
 
@@ -1261,10 +1264,10 @@ defmodule VialKeeper.Benchmarks.Runner do
   defp ensure_output_path_under_root!(path) do
     path = Path.expand(path)
 
-    if VialKeeper.PathSafety.within_root?(path, @approved_benchmark_root) do
+    if VialKeeper.PathSafety.within_root?(path, approved_benchmark_root()) do
       :ok
     else
-      Mix.raise("benchmark output must be under #{@approved_benchmark_root}")
+      Mix.raise("benchmark output must be under #{approved_benchmark_root()}")
     end
   end
 
@@ -1305,7 +1308,7 @@ defmodule VialKeeper.Benchmarks.Runner do
       --dataset N                     Seeded documents (default: 500)
       --batch N                       Bulk/changes batch size (default: 100, max: 500)
       --reads N                       Point reads per measured sample (default: 100)
-      --root PATH                     External benchmark root under #{@approved_benchmark_root}
+      --root PATH                     Benchmark root under #{approved_benchmark_root()}
                                       (default: a unique work directory there)
       --output PATH                   JSON report path under the approved root
       --baseline PATH                 Compare median latency against a prior report

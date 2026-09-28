@@ -14,8 +14,11 @@ defmodule VialKeeper.Search.RebuildPagesTest do
 
   test "catch-up documents are indexed before the generation is published" do
     bundle_root =
-      "/mnt/other/downloads/vialkeeper/work/fts/rebuild-pages-" <>
-        Integer.to_string(System.unique_integer([:positive]))
+      Path.join(
+        System.tmp_dir!(),
+        "vialkeeper-fts-rebuild-pages-" <>
+          Integer.to_string(System.unique_integer([:positive]))
+      )
 
     uuid = "rebuild-pages-#{System.unique_integer([:positive])}"
     File.mkdir_p!(Path.join(bundle_root, "tmp"))
