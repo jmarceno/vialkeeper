@@ -4,13 +4,14 @@ Opt-in runners live here. They are separate from the normal ExUnit gate:
 numbers are useful for trend detection, but they are not stable enough to make
 every developer test run fail.
 
-There are two families:
+There are three families:
 
 - **Synthetic product controls** — small isolated databases, Tantivy
   generations, and JSON reports under `tmp/bench/vialkeeper/` in the checkout.
   See the sections below.
-- **ExQLite controls** — direct SQLite diagnostics with their own temporary
-  runtime and report conventions.
+- **Layer ladder** — native SQLite, ExQLite, and each VialKeeper layer measured
+  side by side on the same statements (`mix bench.overhead`, see
+  [Layer ladder](#layer-ladder-sqlite-backend-diagnostic)).
 - **Dataset-backed suites** — TREC-COVID FTS, Simple Wikipedia stress, and Open
   Images torture. Source data, generated manifests, work databases, caches, and
   reports live only under the repo-local bench root
@@ -325,58 +326,93 @@ configuration from contaminating measurements. The isolated runtime is
 removed after the report is written; the small report remains under
 `tmp/bench/vialkeeper/reports/`.
 
-## ExQLite overhead control (SQLite backend diagnostic)
+## Layer ladder (SQLite backend diagnostic)
 
-`sqlite_exqlite_overhead_benchmark.exs` is an explicit SQLite/ExQLite control,
-not a product latency claim. It answers how much time each VialKeeper layer adds
-over direct ExQLite calls. Run it in the production environment so OpenTelemetry
-uses its no-op provider and the benchmark process has no test exporter in its
-timed path:
+`sqlite_exqlite_overhead_benchmark.exs` measures how much latency each
+VialKeeper layer adds on top of native SQLite, one layer at a time. It is a
+diagnostic for choosing optimisation targets, not a product latency claim.
+Run it in the production environment so OpenTelemetry uses its no-op provider:
 
 ```sh
 scripts/bench_overhead.sh --mode memory --scenario all \
-  --output output/benchmarks/sqlite-exqlite-overhead-memory.json
+  --output output/benchmarks/layer-ladder-memory.json
+scripts/bench_overhead.sh --mode disk --work-dir /dev/shm/vialkeeper-ladder
 # equivalent to: MIX_ENV=prod mix run --no-start bench/sqlite_exqlite_overhead_benchmark.exs -- ...
 ```
 
-Use `--mode disk` for durable SQLite I/O, or `--mode both` to produce both
-measurements. Memory mode is the lower-noise signal for CPU, BEAM, NIF, and
-SQLite execution; disk mode includes filesystem and journal behavior and
-should be compared only with other runs on the same machine. Disk-mode
-databases and the isolated runtime root live under `--work-dir` (default
-`tmp/bench/vialkeeper/work/overhead`) and are removed after the run; point it
-at a tmpfs to remove storage-device noise while keeping the file-backed code
-path.
+Every variant runs the same scenario on its own database. The ladder, from the
+floor up:
 
-Each case opens one database per variant and seeds all of them with the same
-deterministic fixture through `Adapter.apply_bulk_mutation`, so every database
-holds the rows the product itself writes. The measured variants are:
+| Variant | Layer | What it runs |
+| --- | --- | --- |
+| `native_replay` | L0 native SQLite | A C program replays the exact statements the adapter executed |
+| `exqlite_replay` | L1 ExQLite | The same statements through `Exqlite.Sqlite3` |
+| `connection_replay` | L2 Connection | The same statements through `Storage.SQLite.Connection` |
+| `vial_keeper_adapter` | L3 adapter | The public SQLite adapter operation |
+| `vial_keeper_service` | L4 service | `Documents` / `Changes` / `Query` through the catalog, admission, owner and read pool (disk mode) |
+| `vial_keeper_http` | L5 HTTP router | The `/v1` Plug router in process: request decoding, routing, response encoding; no socket (disk mode) |
+| `exqlite_minimal` | reference | Hand-written minimal SQL through ExQLite |
 
-- `pure_exqlite` calls hand-written prepared statements through `Exqlite.Sqlite3`.
-- `vial_keeper_connection` runs the same SQL through the VialKeeper connection
-  wrapper and statement cache.
-- `vial_keeper_adapter` calls the public SQLite adapter operation.
+The difference between neighbouring layers is that layer's cost; the report's
+`ladder` list gives each step as a paired ratio and a per-operation delta with
+95% confidence intervals. `sql_shape` compares `exqlite_minimal` with
+`exqlite_replay`: what the SQL the adapter chooses costs, separately from the
+cost of issuing it. Select a subset with `--variants`, for example
+`--variants native_replay,exqlite_replay,vial_keeper_adapter`.
+
+### How the replays stay honest
+
+- **Same statements.** A capture worker owns a private database seeded like
+  every other variant and runs each sample's adapter operation there, untimed,
+  under Erlang call tracing of `Connection.query/3`, `Connection.execute/3`, and
+  `Connection.exec/2`. The recorded SQL and parameters are what L0–L2 replay
+  for that sample. The worker is a separate process so its process-local
+  caches never warm the measured adapter, and trace patterns are removed
+  before any timed code runs.
+- **Same results.** Each replay must return exactly the rows the captured run
+  returned, and every database (including the native one) must end each case
+  in the expected state.
+- **Same SQLite.** The native control (`bench/native/vk_replay.c`) is compiled
+  from ExQLite's vendored `sqlite3.c` with ExQLite's SQLite compile
+  definitions, read from its Makefile. The build is cached under
+  `_build/<env>/bench/`; it needs only a C compiler (`CC`, default `cc`). Each
+  case checks that both sides report the same SQLite version, source ID, and
+  compile options, and copies the adapter connection's pragmas to the native
+  connection and reads them back. A precompiled ExQLite NIF may come from a
+  different compiler version; the report records both compilers, and
+  `config :exqlite, force_build: true` builds the NIF locally to match.
+- **Same database.** In memory mode the native control restores a serialized
+  image of a seeded adapter database into a regular `:memory:` database; in
+  disk mode it opens the seeded file after the adapter closes it.
+- **Fair floor.** The native control binds with `SQLITE_TRANSIENT`, steps to
+  `SQLITE_DONE`, copies every column value out of SQLite (as ExQLite builds
+  every row), resets the statement, and times only that loop. It uses the
+  system allocator; ExQLite routes SQLite allocations through `enif_alloc`,
+  which is part of the measured L0→L1 step.
+
+The service and HTTP layers use catalog bundles seeded through
+`Documents.bulk_write`, so their revision IDs differ from the adapter-level
+fixture (the catalog generates history IDs); document IDs, bodies, sequences,
+and row counts are the same. Their indexed-query plan is checked with
+`Query.explain`; the adapter's is checked by `EXPLAIN QUERY PLAN` on the
+captured statements.
 
 The scenarios are `point_read` (`--reads` single-document gets per sample),
 `bulk_write` (one `--batch`-document write per sample), `changes_read`, and
-`indexed_query` (`--repeat` operations per sample each). Point reads use one
-winning-document join; changes reads include the bounded SELECT and the
-`has_more` probe; indexed queries use the same structured expression index and
-predicate in the direct and connection controls.
-
-The bulk-write ExQLite control is intentionally a physical baseline: it
-inserts the same final document, revision, change-feed, metadata, and
-replication-state rows in one prepared transaction. It does not reproduce
-VialKeeper validation, revision hashing/lookups, conflict handling, or retention
-orchestration, and it issues one INSERT per row where the adapter batches
-rows into multi-row statements. Its adapter delta is the cost of the current
-VialKeeper write path over that hand-written SQL, not a lower bound for SQLite.
+`indexed_query` (`--repeat` operations per sample each). Memory mode is the
+lower-noise signal for CPU, BEAM, NIF, and SQLite execution; disk mode adds
+filesystem and journal behaviour and the L4/L5 layers. Databases and the
+isolated runtime root live under `--work-dir` (default
+`tmp/bench/vialkeeper/work/overhead`) and are removed after the run; a tmpfs
+work directory removes storage-device noise while keeping the file-backed code
+path.
 
 ### Measurement rules
 
 - **Nothing but the variant call is timed.** Document IDs, write batches,
-  revision hashes, canonical JSON, and term blobs for a sample are built before
-  any timer starts.
+  revision hashes, canonical JSON, term blobs, captured statements, encoded
+  native requests, and HTTP requests for a sample are built before any timer
+  starts. The native control times itself around its SQLite calls only.
 - **Samples are paired and the order rotates.** Every sample runs each variant
   once on the same input; the order rotates through every position and
   reverses on alternate cycles.
@@ -402,8 +438,12 @@ VialKeeper write path over that hand-written SQL, not a lower bound for SQLite.
 
 Each case reports per-variant summaries (`median_ns`, a bootstrap 95% CI of
 the median, `p90_ns`, `p99_ns` once there are at least 100 samples, MAD, CV,
-per-operation latency, and median reductions per operation) and, for every
-variant, a paired comparison against `pure_exqlite` in `vs_reference`:
+per-operation latency, median reductions per operation, and for the native
+control the median SQLite VM steps per operation), the captured statement
+profile (`captured_statements`), the checks that passed (`verification`), and,
+for every
+variant, a paired comparison against the lowest selected ladder layer
+(`reference_variant`, normally `native_replay`) in `vs_reference`:
 
 - `paired_ratio_median` and `paired_ratio_ci95` — the median of per-sample
   `variant / reference` ratios and its 95% CI. This is the headline number.
