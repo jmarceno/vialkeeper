@@ -11,6 +11,18 @@ defmodule VialKeeper.Runtime.DatabaseReadDispatch do
   alias VialKeeper.Storage.Results
   alias VialKeeper.Storage.Services
 
+  @doc """
+  True when `command` is a single atomic storage read.
+
+  Such a read observes one consistent state on its own, so a snapshot reader
+  need not open a snapshot transaction around it.
+  """
+  @spec snapshot_free?(struct()) :: boolean()
+  def snapshot_free?(%Commands.GetDocument{request: request}) when is_map(request),
+    do: Services.atomic_document_read?(request)
+
+  def snapshot_free?(_command), do: false
+
   @spec run(BackendContext.t(), struct()) :: term()
   def run(%BackendContext{} = context, %Commands.Identity{}), do: Services.identity(context)
 

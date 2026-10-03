@@ -8,7 +8,7 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
   @behaviour VialKeeper.Storage.Ports.DocumentFacts
 
   alias VialKeeper.Domain.Revision
-  alias VialKeeper.JSON.{Canonical, StrictDecoder}
+  alias VialKeeper.JSON.Canonical
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Ports.Errors
   alias VialKeeper.Storage.SQLite.{Connection, Context, Documents, Revisions}
@@ -18,6 +18,16 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
     with {:ok, adapter} <- Context.unwrap(context),
          {:ok, doc} <- Documents.find(adapter.conn, document_id) do
       {:ok, shape_document(doc)}
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
+  def find_winner(%BackendContext{} = context, document_id) when is_binary(document_id) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, winner} <- Documents.load_winner(adapter.conn, document_id) do
+      {:ok, winner}
     else
       {:error, reason} -> {:error, Errors.normalize(reason)}
     end
@@ -48,6 +58,18 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
 
       {:error, reason} ->
         {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
+  def find_revision_for_document(%BackendContext{} = context, document, revision_id)
+      when is_map(document) and is_binary(revision_id) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc_key} <- document_doc_key(document),
+         {:ok, revision} <- Revisions.find(adapter.conn, doc_key, revision_id) do
+      {:ok, revision}
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
     end
   end
 
@@ -162,6 +184,17 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
   end
 
   @impl true
+  def list_leaves_for_document(%BackendContext{} = context, document) when is_map(document) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc_key} <- document_doc_key(document),
+         {:ok, leaves} <- Revisions.load_leaves(adapter.conn, doc_key) do
+      {:ok, leaves}
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
   def list_ancestors(%BackendContext{} = context, document_id, revision_id)
       when is_binary(document_id) and is_binary(revision_id) do
     with {:ok, adapter} <- Context.unwrap(context),
@@ -221,7 +254,7 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
              body_json
            ),
          :ok <- Errors.wrap(Revisions.insert(adapter.conn, doc_key, revision, body_json)) do
-      {:ok, materialized_document(document_id, doc_key, revision, sequence, body_json)}
+      {:ok, materialized_document(document_id, doc_key, revision, sequence)}
     else
       {:error, reason} -> {:error, Errors.normalize(reason)}
     end
@@ -242,7 +275,7 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
   end
 
   defp placeholder_document(document_id, doc_key) do
-    shape_document(doc_key, document_id, nil, nil, true, 0)
+    shape_document(doc_key, document_id, nil, true, 0)
   end
 
   @impl true
@@ -556,6 +589,9 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
   defp require_doc_key(_),
     do: {:error, VialKeeper.Error.internal_error("document fact is missing backend metadata")}
 
+  defp document_doc_key(%{backend_meta: meta}), do: require_doc_key(meta)
+  defp document_doc_key(_document), do: require_doc_key(nil)
+
   defp fact_doc_key(%{document_id: document_id}, revision_document_id)
        when document_id != revision_document_id do
     {:error, VialKeeper.Error.integrity_violation("document fact does not match revision")}
@@ -579,15 +615,8 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
   defp materialized_body_json(%Revision{body: body}, _body_json),
     do: Canonical.encode!(body)
 
-  defp materialized_document(document_id, doc_key, revision, sequence, body_json) do
-    shape_document(
-      doc_key,
-      document_id,
-      revision.revision_id,
-      body_json,
-      revision.deleted,
-      sequence
-    )
+  defp materialized_document(document_id, doc_key, revision, sequence) do
+    shape_document(doc_key, document_id, revision.revision_id, revision.deleted, sequence)
   end
 
   @impl true
@@ -643,8 +672,8 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
          :ok <- Revisions.insert_many(conn, revision_rows(keyed, rows)) do
       {:ok,
        Enum.map(Enum.zip(keyed, rows), fn
-         {{doc_key, document_id}, {_id, revision, sequence, body, _term}} ->
-           materialized_document(document_id, doc_key, revision, sequence, body)
+         {{doc_key, document_id}, {_id, revision, sequence, _body, _term}} ->
+           materialized_document(document_id, doc_key, revision, sequence)
        end)}
     end
   end
@@ -704,38 +733,20 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
       doc.doc_key,
       doc.document_id,
       doc.winning_revision,
-      doc.winning_body_json,
       doc.winning_deleted,
       doc.update_sequence
     )
   end
 
-  defp shape_document(
-         doc_key,
-         document_id,
-         winning_revision,
-         winning_body_json,
-         winning_deleted,
-         update_sequence
-       ) do
-    body =
-      case winning_body_json do
-        nil ->
-          nil
-
-        json when is_binary(json) ->
-          case StrictDecoder.decode(json) do
-            {:ok, value} -> value
-            {:error, _} -> nil
-          end
-      end
-
+  # Facts carry no decoded body: every reader that needs the winning body
+  # loads it through `load_winner/2` or a revision, so decoding the
+  # materialized JSON here would be paid by every fact lookup for nothing.
+  defp shape_document(doc_key, document_id, winning_revision, winning_deleted, update_sequence) do
     %{
       document_id: document_id,
       winning_revision: winning_revision,
       winning_deleted: winning_deleted,
       update_sequence: update_sequence,
-      body: body,
       backend_meta: %{doc_key: doc_key}
     }
   end

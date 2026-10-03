@@ -42,9 +42,63 @@ defmodule VialKeeper.Revisions.Id do
   """
   @spec calculate(binary(), binary(), binary() | nil, boolean(), map() | nil, Manifest.t() | map()) ::
           {:ok, binary()} | {:error, VialKeeper.Error.t()}
-  def calculate(document_id, history_id, parent_revision, deleted, body, attachments)
+  def calculate(document_id, history_id, parent_revision, deleted, body, attachments),
+    do: calculate(document_id, history_id, parent_revision, deleted, body, attachments, nil)
+
+  @doc """
+  Calculates a revision ID, reusing `body_json` when the caller already holds
+  the body's canonical JSON (`Canonical.encode(body)`), so the body is not
+  encoded a second time. The ID is identical either way.
+  """
+  @spec calculate(
+          binary(),
+          binary(),
+          binary() | nil,
+          boolean(),
+          map() | nil,
+          Manifest.t() | map(),
+          binary() | nil
+        ) :: {:ok, binary()} | {:error, VialKeeper.Error.t()}
+  def calculate(document_id, history_id, parent_revision, deleted, body, attachments, body_json) do
+    with {:ok, revision_id, _generation} <-
+           calculate_with_generation(
+             document_id,
+             history_id,
+             parent_revision,
+             deleted,
+             body,
+             attachments,
+             body_json
+           ) do
+      {:ok, revision_id}
+    end
+  end
+
+  @doc """
+  Like `calculate/7`, also returning the new revision's generation so callers
+  need not parse it back out of the ID.
+  """
+  @spec calculate_with_generation(
+          binary(),
+          binary(),
+          binary() | nil,
+          boolean(),
+          map() | nil,
+          Manifest.t() | map(),
+          binary() | nil
+        ) :: {:ok, binary(), pos_integer()} | {:error, VialKeeper.Error.t()}
+  def calculate_with_generation(
+        document_id,
+        history_id,
+        parent_revision,
+        deleted,
+        body,
+        attachments,
+        body_json
+      )
       when is_binary(document_id) and is_binary(history_id) and
-             (is_binary(parent_revision) or is_nil(parent_revision)) and is_boolean(deleted) do
+             (is_binary(parent_revision) or is_nil(parent_revision)) and is_boolean(deleted) and
+             (is_binary(body_json) or is_nil(body_json)) do
     with :ok <- validate_history_id(history_id),
          {:ok, generation} <- next_generation(parent_revision),
          {:ok, canonical_attachments} <- canonical_attachments(attachments, deleted),
@@ -54,12 +108,12 @@ defmodule VialKeeper.Revisions.Id do
            "history_id" => history_id,
            "parent_revision" => parent_revision,
            "deleted" => deleted,
-           "body" => if(deleted, do: nil, else: body),
+           "body" => payload_body(deleted, body, body_json),
            "attachments" => canonical_attachments
          },
          {:ok, canonical} <- Canonical.encode(payload) do
       digest = :crypto.hash(:sha256, canonical) |> Base.encode16(case: :lower)
-      {:ok, "#{generation}-#{digest}"}
+      {:ok, "#{generation}-#{digest}", generation}
     end
   end
 
@@ -104,6 +158,10 @@ defmodule VialKeeper.Revisions.Id do
 
   def validate_history_id(_),
     do: {:error, VialKeeper.Error.invalid_request("invalid history id")}
+
+  defp payload_body(true, _body, _body_json), do: nil
+  defp payload_body(false, body, nil), do: body
+  defp payload_body(false, _body, body_json), do: Canonical.fragment(body_json)
 
   defp canonical_attachments(_attachments, true), do: {:ok, %{}}
 

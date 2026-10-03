@@ -3,8 +3,8 @@ defmodule VialKeeper.Storage.OpaqueHandle do
   Opaque handle for storage backends.
 
   Shared and runtime code may pass handles but must not unwrap them or read
-  physical fields such as connection references. Payloads live in a private ETS
-  table owned by `VialKeeper.Storage.OpaqueHandle.Server`. The general
+  physical fields such as connection references. Payloads live in an ETS table
+  owned (and only written) by `VialKeeper.Storage.OpaqueHandle.Server`. The general
   unwrap/replace/drop operations require a backend Context module in the caller
   stack. Backend Context modules use a lower-overhead unwrap operation that the
   Reach architecture rules forbid everywhere else. This is an internal
@@ -18,7 +18,7 @@ defmodule VialKeeper.Storage.OpaqueHandle do
 
   alias VialKeeper.Storage.OpaqueHandle.Server
 
-  @doc "Creates the private ETS table used to store opaque handle payloads."
+  @doc "Ensures the server that owns the opaque handle payload table is running."
   @spec ensure_table!() :: :ok
   def ensure_table! do
     case Process.whereis(Server) do

@@ -9,6 +9,21 @@ defmodule VialKeeper.JSON.Canonical do
   @safe_integer_max 9_007_199_254_740_991
   @default_max_depth 100
 
+  defmodule Fragment do
+    @moduledoc """
+    JSON text that is already the canonical encoding of a value.
+
+    `VialKeeper.JSON.Canonical.encode/1` embeds it verbatim, so a caller that
+    holds a value's canonical JSON can encode a larger structure around it
+    without encoding the value again. Decoded JSON can never produce this
+    struct, so it cannot be smuggled in through a document body.
+    """
+    @enforce_keys [:json]
+    defstruct [:json]
+
+    @type t :: %__MODULE__{json: binary()}
+  end
+
   @spec encode(term()) :: {:ok, binary()} | {:error, Error.t()}
   def encode(value) do
     Probe.measure :json_canonical_encode do
@@ -19,6 +34,15 @@ defmodule VialKeeper.JSON.Canonical do
     ArithmeticError -> {:error, Error.invalid_request("value is not canonical JSON")}
     FunctionClauseError -> {:error, Error.invalid_request("value is not canonical JSON")}
   end
+
+  @doc """
+  Wraps `json`, which must be exactly `encode/1` of some value, for embedding.
+
+  Encoding a structure that contains the fragment yields the same bytes as
+  encoding it with that value in place of the fragment.
+  """
+  @spec fragment(binary()) :: Fragment.t()
+  def fragment(json) when is_binary(json), do: %Fragment{json: json}
 
   @spec encode!(term()) :: binary()
   def encode!(value) do
@@ -61,6 +85,7 @@ defmodule VialKeeper.JSON.Canonical do
   defp encode_value(value) when is_float(value), do: encode_float(value)
 
   defp encode_value(value) when is_binary(value), do: JSON.encode_to_iodata!(value)
+  defp encode_value(%Fragment{json: json}) when is_binary(json), do: json
 
   defp encode_value(value) when is_list(value),
     do: [?[, Enum.map_intersperse(value, ?,, &encode_value/1), ?]]

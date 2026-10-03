@@ -412,6 +412,9 @@ production default (`default_*`, standard tier only).
   every row), resets the statement, and times only that loop. It uses the
   system allocator; ExQLite routes SQLite allocations through `enif_alloc`,
   which is part of the measured L0→L1 step.
+- **Same fetch strategy.** L1 and the `exqlite_minimal` reference fetch rows
+  with `Exqlite.Sqlite3.multi_step/3` at `Connection.fetch_chunk_rows/0` rows
+  per call, as `Connection` does, so L1→L2 measures only the wrapper.
 
 The service and HTTP layers use catalog bundles seeded through
 `Documents.bulk_write`, so their revision IDs differ from the adapter-level
@@ -436,6 +439,10 @@ path.
   revision hashes, canonical JSON, term blobs, captured statements, encoded
   native requests, and HTTP requests for a sample are built before any timer
   starts. The native control times itself around its SQLite calls only.
+- **L5 consumes its responses.** The Plug test adapter mails each response
+  to the calling process; L5 takes those messages after every request, as a
+  socket write would, so they never accumulate in the benchmark process's
+  mailbox and inflate its garbage collections.
 - **Samples are paired and the order rotates.** Every sample runs each variant
   once on the same input; the order rotates through every position and
   reverses on alternate cycles.

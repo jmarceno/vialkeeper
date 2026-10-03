@@ -6,7 +6,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCatalog do
   boundaries remain in the adapter.
   """
 
-  alias VialKeeper.JSON.{Canonical, StrictDecoder, Stringify}
+  alias VialKeeper.JSON.{Canonical, StrictCache, StrictDecoder, Stringify}
   alias VialKeeper.MapAccess
 
   alias VialKeeper.Storage.SQLite.{
@@ -18,6 +18,7 @@ defmodule VialKeeper.Storage.SQLite.IndexCatalog do
 
   @list_cache_key :vial_keeper_sqlite_index_catalog
   @ready_cache_key :vial_keeper_sqlite_ready_index_catalog
+  @decoded_rows_cache_limit 4
   @cache_generation_key :vial_keeper_sqlite_index_catalog_generation
 
   @doc """
@@ -39,20 +40,13 @@ defmodule VialKeeper.Storage.SQLite.IndexCatalog do
            conn,
            "SELECT index_id, definition_json, definition_digest, lifecycle_state, adapter_metadata_json FROM index_definitions ORDER BY index_id"
          ) do
+      # Snapshot readers cannot reuse a cached list (another connection may have
+      # changed the catalog), but the decoded list is a pure function of the
+      # rows just read, so identical rows skip decoding their JSON again.
       {:ok, rows} ->
-        {:ok,
-         Enum.map(rows, fn [id, json, digest_value, state, metadata_json] ->
-           definition = decode_json!(json)
-           metadata = decode_json!(metadata_json)
-
-           definition
-           |> Map.merge(%{
-             "index_id" => id,
-             "definition_digest" => digest_value,
-             "lifecycle_state" => state,
-             "_metadata" => metadata
-           })
-         end)}
+        StrictCache.memoize(:sqlite_index_catalog_rows, rows, @decoded_rows_cache_limit, fn ->
+          {:ok, Enum.map(rows, &list_entry/1)}
+        end)
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
@@ -266,6 +260,18 @@ defmodule VialKeeper.Storage.SQLite.IndexCatalog do
       {:error, reason} ->
         {:error, normalize_error(reason)}
     end
+  end
+
+  defp list_entry([id, json, digest_value, state, metadata_json]) do
+    definition = decode_json!(json)
+    metadata = decode_json!(metadata_json)
+
+    Map.merge(definition, %{
+      "index_id" => id,
+      "definition_digest" => digest_value,
+      "lifecycle_state" => state,
+      "_metadata" => metadata
+    })
   end
 
   defp decode_metadata(row) do

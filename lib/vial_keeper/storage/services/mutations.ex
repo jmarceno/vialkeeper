@@ -32,7 +32,8 @@ defmodule VialKeeper.Storage.Services.Mutations do
     body_json = if deleted, do: nil, else: MapAccess.get(request, :body_json)
 
     with :ok <- validate_mutation_operation(operation),
-         :ok <- validate_document_input(context, document_id, deleted, body, body_json),
+         {:ok, body_json} <-
+           validate_document_input(context, document_id, deleted, body, body_json),
          {:ok, {doc, current}} <-
            Mutation.phase(:fact_reads, fn -> load_document_state(context, document_id) end),
          {:ok, candidate} <-
@@ -120,7 +121,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
     delete_all = MapAccess.get(request, :delete_all, false)
 
     with true <- is_boolean(delete_all),
-         :ok <-
+         {:ok, body_json} <-
            validate_document_input(
              context,
              document_id,
@@ -136,7 +137,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
              document_id,
              current_leaves,
              request,
-             body,
+             {body, body_json},
              delete_all
            ),
          {:ok, status} <- resolution_status(context, doc.document_id, revisions) do
@@ -209,12 +210,11 @@ defmodule VialKeeper.Storage.Services.Mutations do
       fn -> validate_document_id_size(document_id, max_id) end,
       fn -> validate_document_id_characters(document_id) end,
       fn -> validate_deleted_body(deleted, body) end,
-      fn -> validate_live_body(deleted, body) end,
-      fn -> validate_body_size(deleted, body, body_json, max_body) end
+      fn -> validate_live_body(deleted, body) end
     ]
 
     case Enum.find_value(validators, & &1.()) do
-      nil -> :ok
+      nil -> canonical_body_json(deleted, body, body_json, max_body)
       error -> {:error, error}
     end
   end
@@ -254,31 +254,28 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp validate_live_body(false, _body),
     do: Error.invalid_request("document body must be an object")
 
-  defp validate_body_size(true, _body, _body_json, _max), do: nil
+  # Returns the body's canonical JSON, bounded by the configured size. A live
+  # body is encoded here at most once (callers that already canonicalized it
+  # pass `body_json`); the revision ID, stored JSON and term all reuse it.
+  defp canonical_body_json(true, _body, _body_json, _max), do: {:ok, nil}
 
-  defp validate_body_size(false, body, body_json, max) when is_map(body),
-    do: body_size_error(body, body_json, max)
+  defp canonical_body_json(false, _body, body_json, max) when is_binary(body_json),
+    do: bounded_body_json(body_json, max)
 
-  defp validate_body_size(false, _body, _body_json, _max), do: nil
-
-  defp body_size_error(_body, body_json, max) when is_binary(body_json) do
-    if byte_size(body_json) <= max,
-      do: nil,
-      else: Error.resource_limit("document body exceeds the configured limit")
-  end
-
-  defp body_size_error(body, _body_json, max) do
+  defp canonical_body_json(false, body, _body_json, max) do
     case Canonical.encode(body) do
-      {:ok, json} when byte_size(json) <= max ->
-        nil
-
-      {:ok, _json} ->
-        Error.resource_limit("document body exceeds the configured limit")
+      {:ok, json} ->
+        bounded_body_json(json, max)
 
       {:error, _error} ->
-        Error.invalid_request("document body must contain canonical JSON values")
+        {:error, Error.invalid_request("document body must contain canonical JSON values")}
     end
   end
+
+  defp bounded_body_json(json, max) when byte_size(json) <= max, do: {:ok, json}
+
+  defp bounded_body_json(_json, _max),
+    do: {:error, Error.resource_limit("document body exceeds the configured limit")}
 
   defp document_mutation_result(context, doc, winner) do
     with {:ok, leaves_now} <- Facts.list_leaves(context, doc.document_id) do
@@ -690,7 +687,8 @@ defmodule VialKeeper.Storage.Services.Mutations do
     body_json = if deleted, do: nil, else: MapAccess.get(request, :body_json)
 
     with :ok <- validate_mutation_operation(operation),
-         :ok <- validate_document_input(context, document_id, deleted, body, body_json, config),
+         {:ok, body_json} <-
+           validate_document_input(context, document_id, deleted, body, body_json, config),
          {:ok, doc} <- bulk_document(context, document_cache, document_id),
          {:ok, current} <- current_winner(context, doc),
          {:ok, candidate_state} <-
@@ -832,7 +830,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
     delete_all = MapAccess.get(request, :delete_all, false)
 
     with true <- is_boolean(delete_all),
-         :ok <-
+         {:ok, body_json} <-
            validate_document_input(
              context,
              document_id,
@@ -846,7 +844,14 @@ defmodule VialKeeper.Storage.Services.Mutations do
          {:ok, leaves} <- Facts.list_leaves(context, doc.document_id),
          :ok <- ConflictResolution.validate_leaf_set(leaves, expected),
          {:ok, revisions} <-
-           build_resolution_revisions(context, document_id, leaves, request, body, delete_all),
+           build_resolution_revisions(
+             context,
+             document_id,
+             leaves,
+             request,
+             {body, body_json},
+             delete_all
+           ),
          {:ok, status} <- resolution_status(context, doc.document_id, revisions) do
       prepare_resolution_status(
         context,
@@ -1224,7 +1229,14 @@ defmodule VialKeeper.Storage.Services.Mutations do
     end)
   end
 
-  defp build_resolution_revisions(context, document_id, leaves, request, body, delete_all) do
+  defp build_resolution_revisions(
+         context,
+         document_id,
+         leaves,
+         request,
+         {body, body_json},
+         delete_all
+       ) do
     chosen = MapAccess.get(request, :chosen_parent_revision)
     live = Enum.reject(leaves, & &1.deleted)
 
@@ -1250,7 +1262,8 @@ defmodule VialKeeper.Storage.Services.Mutations do
                  chosen,
                  false,
                  body,
-                 attachments
+                 attachments,
+                 body_json
                ),
              {:ok, tombstones} <-
                live
@@ -1494,8 +1507,16 @@ defmodule VialKeeper.Storage.Services.Mutations do
     do: build_revision(document_id, history_id, parent, deleted, body, attachments, nil)
 
   defp build_revision(document_id, history_id, parent, deleted, body, attachments, body_json) do
-    with {:ok, id} <- Id.calculate(document_id, history_id, parent, deleted, body, attachments),
-         {:ok, generation} <- Id.generation(id),
+    with {:ok, id, generation} <-
+           Id.calculate_with_generation(
+             document_id,
+             history_id,
+             parent,
+             deleted,
+             body,
+             attachments,
+             body_json
+           ),
          {:ok, normalized_attachments} <- normalize_attachments(attachments, deleted) do
       {:ok,
        revision_struct(%{

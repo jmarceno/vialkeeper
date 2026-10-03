@@ -169,10 +169,18 @@ defmodule VialKeeper.Runtime.ReadWorker do
        })}
   end
 
+  # Shadow reads check their durable binding and read data in one snapshot.
+  # Other atomic reads observe a consistent state on their own and skip the
+  # snapshot's BEGIN and COMMIT round trips.
   defp run_authorized_read(state, authority, normalized, database_kind, probe_op) do
-    Transaction.run_snapshot(state.context, fn snapshot ->
-      snapshot_read(snapshot, authority, normalized, database_kind, state.uuid, probe_op)
-    end)
+    if database_kind != :shadow and DatabaseReadDispatch.snapshot_free?(normalized) do
+      sync_owner_body(state.uuid, probe_op)
+      DatabaseReadDispatch.run(state.context, normalized)
+    else
+      Transaction.run_snapshot(state.context, fn snapshot ->
+        snapshot_read(snapshot, authority, normalized, database_kind, state.uuid, probe_op)
+      end)
+    end
   end
 
   defp snapshot_read(snapshot, authority, normalized, database_kind, uuid, probe_op) do

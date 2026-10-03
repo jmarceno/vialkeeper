@@ -1119,11 +1119,34 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   defp invoke!(state, :vial_keeper_http, %{http: requests}) do
     Enum.each(requests, fn request ->
-      case VialKeeper.HTTP.Router.call(request, state.router_opts) do
+      response = VialKeeper.HTTP.Router.call(request, state.router_opts)
+      :ok = take_test_response(response)
+
+      case response do
         %{status: 200} -> :ok
         response -> Mix.raise("HTTP #{response.status}: #{response.resp_body}")
       end
     end)
+  end
+
+  # The Plug test adapter mails every sent response (and a "sent" marker) to
+  # the calling process; a real server writes it to the socket instead. Left
+  # in the mailbox they pile up across samples and every garbage collection
+  # of this process scans them, inflating every layer measured after them.
+  defp take_test_response(%Plug.Conn{adapter: {Plug.Adapters.Test.Conn, %{ref: ref}}}) do
+    sent = Plug.Conn.Adapter.already_sent()
+
+    receive do
+      {^ref, {_status, _headers, _body}} -> :ok
+    after
+      0 -> Mix.raise("the HTTP layer sent no response")
+    end
+
+    receive do
+      ^sent -> :ok
+    after
+      0 -> :ok
+    end
   end
 
   defp invoke!(state, :exqlite_minimal, %{base: base}) do
@@ -1148,10 +1171,12 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     run_exqlite_ops(conn, rest, if(count_rows, do: rows + stepped, else: rows))
   end
 
+  # Fetches the way `Connection` does (one ExQLite call per chunk of rows), so
+  # L1 and L2 differ only in the wrapper, not in the fetch strategy.
   defp step_count(conn, statement, rows) do
-    case Sqlite3.step(conn, statement) do
-      {:row, _row} -> step_count(conn, statement, rows + 1)
-      :done -> rows
+    case Sqlite3.multi_step(conn, statement, Connection.fetch_chunk_rows()) do
+      {:rows, chunk} -> step_count(conn, statement, rows + length(chunk))
+      {:done, chunk} -> rows + length(chunk)
       other -> Mix.raise("exqlite replay step failed: #{inspect(other)}")
     end
   end
@@ -1946,6 +1971,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     @moduledoc false
 
     alias Exqlite.Sqlite3
+    alias VialKeeper.Storage.SQLite.Connection
 
     def prepare_many(conn, definitions) do
       Map.new(definitions, fn {name, sql} -> {name, prepare!(conn, sql)} end)
@@ -1991,13 +2017,12 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
       :ok
     end
 
-    defp step(conn, statement, rows) do
-      case Sqlite3.step(conn, statement) do
-        {:row, row} -> step(conn, statement, [row | rows])
-        :done -> {:ok, Enum.reverse(rows)}
+    defp step(conn, statement, chunks) do
+      case Sqlite3.multi_step(conn, statement, Connection.fetch_chunk_rows()) do
+        {:rows, chunk} -> step(conn, statement, [chunk | chunks])
+        {:done, chunk} -> {:ok, Enum.concat(Enum.reverse([chunk | chunks]))}
         :busy -> {:error, :busy}
         {:error, reason} -> {:error, reason}
-        other -> {:error, other}
       end
     end
   end

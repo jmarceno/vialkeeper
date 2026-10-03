@@ -79,7 +79,15 @@ if config_env() != :test do
         }
       ]
   else
-    config :opentelemetry, traces_exporter: :none, processors: batch_processors
+    # With no exporter every recorded span is thrown away, so do not record
+    # spans for traces this host starts. A sampled inbound `traceparent` is
+    # still honored, so a caller's trace stays sampled through this host and
+    # into the hosts it calls.
+    config :opentelemetry,
+      traces_exporter: :none,
+      processors: batch_processors,
+      sampler: {:parent_based, %{root: :always_off}}
+
     config :opentelemetry_experimental, readers: []
   end
 end

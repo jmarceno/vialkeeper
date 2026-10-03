@@ -12,7 +12,7 @@ defmodule VialKeeper.Storage.Services do
 
   alias VialKeeper.MapAccess
   alias VialKeeper.Probe
-  alias VialKeeper.Query.{Normalizer, SubscriptionRequest}
+  alias VialKeeper.Query.{Normalizer, Prepared, SnapshotChecks, SubscriptionRequest}
   alias VialKeeper.Replication.Profile
   alias VialKeeper.Search
   alias VialKeeper.Storage.BackendContext
@@ -64,17 +64,37 @@ defmodule VialKeeper.Storage.Services do
   def close(%BackendContext{} = context),
     do: with_port(context, :lifecycle, fn -> Access.port(context, :lifecycle).close(context) end)
 
-  @doc "Loads one document through shared document and revision facts."
+  @doc """
+  Loads one document through shared document and revision facts.
+
+  A request for the current winner is one atomic fact read and runs without a
+  snapshot; a historical revision or conflict listing reads several facts
+  inside one snapshot.
+  """
   @spec get_document(BackendContext.t(), map()) ::
           {:ok, map()} | {:error, VialKeeper.Error.t()}
   def get_document(%BackendContext{} = context, request) when is_map(request) do
     Probe.measure :storage_get_document do
-      Transaction.run_snapshot(context, &load_document(&1, request))
+      if atomic_document_read?(request),
+        do: load_winner(context, request),
+        else: Transaction.run_snapshot(context, &load_document(&1, request))
     end
   end
 
   def get_document(%BackendContext{}, _request),
     do: {:error, VialKeeper.Error.invalid_request("document request must be an object")}
+
+  @doc """
+  True when a document request reads only the current winner.
+
+  Such a read is a single atomic fact read, so callers need not wrap it in a
+  snapshot to observe a consistent document.
+  """
+  @spec atomic_document_read?(map()) :: boolean()
+  def atomic_document_read?(request) when is_map(request) do
+    is_nil(MapAccess.get(request, :revision)) and
+      MapAccess.get(request, :include_conflicts, false) != true
+  end
 
   @doc "Loads one requested revision through shared document facts."
   @spec get_revision(BackendContext.t(), map()) ::
@@ -191,12 +211,25 @@ defmodule VialKeeper.Storage.Services do
     Probe.measure :storage_execute_query do
       with_port(context, :index_candidates, fn ->
         with {:ok, current_identity} <- identity(context),
-             {:ok, normalized} <- Normalizer.normalize_public_request(request) do
-          Query.execute(context, normalized, current_identity)
+             {:ok, normalized} <- Normalizer.normalize_public_request(request),
+             {:ok, admitted} <- admit_public_query(request, normalized, current_identity) do
+          Query.execute(context, admitted, current_identity)
         end
       end)
     end
   end
+
+  # A prepared request comes from the public query service, which leaves its
+  # identity-dependent checks to this snapshot (see `SnapshotChecks`).
+  defp admit_public_query(%Prepared{}, normalized, identity),
+    do: SnapshotChecks.admit(normalized, identity)
+
+  defp admit_public_query(_request, normalized, _identity), do: {:ok, normalized}
+
+  defp check_public_query_limit(%Prepared{}, normalized, identity),
+    do: SnapshotChecks.check_limit(normalized, identity)
+
+  defp check_public_query_limit(_request, _normalized, _identity), do: :ok
 
   @doc "Normalizes and executes a public subscription snapshot."
   @spec execute_public_subscription_snapshot(BackendContext.t(), map()) ::
@@ -221,7 +254,8 @@ defmodule VialKeeper.Storage.Services do
   def explain_public_query(%BackendContext{} = context, request) when is_map(request) do
     with_port(context, :index_candidates, fn ->
       with {:ok, current_identity} <- identity(context),
-           {:ok, normalized} <- Normalizer.normalize_public_request(request) do
+           {:ok, normalized} <- Normalizer.normalize_public_request(request),
+           :ok <- check_public_query_limit(request, normalized, current_identity) do
         Query.explain(context, normalized, current_identity)
       end
     end)
@@ -648,13 +682,10 @@ defmodule VialKeeper.Storage.Services do
   defp selected_revision(%BackendContext{} = context, document, nil) do
     cond do
       document.winning_deleted ->
-        {:error,
-         VialKeeper.Error.document_not_found("document is deleted", %{
-           winning_revision: document.winning_revision
-         })}
+        {:error, deleted_document_error(document.winning_revision)}
 
       is_binary(document.winning_revision) ->
-        Facts.find_revision(context, document.document_id, document.winning_revision)
+        Facts.find_revision_for_document(context, document, document.winning_revision)
 
       true ->
         {:error, VialKeeper.Error.document_not_found("document has no winning revision")}
@@ -663,7 +694,13 @@ defmodule VialKeeper.Storage.Services do
 
   defp selected_revision(%BackendContext{} = context, document, revision_id) do
     with :ok <- validate_identifier(revision_id, "revision"),
-         do: Facts.find_revision(context, document.document_id, revision_id)
+         do: Facts.find_revision_for_document(context, document, revision_id)
+  end
+
+  defp deleted_document_error(winning_revision) do
+    VialKeeper.Error.document_not_found("document is deleted", %{
+      winning_revision: winning_revision
+    })
   end
 
   defp get_revisions_batch_available(%BackendContext{} = context, requests) do
@@ -696,12 +733,10 @@ defmodule VialKeeper.Storage.Services do
     end)
   end
 
-  defp maybe_document_leaves(_context, _document_id, false), do: {:ok, []}
+  defp maybe_document_leaves(%BackendContext{} = context, document, true),
+    do: Facts.list_leaves_for_document(context, document)
 
-  defp maybe_document_leaves(%BackendContext{} = context, document_id, true),
-    do: Facts.list_leaves(context, document_id)
-
-  defp maybe_document_leaves(_context, _document_id, _), do: {:ok, []}
+  defp maybe_document_leaves(_context, _document, _include_conflicts), do: {:ok, []}
 
   defp revision_batch_result(%{
          document_id: document_id,
@@ -735,6 +770,24 @@ defmodule VialKeeper.Storage.Services do
     end
   end
 
+  defp load_winner(%BackendContext{} = context, request) do
+    with_port(context, :document_facts, fn ->
+      document_id = MapAccess.get(request, :document_id)
+
+      with :ok <- validate_identifier(document_id, "document_id"),
+           {:ok, winner} <- Facts.find_winner(context, document_id) do
+        winner_document(winner)
+      end
+    end)
+  end
+
+  defp winner_document(nil), do: require_document(nil)
+
+  defp winner_document({:deleted, winning_revision}),
+    do: {:error, deleted_document_error(winning_revision)}
+
+  defp winner_document(winner) when is_map(winner), do: {:ok, winner}
+
   defp load_document(%BackendContext{} = snap, request) do
     with_port(snap, :document_facts, fn ->
       document_id = MapAccess.get(request, :document_id)
@@ -745,7 +798,7 @@ defmodule VialKeeper.Storage.Services do
            {:ok, document} <- Facts.find_document(snap, document_id),
            {:ok, document} <- require_document(document),
            {:ok, revision} <- selected_revision(snap, document, requested_revision),
-           {:ok, leaves} <- maybe_document_leaves(snap, document_id, include_conflicts) do
+           {:ok, leaves} <- maybe_document_leaves(snap, document, include_conflicts) do
         {:ok, Results.document_map(document, revision, leaves)}
       end
     end)

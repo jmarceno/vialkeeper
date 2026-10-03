@@ -20,7 +20,26 @@ defmodule VialKeeper.Storage.Ports.DocumentFacts do
           optional(:backend_meta) => map()
         }
 
+  @type winner :: %{
+          required(:id) => binary(),
+          required(:revision) => binary(),
+          required(:deleted) => false,
+          required(:body) => term(),
+          required(:sequence) => non_neg_integer(),
+          required(:attachments) => map()
+        }
+
   @callback find_document(BackendContext.t(), binary()) :: result(document_fact() | nil)
+
+  @doc """
+  Loads a document's current winning revision as one consistent read.
+
+  Returns `nil` for an unknown document and `{:deleted, winning_revision}` when
+  the winner is a deletion (or the document is an empty placeholder). The read
+  is atomic on its own, so callers need no enclosing snapshot.
+  """
+  @callback find_winner(BackendContext.t(), binary()) ::
+              result(nil | {:deleted, binary() | nil} | winner())
   @callback find_documents(BackendContext.t(), [binary()]) ::
               result(%{optional(binary()) => document_fact() | nil})
   @callback find_revision(BackendContext.t(), binary(), binary()) :: result(Revision.t() | nil)
@@ -35,7 +54,17 @@ defmodule VialKeeper.Storage.Ports.DocumentFacts do
                   revision: Revision.t() | nil
                 }
               ])
+  @doc """
+  Loads one revision of a document fact already read in the same snapshot.
+
+  Unlike `find_revision/3` this does not look the document up again.
+  """
+  @callback find_revision_for_document(BackendContext.t(), document_fact(), binary()) ::
+              result(Revision.t())
   @callback list_leaves(BackendContext.t(), binary()) :: result([Revision.t()])
+  @doc "Lists leaf revisions of a document fact already read in the same snapshot."
+  @callback list_leaves_for_document(BackendContext.t(), document_fact()) ::
+              result([Revision.t()])
   @callback list_ancestors(BackendContext.t(), binary(), binary()) :: result([Revision.t()])
   @callback list_document_page(BackendContext.t(), binary() | nil, pos_integer()) ::
               result(%{document_ids: [binary()], next_cursor: binary() | nil})

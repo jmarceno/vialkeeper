@@ -28,6 +28,12 @@ defmodule VialKeeper.Storage.Services.Facts do
   def find_document(%BackendContext{} = ctx, document_id),
     do: Access.port(ctx, :document_facts).find_document(ctx, document_id)
 
+  @doc "Loads a document's winning revision as one consistent read (no snapshot needed)."
+  @spec find_winner(BackendContext.t(), binary()) ::
+          {:ok, nil | {:deleted, binary() | nil} | map()} | {:error, VialKeeper.Error.t()}
+  def find_winner(%BackendContext{} = ctx, document_id),
+    do: Access.port(ctx, :document_facts).find_winner(ctx, document_id)
+
   @doc "Loads many document facts keyed by document id."
   @spec find_documents(BackendContext.t(), [binary()]) ::
           {:ok, map()} | {:error, VialKeeper.Error.t()}
@@ -40,6 +46,12 @@ defmodule VialKeeper.Storage.Services.Facts do
   def find_revision(%BackendContext{} = ctx, document_id, revision_id),
     do: Access.port(ctx, :document_facts).find_revision(ctx, document_id, revision_id)
 
+  @doc "Loads one revision of a document fact read earlier in the same snapshot."
+  @spec find_revision_for_document(BackendContext.t(), map(), binary()) ::
+          {:ok, Revision.t()} | {:error, VialKeeper.Error.t()}
+  def find_revision_for_document(%BackendContext{} = ctx, document, revision_id),
+    do: Access.port(ctx, :document_facts).find_revision_for_document(ctx, document, revision_id)
+
   @doc "Loads requested document/revision pairs in request order."
   @spec find_revision_batch(BackendContext.t(), list()) ::
           {:ok, list()} | {:error, VialKeeper.Error.t()}
@@ -51,6 +63,12 @@ defmodule VialKeeper.Storage.Services.Facts do
           {:ok, [Revision.t()]} | {:error, VialKeeper.Error.t()}
   def list_leaves(%BackendContext{} = ctx, document_id),
     do: Access.port(ctx, :document_facts).list_leaves(ctx, document_id)
+
+  @doc "Lists leaf revisions of a document fact read earlier in the same snapshot."
+  @spec list_leaves_for_document(BackendContext.t(), map()) ::
+          {:ok, [Revision.t()]} | {:error, VialKeeper.Error.t()}
+  def list_leaves_for_document(%BackendContext{} = ctx, document),
+    do: Access.port(ctx, :document_facts).list_leaves_for_document(ctx, document)
 
   @doc "Lists ancestors of a revision."
   @spec list_ancestors(BackendContext.t(), binary(), binary()) ::

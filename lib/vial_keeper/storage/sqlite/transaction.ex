@@ -38,7 +38,7 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
   def run(%BackendContext{} = context, fun) when is_function(fun, 1) do
     with {:ok, adapter} <- Context.unwrap(context) do
       run_on_adapter(adapter, fn updated_adapter ->
-        fun.(Context.replace_ref(context, updated_adapter))
+        fun.(rebind(context, adapter, updated_adapter))
       end)
     end
   end
@@ -47,10 +47,15 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
   def run_snapshot(%BackendContext{} = context, fun) when is_function(fun, 1) do
     with {:ok, adapter} <- Context.unwrap(context) do
       run_snapshot_on_adapter(adapter, fn updated_adapter ->
-        fun.(Context.replace_ref(context, updated_adapter))
+        fun.(rebind(context, adapter, updated_adapter))
       end)
     end
   end
+
+  # The transaction body normally receives the very adapter the context holds;
+  # storing it back would be a handle-server round trip that changes nothing.
+  defp rebind(context, adapter, adapter), do: Context.mirror_identity(context, adapter)
+  defp rebind(context, _adapter, updated_adapter), do: Context.replace_ref(context, updated_adapter)
 
   @doc "Runs `fun` atomically against an open SQLite adapter handle."
   @spec run_on_adapter(Adapter.t(), (Adapter.t() -> {:ok, term()} | {:error, VialKeeper.Error.t()})) ::

@@ -2,13 +2,18 @@ defmodule VialKeeper.Storage.OpaqueHandle.Server do
   @moduledoc """
   Private process backing `VialKeeper.Storage.OpaqueHandle`.
 
-  The server stores payloads in a private ETS table. General unwrap,
-  replacement, and deletion requests are authorized from backend context
-  modules. A lower-overhead unwrap request exists for backend Context modules
-  and is statically confined there by Reach. The server is an implementation
-  detail of the storage boundary and is not a general-purpose term registry.
+  The server owns the payload ETS table and is its only writer. General
+  unwrap, replacement, and deletion requests are authorized from backend
+  context modules. Backend Context modules read payloads with
+  `backend_unwrap/1`, a direct lookup in the caller that is statically
+  confined to those modules by Reach: it sits on every storage port call, so
+  it must neither serialize all databases through this process nor pay a
+  message round trip. The server is an implementation detail of the storage
+  boundary and is not a general-purpose term registry.
   """
   use GenServer
+
+  @table_key {__MODULE__, :table}
 
   @allowed_callers [
     VialKeeper.Storage.SQLite.Context,
@@ -33,8 +38,11 @@ defmodule VialKeeper.Storage.OpaqueHandle.Server do
 
   @doc false
   @spec backend_unwrap(VialKeeper.Storage.OpaqueHandle.t()) :: {:ok, term()} | {:error, :missing}
-  def backend_unwrap(%VialKeeper.Storage.OpaqueHandle{} = handle) do
-    GenServer.call(__MODULE__, {:backend_unwrap, handle}, VialKeeper.Config.request_timeout_ms())
+  def backend_unwrap(%VialKeeper.Storage.OpaqueHandle{id: id}) do
+    case :ets.lookup(:persistent_term.get(@table_key), id) do
+      [{^id, term}] -> {:ok, term}
+      [] -> {:error, :missing}
+    end
   end
 
   @spec replace(VialKeeper.Storage.OpaqueHandle.t(), term()) ::
@@ -50,7 +58,8 @@ defmodule VialKeeper.Storage.OpaqueHandle.Server do
 
   @impl true
   def init(:ok) do
-    tid = :ets.new(__MODULE__.Table, [:set, :private])
+    tid = :ets.new(__MODULE__.Table, [:set, :protected, read_concurrency: true])
+    :ok = :persistent_term.put(@table_key, tid)
     {:ok, tid}
   end
 
@@ -68,13 +77,6 @@ defmodule VialKeeper.Storage.OpaqueHandle.Server do
     else
       [] -> {:reply, {:error, :missing}, tid}
       {:error, _} = error -> {:reply, error, tid}
-    end
-  end
-
-  def handle_call({:backend_unwrap, %VialKeeper.Storage.OpaqueHandle{id: id}}, _from, tid) do
-    case :ets.lookup(tid, id) do
-      [{^id, term}] -> {:reply, {:ok, term}, tid}
-      [] -> {:reply, {:error, :missing}, tid}
     end
   end
 

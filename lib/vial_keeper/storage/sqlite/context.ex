@@ -62,6 +62,12 @@ defmodule VialKeeper.Storage.SQLite.Context do
     end
   end
 
+  @doc "Mirrors `adapter.identity` onto a context whose handle already holds `adapter`."
+  @spec mirror_identity(BackendContext.t(), Adapter.t()) :: BackendContext.t()
+  def mirror_identity(%BackendContext{} = context, %Adapter{} = adapter) do
+    ContextRef.mirror_identity(context, adapter)
+  end
+
   @doc "Rebuilds a context after mutating adapter fields inside a transaction."
   @spec replace_ref(BackendContext.t(), Adapter.t()) :: BackendContext.t()
   def replace_ref(%BackendContext{} = context, %Adapter{} = adapter) do
