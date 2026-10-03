@@ -1,45 +1,111 @@
+Code.require_file("overhead/stats.exs", __DIR__)
+Code.require_file("overhead/sampler.exs", __DIR__)
+Code.require_file("overhead/environment.exs", __DIR__)
+Code.require_file("overhead/native.exs", __DIR__)
+Code.require_file("overhead/capture.exs", __DIR__)
+
 defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   @moduledoc """
-  Paired low-noise benchmark of VialKeeper SQLite work against direct ExQLite.
+  Layer-by-layer latency ladder from native SQLite up to the HTTP router.
 
-  Every case opens three independent databases with the same schema and the
-  same deterministic fixture. The measured variants are:
+  Every variant runs the same scenario on its own database, seeded with the
+  same deterministic fixture through the SQLite adapter. The ladder, from the
+  floor up:
 
-    * `pure_exqlite` — prepared statements through `Exqlite.Sqlite3`.
-    * `vial_keeper_connection` — the same SQL through the VialKeeper connection
-      wrapper and its statement cache.
-    * `vial_keeper_adapter` — the public SQLite adapter operation.
+    * `native_replay` (L0) — a C program built from ExQLite's own `sqlite3.c`
+      replays the exact statements the adapter executed (see `Capture`).
+    * `exqlite_replay` (L1) — the same statements through `Exqlite.Sqlite3`.
+    * `connection_replay` (L2) — the same statements through VialKeeper's
+      `Connection` wrapper and statement cache.
+    * `vial_keeper_adapter` (L3) — the public SQLite adapter operation.
+    * `vial_keeper_service` (L4, disk mode) — `Documents`, `Changes`, and
+      `Query` through the database catalog, admission, owner, and read pool.
+    * `vial_keeper_http` (L5, disk mode) — the `/v1` Plug router in process
+      (request decoding, routing, response encoding; no socket).
 
-  Samples are paired by operation number and the variant order alternates. A
-  sample's garbage collection is performed before, rather than inside, the
-  timed region. Setup, fixture loading, index creation, statement preparation,
-  and cleanup are outside the measured region.
+  `exqlite_minimal` is a side reference: hand-written minimal SQL through
+  ExQLite. Comparing it with `exqlite_replay` shows what the SQL the adapter
+  chooses to issue costs, separately from the cost of issuing it.
 
-  The direct write control is a physical SQLite baseline: it writes the same
-  final document, revision, change-feed, metadata, and replication-state rows
-  in one prepared transaction. It intentionally does not reproduce VialKeeper's
-  validation, revision lookup, conflict handling, JSON hashing, or retention
-  orchestration. This makes the write result a useful end-to-end overhead
-  number over SQLite, not a claim that those semantics are free in SQLite.
+  Measurement rules (see `VialKeeper.Benchmarks.Overhead.Sampler`):
+
+    * per-sample inputs (document IDs, write batches, revision hashes, term
+      blobs, captured statements, encoded native requests, HTTP requests) are
+      built before the timer starts;
+    * samples are paired by index and the variant order rotates;
+    * timing is nanosecond monotonic time; the native control times itself
+      around its SQLite calls only;
+    * no garbage collection is forced before a sample;
+    * collection stops when the paired-ratio confidence intervals are narrow
+      enough, or at the iteration/time cap;
+    * replays must return exactly the rows the captured run returned, and every
+      database must end in the expected state.
   """
 
   alias Exqlite.Sqlite3
+  alias VialKeeper.Benchmarks.ExqliteOverhead.Raw
+  alias VialKeeper.Benchmarks.Overhead.{Capture, Environment, Native, Sampler, Stats}
   alias VialKeeper.JSON.Canonical
   alias VialKeeper.Revisions.Id
-  alias VialKeeper.Storage.SQLite.{Adapter, Connection}
-  alias VialKeeper.Storage.SQLite.TermBlob
-  alias VialKeeper.Benchmarks.ExqliteOverhead.Raw
+  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.SQLite.{Adapter, Connection, TermBlob}
 
   @scenarios [:point_read, :bulk_write, :changes_read, :indexed_query]
   @modes [:memory, :disk]
-  @variants [:pure_exqlite, :vial_keeper_connection, :vial_keeper_adapter]
+  @ladder [
+    :native_replay,
+    :exqlite_replay,
+    :connection_replay,
+    :vial_keeper_adapter,
+    :vial_keeper_service,
+    :vial_keeper_http
+  ]
+  @references [:exqlite_minimal]
+  @all_variants @ladder ++ @references
+  @disk_only [:vial_keeper_service, :vial_keeper_http]
+  @replay_variants [:native_replay, :exqlite_replay, :connection_replay]
+  @adapter_level [
+    :native_replay,
+    :exqlite_replay,
+    :connection_replay,
+    :vial_keeper_adapter,
+    :exqlite_minimal
+  ]
 
-  @default_iterations 30
+  @step_descriptions %{
+    {:native_replay, :exqlite_replay} =>
+      "ExQLite NIF boundary: dirty-scheduler hops, parameter binding calls, row term construction",
+    {:exqlite_replay, :connection_replay} => "VialKeeper Connection wrapper and statement cache",
+    {:connection_replay, :vial_keeper_adapter} =>
+      "Adapter work between the same statements: validation, revision logic, encoding and decoding",
+    {:vial_keeper_adapter, :vial_keeper_service} =>
+      "Service validation, catalog routing, admission, owner and read-pool process hops",
+    {:vial_keeper_service, :vial_keeper_http} =>
+      "Plug router, JSON request decoding and response encoding (no socket)"
+  }
+
+  # Pragmas copied from the adapter connection to the native control and read
+  # back to prove both run with the same settings.
+  @aligned_pragmas ~w(journal_mode synchronous foreign_keys locking_mode trusted_schema
+                      cache_size temp_store wal_autocheckpoint mmap_size automatic_index)
+
   @default_warmup 10
+  @default_min_iterations 30
+  @default_max_iterations 300
+  @default_target_ci_pct 1.0
+  @default_budget_ms 30_000
   @default_dataset_size 500
   @default_batch_size 50
   @default_read_count 100
+  @default_repeat 20
+  @default_work_dir "tmp/bench/vialkeeper/work/overhead"
+  @seed_chunk 500
   @query_limit 50
+  @index_definition %{
+    "name" => "by-category",
+    "type" => "structured",
+    "fields" => [%{"path" => "/category", "type" => "string", "direction" => "asc"}]
+  }
 
   @winner_select_sql """
   SELECT d.document_id, d.winning_revision, d.winning_body_json, d.winning_body_term,
@@ -116,31 +182,33 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   @pending_key "pending_local_causal"
   @pending_json Canonical.encode!(%{"pending_any" => true, "peers" => %{}})
 
-  defstruct [:kind, :mode, :adapter, :conn, :path, statements: %{}]
+  defstruct [:kind, :mode, :adapter, :conn, :path, :port, :uuid, statements: %{}]
 
   @doc false
   @spec main([binary()]) :: :ok
   def main(argv) do
     options = parse_options(argv)
+    config = benchmark_config(options)
+    modes = parse_modes(options[:mode])
+    scenarios = parse_scenarios(options[:scenario])
+    requested = parse_variants(options[:variants])
+    native = if :native_replay in requested, do: Native.build!()
 
-    with_isolated_runtime(fn ->
-      config = benchmark_config(options)
+    with_isolated_runtime(config, fn ->
       started_at = DateTime.utc_now() |> DateTime.to_iso8601()
-      modes = parse_modes(options[:mode])
-      scenarios = parse_scenarios(options[:scenario])
 
       results =
         for mode <- modes, scenario <- scenarios do
-          run_case(mode, scenario, config)
+          run_case(mode, scenario, config, applicable_variants(requested, mode), native)
         end
 
       report = %{
-        "schema_version" => 1,
-        "benchmark" => "vial_keeper_overhead_vs_exqlite",
+        "schema_version" => 3,
+        "benchmark" => "vial_keeper_layer_ladder",
         "started_at" => started_at,
-        "git_revision" => git_revision(),
-        "runtime" => runtime_metadata(),
-        "configuration" => config,
+        "environment" =>
+          sqlite_metadata() |> Environment.metadata() |> Map.put("native_control", native),
+        "configuration" => Map.put(config, "variants", Enum.map(requested, &Atom.to_string/1)),
         "results" => results
       }
 
@@ -150,14 +218,16 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     end)
   end
 
-  defp with_isolated_runtime(fun) do
-    root = Path.join(System.tmp_dir!(), "vialkeeper-overhead-benchmark-#{unique_suffix()}")
+  defp with_isolated_runtime(config, fun) do
+    run_dir = Path.join(config["work_dir"], "run-#{unique_suffix()}")
+    root = Path.join(run_dir, "runtime")
     previous_root = Application.get_env(:vial_keeper, :database_root)
     previous_listener = Application.get_env(:vial_keeper, :listener)
     ensure_application_stopped!()
     File.mkdir_p!(root)
     Application.put_env(:vial_keeper, :database_root, root)
     Application.put_env(:vial_keeper, :listener, ip: {127, 0, 0, 1}, port: 0)
+    Process.put({__MODULE__, :run_dir}, run_dir)
 
     try do
       {:ok, _started} = Application.ensure_all_started(:vial_keeper)
@@ -166,7 +236,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
       _ = Application.stop(:vial_keeper)
       restore_application_env(:database_root, previous_root)
       restore_application_env(:listener, previous_listener)
-      _ = File.rm_rf(root)
+      _ = File.rm_rf(run_dir)
     end
   end
 
@@ -187,11 +257,18 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
         strict: [
           mode: :string,
           scenario: :string,
+          variants: :string,
           iterations: :integer,
+          min_iterations: :integer,
+          max_iterations: :integer,
+          target_ci_pct: :float,
+          budget_ms: :integer,
           warmup: :integer,
           dataset: :integer,
           batch: :integer,
           reads: :integer,
+          repeat: :integer,
+          work_dir: :string,
           output: :string,
           help: :boolean
         ],
@@ -211,61 +288,88 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   end
 
   defp benchmark_config(options) do
-    iterations =
-      positive_option(options, :iterations, "VIALKEEPER_OVERHEAD_ITERATIONS", @default_iterations)
+    fixed = options[:iterations] || env_integer("VIALKEEPER_OVERHEAD_ITERATIONS", nil)
 
-    warmup = non_negative_option(options, :warmup, "VIALKEEPER_OVERHEAD_WARMUP", @default_warmup)
+    {min_iterations, max_iterations} =
+      case fixed do
+        nil ->
+          {positive(options, :min_iterations, @default_min_iterations),
+           positive(options, :max_iterations, @default_max_iterations)}
 
-    dataset_size =
-      positive_option(options, :dataset, "VIALKEEPER_OVERHEAD_DATASET", @default_dataset_size)
+        count when count > 0 ->
+          {count, count}
 
-    batch_size = positive_option(options, :batch, "VIALKEEPER_OVERHEAD_BATCH", @default_batch_size)
-    read_count = positive_option(options, :reads, "VIALKEEPER_OVERHEAD_READS", @default_read_count)
+        _ ->
+          Mix.raise("--iterations must be positive")
+      end
+
+    if min_iterations > max_iterations do
+      Mix.raise("--min-iterations must not exceed --max-iterations")
+    end
+
+    batch_size =
+      positive(options, :batch, env_integer("VIALKEEPER_OVERHEAD_BATCH", @default_batch_size))
 
     if batch_size > 500 do
       Mix.raise("--batch must be at most the configured host bulk limit (500)")
     end
 
+    target_ci_pct = options[:target_ci_pct] || @default_target_ci_pct
+
+    if target_ci_pct <= 0 do
+      Mix.raise("--target-ci-pct must be positive")
+    end
+
     %{
-      "iterations" => iterations,
-      "warmup" => warmup,
-      "dataset_size" => dataset_size,
+      "warmup" =>
+        non_negative(options, :warmup, env_integer("VIALKEEPER_OVERHEAD_WARMUP", @default_warmup)),
+      "min_iterations" => min_iterations,
+      "max_iterations" => max_iterations,
+      "target_ci_pct" => target_ci_pct,
+      "budget_ms" => positive(options, :budget_ms, @default_budget_ms),
+      "dataset_size" =>
+        positive(
+          options,
+          :dataset,
+          env_integer("VIALKEEPER_OVERHEAD_DATASET", @default_dataset_size)
+        ),
       "batch_size" => batch_size,
-      "read_count" => read_count,
+      "read_count" =>
+        positive(options, :reads, env_integer("VIALKEEPER_OVERHEAD_READS", @default_read_count)),
+      "repeat" => positive(options, :repeat, @default_repeat),
       "query_limit" => @query_limit,
-      "gc_before_sample" => true,
-      "pair_order" => "alternating",
-      "timed_variants" => Enum.map(@variants, &Atom.to_string/1)
+      "work_dir" => Path.expand(options[:work_dir] || @default_work_dir),
+      "timer" => "monotonic_ns",
+      "gc_before_sample" => false,
+      "pair_order" => "rotating"
     }
   end
 
-  defp positive_option(options, key, env, default) do
-    value = options[key] || env_integer(env, default)
-
-    if value > 0 do
-      value
-    else
-      Mix.raise("#{env} / --#{key} must be positive")
+  defp positive(options, key, default) do
+    case options[key] || default do
+      value when is_integer(value) and value > 0 -> value
+      _ -> Mix.raise("--#{key |> Atom.to_string() |> String.replace("_", "-")} must be positive")
     end
   end
 
-  defp non_negative_option(options, key, env, default) do
-    value = options[key] || env_integer(env, default)
-
-    if value >= 0 do
-      value
-    else
-      Mix.raise("#{env} / --#{key} must be non-negative")
+  defp non_negative(options, key, default) do
+    case options[key] || default do
+      value when is_integer(value) and value >= 0 -> value
+      _ -> Mix.raise("--#{key} must be non-negative")
     end
   end
 
   defp env_integer(env, default) do
     case System.get_env(env) do
-      nil -> default
-      value -> String.to_integer(value)
+      nil ->
+        default
+
+      value ->
+        case Integer.parse(value) do
+          {integer, ""} -> integer
+          _ -> Mix.raise("#{env} must be an integer")
+        end
     end
-  rescue
-    ArgumentError -> Mix.raise("#{env} must be an integer")
   end
 
   defp parse_modes(nil), do: [:memory]
@@ -276,69 +380,143 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   defp parse_scenarios("all"), do: @scenarios
   defp parse_scenarios(value), do: parse_atoms(value, @scenarios, "scenario")
 
-  defp parse_atoms(value, allowed, label) do
-    atoms =
-      value
-      |> String.split(",", trim: true)
-      |> Enum.map(&String.to_existing_atom/1)
+  defp parse_variants(nil), do: @all_variants
+  defp parse_variants("all"), do: @all_variants
 
-    if atoms != [] and Enum.all?(atoms, &(&1 in allowed)) do
-      atoms
-    else
-      Mix.raise(
-        "unknown #{label} #{inspect(value)}; allowed: " <>
-          Enum.join(Enum.map(allowed, &Atom.to_string/1), ", ")
-      )
-    end
-  rescue
-    ArgumentError -> Mix.raise("unknown #{label} #{inspect(value)}")
+  defp parse_variants(value) do
+    selected = parse_atoms(value, @all_variants, "variant")
+    Enum.filter(@all_variants, &(&1 in selected))
   end
 
-  defp run_case(mode, scenario, config) do
-    variants = open_variants!(mode)
+  defp applicable_variants(requested, :memory), do: requested -- @disk_only
+  defp applicable_variants(requested, :disk), do: requested
+
+  defp parse_atoms(value, allowed, label) do
+    by_name = Map.new(allowed, &{Atom.to_string(&1), &1})
+    names = String.split(value, ",", trim: true)
+
+    case Enum.map(names, &Map.fetch(by_name, &1)) do
+      [_ | _] = found ->
+        if Enum.all?(found, &match?({:ok, _}, &1)) do
+          Enum.map(found, fn {:ok, atom} -> atom end)
+        else
+          unknown_option!(label, value, allowed)
+        end
+
+      [] ->
+        unknown_option!(label, value, allowed)
+    end
+  end
+
+  defp unknown_option!(label, value, allowed) do
+    Mix.raise(
+      "unknown #{label} #{inspect(value)}; allowed: " <>
+        Enum.join(Enum.map(allowed, &Atom.to_string/1), ", ")
+    )
+  end
+
+  ## Case lifecycle
+
+  defp run_case(mode, scenario, config, selected, native) do
+    if selected == [], do: Mix.raise("no selected variant applies to #{mode} mode")
+    documents = Enum.map(0..(config["dataset_size"] - 1), &fixture_document/1)
+    reset_statement_registries()
+    state = %{mode: mode, scenario: scenario, config: config, documents: documents}
+    variants = open_variants!(selected, mode)
+    Process.put({__MODULE__, :open_variants}, variants)
+    worker = if Enum.any?(selected, &(&1 in @replay_variants)), do: start_capture(mode, documents)
 
     try do
-      fixture = seed_variants!(variants, config)
-      index_id = setup_index!(variants, scenario)
-      variants = prepare_variants(variants, scenario)
-      measured = measure_case(variants, scenario, config, fixture, index_id)
-      validate_measured_state!(variants, scenario, config)
+      state = Map.merge(state, %{variants: variants, worker: worker, selected: selected})
+      verification = setup_case!(state)
 
-      %{
-        "storage_mode" => Atom.to_string(mode),
-        "scenario" => Atom.to_string(scenario),
-        "operation_count" => operation_count(scenario, config, fixture),
-        "dataset_size" => config["dataset_size"],
-        "warmup" => config["warmup"],
-        "iterations" => config["iterations"],
-        "fixture" => fixture_metadata(fixture),
-        "variants" => measured["variants"],
-        "overhead_vs_pure_exqlite" => measured["overhead_vs_pure_exqlite"],
-        "sample_order" => measured["sample_order"]
-      }
+      {variants, native_verification} = finalize_native(state.variants, native, mode)
+      variants = prepare_minimal(variants, scenario)
+      verification = Map.put(verification, "native_engine", native_verification)
+      state = %{state | variants: variants}
+
+      state =
+        Map.merge(state, %{
+          fixture: fixture(documents),
+          router_opts: VialKeeper.HTTP.Router.init([])
+        })
+
+      reference = Enum.find(@ladder, List.first(selected), &(&1 in selected))
+
+      collected =
+        Sampler.run(
+          variants: selected,
+          reference: reference,
+          prepare: &prepare_input(state, &1),
+          invoke: &invoke!(state, &1, &2),
+          warmup: config["warmup"],
+          min_iterations: config["min_iterations"],
+          max_iterations: config["max_iterations"],
+          target_ci_pct: config["target_ci_pct"],
+          budget_ms: config["budget_ms"]
+        )
+
+      validate_measured_state!(state, length(collected.samples))
+      case_report(state, reference, verification, collected)
     after
-      Enum.each(variants, &close_variant/1)
+      variants = Process.delete({__MODULE__, :open_variants}) || variants
+      # Statements must be finalized before their connection closes.
+      release_statement_registries(variants)
+      Enum.each(Map.values(variants), &close_variant/1)
+      if worker, do: stop_capture(worker)
     end
   end
 
-  defp open_variants!(mode) do
-    Enum.reduce(@variants, [], fn kind, opened ->
+  defp setup_case!(state) do
+    adapter_variants = adapter_variants(state)
+
+    Enum.each(adapter_variants, &seed_adapter!(&1.adapter, state.documents))
+    Enum.each(service_variants(state), &seed_service!(&1.uuid, state.documents))
+
+    %{"index_plan" => if(state.scenario == :indexed_query, do: setup_indexes!(state))}
+  end
+
+  defp adapter_variants(state),
+    do: state.variants |> Map.values() |> Enum.filter(&(&1.kind in @adapter_level))
+
+  defp service_variants(state),
+    do: state.variants |> Map.values() |> Enum.filter(&(&1.kind in @disk_only))
+
+  defp open_variants!(selected, mode) do
+    Enum.reduce(selected, %{}, fn kind, opened ->
       try do
-        [open_variant!(kind, mode) | opened]
+        Map.put(opened, kind, open_variant!(kind, mode))
       rescue
         exception ->
-          Enum.each(opened, &close_variant/1)
+          Enum.each(Map.values(opened), &close_variant/1)
           reraise exception, __STACKTRACE__
       end
     end)
-    |> Enum.reverse()
+  end
+
+  defp open_variant!(kind, :disk) when kind in @disk_only do
+    relative = "overhead-#{kind}-#{System.unique_integer([:positive])}.vialkeeper"
+
+    with {:ok, identity} <- DatabaseCatalog.create(relative),
+         uuid = identity.database_uuid,
+         {:ok, _} <- DatabaseCatalog.open(uuid),
+         :ok <- VialKeeper.View.Manager.await_resumed(uuid) do
+      %__MODULE__{kind: kind, mode: :disk, uuid: uuid}
+    else
+      other -> Mix.raise("could not create #{kind} catalog database: #{inspect(other)}")
+    end
   end
 
   defp open_variant!(kind, mode) do
+    adapter = create_adapter!(kind, mode)
+    %__MODULE__{kind: kind, mode: mode, adapter: adapter, conn: adapter.conn, path: adapter.path}
+  end
+
+  defp create_adapter!(label, mode, run_dir \\ Process.get({__MODULE__, :run_dir})) do
     path =
       case mode do
         :memory -> ":memory:"
-        :disk -> Path.join(System.tmp_dir!(), "vialkeeper-exqlite-overhead-#{unique_suffix()}.db")
+        :disk -> Path.join(run_dir, "#{label}-#{unique_suffix()}.db")
       end
 
     options = %{
@@ -348,227 +526,732 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
     case Adapter.create(path, options) do
       {:ok, adapter} ->
-        %__MODULE__{kind: kind, mode: mode, adapter: adapter, conn: adapter.conn, path: path}
+        adapter
 
       {:error, error} ->
-        Mix.raise("could not create #{kind} benchmark database: #{inspect(error)}")
+        Mix.raise("could not create #{label} benchmark database: #{inspect(error)}")
     end
   end
 
-  defp close_variant(%__MODULE__{
-         kind: :pure_exqlite,
-         conn: conn,
-         adapter: adapter,
-         path: path,
-         statements: statements
-       }) do
-    Raw.release_all(conn, Map.values(statements))
-    _ = Adapter.close(adapter)
+  defp close_variant(%__MODULE__{kind: kind, uuid: uuid}) when kind in @disk_only do
+    _ = DatabaseCatalog.close(uuid)
+    _ = DatabaseCatalog.unregister(uuid)
+    :ok
+  end
+
+  defp close_variant(%__MODULE__{port: port, path: path}) when is_port(port) do
+    Native.stop(port)
     cleanup_path(path)
   end
+
+  defp close_variant(%__MODULE__{kind: :exqlite_minimal, conn: conn, adapter: adapter} = variant) do
+    Raw.release_all(conn, Map.values(variant.statements))
+    _ = Adapter.close(adapter)
+    cleanup_path(variant.path)
+  end
+
+  defp close_variant(%__MODULE__{adapter: nil, path: path}), do: cleanup_path(path)
 
   defp close_variant(%__MODULE__{adapter: adapter, path: path}) do
     _ = Adapter.close(adapter)
     cleanup_path(path)
   end
 
-  defp seed_variants!(variants, config) do
-    documents = Enum.map(0..(config["dataset_size"] - 1), &fixture_document/1)
+  ## Capture worker
 
-    Enum.each(variants, fn variant ->
-      seed_database!(variant.conn, documents)
-      validate_fixture!(variant.conn, config["dataset_size"])
+  defp start_capture(mode, documents) do
+    run_dir = Process.get({__MODULE__, :run_dir})
+
+    Capture.start(fn ->
+      adapter = create_adapter!(:capture, mode, run_dir)
+      seed_adapter!(adapter, documents)
+      adapter
+    end)
+  end
+
+  defp stop_capture(worker) do
+    path = Capture.run(worker, fn adapter -> _ = Adapter.close(adapter) && adapter.path end)
+    Capture.stop(worker)
+    cleanup_path(path)
+  end
+
+  ## Seeding and verification
+
+  # Every adapter-level database (including the capture database) is seeded
+  # through the product write path with deterministic history IDs, so they all
+  # hold byte-identical rows that the adapter itself would have produced.
+  defp seed_adapter!(adapter, documents) do
+    documents
+    |> Enum.chunk_every(@seed_chunk)
+    |> Enum.each(fn chunk ->
+      case Adapter.apply_bulk_mutation(adapter, %{operations: Enum.map(chunk, &put_operation/1)}) do
+        {:ok, results} when length(results) == length(chunk) -> :ok
+        other -> Mix.raise("benchmark seed failed: #{inspect(other)}")
+      end
     end)
 
-    %{
-      documents: documents,
-      category_match_count: Enum.count(documents, &(&1.body["category"] == "task"))
-    }
+    validate_fixture!(adapter.conn, documents)
   end
 
-  defp seed_database!(conn, documents) do
-    statements =
-      Raw.prepare_many(conn, [
-        {:begin, @begin_sql},
-        {:rollback, @rollback_sql},
-        {:commit, @commit_sql},
-        {:document_insert, @document_insert_sql},
-        {:revision_insert, @revision_insert_sql},
-        {:change_insert, @change_insert_sql},
-        {:sequence_update, @sequence_update_sql},
-        {:local_record_upsert, @local_record_upsert_sql}
+  # Catalog databases accept no client history IDs, so revision IDs differ
+  # from the adapter-level fixture; document IDs, bodies, sequence numbers and
+  # row counts are the same.
+  defp seed_service!(uuid, documents) do
+    documents
+    |> Enum.chunk_every(@seed_chunk)
+    |> Enum.each(fn chunk ->
+      case VialKeeper.Documents.bulk_write(uuid, Enum.map(chunk, &service_operation/1)) do
+        {:ok, results} when length(results) == length(chunk) -> :ok
+        other -> Mix.raise("service seed failed: #{inspect(other)}")
+      end
+    end)
+
+    assert_service_sequence!(uuid, length(documents))
+  end
+
+  defp put_operation(document),
+    do: %{
+      operation: :put,
+      document_id: document.id,
+      history_id: document.history_id,
+      body: document.body
+    }
+
+  defp service_operation(document), do: %{type: :put, id: document.id, body: document.body}
+
+  defp validate_fixture!(conn, documents) do
+    dataset_size = length(documents)
+    counts = table_counts(conn)
+    expected = {dataset_size, dataset_size, dataset_size, dataset_size}
+
+    if counts != expected do
+      Mix.raise("benchmark fixture mismatch: #{inspect(counts)} expected #{inspect(expected)}")
+    end
+
+    # The minimal write control computes revision IDs itself; they must match
+    # what the adapter stored for the same document, history and body.
+    sample = List.first(documents)
+
+    [[revision]] =
+      Raw.one_off_query!(conn, "SELECT winning_revision FROM documents WHERE document_id = ?", [
+        sample.id
       ])
 
-    try do
-      Raw.run!(conn, statements.begin)
+    if revision != sample.revision_id do
+      Mix.raise("benchmark revision mismatch: adapter #{revision}, harness #{sample.revision_id}")
+    end
+  end
 
-      Enum.each(documents, fn document ->
-        Raw.run!(conn, statements.document_insert, [
-          document.id,
-          document.revision_id,
-          document.body_json,
-          TermBlob.bind(document.body_term),
-          0,
-          document.sequence
-        ])
+  defp table_counts(conn) do
+    [[documents]] = Raw.one_off_query!(conn, "SELECT count(*) FROM documents")
+    [[revisions]] = Raw.one_off_query!(conn, "SELECT count(*) FROM revisions")
+    [[changes]] = Raw.one_off_query!(conn, "SELECT count(*) FROM changes")
+    [[sequence]] = Raw.one_off_query!(conn, "SELECT current_sequence FROM db_meta WHERE id = 1")
+    {documents, revisions, changes, sequence}
+  end
 
-        {:ok, doc_key} = Sqlite3.last_insert_rowid(conn)
+  @count_queries [
+    "SELECT count(*) FROM documents",
+    "SELECT count(*) FROM revisions",
+    "SELECT count(*) FROM changes",
+    "SELECT current_sequence FROM db_meta WHERE id = 1"
+  ]
 
-        Raw.run!(conn, statements.revision_insert, [
-          doc_key,
-          document.revision_id,
-          1,
-          nil,
-          document.history_id,
-          document.digest,
-          0,
-          document.body_json,
-          TermBlob.bind(document.body_term),
-          0,
-          1
-        ])
+  defp native_table_counts(port) do
+    @count_queries
+    |> Enum.map(fn sql -> port |> Native.scalar(sql) |> List.first() |> String.to_integer() end)
+    |> List.to_tuple()
+  end
 
-        Raw.run!(conn, statements.change_insert, [
-          document.sequence,
-          doc_key,
-          document.id,
-          document.revision_id,
-          0,
-          document.leaf_json,
-          TermBlob.bind(document.leaf_term),
-          "local"
-        ])
+  defp assert_service_sequence!(uuid, expected) do
+    case VialKeeper.Changes.read(uuid, %{since: expected - 1, limit: 10}) do
+      {:ok, %{results: [%{sequence: ^expected}], has_more: false}} ->
+        :ok
+
+      other ->
+        Mix.raise("service database is not at sequence #{expected}: #{inspect(other)}")
+    end
+  end
+
+  defp validate_measured_state!(state, samples) do
+    config = state.config
+    batches = if state.scenario == :bulk_write, do: config["warmup"] + samples, else: 0
+    expected = config["dataset_size"] + batches * config["batch_size"]
+    expected_counts = {expected, expected, expected, expected}
+
+    observed =
+      Enum.map(Map.values(state.variants), fn
+        %__MODULE__{kind: kind, uuid: uuid} when kind in @disk_only ->
+          assert_service_sequence!(uuid, expected)
+          {kind, expected_counts}
+
+        %__MODULE__{kind: kind, port: port} when is_port(port) ->
+          {kind, native_table_counts(port)}
+
+        %__MODULE__{kind: kind, conn: conn} ->
+          {kind, table_counts(conn)}
       end)
 
-      Raw.run!(conn, statements.sequence_update, [length(documents)])
+    observed =
+      if state.worker,
+        do: [{:capture, Capture.run(state.worker, &table_counts(&1.conn))} | observed],
+        else: observed
 
-      Raw.run!(conn, statements.local_record_upsert, [
-        @pending_namespace,
-        @pending_key,
-        @pending_json
-      ])
-
-      Raw.run!(conn, statements.commit)
-    rescue
-      exception ->
-        _ = Raw.run(conn, Map.get(statements, :rollback, nil), [])
-        reraise exception, __STACKTRACE__
-    after
-      Raw.release_all(conn, Map.values(statements))
-    end
-  end
-
-  defp validate_fixture!(conn, dataset_size) do
-    documents = Raw.one_off_query!(conn, "SELECT count(*) FROM documents")
-    revisions = Raw.one_off_query!(conn, "SELECT count(*) FROM revisions")
-    changes = Raw.one_off_query!(conn, "SELECT count(*) FROM changes")
-    sequence = Raw.one_off_query!(conn, "SELECT current_sequence FROM db_meta WHERE id = 1")
-
-    expected = [[dataset_size]]
-
-    if documents != expected or revisions != expected or changes != expected or sequence != expected do
-      Mix.raise(
-        "benchmark fixture mismatch: #{inspect(%{documents: documents, revisions: revisions, changes: changes, sequence: sequence})}"
-      )
-    end
-  end
-
-  defp validate_measured_state!(variants, scenario, config) do
-    measured_batches =
-      case scenario do
-        :bulk_write -> config["warmup"] + config["iterations"]
-        _ -> 0
-      end
-
-    expected_documents = config["dataset_size"] + measured_batches * config["batch_size"]
-
-    Enum.each(variants, fn variant ->
-      [[document_count]] = Raw.one_off_query!(variant.conn, "SELECT count(*) FROM documents")
-      [[revision_count]] = Raw.one_off_query!(variant.conn, "SELECT count(*) FROM revisions")
-      [[change_count]] = Raw.one_off_query!(variant.conn, "SELECT count(*) FROM changes")
-
-      [[sequence]] =
-        Raw.one_off_query!(variant.conn, "SELECT current_sequence FROM db_meta WHERE id = 1")
-
-      expected_sequence = expected_documents
-
-      if {document_count, revision_count, change_count, sequence} !=
-           {expected_documents, expected_documents, expected_documents, expected_sequence} do
+    Enum.each(observed, fn {kind, counts} ->
+      if counts != expected_counts do
         Mix.raise(
-          "benchmark measured-state mismatch for #{variant.kind}: " <>
-            inspect(%{
-              documents: document_count,
-              revisions: revision_count,
-              changes: change_count,
-              sequence: sequence,
-              expected: expected_documents
-            })
+          "measured-state mismatch for #{kind}: #{inspect(counts)} expected #{inspect(expected_counts)}"
         )
       end
     end)
   end
 
-  defp setup_index!(variants, :indexed_query) do
-    definition = %{
-      "name" => "by-category",
-      "type" => "structured",
-      "fields" => [%{"path" => "/category", "type" => "string", "direction" => "asc"}]
-    }
+  defp setup_indexes!(state) do
+    index_ids =
+      Enum.map(adapter_variants(state), fn variant -> create_index!(variant.adapter) end)
 
     index_ids =
-      Enum.map(variants, fn variant ->
-        case Adapter.create_index(variant.adapter, definition) do
-          {:ok, result} -> value(result, :index_id)
-          {:error, error} -> Mix.raise("could not create benchmark index: #{inspect(error)}")
-        end
-      end)
+      if state.worker,
+        do: [Capture.run(state.worker, &create_index!/1) | index_ids],
+        else: index_ids
 
     if Enum.uniq(index_ids) |> length() != 1 do
       Mix.raise("benchmark variants created different index IDs: #{inspect(index_ids)}")
     end
 
-    Enum.each(variants, &validate_index_fixture!/1)
-    List.first(index_ids)
+    Enum.each(service_variants(state), fn variant ->
+      case VialKeeper.Query.create_index(variant.uuid, @index_definition) do
+        {:ok, _} -> verify_service_plan!(variant.uuid)
+        other -> Mix.raise("could not create service index: #{inspect(other)}")
+      end
+    end)
+
+    Enum.each(adapter_variants(state), &verify_index_exists!(&1.conn))
+
+    %{
+      "adapter_plan_uses_index" => if(state.worker, do: verify_adapter_plan!(state)),
+      "minimal_sql_uses_index" =>
+        if(Map.has_key?(state.variants, :exqlite_minimal),
+          do: verify_minimal_plan!(state.variants.exqlite_minimal.conn)
+        ),
+      "service_plan_uses_index" => if(service_variants(state) != [], do: true)
+    }
   end
 
-  defp setup_index!(_variants, _scenario), do: nil
+  defp create_index!(adapter) do
+    case Adapter.create_index(adapter, @index_definition) do
+      {:ok, result} -> value(result, :index_id)
+      {:error, error} -> Mix.raise("could not create benchmark index: #{inspect(error)}")
+    end
+  end
 
-  defp validate_index_fixture!(variant) do
-    rows = Raw.one_off_query!(variant.conn, "SELECT name FROM sqlite_master WHERE type = 'index'")
+  defp verify_index_exists!(conn) do
+    rows = Raw.one_off_query!(conn, "SELECT name FROM sqlite_master WHERE type = 'index'")
 
     unless Enum.any?(rows, fn [name] -> is_binary(name) and String.starts_with?(name, "exdb_s_") end) do
-      Mix.raise("benchmark structured index is missing for #{variant.kind}")
-    end
-
-    plan =
-      Raw.one_off_query!(variant.conn, "EXPLAIN QUERY PLAN " <> @indexed_query_sql, [
-        "task",
-        "task",
-        @query_limit + 1
-      ])
-
-    details = Enum.map(plan, &List.last/1) |> Enum.map(&to_string/1)
-
-    unless Enum.any?(details, &String.contains?(&1, "exdb_s_")) do
-      Mix.raise("benchmark indexed query is not using the structured index: #{inspect(plan)}")
+      Mix.raise("benchmark structured index is missing")
     end
   end
 
-  defp prepare_variants(variants, scenario) do
-    Enum.map(variants, fn
-      %__MODULE__{kind: :pure_exqlite} = variant ->
-        %{variant | statements: Raw.prepare_many(variant.conn, raw_statements(scenario))}
+  defp verify_minimal_plan!(conn) do
+    plan_uses_index!(conn, @indexed_query_sql, ["task", "task", @query_limit + 1], "minimal SQL")
+  end
 
-      variant ->
-        variant
+  # Runs one adapter query in the capture worker and checks that at least one
+  # statement it executed is planned through the structured index.
+  defp verify_adapter_plan!(state) do
+    request = indexed_request(state.config)
+    {_, ops} = Capture.capture(state.worker, &Adapter.execute_query(&1, request))
+    queries = Enum.filter(ops, &(&1.kind == :query))
+
+    Capture.run(state.worker, fn adapter ->
+      if Enum.any?(queries, &plan_uses_index?(adapter.conn, &1.sql, &1.params)),
+        do: true,
+        else: Mix.raise("adapter indexed query did not use the structured index")
     end)
   end
 
-  defp raw_statements(:point_read) do
-    [{:winner_select, @winner_select_sql}]
+  defp verify_service_plan!(uuid) do
+    case VialKeeper.Query.explain(uuid, %{selector: %{"/category" => "task"}, limit: @query_limit}) do
+      {:ok, %{full_scan: false, selected_indexes: [_ | _]}} -> :ok
+      other -> Mix.raise("service indexed query did not select the index: #{inspect(other)}")
+    end
   end
 
-  defp raw_statements(:bulk_write) do
+  defp plan_uses_index!(conn, sql, params, label) do
+    if plan_uses_index?(conn, sql, params),
+      do: true,
+      else: Mix.raise("#{label} indexed query is not using the structured index")
+  end
+
+  defp plan_uses_index?(conn, sql, params) do
+    conn
+    |> Raw.one_off_query!("EXPLAIN QUERY PLAN " <> sql, params)
+    |> Enum.any?(fn row -> row |> List.last() |> to_string() |> String.contains?("exdb_s_") end)
+  end
+
+  ## Native control
+
+  defp finalize_native(variants, nil, _mode), do: {variants, nil}
+
+  defp finalize_native(%{native_replay: variant} = variants, native, mode) do
+    pragmas =
+      Enum.flat_map(@aligned_pragmas, fn name ->
+        case pragma_value(variant.conn, name) do
+          nil -> []
+          value -> [{name, value}]
+        end
+      end)
+
+    engine = sqlite_metadata(variant.conn)
+    port = Native.start(native["path"])
+    variant = %{variant | port: port}
+
+    try do
+      open_native!(port, variant, mode)
+
+      Enum.each(pragmas, fn {name, value} -> Native.exec(port, "PRAGMA #{name} = #{value}") end)
+
+      mismatched =
+        Enum.reject(pragmas, fn {name, value} ->
+          Native.scalar(port, "PRAGMA #{name}") == [value]
+        end)
+
+      if mismatched != [] do
+        Mix.raise("native control pragmas differ from the adapter: #{inspect(mismatched)}")
+      end
+
+      verify_native_engine!(port, engine)
+      variants = Map.put(variants, :native_replay, %{variant | adapter: nil, conn: nil})
+      Process.put({__MODULE__, :open_variants}, variants)
+
+      {variants,
+       %{
+         "sqlite_version" => engine["version"],
+         "source_id_and_compile_options_match" => true,
+         "aligned_pragmas" => Map.new(pragmas),
+         # Compile options are compared without the COMPILER entry: ExQLite may
+         # ship a precompiled NIF built by a different compiler version.
+         "exqlite_compiler" =>
+           Enum.find(engine["compile_options"], &String.starts_with?(&1, "COMPILER=")),
+         "native_compiler" => native["compiler"]
+       }}
+    rescue
+      exception ->
+        Native.stop(port)
+        reraise exception, __STACKTRACE__
+    end
+  end
+
+  defp finalize_native(variants, _native, _mode), do: {variants, nil}
+
+  defp open_native!(port, variant, :memory) do
+    {:ok, image} = Sqlite3.serialize(variant.conn, "main")
+    _ = Adapter.close(variant.adapter)
+    Native.open_image(port, image)
+  end
+
+  defp open_native!(port, variant, :disk) do
+    _ = Adapter.close(variant.adapter)
+    Native.open_file(port, variant.path)
+  end
+
+  defp verify_native_engine!(port, engine) do
+    native = %{
+      "version" => port |> Native.scalar("SELECT sqlite_version()") |> List.first(),
+      "source_id" => port |> Native.scalar("SELECT sqlite_source_id()") |> List.first(),
+      "compile_options" => Native.scalar(port, "PRAGMA compile_options")
+    }
+
+    comparable = fn metadata ->
+      Map.update!(metadata, "compile_options", fn options ->
+        Enum.reject(options, &String.starts_with?(&1, "COMPILER="))
+      end)
+    end
+
+    if comparable.(native) != comparable.(engine) do
+      Mix.raise(
+        "native control SQLite build differs from ExQLite:\n" <>
+          "native: #{inspect(native)}\nexqlite: #{inspect(engine)}"
+      )
+    end
+  end
+
+  defp pragma_value(conn, name) do
+    case Connection.pragma(conn, name) do
+      {:ok, [[value]]} -> to_string(value)
+      # Some pragmas (mmap_size on an in-memory database) have no value.
+      {:ok, []} -> nil
+      other -> Mix.raise("could not read PRAGMA #{name}: #{inspect(other)}")
+    end
+  end
+
+  ## Inputs (built outside every timed region)
+
+  defp prepare_input(state, token) do
+    base = base_input(state.scenario, token, state.config)
+    input = %{base: base}
+
+    input =
+      if state.worker,
+        do: Map.put(input, :replay, capture_replay(state, base)),
+        else: input
+
+    if Map.has_key?(state.variants, :vial_keeper_http) do
+      flush_plug_test_messages()
+      Map.put(input, :http, http_requests(state, base))
+    else
+      input
+    end
+  end
+
+  # Plug's test adapter sends every response to the calling process. Drop
+  # them between samples so the mailbox does not grow across the run.
+  defp flush_plug_test_messages do
+    receive do
+      {:plug_conn, :sent} ->
+        flush_plug_test_messages()
+
+      {ref, {status, _headers, _body}} when is_reference(ref) and is_integer(status) ->
+        flush_plug_test_messages()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp base_input(:point_read, {_phase, absolute}, config) do
+    dataset_size = config["dataset_size"]
+    read_count = config["read_count"]
+    start = rem(absolute * read_count, dataset_size)
+    Enum.map(0..(read_count - 1), &document_id(rem(start + &1, dataset_size)))
+  end
+
+  defp base_input(:bulk_write, {_phase, absolute}, config) do
+    batch = batch_documents(config, absolute)
+
+    %{
+      batch: batch,
+      operations: Enum.map(batch, &put_operation/1),
+      service_operations: Enum.map(batch, &service_operation/1)
+    }
+  end
+
+  defp base_input(_scenario, _token, _config), do: nil
+
+  defp capture_replay(state, base) do
+    {:ok, ops} = Capture.capture(state.worker, &adapter_operation!(&1, state.scenario, base, state))
+    record_capture_profile(ops)
+
+    replay = %{
+      ops: ops,
+      expected_rows: ops |> Enum.filter(&(&1.kind == :query)) |> Enum.map(& &1.rows) |> Enum.sum(),
+      statements: length(ops)
+    }
+
+    replay =
+      if Map.has_key?(state.variants, :exqlite_replay),
+        do: Map.put(replay, :exqlite, exqlite_ops(state.variants.exqlite_replay.conn, ops)),
+        else: replay
+
+    if Map.has_key?(state.variants, :native_replay),
+      do: Map.put(replay, :native, native_request(state.variants.native_replay.port, ops)),
+      else: replay
+  end
+
+  defp exqlite_ops(conn, ops) do
+    Enum.map(ops, fn
+      %{kind: :exec, sql: sql} ->
+        {:exec, sql}
+
+      %{kind: kind, sql: sql, params: params} ->
+        {:stmt, exqlite_statement(conn, sql), params, kind == :query}
+    end)
+  end
+
+  defp native_request(port, ops) do
+    ops
+    |> Enum.map(fn
+      %{kind: :exec, sql: sql} ->
+        {:exec, sql}
+
+      %{kind: kind, sql: sql, params: params} ->
+        {:stmt, kind == :query, native_statement(port, sql), params}
+    end)
+    |> Native.encode_run()
+    |> IO.iodata_to_binary()
+  end
+
+  @exqlite_registry {__MODULE__, :exqlite_statements}
+  @native_registry {__MODULE__, :native_statements}
+
+  defp reset_statement_registries do
+    Process.put(@exqlite_registry, %{})
+    Process.put(@native_registry, %{})
+  end
+
+  defp release_statement_registries(variants) do
+    case variants do
+      %{exqlite_replay: %{conn: conn}} ->
+        Raw.release_all(conn, Map.values(Process.get(@exqlite_registry, %{})))
+
+      _ ->
+        :ok
+    end
+
+    reset_statement_registries()
+  end
+
+  defp exqlite_statement(conn, sql) do
+    registry = Process.get(@exqlite_registry)
+
+    case Map.fetch(registry, sql) do
+      {:ok, statement} ->
+        statement
+
+      :error ->
+        statement = Raw.prepare!(conn, sql)
+        Process.put(@exqlite_registry, Map.put(registry, sql, statement))
+        statement
+    end
+  end
+
+  defp native_statement(port, sql) do
+    registry = Process.get(@native_registry)
+
+    case Map.fetch(registry, sql) do
+      {:ok, id} ->
+        id
+
+      :error ->
+        id = map_size(registry)
+        :ok = Native.prepare(port, id, sql)
+        Process.put(@native_registry, Map.put(registry, sql, id))
+        id
+    end
+  end
+
+  defp http_requests(state, base) do
+    prefix = "/v1/databases/#{state.variants.vial_keeper_http.uuid}"
+    config = state.config
+
+    case state.scenario do
+      :point_read ->
+        Enum.map(base, &http_request(prefix <> "/documents/get", %{"id" => &1}))
+
+      :bulk_write ->
+        body =
+          Enum.map(base.batch, &%{"type" => "put", "id" => &1.id, "body" => &1.body})
+
+        [http_request(prefix <> "/documents/bulk-write", body)]
+
+      :changes_read ->
+        body = %{"since" => 0, "limit" => changes_limit(config)}
+        List.duplicate(http_request(prefix <> "/changes", body), config["repeat"])
+
+      :indexed_query ->
+        body = %{"selector" => %{"/category" => "task"}, "limit" => config["query_limit"]}
+        List.duplicate(http_request(prefix <> "/query", body), config["repeat"])
+    end
+  end
+
+  defp http_request(path, body) do
+    Plug.Test.conn(:post, path, JSON.encode!(body))
+    |> Plug.Conn.put_req_header("content-type", "application/json")
+  end
+
+  ## Timed operations
+
+  defp invoke!(state, :native_replay, %{replay: replay}) do
+    result = Native.run(state.variants.native_replay.port, replay.native)
+    check_rows!(:native_replay, result.rows, replay.expected_rows)
+    {:timed, result.ns, %{vm_steps: result.vm_steps, statements: result.statements}}
+  end
+
+  defp invoke!(state, :exqlite_replay, %{replay: replay}) do
+    rows = run_exqlite_ops(state.variants.exqlite_replay.conn, replay.exqlite, 0)
+    check_rows!(:exqlite_replay, rows, replay.expected_rows)
+  end
+
+  defp invoke!(state, :connection_replay, %{replay: replay}) do
+    rows = run_connection_ops(state.variants.connection_replay.conn, replay.ops, 0)
+    check_rows!(:connection_replay, rows, replay.expected_rows)
+  end
+
+  defp invoke!(state, :vial_keeper_adapter, %{base: base}) do
+    adapter_operation!(state.variants.vial_keeper_adapter.adapter, state.scenario, base, state)
+  end
+
+  defp invoke!(state, :vial_keeper_service, %{base: base}) do
+    service_operation!(state.variants.vial_keeper_service.uuid, state.scenario, base, state)
+  end
+
+  defp invoke!(state, :vial_keeper_http, %{http: requests}) do
+    Enum.each(requests, fn request ->
+      case VialKeeper.HTTP.Router.call(request, state.router_opts) do
+        %{status: 200} -> :ok
+        response -> Mix.raise("HTTP #{response.status}: #{response.resp_body}")
+      end
+    end)
+  end
+
+  defp invoke!(state, :exqlite_minimal, %{base: base}) do
+    minimal_operation!(state.variants.exqlite_minimal, state.scenario, base, state)
+  end
+
+  defp check_rows!(_variant, rows, rows), do: :ok
+
+  defp check_rows!(variant, rows, expected),
+    do: Mix.raise("#{variant} returned #{rows} rows; the captured run returned #{expected}")
+
+  defp run_exqlite_ops(_conn, [], rows), do: rows
+
+  defp run_exqlite_ops(conn, [{:exec, sql} | rest], rows) do
+    :ok = Sqlite3.execute(conn, sql)
+    run_exqlite_ops(conn, rest, rows)
+  end
+
+  defp run_exqlite_ops(conn, [{:stmt, statement, params, count_rows} | rest], rows) do
+    :ok = Sqlite3.bind(statement, params)
+    stepped = step_count(conn, statement, 0)
+    run_exqlite_ops(conn, rest, if(count_rows, do: rows + stepped, else: rows))
+  end
+
+  defp step_count(conn, statement, rows) do
+    case Sqlite3.step(conn, statement) do
+      {:row, _row} -> step_count(conn, statement, rows + 1)
+      :done -> rows
+      other -> Mix.raise("exqlite replay step failed: #{inspect(other)}")
+    end
+  end
+
+  defp run_connection_ops(_conn, [], rows), do: rows
+
+  defp run_connection_ops(conn, [%{kind: :exec, sql: sql} | rest], rows) do
+    :ok = Connection.exec(conn, sql)
+    run_connection_ops(conn, rest, rows)
+  end
+
+  defp run_connection_ops(conn, [%{kind: :execute, sql: sql, params: params} | rest], rows) do
+    :ok = Connection.execute(conn, sql, params)
+    run_connection_ops(conn, rest, rows)
+  end
+
+  defp run_connection_ops(conn, [%{kind: :query, sql: sql, params: params} | rest], rows) do
+    {:ok, result} = Connection.query(conn, sql, params)
+    run_connection_ops(conn, rest, rows + length(result))
+  end
+
+  # The adapter operation for a sample; runs both in the capture worker
+  # (traced, untimed) and as the measured adapter variant.
+  defp adapter_operation!(adapter, :point_read, ids, _state) do
+    Enum.each(ids, fn id ->
+      case Adapter.get_document(adapter, %{document_id: id}) do
+        {:ok, %{id: ^id, deleted: false, body: body}} when is_map(body) -> :ok
+        other -> Mix.raise("point-read adapter result was invalid: #{inspect(other)}")
+      end
+    end)
+  end
+
+  defp adapter_operation!(adapter, :bulk_write, %{operations: operations}, _state) do
+    case Adapter.apply_bulk_mutation(adapter, %{operations: operations}) do
+      {:ok, results} when length(results) == length(operations) -> :ok
+      other -> Mix.raise("bulk-write adapter result was invalid: #{inspect(other)}")
+    end
+  end
+
+  defp adapter_operation!(adapter, :changes_read, _base, state) do
+    limit = changes_limit(state.config)
+    expected_has_more = limit < state.config["dataset_size"]
+
+    repeat(state.config["repeat"], fn ->
+      case Adapter.read_changes(adapter, %{since: 0, limit: limit}) do
+        {:ok, %{results: results, has_more: ^expected_has_more}} when length(results) == limit ->
+          :ok
+
+        other ->
+          Mix.raise("changes adapter result was invalid: #{inspect(other)}")
+      end
+    end)
+  end
+
+  defp adapter_operation!(adapter, :indexed_query, _base, state) do
+    request = indexed_request(state.config)
+
+    repeat(state.config["repeat"], fn ->
+      case Adapter.execute_query(adapter, request) do
+        {:ok, result} -> check_query_results!(result, state)
+        other -> Mix.raise("indexed-query adapter result was invalid: #{inspect(other)}")
+      end
+    end)
+  end
+
+  defp service_operation!(uuid, :point_read, ids, _state) do
+    Enum.each(ids, fn id ->
+      case VialKeeper.Documents.get(uuid, %{id: id}) do
+        {:ok, %{id: ^id, deleted: false}} -> :ok
+        other -> Mix.raise("service point read was invalid: #{inspect(other)}")
+      end
+    end)
+  end
+
+  defp service_operation!(uuid, :bulk_write, %{service_operations: operations}, _state) do
+    case VialKeeper.Documents.bulk_write(uuid, operations) do
+      {:ok, results} when length(results) == length(operations) -> :ok
+      other -> Mix.raise("service bulk write was invalid: #{inspect(other)}")
+    end
+  end
+
+  defp service_operation!(uuid, :changes_read, _base, state) do
+    limit = changes_limit(state.config)
+    expected_has_more = limit < state.config["dataset_size"]
+
+    repeat(state.config["repeat"], fn ->
+      case VialKeeper.Changes.read(uuid, %{since: 0, limit: limit}) do
+        {:ok, %{results: results, has_more: ^expected_has_more}} when length(results) == limit ->
+          :ok
+
+        other ->
+          Mix.raise("service changes read was invalid: #{inspect(other)}")
+      end
+    end)
+  end
+
+  defp service_operation!(uuid, :indexed_query, _base, state) do
+    request = indexed_request(state.config)
+
+    repeat(state.config["repeat"], fn ->
+      case VialKeeper.Query.execute(uuid, request) do
+        {:ok, result} -> check_query_results!(result, state)
+        other -> Mix.raise("service query was invalid: #{inspect(other)}")
+      end
+    end)
+  end
+
+  defp indexed_request(config),
+    do: %{selector: %{"/category" => "task"}, limit: config["query_limit"]}
+
+  defp check_query_results!(result, state) do
+    results = value(result, :documents) || value(result, :results) || []
+
+    if length(results) == min(state.config["query_limit"], state.fixture.category_match_count),
+      do: :ok,
+      else: Mix.raise("indexed query returned #{length(results)} documents")
+  end
+
+  defp changes_limit(config), do: min(config["batch_size"], config["dataset_size"])
+
+  defp repeat(0, _fun), do: :ok
+
+  defp repeat(count, fun) do
+    :ok = fun.()
+    repeat(count - 1, fun)
+  end
+
+  ## Minimal hand-written SQL reference
+
+  defp minimal_statements(:point_read), do: [{:winner_select, @winner_select_sql}]
+
+  defp minimal_statements(:bulk_write) do
     [
       {:begin, @begin_sql},
       {:rollback, @rollback_sql},
@@ -581,495 +1264,306 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     ]
   end
 
-  defp raw_statements(:changes_read) do
-    [{:changes_select, @changes_select_sql}, {:changes_exists, @changes_exists_sql}]
+  defp minimal_statements(:changes_read),
+    do: [{:changes_select, @changes_select_sql}, {:changes_exists, @changes_exists_sql}]
+
+  defp minimal_statements(:indexed_query), do: [{:indexed_query, @indexed_query_sql}]
+
+  defp prepare_minimal(%{exqlite_minimal: variant} = variants, scenario) do
+    statements = Raw.prepare_many(variant.conn, minimal_statements(scenario))
+    variants = Map.put(variants, :exqlite_minimal, %{variant | statements: statements})
+    Process.put({__MODULE__, :open_variants}, variants)
+    variants
   end
 
-  defp raw_statements(:indexed_query), do: [{:indexed_query, @indexed_query_sql}]
+  defp prepare_minimal(variants, _scenario), do: variants
 
-  defp measure_case(variants, scenario, config, fixture, index_id) do
-    Enum.each(sequence(config["warmup"]), fn number ->
-      token = {:warmup, number, number - 1}
+  defp minimal_operation!(variant, scenario, base, state),
+    do: run_minimal!(variant.conn, variant.statements, scenario, base, state)
 
-      variants
-      |> ordered_variants(number - 1)
-      |> Enum.each(&invoke!(&1, scenario, token, config, fixture, index_id))
+  defp run_minimal!(conn, statements, :point_read, ids, _state) do
+    Enum.each(ids, fn id ->
+      [[^id, _revision, _json, _term, 0, _sequence, nil, _digest, _size, _type]] =
+        Raw.run!(conn, statements.winner_select, [id])
     end)
+  end
 
-    samples =
-      Enum.map(sequence(config["iterations"]), fn number ->
-        absolute = config["warmup"] + number - 1
-        token = {:sample, number, absolute}
+  defp run_minimal!(conn, statements, :bulk_write, %{batch: batch}, _state) do
+    run = fn name, params -> Raw.run!(conn, Map.fetch!(statements, name), params) end
+    physical_bulk_write!(conn, batch, run, fn -> Raw.run(conn, statements.rollback, []) end)
+  end
 
-        durations =
-          ordered_variants(variants, absolute)
-          |> Enum.map(fn variant ->
-            :erlang.garbage_collect()
+  defp run_minimal!(conn, statements, :changes_read, _base, state) do
+    limit = changes_limit(state.config)
+    expected_has_more = if limit < state.config["dataset_size"], do: 1, else: 0
 
-            {elapsed_us, _result} =
-              :timer.tc(fn -> invoke!(variant, scenario, token, config, fixture, index_id) end)
+    repeat(state.config["repeat"], fn ->
+      rows = Raw.run!(conn, statements.changes_select, [0, limit])
+      last = rows |> List.last([0]) |> List.first()
+      [[has_more]] = Raw.run!(conn, statements.changes_exists, [last])
 
-            {variant.kind, elapsed_us}
-          end)
+      if length(rows) == limit and has_more == expected_has_more,
+        do: :ok,
+        else: Mix.raise("minimal changes result was invalid")
+    end)
+  end
 
-        Map.new(durations)
+  defp run_minimal!(conn, statements, :indexed_query, _base, state) do
+    limit = state.config["query_limit"]
+    expected = state.fixture.category_match_count
+
+    repeat(state.config["repeat"], fn ->
+      rows = Raw.run!(conn, statements.indexed_query, ["task", "task", limit + 1])
+      count = if rows == [], do: 0, else: rows |> List.last() |> List.last()
+
+      if length(rows) == min(limit + 1, expected) and count == expected,
+        do: :ok,
+        else: Mix.raise("minimal indexed-query result was invalid")
+    end)
+  end
+
+  # One transaction writing the final document, revision, change, sequence and
+  # replication-state rows, one INSERT per row.
+  defp physical_bulk_write!(conn, batch, run, rollback) do
+    run.(:begin, [])
+
+    try do
+      Enum.each(batch, fn document ->
+        run.(:document_insert, [
+          document.id,
+          document.revision_id,
+          document.body_json,
+          TermBlob.bind(document.body_term),
+          0,
+          document.sequence
+        ])
+
+        {:ok, doc_key} = Sqlite3.last_insert_rowid(conn)
+
+        run.(:revision_insert, [
+          doc_key,
+          document.revision_id,
+          1,
+          nil,
+          document.history_id,
+          document.digest,
+          0,
+          document.body_json,
+          TermBlob.bind(document.body_term),
+          0,
+          1
+        ])
+
+        run.(:change_insert, [
+          document.sequence,
+          doc_key,
+          document.id,
+          document.revision_id,
+          0,
+          document.leaf_json,
+          TermBlob.bind(document.leaf_term),
+          "local"
+        ])
       end)
 
-    variants_report =
-      Map.new(variants, fn variant ->
-        key = Atom.to_string(variant.kind)
-        values = Enum.map(samples, &Map.fetch!(&1, variant.kind))
-        {key, summarize_samples(values, operation_count(scenario, config, fixture))}
+      run.(:sequence_update, [List.last(batch).sequence])
+      run.(:local_record_upsert, [@pending_namespace, @pending_key, @pending_json])
+      run.(:commit, [])
+      :ok
+    rescue
+      exception ->
+        _ = rollback.()
+        reraise exception, __STACKTRACE__
+    end
+  end
+
+  ## Report
+
+  defp case_report(state, reference, verification, collected) do
+    samples = collected.samples
+    operations = operation_count(state.scenario, state.config)
+    selected = state.selected
+    series = fn kind, key -> Enum.map(samples, &get_in(&1, [kind, key])) end
+    ns = Map.new(selected, &{&1, series.(&1, :ns)})
+
+    variants =
+      Map.new(selected, fn kind ->
+        summary =
+          ns[kind]
+          |> Stats.summarize(operations)
+          |> Map.put("layer", layer_label(kind))
+          |> Map.put("samples_ns", ns[kind])
+          |> Map.put(
+            "median_reductions_per_operation",
+            per_op(series.(kind, :reductions), operations)
+          )
+          |> Map.put("gcs_per_sample_median", Stats.round_float(Stats.median(series.(kind, :gcs))))
+          |> Map.merge(native_counters(kind, samples, operations))
+
+        {Atom.to_string(kind), summary}
       end)
 
-    pure = Map.fetch!(variants_report, "pure_exqlite")
+    vs_reference =
+      selected
+      |> Enum.reject(&(&1 == reference))
+      |> Map.new(&{Atom.to_string(&1), Stats.compare(ns[reference], ns[&1])})
 
-    overhead =
-      variants_report
-      |> Map.delete("pure_exqlite")
-      |> Map.new(fn {variant, summary} ->
-        {variant, overhead_summary(pure, summary)}
+    ladder = Enum.filter(@ladder, &(&1 in selected))
+
+    steps =
+      ladder
+      |> Enum.zip(Enum.drop(ladder, 1))
+      |> Enum.map(fn {lower, upper} ->
+        Stats.compare(ns[lower], ns[upper])
+        |> Map.merge(%{
+          "from" => Atom.to_string(lower),
+          "to" => Atom.to_string(upper),
+          "adds" => step_description(lower, upper),
+          "median_delta_ns_per_operation" =>
+            Stats.round_float(Stats.median(Stats.paired_deltas(ns[lower], ns[upper])) / operations)
+        })
       end)
 
     %{
-      "variants" => variants_report,
-      "overhead_vs_pure_exqlite" => overhead,
+      "storage_mode" => Atom.to_string(state.mode),
+      "scenario" => Atom.to_string(state.scenario),
+      "operations_per_sample" => operations,
+      "dataset_size" => state.config["dataset_size"],
+      "warmup" => state.config["warmup"],
+      "iterations" => length(samples),
+      "stop_reason" => collected.stop_reason,
+      "elapsed_ms" => collected.elapsed_ms,
+      "reference_variant" => Atom.to_string(reference),
+      "fixture" => fixture_metadata(state.fixture),
+      "verification" => verification,
+      "captured_statements" => captured_statements(state),
+      "variants" => variants,
+      "vs_reference" => vs_reference,
+      "ladder" => steps,
+      "sql_shape" => sql_shape(ns, operations),
       "sample_order" =>
-        Enum.map(sequence(config["iterations"]), &sample_order(&1, config["warmup"]))
+        Enum.map(samples, fn sample -> Enum.map(sample.__order__, &Atom.to_string/1) end)
     }
   end
 
-  defp ordered_variants(variants, absolute) do
-    if rem(absolute, 2) == 0, do: variants, else: Enum.reverse(variants)
+  @capture_profile {__MODULE__, :capture_profile}
+
+  # Statement counts of every captured sample (warmup included) and the SQL
+  # mix of the last one, recorded while inputs are prepared.
+  defp record_capture_profile(ops) do
+    {counts, _last} = Process.get(@capture_profile, {[], nil})
+    Process.put(@capture_profile, {[length(ops) | counts], ops})
   end
 
-  defp sample_order(number, warmup) do
-    absolute = warmup + number - 1
-    order = if rem(absolute, 2) == 0, do: @variants, else: Enum.reverse(@variants)
-    Enum.map(order, &Atom.to_string/1)
-  end
+  defp captured_statements(%{worker: nil}), do: nil
 
-  defp invoke!(variant, :point_read, token, config, _fixture, _index_id) do
-    ids = Enum.map(0..(config["dataset_size"] - 1), &document_id/1)
-    read_count = config["read_count"]
-    start = rem(token_number(token) * read_count, config["dataset_size"])
-
-    Enum.each(0..(read_count - 1), fn offset ->
-      id = Enum.at(ids, rem(start + offset, config["dataset_size"]))
-      invoke_point_read!(variant, id)
-    end)
-
-    :ok
-  end
-
-  defp invoke!(variant, :bulk_write, token, config, _fixture, _index_id) do
-    batch = batch_documents(config, token_number(token))
-    invoke_bulk_write!(variant, batch)
-  end
-
-  defp invoke!(variant, :changes_read, _token, config, _fixture, _index_id) do
-    limit = min(config["batch_size"], config["dataset_size"])
-    invoke_changes_read!(variant, limit, config["dataset_size"])
-  end
-
-  defp invoke!(variant, :indexed_query, _token, config, fixture, _index_id) do
-    invoke_indexed_query!(variant, config["query_limit"], fixture.category_match_count)
-  end
-
-  defp invoke_point_read!(%__MODULE__{kind: :pure_exqlite, conn: conn, statements: statements}, id) do
-    [
-      [
-        ^id,
-        _revision_id,
-        _body_json,
-        _body_term,
-        0,
-        _sequence,
-        nil,
-        _digest,
-        _logical_size,
-        _content_type
-      ]
-    ] = Raw.run!(conn, statements.winner_select, [id])
-
-    :ok
-  end
-
-  defp invoke_point_read!(%__MODULE__{kind: :vial_keeper_connection, conn: conn}, id) do
-    [
-      [
-        ^id,
-        _revision_id,
-        _body_json,
-        _body_term,
-        0,
-        _sequence,
-        nil,
-        _digest,
-        _logical_size,
-        _content_type
-      ]
-    ] = connection_query!(conn, @winner_select_sql, [id])
-
-    :ok
-  end
-
-  defp invoke_point_read!(%__MODULE__{kind: :vial_keeper_adapter, adapter: adapter}, id) do
-    case Adapter.get_document(adapter, %{document_id: id}) do
-      {:ok, %{id: ^id, deleted: false, body: body}} when is_map(body) -> :ok
-      other -> Mix.raise("point-read adapter result was invalid: #{inspect(other)}")
-    end
-  end
-
-  defp invoke_bulk_write!(
-         %__MODULE__{kind: :pure_exqlite, conn: conn, statements: statements},
-         batch
-       ) do
-    raw_bulk_write!(conn, statements, batch)
-  end
-
-  defp invoke_bulk_write!(%__MODULE__{kind: :vial_keeper_connection, conn: conn}, batch) do
-    connection_bulk_write!(conn, batch)
-  end
-
-  defp invoke_bulk_write!(%__MODULE__{kind: :vial_keeper_adapter, adapter: adapter}, batch) do
-    operations =
-      Enum.map(batch, fn document ->
-        %{
-          operation: :put,
-          document_id: document.id,
-          history_id: document.history_id,
-          body: document.body
-        }
-      end)
-
-    case Adapter.apply_bulk_mutation(adapter, %{operations: operations}) do
-      {:ok, results} when is_list(results) and length(results) == length(batch) -> :ok
-      other -> Mix.raise("bulk-write adapter result was invalid: #{inspect(other)}")
-    end
-  end
-
-  defp raw_bulk_write!(conn, statements, batch) do
-    Raw.run!(conn, statements.begin)
-
-    try do
-      Enum.each(batch, fn document ->
-        Raw.run!(conn, statements.document_insert, [
-          document.id,
-          document.revision_id,
-          document.body_json,
-          TermBlob.bind(document.body_term),
-          0,
-          document.sequence
-        ])
-
-        {:ok, doc_key} = Sqlite3.last_insert_rowid(conn)
-
-        Raw.run!(conn, statements.revision_insert, [
-          doc_key,
-          document.revision_id,
-          1,
-          nil,
-          document.history_id,
-          document.digest,
-          0,
-          document.body_json,
-          TermBlob.bind(document.body_term),
-          0,
-          1
-        ])
-
-        Raw.run!(conn, statements.change_insert, [
-          document.sequence,
-          doc_key,
-          document.id,
-          document.revision_id,
-          0,
-          document.leaf_json,
-          TermBlob.bind(document.leaf_term),
-          "local"
-        ])
-      end)
-
-      last_sequence = List.last(batch).sequence
-      Raw.run!(conn, statements.sequence_update, [last_sequence])
-
-      Raw.run!(conn, statements.local_record_upsert, [
-        @pending_namespace,
-        @pending_key,
-        @pending_json
-      ])
-
-      Raw.run!(conn, statements.commit)
-      :ok
-    rescue
-      exception ->
-        _ = Raw.run(conn, statements.rollback, [])
-        reraise exception, __STACKTRACE__
-    end
-  end
-
-  defp connection_bulk_write!(conn, batch) do
-    connection_execute!(conn, @begin_sql)
-
-    try do
-      Enum.each(batch, fn document ->
-        connection_execute!(conn, @document_insert_sql, [
-          document.id,
-          document.revision_id,
-          document.body_json,
-          TermBlob.bind(document.body_term),
-          0,
-          document.sequence
-        ])
-
-        {:ok, doc_key} = Sqlite3.last_insert_rowid(conn)
-
-        connection_execute!(conn, @revision_insert_sql, [
-          doc_key,
-          document.revision_id,
-          1,
-          nil,
-          document.history_id,
-          document.digest,
-          0,
-          document.body_json,
-          TermBlob.bind(document.body_term),
-          0,
-          1
-        ])
-
-        connection_execute!(conn, @change_insert_sql, [
-          document.sequence,
-          doc_key,
-          document.id,
-          document.revision_id,
-          0,
-          document.leaf_json,
-          TermBlob.bind(document.leaf_term),
-          "local"
-        ])
-      end)
-
-      last_sequence = List.last(batch).sequence
-      connection_execute!(conn, @sequence_update_sql, [last_sequence])
-
-      connection_execute!(conn, @local_record_upsert_sql, [
-        @pending_namespace,
-        @pending_key,
-        @pending_json
-      ])
-
-      connection_execute!(conn, @commit_sql)
-      :ok
-    rescue
-      exception ->
-        _ = Connection.execute(conn, @rollback_sql)
-        reraise exception, __STACKTRACE__
-    end
-  end
-
-  defp invoke_changes_read!(
-         %__MODULE__{kind: :pure_exqlite, conn: conn, statements: statements},
-         limit,
-         dataset_size
-       ) do
-    rows = Raw.run!(conn, statements.changes_select, [0, limit])
-    [[has_more]] = Raw.run!(conn, statements.changes_exists, [List.last(rows, [0]) |> List.first()])
-
-    expected_has_more = if limit < dataset_size, do: 1, else: 0
-
-    if length(rows) == limit and has_more == expected_has_more,
-      do: :ok,
-      else: Mix.raise("changes baseline result was invalid")
-  end
-
-  defp invoke_changes_read!(
-         %__MODULE__{kind: :vial_keeper_connection, conn: conn},
-         limit,
-         dataset_size
-       ) do
-    rows = connection_query!(conn, @changes_select_sql, [0, limit])
-
-    [[has_more]] =
-      connection_query!(conn, @changes_exists_sql, [List.last(rows, [0]) |> List.first()])
-
-    expected_has_more = if limit < dataset_size, do: 1, else: 0
-
-    if length(rows) == limit and has_more == expected_has_more,
-      do: :ok,
-      else: Mix.raise("changes connection result was invalid")
-  end
-
-  defp invoke_changes_read!(
-         %__MODULE__{kind: :vial_keeper_adapter, adapter: adapter},
-         limit,
-         dataset_size
-       ) do
-    expected_has_more = limit < dataset_size
-
-    case Adapter.read_changes(adapter, %{since: 0, limit: limit}) do
-      {:ok, %{results: results, has_more: ^expected_has_more}} when length(results) == limit ->
-        :ok
-
-      other ->
-        Mix.raise("changes adapter result was invalid: #{inspect(other)}")
-    end
-  end
-
-  defp invoke_indexed_query!(
-         %__MODULE__{kind: :pure_exqlite, conn: conn, statements: statements},
-         limit,
-         expected_count
-       ) do
-    rows = Raw.run!(conn, statements.indexed_query, ["task", "task", limit + 1])
-
-    if length(rows) == min(limit + 1, expected_count) and indexed_count(rows) == expected_count,
-      do: :ok,
-      else: Mix.raise("indexed-query baseline result was invalid")
-  end
-
-  defp invoke_indexed_query!(
-         %__MODULE__{kind: :vial_keeper_connection, conn: conn},
-         limit,
-         expected_count
-       ) do
-    rows = connection_query!(conn, @indexed_query_sql, ["task", "task", limit + 1])
-
-    if length(rows) == min(limit + 1, expected_count) and indexed_count(rows) == expected_count,
-      do: :ok,
-      else: Mix.raise("indexed-query connection result was invalid")
-  end
-
-  defp invoke_indexed_query!(
-         %__MODULE__{kind: :vial_keeper_adapter, adapter: adapter},
-         limit,
-         expected_count
-       ) do
-    request = %{selector: %{"/category" => "task"}, index: "by-category", limit: limit}
-
-    case Adapter.execute_query(adapter, request) do
-      {:ok, result} ->
-        results = value(result, :results) || value(result, :documents) || []
-
-        if length(results) == min(limit, expected_count),
-          do: :ok,
-          else: Mix.raise("indexed-query adapter result was invalid")
-
-      other ->
-        Mix.raise("indexed-query adapter result was invalid: #{inspect(other)}")
-    end
-  end
-
-  defp indexed_count([]), do: 0
-  defp indexed_count(rows), do: rows |> List.last() |> List.last()
-
-  defp connection_query!(conn, sql, params) do
-    case Connection.query(conn, sql, params) do
-      {:ok, rows} -> rows
-      {:error, reason} -> Mix.raise("VialKeeper connection query failed: #{inspect(reason)}")
-    end
-  end
-
-  defp connection_execute!(conn, sql, params \\ []) do
-    case Connection.execute(conn, sql, params) do
-      :ok -> :ok
-      {:error, reason} -> Mix.raise("VialKeeper connection execute failed: #{inspect(reason)}")
-    end
-  end
-
-  defp summarize_samples(samples, operation_count) do
-    values = Enum.sort(samples)
-    count = length(values)
-    median_us = percentile(values, 0.50)
-    p95_us = percentile(values, 0.95)
-    p99_us = percentile(values, 0.99)
-    mean_us = Enum.sum(values) / count
-    mad_us = median_absolute_deviation(values, median_us)
+  defp captured_statements(state) do
+    {counts, ops} = Process.delete(@capture_profile) || {[], []}
+    median = Stats.median(counts)
 
     %{
-      "sample_us" => values,
-      "count" => count,
-      "min_us" => List.first(values),
-      "max_us" => List.last(values),
-      "mean_us" => Float.round(mean_us, 2),
-      "median_us" => median_us,
-      "p95_us" => p95_us,
-      "p99_us" => p99_us,
-      "median_absolute_deviation_us" => mad_us,
-      "coefficient_of_variation_pct" => coefficient_of_variation(values, mean_us),
-      "median_us_per_operation" => Float.round(median_us / operation_count, 2),
-      "median_operations_per_second" => Float.round(operation_count * 1_000_000 / median_us, 2)
+      "per_sample_median" => median,
+      "per_operation" => Stats.round_float(median / operation_count(state.scenario, state.config)),
+      "distinct_sql" => ops |> Enum.map(& &1.sql) |> Enum.uniq() |> length(),
+      "kinds" => Enum.frequencies_by(ops, &Atom.to_string(&1.kind))
     }
   end
 
-  defp overhead_summary(reference, candidate) do
-    deltas =
-      Enum.zip(reference["sample_us"], candidate["sample_us"])
-      |> Enum.map(fn {baseline, measured} -> measured - baseline end)
-
+  defp native_counters(:native_replay, samples, operations) do
     %{
-      "median_delta_us" => candidate["median_us"] - reference["median_us"],
-      "median_overhead_pct" => percentage_delta(reference["median_us"], candidate["median_us"]),
-      "p95_delta_us" => candidate["p95_us"] - reference["p95_us"],
-      "p95_overhead_pct" => percentage_delta(reference["p95_us"], candidate["p95_us"]),
-      "paired_delta_us" => deltas,
-      "paired_median_delta_us" => percentile(Enum.sort(deltas), 0.50),
-      "paired_mean_delta_us" => Float.round(Enum.sum(deltas) / length(deltas), 2),
-      "paired_overhead_pct" =>
-        percentage_delta(
-          reference["median_us"],
-          percentile(Enum.sort(deltas), 0.50) + reference["median_us"]
-        )
+      "median_vm_steps_per_operation" =>
+        per_op(Enum.map(samples, & &1.native_replay.extra.vm_steps), operations),
+      "statements_per_sample" =>
+        samples |> Enum.map(& &1.native_replay.extra.statements) |> Stats.median()
     }
   end
 
-  defp percentage_delta(reference, measured) when reference > 0,
-    do: Float.round((measured / reference - 1) * 100, 2)
+  defp native_counters(_kind, _samples, _operations), do: %{}
 
-  defp percentage_delta(_reference, _measured), do: 0.0
+  defp sql_shape(ns, operations) do
+    case ns do
+      %{exqlite_minimal: minimal, exqlite_replay: replay} ->
+        Stats.compare(minimal, replay)
+        |> Map.merge(%{
+          "from" => "exqlite_minimal",
+          "to" => "exqlite_replay",
+          "adds" => "SQL the adapter issues versus hand-written minimal SQL, both through ExQLite",
+          "median_delta_ns_per_operation" =>
+            Stats.round_float(Stats.median(Stats.paired_deltas(minimal, replay)) / operations)
+        })
 
-  defp median_absolute_deviation(values, median) do
-    values
-    |> Enum.map(&abs(&1 - median))
-    |> Enum.sort()
-    |> percentile(0.50)
+      _ ->
+        nil
+    end
   end
 
-  defp coefficient_of_variation(_values, mean) when mean == 0, do: 0.0
+  defp step_description(lower, upper) do
+    lower_index = Enum.find_index(@ladder, &(&1 == lower))
+    upper_index = Enum.find_index(@ladder, &(&1 == upper))
 
-  defp coefficient_of_variation(values, mean) do
-    variance = Enum.reduce(values, 0.0, &(&2 + :math.pow(&1 - mean, 2))) / length(values)
-    Float.round(:math.sqrt(variance) / mean * 100, 2)
+    @ladder
+    |> Enum.slice(lower_index..upper_index)
+    |> then(&Enum.zip(&1, Enum.drop(&1, 1)))
+    |> Enum.map_join("; ", &Map.fetch!(@step_descriptions, &1))
   end
 
-  defp percentile(values, fraction) do
-    index = max(1, ceil(length(values) * fraction)) - 1
-    Enum.at(values, index)
+  defp layer_label(:native_replay), do: "L0 native SQLite"
+  defp layer_label(:exqlite_replay), do: "L1 ExQLite"
+  defp layer_label(:connection_replay), do: "L2 Connection"
+  defp layer_label(:vial_keeper_adapter), do: "L3 adapter"
+  defp layer_label(:vial_keeper_service), do: "L4 service"
+  defp layer_label(:vial_keeper_http), do: "L5 HTTP router"
+  defp layer_label(:exqlite_minimal), do: "reference: minimal SQL"
+
+  defp per_op(values, operations), do: Stats.round_float(Stats.median(values) / operations)
+
+  defp operation_count(:point_read, config), do: config["read_count"]
+  defp operation_count(:bulk_write, config), do: config["batch_size"]
+  defp operation_count(:changes_read, config), do: config["repeat"]
+  defp operation_count(:indexed_query, config), do: config["repeat"]
+
+  defp fixture(documents) do
+    %{
+      documents: documents,
+      category_match_count: Enum.count(documents, &(&1.body["category"] == "task"))
+    }
   end
-
-  defp operation_count(:point_read, config, _fixture), do: config["read_count"]
-  defp operation_count(:bulk_write, config, _fixture), do: config["batch_size"]
-
-  defp operation_count(:changes_read, config, _fixture),
-    do: min(config["batch_size"], config["dataset_size"])
-
-  defp operation_count(:indexed_query, _config, fixture), do: fixture.category_match_count
 
   defp fixture_metadata(fixture) do
     %{
       "documents" => length(fixture.documents),
       "category_task_documents" => fixture.category_match_count,
       "seed_sequence" => length(fixture.documents),
+      "seeded_through" => "Adapter.apply_bulk_mutation (service layers: Documents.bulk_write)",
       "body_shape" => "category, priority, title, tags",
       "attachments" => "none"
     }
   end
 
+  ## Fixture documents
+
   defp fixture_document(index) do
-    id = document_id(index)
-    history_id = deterministic_uuid("seed-history", Integer.to_string(index))
-    body = benchmark_body(index)
+    build_document(
+      document_id(index),
+      deterministic_uuid("seed-history", Integer.to_string(index)),
+      index,
+      index + 1
+    )
+  end
+
+  defp batch_documents(config, batch_index) do
+    Enum.map(0..(config["batch_size"] - 1), fn offset ->
+      value = config["dataset_size"] + batch_index * config["batch_size"] + offset
+
+      id =
+        "bench-#{String.pad_leading(Integer.to_string(batch_index), 6, "0")}-#{String.pad_leading(Integer.to_string(offset), 4, "0")}"
+
+      build_document(id, deterministic_uuid("bench-history", id), value, value + 1)
+    end)
+  end
+
+  defp build_document(id, history_id, value, sequence) do
+    body = benchmark_body(value)
     revision_id = revision_id!(id, history_id, body)
     body_json = Canonical.encode!(body)
     leaf_json = leaf_json(revision_id, history_id)
@@ -1084,36 +1578,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
       body_term: term_blob!(body, body_json),
       leaf_json: leaf_json,
       leaf_term: term_blob!(leaf_value(revision_id, history_id), leaf_json),
-      sequence: index + 1
+      sequence: sequence
     }
-  end
-
-  defp batch_documents(config, batch_index) do
-    Enum.map(0..(config["batch_size"] - 1), fn offset ->
-      value = config["dataset_size"] + batch_index * config["batch_size"] + offset
-
-      id =
-        "bench-#{String.pad_leading(Integer.to_string(batch_index), 6, "0")}-#{String.pad_leading(Integer.to_string(offset), 4, "0")}"
-
-      history_id = deterministic_uuid("bench-history", id)
-      body = benchmark_body(value)
-      revision_id = revision_id!(id, history_id, body)
-      body_json = Canonical.encode!(body)
-      leaf_json = leaf_json(revision_id, history_id)
-
-      %{
-        id: id,
-        history_id: history_id,
-        revision_id: revision_id,
-        digest: digest(revision_id),
-        body: body,
-        body_json: body_json,
-        body_term: term_blob!(body, body_json),
-        leaf_json: leaf_json,
-        leaf_term: term_blob!(leaf_value(revision_id, history_id), leaf_json),
-        sequence: config["dataset_size"] + batch_index * config["batch_size"] + offset + 1
-      }
-    end)
   end
 
   defp benchmark_body(value) do
@@ -1125,8 +1591,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     }
   end
 
-  defp document_id(index),
-    do: "seed-" <> String.pad_leading(Integer.to_string(index), 6, "0")
+  defp document_id(index), do: "seed-" <> String.pad_leading(Integer.to_string(index), 6, "0")
 
   defp leaf_value(revision_id, history_id),
     do: [%{"revision" => revision_id, "history_id" => history_id, "deleted" => false}]
@@ -1150,8 +1615,6 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   defp digest(revision_id), do: revision_id |> String.split("-", parts: 2) |> List.last()
 
-  defp token_number({_phase, _number, absolute}), do: absolute
-
   defp deterministic_uuid(namespace, value) do
     hex = :crypto.hash(:sha256, namespace <> ":" <> value) |> Base.encode16(case: :lower)
 
@@ -1166,59 +1629,85 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 
-  defp write_report(report, "-") do
-    IO.puts(JSON.encode_to_iodata!(report))
-  end
+  ## Output
 
-  defp write_report(report, path) do
-    File.mkdir_p!(Path.dirname(path))
-    json = JSON.encode_to_iodata!(report) |> IO.iodata_to_binary()
-    File.write!(path, json <> "\n")
-  end
+  defp sqlite_metadata do
+    {:ok, conn} = Sqlite3.open(":memory:")
 
-  defp print_summary(report, output) do
-    IO.puts("VialKeeper overhead benchmark report: #{output}")
-
-    Enum.each(report["results"], fn result ->
-      adapter_variant = result["variants"]["vial_keeper_adapter"]
-      connection_variant = result["variants"]["vial_keeper_connection"]
-      adapter = result["overhead_vs_pure_exqlite"]["vial_keeper_adapter"]
-      connection = result["overhead_vs_pure_exqlite"]["vial_keeper_connection"]
-
-      IO.puts(
-        "  #{result["storage_mode"]}/#{result["scenario"]}: " <>
-          "adapter median #{adapter_variant["median_us"]} us " <>
-          "(overhead +#{adapter["median_delta_us"]} us / #{adapter["median_overhead_pct"]}%), " <>
-          "connection median #{connection_variant["median_us"]} us " <>
-          "(overhead #{connection["median_delta_us"]} us / #{connection["median_overhead_pct"]}%)"
-      )
-    end)
-  end
-
-  defp runtime_metadata do
-    runtime = VialKeeper.Diagnostics.runtime()
-
-    %{
-      "elixir" => System.version(),
-      "otp" => :erlang.system_info(:otp_release) |> to_string(),
-      "sqlite" => get_in(runtime, [:backend, :sqlite]),
-      "schedulers_online" => :erlang.system_info(:schedulers_online),
-      "os" => :os.type() |> inspect()
-    }
-  end
-
-  defp git_revision do
-    case System.cmd("git", ["rev-parse", "HEAD"], stderr_to_stdout: true) do
-      {revision, 0} -> String.trim(revision)
-      _ -> "unknown"
+    try do
+      sqlite_metadata(conn)
+    after
+      Sqlite3.close(conn)
     end
   end
 
-  defp default_output_path do
-    timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%dT%H%M%SZ")
-    Path.join("output/benchmarks", "exqlite-overhead-#{timestamp}.json")
+  defp sqlite_metadata(conn) do
+    [[version, source_id]] =
+      Raw.one_off_query!(conn, "SELECT sqlite_version(), sqlite_source_id()")
+
+    options = conn |> Raw.one_off_query!("PRAGMA compile_options") |> Enum.map(&List.first/1)
+    %{"version" => version, "source_id" => source_id, "compile_options" => options}
   end
 
+  defp write_report(report, "-"), do: IO.puts(JSON.encode_to_iodata!(report))
+
+  defp write_report(report, path) do
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, [JSON.encode_to_iodata!(report), "\n"])
+  end
+
+  defp print_summary(report, output) do
+    IO.puts("VialKeeper layer ladder report: #{output}")
+
+    Enum.each(report["results"], fn result ->
+      IO.puts(
+        "\n  #{result["storage_mode"]}/#{result["scenario"]} " <>
+          "(#{result["iterations"]} samples, #{result["stop_reason"]}, " <>
+          "#{result["operations_per_sample"]} ops/sample, reference #{result["reference_variant"]})"
+      )
+
+      result["variants"]
+      |> Enum.sort_by(fn {name, _} -> variant_rank(name) end)
+      |> Enum.each(fn {name, summary} ->
+        ratio =
+          case result["vs_reference"][name] do
+            nil ->
+              "reference"
+
+            comparison ->
+              "x#{comparison["paired_ratio_median"]} #{inspect(comparison["paired_ratio_ci95"])}"
+          end
+
+        IO.puts(
+          "    #{pad(summary["layer"], 24)} #{pad(name, 22)} " <>
+            "#{pad(format_us(summary["median_ns_per_operation"]) <> "/op", 14)} #{ratio}"
+        )
+      end)
+
+      Enum.each(result["ladder"], fn step ->
+        IO.puts(
+          "    step #{step["from"]} -> #{step["to"]}: " <>
+            "+#{format_us(step["median_delta_ns_per_operation"])}/op " <>
+            "(x#{step["paired_ratio_median"]} #{inspect(step["paired_ratio_ci95"])})"
+        )
+      end)
+    end)
+  end
+
+  defp variant_rank(name) do
+    Enum.find_index(@all_variants, &(Atom.to_string(&1) == name)) || length(@all_variants)
+  end
+
+  defp pad(value, width), do: String.pad_trailing(to_string(value), width)
+
+  defp format_us(ns), do: "#{:erlang.float_to_binary(ns / 1000, decimals: 2)} us"
+
+  defp default_output_path do
+    timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%dT%H%M%SZ")
+    Path.join("output/benchmarks", "layer-ladder-#{timestamp}.json")
+  end
+
+  defp cleanup_path(nil), do: :ok
   defp cleanup_path(":memory:"), do: :ok
 
   defp cleanup_path(path) do
@@ -1229,28 +1718,35 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     :ok
   end
 
-  defp sequence(0), do: []
-  defp sequence(count), do: 1..count
-
   defp usage do
     """
     Usage:
+      scripts/bench_overhead.sh [options]
       MIX_ENV=prod mix run --no-start bench/sqlite_exqlite_overhead_benchmark.exs -- [options]
 
     Options:
-      --mode memory|disk|both       SQLite mode (default: memory)
-      --scenario NAME|all           Comma-separated scenario list (default: all)
-      --iterations N                Measured paired samples (default: 30)
-      --warmup N                    Paired warmup samples (default: 10)
-      --dataset N                   Seeded documents (default: 500)
-      --batch N                     Bulk-write/changes batch size (default: 50, max: 500)
-      --reads N                     Point reads per sample (default: 100)
+      --mode memory|disk|both       SQLite mode (default: memory). The service and
+                                    HTTP layers need catalog bundles: disk mode only.
+      --scenario NAME|all           point_read, bulk_write, changes_read, indexed_query
+      --variants NAME,...|all       #{Enum.map_join(@all_variants, ", ", &Atom.to_string/1)}
+      --warmup N                    Untimed warmup samples (default: #{@default_warmup})
+      --min-iterations N            Samples before the stop rule applies (default: #{@default_min_iterations})
+      --max-iterations N            Sample cap (default: #{@default_max_iterations})
+      --target-ci-pct F             Stop when every paired-ratio 95% CI half-width
+                                    is at most F percent (default: #{@default_target_ci_pct})
+      --budget-ms N                 Wall-clock cap per case (default: #{@default_budget_ms})
+      --iterations N                Fixed sample count (sets min = max = N)
+      --dataset N                   Seeded documents (default: #{@default_dataset_size})
+      --batch N                     Bulk-write/changes batch size (default: #{@default_batch_size}, max: 500)
+      --reads N                     Point reads per sample (default: #{@default_read_count})
+      --repeat N                    Changes/query operations per sample (default: #{@default_repeat})
+      --work-dir PATH               Databases and runtime root (default: #{@default_work_dir})
       --output PATH                 JSON report path (default: output/benchmarks/...json)
 
     Environment equivalents:
       VIALKEEPER_OVERHEAD_ITERATIONS, VIALKEEPER_OVERHEAD_WARMUP,
       VIALKEEPER_OVERHEAD_DATASET, VIALKEEPER_OVERHEAD_BATCH,
-      VIALKEEPER_OVERHEAD_READS
+      VIALKEEPER_OVERHEAD_READS, CC (native control compiler)
     """
   end
 
@@ -1264,7 +1760,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     end
 
     def prepare!(conn, sql) do
-      case Sqlite3.prepare(conn, String.trim(sql)) do
+      case Sqlite3.prepare(conn, sql) do
         {:ok, statement} -> statement
         {:error, reason} -> Mix.raise("could not prepare benchmark SQL: #{inspect(reason)}")
       end
@@ -1273,7 +1769,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     def run!(conn, statement, params \\ []) do
       case run(conn, statement, params) do
         {:ok, rows} -> rows
-        {:error, reason} -> Mix.raise("pure ExQLite benchmark SQL failed: #{inspect(reason)}")
+        {:error, reason} -> Mix.raise("ExQLite benchmark SQL failed: #{inspect(reason)}")
       end
     end
 
