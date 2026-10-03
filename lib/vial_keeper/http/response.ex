@@ -2,7 +2,10 @@ defmodule VialKeeper.HTTP.Response do
   @moduledoc "Builds stable JSON responses and error envelopes for HTTP routes."
   import Plug.Conn
 
+  require VialKeeper.Probe
+
   alias VialKeeper.MapAccess
+  alias VialKeeper.Probe
   alias VialKeeper.Storage.Results
 
   @spec request_id(Plug.Conn.t()) :: binary()
@@ -77,10 +80,12 @@ defmodule VialKeeper.HTTP.Response do
   def send_json(conn, status, body) do
     request_id = MapAccess.get(body, :request_id, request_id(conn))
 
-    conn
-    |> put_resp_header("x-request-id", request_id)
-    |> put_resp_content_type("application/json")
-    |> send_resp(status, JSON.encode_to_iodata!(body))
+    Probe.measure :http_response_encode do
+      conn
+      |> put_resp_header("x-request-id", request_id)
+      |> put_resp_content_type("application/json")
+      |> send_resp(status, JSON.encode_to_iodata!(body))
+    end
   end
 
   @doc "Streams binary chunks onto an already-chunked response connection."

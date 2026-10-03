@@ -916,6 +916,36 @@ revision bodies, full remote URLs, tokens, or raw codec error text.
 `:observability_dashboard` is `true`. That flag is **not** a `host.toml` key;
 OTLP collection is configured via `otlp_endpoint` only.
 
+### Performance probes
+
+Every node keeps in-memory performance counters for its hot paths: HTTP
+routing and encoding, the `Documents`/`Changes`/`Query` services, catalog
+routing, read-pool and owner hops, storage entry points, mutation and SQLite
+phases, and (optionally) individual SQLite calls and JSON/term codecs. Each
+probe holds a total duration and a latency histogram; nothing leaves the node
+unless you read it, and no customer data is recorded (probe names are a closed
+vocabulary).
+
+- **Reading them:** the observability snapshot above includes a
+  `performance_probes` object with the enabled `tiers`, the histogram
+  `bucket_bounds_ns`, and per-probe `count`, `total_ns`, `mean_ns`, and
+  histogram upper bounds for p50 and p99 (`p50_le_ns`, `p99_le_ns`; `null` past
+  the last bound). Counters accumulate from boot; take two snapshots and
+  subtract to look at a window.
+- **Tiers:** `standard` probes (a handful per request) are on by default.
+  `detail` probes (per SQLite statement and per encode/decode, dozens per
+  request) are compiled in but off. Turn them on while investigating and off
+  afterwards, from a release shell:
+  `bin/vial_keeper rpc 'VialKeeper.Probe.enable(:detail)'`
+  (and `disable(:detail)`). Changing tiers is a one-off, node-wide operation;
+  do not script it per request. The initial tiers come from application env
+  `:performance_probe_tiers` (default `[:standard]`).
+- **Cost:** a disabled probe is one constant-term read; an enabled probe adds
+  two clock reads and two atomic counter increments. The layer-ladder
+  benchmark (`bench/README.md`) measures and reports this overhead for each
+  layer. Application env `:performance_probes, false` at compile time removes
+  the probes from the build entirely.
+
 ---
 
 ## Quick checklist

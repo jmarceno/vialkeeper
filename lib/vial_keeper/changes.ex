@@ -1,8 +1,10 @@
 defmodule VialKeeper.Changes do
   @moduledoc "Internal changes-feed service used by HTTP routes and runtime workers; not a client API."
   alias VialKeeper.Changes.Request
+  require VialKeeper.Probe
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Changes, as: ChangesModule
+  alias VialKeeper.Probe
   alias VialKeeper.Runtime.{ChangeNotifier, DatabaseCatalog}
 
   @type admission_class :: :foreground | :replication
@@ -15,11 +17,13 @@ defmodule VialKeeper.Changes do
   def read(uuid, request \\ %{}, opts \\ []) do
     admission_class = Keyword.get(opts, :admission_class, :foreground)
 
-    ChangesModule.read(uuid, 0, fn ->
-      with {:ok, normalized} <- normalize_request(request) do
-        catalog_read(uuid, normalized, admission_class)
-      end
-    end)
+    Probe.measure :changes_read do
+      ChangesModule.read(uuid, 0, fn ->
+        with {:ok, normalized} <- normalize_request(request) do
+          catalog_read(uuid, normalized, admission_class)
+        end
+      end)
+    end
   end
 
   @spec wait(uuid(), map() | struct()) :: result(map())

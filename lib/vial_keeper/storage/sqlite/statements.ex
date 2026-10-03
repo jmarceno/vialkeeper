@@ -5,7 +5,10 @@ defmodule VialKeeper.Storage.SQLite.Statements do
   Prepared statements are owned and reused by the database owner process (via
   the connection handle it serializes through).
   """
+  require VialKeeper.Probe
+
   alias Exqlite.Sqlite3
+  alias VialKeeper.Probe
 
   @cache_key :vial_keeper_sqlite_statement_cache
 
@@ -20,7 +23,12 @@ defmodule VialKeeper.Storage.SQLite.Statements do
         {:ok, statement, :cached}
 
       :error ->
-        with {:ok, statement} <- Sqlite3.prepare(conn, sql) do
+        prepared =
+          Probe.measure :sqlite_prepare do
+            Sqlite3.prepare(conn, sql)
+          end
+
+        with {:ok, statement} <- prepared do
           Process.put({@cache_key, conn}, Map.put(cache, sql, statement))
           {:ok, statement, :new}
         end

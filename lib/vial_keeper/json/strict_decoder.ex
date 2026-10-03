@@ -12,13 +12,24 @@ defmodule VialKeeper.JSON.StrictDecoder do
   @rusty_max_depth 128
   @safe_integer_max 9_007_199_254_740_991
 
+  require VialKeeper.Probe
+
   alias VialKeeper.Error
   alias VialKeeper.JSON.StrictDecoder.Legacy
+  alias VialKeeper.Probe
 
   @spec decode(binary(), keyword()) :: {:ok, term()} | {:error, Error.t()}
   def decode(input, opts \\ [])
 
   def decode(input, opts) when is_binary(input) do
+    Probe.measure :json_strict_decode do
+      decode_binary(input, opts)
+    end
+  end
+
+  def decode(_, _), do: {:error, Error.invalid_request("JSON body must be UTF-8 text")}
+
+  defp decode_binary(input, opts) do
     max_depth = Keyword.get(opts, :max_depth, configured_max_depth())
     max_bytes = Keyword.get(opts, :max_bytes, byte_size(input))
 
@@ -42,8 +53,6 @@ defmodule VialKeeper.JSON.StrictDecoder do
         decode_with_rusty(input, max_depth, max_bytes)
     end
   end
-
-  def decode(_, _), do: {:error, Error.invalid_request("JSON body must be UTF-8 text")}
 
   @doc "Decodes JSON and returns nil for malformed or invalid input."
   @spec decode_or_nil(binary()) :: term() | nil

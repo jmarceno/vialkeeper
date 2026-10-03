@@ -23,6 +23,11 @@ defmodule VialKeeper.Benchmarks.Overhead.Sampler do
   No garbage collection is forced: a long-lived storage owner runs with a warm
   heap, so forcing a collection would charge heap regrowth to the timed region.
   Global GC counts and reductions are recorded per sample instead.
+
+  The optional `:observe` option is a `{take, finish}` pair of functions: `take`
+  runs right before the timer starts and `finish.(taken)` right after it stops,
+  both outside the timed region; the result is stored under `:observed` in the
+  variant's sample (used for performance-probe deltas).
   """
 
   alias VialKeeper.Benchmarks.Overhead.Stats
@@ -79,7 +84,9 @@ defmodule VialKeeper.Benchmarks.Overhead.Sampler do
         sample =
           variants
           |> order(absolute)
-          |> Map.new(fn variant -> {variant, timed(invoke, variant, input)} end)
+          |> Map.new(fn variant ->
+            {variant, timed(invoke, variant, input, Keyword.get(opts, :observe))}
+          end)
           |> Map.put(:__order__, order(variants, absolute))
 
         collect(opts, variants, prepare, invoke, warmup, started, [sample | samples])
@@ -125,6 +132,14 @@ defmodule VialKeeper.Benchmarks.Overhead.Sampler do
       width = Stats.relative_half_width_pct(Stats.median_ci(ratios), Stats.median(ratios))
       is_number(width) and width <= target
     end)
+  end
+
+  defp timed(invoke, variant, input, nil), do: timed(invoke, variant, input)
+
+  defp timed(invoke, variant, input, {take, finish}) do
+    taken = take.()
+    measured = timed(invoke, variant, input)
+    Map.put(measured, :observed, finish.(taken))
   end
 
   defp timed(invoke, variant, input) do

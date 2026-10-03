@@ -2,6 +2,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   @moduledoc "Serializes database commands through one owner process."
   use GenServer
   require Logger
+  require VialKeeper.Probe
   alias VialKeeper.Commands
   alias VialKeeper.DatabaseBundle
   alias VialKeeper.DerivedView.Manager, as: DerivedViewManager
@@ -9,6 +10,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Compact
   alias VialKeeper.Observability.Instrumentation.Mutation
+  alias VialKeeper.Probe
 
   alias VialKeeper.Runtime.{
     AttachmentCoordinator,
@@ -200,11 +202,15 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   end
 
   def handle_call({:command_context, %CommandContext{} = context, command}, from, state) do
-    safe_dispatch(context, command, from, state)
+    Probe.measure :owner_command do
+      safe_dispatch(context, command, from, state)
+    end
   end
 
   def handle_call(command, from, state) do
-    safe_dispatch(CommandContext.public(), command, from, state)
+    Probe.measure :owner_command do
+      safe_dispatch(CommandContext.public(), command, from, state)
+    end
   end
 
   defp safe_dispatch(context, command, from, state) do

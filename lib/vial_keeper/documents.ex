@@ -4,8 +4,10 @@ defmodule VialKeeper.Documents do
   alias VialKeeper.Attachments.Manifest
   alias VialKeeper.Error
   alias VialKeeper.JSON.Canonical
+  require VialKeeper.Probe
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Mutation
+  alias VialKeeper.Probe
   alias VialKeeper.Runtime.DatabaseCatalog
   alias VialKeeper.Shadow.ReadRouter
 
@@ -55,6 +57,12 @@ defmodule VialKeeper.Documents do
 
   @spec get(uuid(), map(), keyword()) :: result(map())
   def get(uuid, request, opts) when is_list(opts) do
+    Probe.measure :documents_get do
+      get_checked(uuid, request, opts)
+    end
+  end
+
+  defp get_checked(uuid, request, opts) do
     case validate_get(request) do
       {:ok, request} ->
         get_validated(uuid, request, opts)
@@ -79,12 +87,14 @@ defmodule VialKeeper.Documents do
   @spec get_with_meta(uuid(), map(), keyword()) ::
           {:ok, term(), map()} | {:error, Error.t()}
   def get_with_meta(uuid, request, opts \\ []) do
-    with {:ok, request} <- validate_get(request) do
-      ReadRouter.get(
-        uuid,
-        request,
-        Keyword.put(opts, :primary, fn normalized -> get_primary(uuid, normalized) end)
-      )
+    Probe.measure :documents_get do
+      with {:ok, request} <- validate_get(request) do
+        ReadRouter.get(
+          uuid,
+          request,
+          Keyword.put(opts, :primary, fn normalized -> get_primary(uuid, normalized) end)
+        )
+      end
     end
   end
 
@@ -198,7 +208,9 @@ defmodule VialKeeper.Documents do
     if length(operations) > limit do
       {:error, Error.resource_limit("bulk-write operation count exceeds the host limit")}
     else
-      dispatch_bulk_write(uuid, operations)
+      Probe.measure :documents_bulk_write do
+        dispatch_bulk_write(uuid, operations)
+      end
     end
   end
 

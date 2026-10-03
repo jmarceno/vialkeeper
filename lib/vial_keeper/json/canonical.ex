@@ -1,14 +1,19 @@
 defmodule VialKeeper.JSON.Canonical do
   @moduledoc "RFC 8785-style canonical JSON for validated JSON values."
+  require VialKeeper.Probe
+
   alias VialKeeper.Error
   alias VialKeeper.JSON.StrictDecoder
+  alias VialKeeper.Probe
 
   @safe_integer_max 9_007_199_254_740_991
   @default_max_depth 100
 
   @spec encode(term()) :: {:ok, binary()} | {:error, Error.t()}
   def encode(value) do
-    {:ok, IO.iodata_to_binary(encode_value(value))}
+    Probe.measure :json_canonical_encode do
+      {:ok, IO.iodata_to_binary(encode_value(value))}
+    end
   rescue
     ArgumentError -> {:error, Error.invalid_request("value is not canonical JSON")}
     ArithmeticError -> {:error, Error.invalid_request("value is not canonical JSON")}

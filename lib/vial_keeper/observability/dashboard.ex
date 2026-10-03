@@ -1,4 +1,5 @@
 defmodule VialKeeper.Observability.Dashboard do
+  alias VialKeeper.Probe
   alias VialKeeper.Runtime.{DatabaseAdmission, DatabaseCatalog}
 
   @moduledoc """
@@ -124,7 +125,12 @@ defmodule VialKeeper.Observability.Dashboard do
           "replication" => replication["error_count"] + checkpoints["error_count"]
         }
       },
-      "runtime" => runtime
+      "runtime" => runtime,
+      "performance_probes" => %{
+        "tiers" => Enum.map(Probe.enabled_tiers(), &Atom.to_string/1),
+        "bucket_bounds_ns" => Probe.bucket_bounds_ns(),
+        "probes" => Probe.summarize(Probe.snapshot())
+      }
     }
   end
 

@@ -5,7 +5,9 @@ defmodule VialKeeper.HTTP.Request do
 
   alias VialKeeper.Error
   alias VialKeeper.HTTP.BodyReader
+  require VialKeeper.Probe
   alias VialKeeper.HTTP.Response
+  alias VialKeeper.Probe
 
   @doc """
   Reads the request body and invokes `fun.(body, conn)`.
@@ -18,7 +20,12 @@ defmodule VialKeeper.HTTP.Request do
 
   @spec call(Plug.Conn.t(), keyword(), (map(), Plug.Conn.t() -> Plug.Conn.t())) :: Plug.Conn.t()
   def call(conn, opts, fun) when is_list(opts) and is_function(fun, 2) do
-    case BodyReader.read(conn, opts) do
+    read =
+      Probe.measure :http_body_read do
+        BodyReader.read(conn, opts)
+      end
+
+    case read do
       {:ok, body, conn} -> fun.(body, conn)
       {:error, error} -> Response.error(conn, error)
     end

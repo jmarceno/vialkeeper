@@ -8,7 +8,10 @@ defmodule VialKeeper.Storage.Services do
   apply effects.
   """
 
+  require VialKeeper.Probe
+
   alias VialKeeper.MapAccess
+  alias VialKeeper.Probe
   alias VialKeeper.Query.{Normalizer, SubscriptionRequest}
   alias VialKeeper.Replication.Profile
   alias VialKeeper.Search
@@ -65,7 +68,9 @@ defmodule VialKeeper.Storage.Services do
   @spec get_document(BackendContext.t(), map()) ::
           {:ok, map()} | {:error, VialKeeper.Error.t()}
   def get_document(%BackendContext{} = context, request) when is_map(request) do
-    Transaction.run_snapshot(context, &load_document(&1, request))
+    Probe.measure :storage_get_document do
+      Transaction.run_snapshot(context, &load_document(&1, request))
+    end
   end
 
   def get_document(%BackendContext{}, _request),
@@ -85,6 +90,15 @@ defmodule VialKeeper.Storage.Services do
   @spec read_changes(BackendContext.t(), map()) ::
           {:ok, map()} | {:error, VialKeeper.Error.t()}
   def read_changes(%BackendContext{} = context, request) when is_map(request) do
+    Probe.measure :storage_read_changes do
+      read_changes_page(context, request)
+    end
+  end
+
+  def read_changes(%BackendContext{}, _request),
+    do: {:error, VialKeeper.Error.invalid_request("changes request must be an object")}
+
+  defp read_changes_page(context, request) do
     with_port(context, :change_log, fn ->
       since = MapAccess.get(request, :since, 0)
       limit = MapAccess.get(request, :limit, 100)
@@ -102,9 +116,6 @@ defmodule VialKeeper.Storage.Services do
       end
     end)
   end
-
-  def read_changes(%BackendContext{}, _request),
-    do: {:error, VialKeeper.Error.invalid_request("changes request must be an object")}
 
   @doc "Checks for pending local-origin changes through the change-log port."
   @spec has_local_origin_changes?(BackendContext.t(), binary() | nil) ::
@@ -177,12 +188,14 @@ defmodule VialKeeper.Storage.Services do
   @spec execute_public_query(BackendContext.t(), map()) ::
           {:ok, map()} | {:error, VialKeeper.Error.t()}
   def execute_public_query(%BackendContext{} = context, request) when is_map(request) do
-    with_port(context, :index_candidates, fn ->
-      with {:ok, current_identity} <- identity(context),
-           {:ok, normalized} <- Normalizer.normalize_public_request(request) do
-        Query.execute(context, normalized, current_identity)
-      end
-    end)
+    Probe.measure :storage_execute_query do
+      with_port(context, :index_candidates, fn ->
+        with {:ok, current_identity} <- identity(context),
+             {:ok, normalized} <- Normalizer.normalize_public_request(request) do
+          Query.execute(context, normalized, current_identity)
+        end
+      end)
+    end
   end
 
   @doc "Normalizes and executes a public subscription snapshot."
@@ -263,9 +276,11 @@ defmodule VialKeeper.Storage.Services do
   def apply_bulk_mutation(%BackendContext{} = context, request) when is_map(request) do
     operations = MapAccess.get(request, :operations)
 
-    with_ports(context, @mutation_port_families, fn ->
-      bulk_mutation_with_search(context, operations)
-    end)
+    Probe.measure :storage_bulk_mutation do
+      with_ports(context, @mutation_port_families, fn ->
+        bulk_mutation_with_search(context, operations)
+      end)
+    end
   end
 
   @doc "Resolves a document conflict."

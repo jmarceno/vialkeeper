@@ -15,7 +15,10 @@ defmodule VialKeeper.Storage.SQLite.TermBlob do
   @max_term_depth 256
   @cache_key :vial_keeper_sqlite_term_blob_cache
 
+  require VialKeeper.Probe
+
   alias VialKeeper.JSON.{Canonical, StrictCache}
+  alias VialKeeper.Probe
 
   @type fallback_reason :: :missing | :invalid_header | :digest_mismatch | :invalid_term
 
@@ -26,6 +29,12 @@ defmodule VialKeeper.Storage.SQLite.TermBlob do
   @spec encode(term(), binary()) ::
           {:ok, binary()} | {:error, VialKeeper.Error.t()}
   def encode(value, canonical_json) when is_binary(canonical_json) do
+    Probe.measure :term_encode do
+      encode_valid(value, canonical_json)
+    end
+  end
+
+  defp encode_valid(value, canonical_json) do
     if valid_json_term?(value, 0, @max_term_depth) do
       payload = :erlang.term_to_binary(value)
       digest = :crypto.hash(:sha256, canonical_json)
@@ -40,6 +49,14 @@ defmodule VialKeeper.Storage.SQLite.TermBlob do
   def decode(nil, _canonical_json), do: {:fallback, :missing}
 
   def decode(blob, canonical_json) when is_binary(blob) and is_binary(canonical_json) do
+    Probe.measure :term_decode do
+      decode_verified(blob, canonical_json)
+    end
+  end
+
+  def decode(_blob, _canonical_json), do: {:fallback, :invalid_header}
+
+  defp decode_verified(blob, canonical_json) do
     case payload_from_blob(blob) do
       {:ok, digest, payload} ->
         if digest == :crypto.hash(:sha256, canonical_json),
@@ -51,8 +68,6 @@ defmodule VialKeeper.Storage.SQLite.TermBlob do
     end
   end
 
-  def decode(_blob, _canonical_json), do: {:fallback, :invalid_header}
-
   @doc "Decodes and verifies a trusted stored term without loading canonical JSON."
   @spec decode_trusted(binary() | nil) :: {:ok, term()} | {:error, VialKeeper.Error.t()}
   def decode_trusted(blob), do: decode_trusted(blob, @max_term_depth)
@@ -61,9 +76,8 @@ defmodule VialKeeper.Storage.SQLite.TermBlob do
           {:ok, term()} | {:error, VialKeeper.Error.t()}
   def decode_trusted(blob, max_depth)
       when is_binary(blob) and is_integer(max_depth) and max_depth >= 0 do
-    case blob |> payload_from_blob() |> trusted_payload(max_depth) do
-      {:ok, value} -> {:ok, value}
-      :error -> {:error, VialKeeper.Error.integrity_violation("stored JSON term BLOB is invalid")}
+    Probe.measure :term_decode do
+      decode_trusted_blob(blob, max_depth)
     end
   end
 
@@ -73,6 +87,13 @@ defmodule VialKeeper.Storage.SQLite.TermBlob do
 
   def decode_trusted(_blob, _max_depth),
     do: {:error, VialKeeper.Error.integrity_violation("stored JSON term BLOB is missing")}
+
+  defp decode_trusted_blob(blob, max_depth) do
+    case blob |> payload_from_blob() |> trusted_payload(max_depth) do
+      {:ok, value} -> {:ok, value}
+      :error -> {:error, VialKeeper.Error.integrity_violation("stored JSON term BLOB is invalid")}
+    end
+  end
 
   @spec decode_trusted_with_cache(binary() | nil, atom(), non_neg_integer(), pos_integer()) ::
           {:ok, term()} | {:error, VialKeeper.Error.t()}

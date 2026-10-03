@@ -345,10 +345,10 @@ floor up:
 
 | Variant | Layer | What it runs |
 | --- | --- | --- |
-| `native_replay` | L0 native SQLite | A C program replays the exact statements the adapter executed |
+| `native_replay` | L0 native SQLite | A C program replays the exact statements the storage layer executed |
 | `exqlite_replay` | L1 ExQLite | The same statements through `Exqlite.Sqlite3` |
 | `connection_replay` | L2 Connection | The same statements through `Storage.SQLite.Connection` |
-| `vial_keeper_adapter` | L3 adapter | The public SQLite adapter operation |
+| `vial_keeper_storage` | L3 storage | `Storage.Services` on the SQLite backend: the storage entry point the database owner and read workers call |
 | `vial_keeper_service` | L4 service | `Documents` / `Changes` / `Query` through the catalog, admission, owner and read pool (disk mode) |
 | `vial_keeper_http` | L5 HTTP router | The `/v1` Plug router in process: request decoding, routing, response encoding; no socket (disk mode) |
 | `exqlite_minimal` | reference | Hand-written minimal SQL through ExQLite |
@@ -356,18 +356,41 @@ floor up:
 The difference between neighbouring layers is that layer's cost; the report's
 `ladder` list gives each step as a paired ratio and a per-operation delta with
 95% confidence intervals. `sql_shape` compares `exqlite_minimal` with
-`exqlite_replay`: what the SQL the adapter chooses costs, separately from the
-cost of issuing it. Select a subset with `--variants`, for example
-`--variants native_replay,exqlite_replay,vial_keeper_adapter`.
+`exqlite_replay`: what the SQL the storage layer chooses costs, separately
+from the cost of issuing it. Select a subset with `--variants`, for example
+`--variants native_replay,exqlite_replay,vial_keeper_storage`.
+
+L3 calls `Storage.Services` rather than the SQLite adapter's own read API
+(`Adapter.get_document/2`, `Adapter.execute_query/2`): the adapter API takes
+shorter, non-production code paths for point reads and queries, so measuring
+it would understate what the runtime actually pays.
+
+### Where each layer's time goes
+
+Every variant records `VialKeeper.Probe` counter deltas around
+each timed call (snapshots are taken outside the timer). The benchmark runs
+with both probe tiers enabled. Each variant's `probes` map gives, per probe,
+`calls_per_operation`, `ns_per_operation` (a mean), and the histogram
+percentile bounds; the printed summary lists the six most expensive probes.
+Probes are inclusive and nest (`sqlite_step` runs inside
+`storage_get_document`, which runs inside `read_worker_job`), so compare a
+probe with its enclosing probe, and compare probe totals with the variant's
+`mean_ns_per_operation`, not the median.
+
+The probes' own cost is reported, not assumed: each run measures the per-call
+cost of an enabled and a disabled probe (`environment.probe_cost_ns`), and each
+variant's `probe_overhead_estimate` multiplies it by that variant's probe calls
+per operation, both as run here (`profiling_*`, both tiers on) and for the
+production default (`default_*`, standard tier only).
 
 ### How the replays stay honest
 
 - **Same statements.** A capture worker owns a private database seeded like
-  every other variant and runs each sample's adapter operation there, untimed,
+  every other variant and runs each sample's storage operation there, untimed,
   under Erlang call tracing of `Connection.query/3`, `Connection.execute/3`, and
   `Connection.exec/2`. The recorded SQL and parameters are what L0–L2 replay
   for that sample. The worker is a separate process so its process-local
-  caches never warm the measured adapter, and trace patterns are removed
+  caches never warm the measured storage variant, and trace patterns are removed
   before any timed code runs.
 - **Same results.** Each replay must return exactly the rows the captured run
   returned, and every database (including the native one) must end each case
@@ -394,7 +417,7 @@ The service and HTTP layers use catalog bundles seeded through
 `Documents.bulk_write`, so their revision IDs differ from the adapter-level
 fixture (the catalog generates history IDs); document IDs, bodies, sequences,
 and row counts are the same. Their indexed-query plan is checked with
-`Query.explain`; the adapter's is checked by `EXPLAIN QUERY PLAN` on the
+`Query.explain`; the storage layer's is checked by `EXPLAIN QUERY PLAN` on the
 captured statements.
 
 The scenarios are `point_read` (`--reads` single-document gets per sample),
