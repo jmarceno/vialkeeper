@@ -17,7 +17,7 @@ defmodule VialKeeper.Storage.ContextRef do
       case {unquote(context), unquote(adapter)} do
         {%BackendContext{backend_ref: %OpaqueHandle{} = handle} = ctx, adapter} ->
           _ = OpaqueHandle.replace(handle, adapter)
-          %{ctx | identity: Map.get(adapter, :identity) || %{}}
+          unquote(__MODULE__).mirror_identity(ctx, adapter)
 
         {%BackendContext{} = ctx, adapter} ->
           %{
@@ -28,4 +28,9 @@ defmodule VialKeeper.Storage.ContextRef do
       end
     end
   end
+
+  @doc "Mirrors `adapter.identity` onto the context without touching its handle."
+  @spec mirror_identity(BackendContext.t(), map()) :: BackendContext.t()
+  def mirror_identity(%BackendContext{} = context, adapter) when is_map(adapter),
+    do: %{context | identity: Map.get(adapter, :identity) || %{}}
 end
