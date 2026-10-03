@@ -30,6 +30,10 @@ defmodule VialKeeper.Replication.RemoteIdentityHardeningTest do
       |> Conn.send_resp(302, "")
     end
 
+    post "/v1/databases/22222222-2222-4222-8222-222222222222/replication/revisions/get" do
+      send_json(conn, %{"chains" => [], "retention_floor" => 1, "compaction_epoch" => "2"})
+    end
+
     match _ do
       send(Application.get_env(:vial_keeper, :remote_hardening_test_pid), :redirect_followed)
       send_json(conn, %{"current_sequence" => 0})
@@ -89,5 +93,14 @@ defmodule VialKeeper.Replication.RemoteIdentityHardeningTest do
     Application.put_env(:vial_keeper, :remote_hardening_test_pid, self())
     assert {:error, _} = RemoteEndpoint.identity(endpoint(base_url, @redirect))
     refute_received :redirect_followed
+  end
+
+  test "bootstrap revision page with a non-integer compaction epoch is rejected", %{
+    base_url: base_url
+  } do
+    assert {:error, %VialKeeper.Error{}} =
+             RemoteEndpoint.get_revision_chains(endpoint(base_url, @malformed), %{
+               bootstrap: true
+             })
   end
 end

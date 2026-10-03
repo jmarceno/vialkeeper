@@ -44,21 +44,33 @@ defmodule VialKeeper.Replication.RemoteEndpoint do
   end
 
   @identity_integer_fields ~w(current_sequence retention_floor retention_floor_sequence compaction_epoch)
+  @page_integer_fields ~w(retention_floor compaction_epoch)
 
   # A remote peer is untrusted: reject identities whose sequence or epoch fields
   # are not non-negative integers so they cannot reach checkpoint arithmetic.
-  defp validate_identity(identity) when is_map(identity) do
-    valid? =
-      Enum.all?(@identity_integer_fields, &optional_non_neg_integer?(Map.get(identity, &1))) and
-        optional_binary?(Map.get(identity, "history_epoch"))
-
-    if valid?,
-      do: {:ok, identity},
-      else: {:error, VialKeeper.Error.invalid_request("remote replication identity is malformed")}
+  defp validate_identity(identity) do
+    with {:ok, identity} <- validate_integer_fields(identity, @identity_integer_fields, "identity") do
+      if optional_binary?(Map.get(identity, "history_epoch")),
+        do: {:ok, identity},
+        else: malformed("identity")
+    end
   end
 
-  defp validate_identity(_identity),
-    do: {:error, VialKeeper.Error.invalid_request("remote replication identity is malformed")}
+  defp validate_integer_fields(response, fields, label) when is_map(response) do
+    if Enum.all?(fields, &optional_non_neg_integer?(Map.get(response, &1))),
+      do: {:ok, response},
+      else: malformed(label)
+  end
+
+  defp validate_integer_fields(_response, _fields, label), do: malformed(label)
+
+  defp malformed(label),
+    do: {:error, VialKeeper.Error.invalid_request("remote replication #{label} is malformed")}
+
+  defp validated({:ok, response}, fields, label),
+    do: validate_integer_fields(response, fields, label)
+
+  defp validated({:error, _} = error, _fields, _label), do: error
 
   defp optional_non_neg_integer?(value), do: is_nil(value) or (is_integer(value) and value >= 0)
   defp optional_binary?(value), do: is_nil(value) or is_binary(value)
@@ -141,6 +153,7 @@ defmodule VialKeeper.Replication.RemoteEndpoint do
         "/v1/databases/#{endpoint.database_uuid}/replication/revisions/get",
         request
       )
+      |> validated(@page_integer_fields, "revision page")
 
   @impl true
   def import_revision_chains(endpoint, request),
@@ -233,6 +246,7 @@ defmodule VialKeeper.Replication.RemoteEndpoint do
         "/v1/databases/#{endpoint.database_uuid}/replication/boundaries/install",
         request
       )
+      |> validated(~w(compaction_epoch), "boundary install result")
 
   @impl true
   def put_peer_position(endpoint, request) do
