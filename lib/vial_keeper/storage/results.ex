@@ -167,7 +167,7 @@ defmodule VialKeeper.Storage.Results do
   def to_public(list) when is_list(list), do: Enum.map(list, &to_public/1)
 
   def to_public(map) when is_map(map) and not is_struct(map) do
-    Map.new(map, fn {key, value} -> {public_key(key), to_public(value)} end)
+    Map.new(map, fn {key, value} -> {public_key(key), public_value(key, value)} end)
   end
 
   def to_public(%_{} = struct), do: struct |> Map.from_struct() |> to_public()
@@ -194,6 +194,13 @@ defmodule VialKeeper.Storage.Results do
   end
 
   defp public_attachment_entry(other), do: other
+
+  # Document bodies and projected fields are validated JSON (string keys, JSON
+  # scalars, no structs), for which `to_public/1` is the identity; the
+  # GetDocument and PutDocument clauses already pass bodies through. Walking
+  # them would rebuild every result document only to copy it.
+  defp public_value(key, value) when key in [:body, :fields], do: value
+  defp public_value(_key, value), do: to_public(value)
 
   defp public_key(key) when is_atom(key), do: Atom.to_string(key)
   defp public_key(key), do: key

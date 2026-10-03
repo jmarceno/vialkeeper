@@ -853,7 +853,9 @@ Backend exception names and engine query text are not public. Use the envelope:
 ## Observability
 
 OTLP is **opt-in**. Empty `otlp_endpoint` means no exporter and no collector
-network connection.
+network connection. Without an exporter the host records no spans of its own
+(their only destination would be discarded); metrics instrumentation and the
+performance probes are unaffected.
 
 ```toml
 [observability]
@@ -904,7 +906,9 @@ revision bodies, full remote URLs, tokens, or raw codec error text.
 
 ### Trace context
 
-- Inbound HTTP: W3C `traceparent` / `tracestate` extracted.
+- Inbound HTTP: W3C `traceparent` / `tracestate` extracted. With no exporter
+  configured the caller's context is still carried through the request, so a
+  host that exports nothing does not break a trace passing through it.
 - Outbound replication: current context injected so push jobs share one
   `trace_id` across hosts.
 - Finch client telemetry is bridged to OTel. Bandit server is **not** bridged

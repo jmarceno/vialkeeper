@@ -55,13 +55,28 @@ defmodule VialKeeper.Config do
   def defaults, do: @defaults
 
   @spec host_limits() :: map()
-  def host_limits do
-    Application.get_env(:vial_keeper, :host_limits, []) |> Map.new()
-  end
+  def host_limits, do: env_map(:host_limits)
 
   @spec admission_policy() :: map()
-  def admission_policy do
-    Application.get_env(:vial_keeper, :admission_policy, []) |> Map.new()
+  def admission_policy, do: env_map(:admission_policy)
+
+  # Host limits are read on hot paths (several times per request). Building a
+  # map from the ~40-entry keyword list each time dominated those reads, so
+  # the map is memoized against the environment value it was built from: a
+  # changed environment (`Application.put_env/3`) is picked up on the next
+  # read, and an unchanged one costs a lookup and a comparison.
+  defp env_map(key) do
+    source = Application.get_env(:vial_keeper, key, [])
+
+    case :persistent_term.get({__MODULE__, key}, nil) do
+      {^source, map} ->
+        map
+
+      _stale ->
+        map = Map.new(source)
+        :ok = :persistent_term.put({__MODULE__, key}, {source, map})
+        map
+    end
   end
 
   @spec shutdown_timeout() :: pos_integer()

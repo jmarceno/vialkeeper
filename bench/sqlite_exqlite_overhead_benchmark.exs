@@ -1119,11 +1119,34 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   defp invoke!(state, :vial_keeper_http, %{http: requests}) do
     Enum.each(requests, fn request ->
-      case VialKeeper.HTTP.Router.call(request, state.router_opts) do
+      response = VialKeeper.HTTP.Router.call(request, state.router_opts)
+      :ok = take_test_response(response)
+
+      case response do
         %{status: 200} -> :ok
         response -> Mix.raise("HTTP #{response.status}: #{response.resp_body}")
       end
     end)
+  end
+
+  # The Plug test adapter mails every sent response (and a "sent" marker) to
+  # the calling process; a real server writes it to the socket instead. Left
+  # in the mailbox they pile up across samples and every garbage collection
+  # of this process scans them, inflating every layer measured after them.
+  defp take_test_response(%Plug.Conn{adapter: {Plug.Adapters.Test.Conn, %{ref: ref}}}) do
+    sent = Plug.Conn.Adapter.already_sent()
+
+    receive do
+      {^ref, {_status, _headers, _body}} -> :ok
+    after
+      0 -> Mix.raise("the HTTP layer sent no response")
+    end
+
+    receive do
+      ^sent -> :ok
+    after
+      0 -> :ok
+    end
   end
 
   defp invoke!(state, :exqlite_minimal, %{base: base}) do

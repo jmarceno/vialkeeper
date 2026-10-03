@@ -439,6 +439,10 @@ path.
   revision hashes, canonical JSON, term blobs, captured statements, encoded
   native requests, and HTTP requests for a sample are built before any timer
   starts. The native control times itself around its SQLite calls only.
+- **L5 consumes its responses.** The Plug test adapter mails each response
+  to the calling process; L5 takes those messages after every request, as a
+  socket write would, so they never accumulate in the benchmark process's
+  mailbox and inflate its garbage collections.
 - **Samples are paired and the order rotates.** Every sample runs each variant
   once on the same input; the order rotates through every position and
   reverses on alternate cycles.

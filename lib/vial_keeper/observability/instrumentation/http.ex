@@ -39,13 +39,17 @@ defmodule VialKeeper.Observability.Instrumentation.HTTP do
   @spec wrap(Plug.Conn.t(), (Plug.Conn.t() -> Plug.Conn.t())) :: Plug.Conn.t()
   def wrap(conn, fun) when is_function(fun, 1) do
     if tracing_api_available?() do
-      wrap_traced(conn, fun)
+      wrap_traced(conn, fun, Tracer.tracing_enabled?())
     else
       wrap_untraced(conn, fun)
     end
   end
 
-  defp wrap_traced(conn, fun) do
+  # With no span exporter configured the request span would be discarded, so
+  # (like `Tracer.with_span/3`) none is started. The inbound trace context is
+  # still extracted and attached, so calls this request makes to other hosts
+  # carry the caller's trace, and the duration metric is still recorded.
+  defp wrap_traced(conn, fun, span?) do
     # Extract inbound trace context (W3C traceparent/tracestate) so an external
     # caller's trace continues into this request span. extract/1 attaches the
     # extracted context and returns a detach token used to restore the prior
@@ -56,17 +60,7 @@ defmodule VialKeeper.Observability.Instrumentation.HTTP do
     # Capture the route template and db uuid before routing consumes path_info.
     route = route_template(conn)
     db_uuid = database_uuid(conn)
-
-    start_attrs =
-      Attributes.build(
-        [http_method: conn.method, http_route: route] ++
-          if(db_uuid, do: [db_uuid: db_uuid], else: [])
-      )
-
-    span_ctx =
-      OtelTracer.start_span(@request_span, %{kind: :server, attributes: start_attrs})
-
-    _ = OtelTracer.set_current_span(span_ctx)
+    span_ctx = start_request_span(span?, conn.method, route, db_uuid)
 
     conn =
       Plug.Conn.register_before_send(conn, fn conn ->
@@ -104,8 +98,24 @@ defmodule VialKeeper.Observability.Instrumentation.HTTP do
         :ok
       end
 
-      _ = OtelTracer.set_current_span(:undefined)
+      if span? do
+        _ = OtelTracer.set_current_span(:undefined)
+      end
     end
+  end
+
+  defp start_request_span(false, _method, _route, _db_uuid), do: :undefined
+
+  defp start_request_span(true, method, route, db_uuid) do
+    start_attrs =
+      Attributes.build(
+        [http_method: method, http_route: route] ++
+          if(db_uuid, do: [db_uuid: db_uuid], else: [])
+      )
+
+    span_ctx = OtelTracer.start_span(@request_span, %{kind: :server, attributes: start_attrs})
+    _ = OtelTracer.set_current_span(span_ctx)
+    span_ctx
   end
 
   defp wrap_untraced(conn, fun) do
