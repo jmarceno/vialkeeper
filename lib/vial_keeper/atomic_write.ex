@@ -20,9 +20,9 @@ defmodule VialKeeper.AtomicWrite do
   @spec write(Path.t(), iodata()) :: :ok | {:error, File.posix()}
   def write(path, contents) do
     root = Path.dirname(path)
+    temp = path <> ".tmp." <> Integer.to_string(System.unique_integer([:positive]))
 
     with :ok <- File.mkdir_p(root),
-         temp = path <> ".tmp." <> Integer.to_string(System.unique_integer([:positive])),
          :ok <- File.write(temp, contents),
          :ok <- sync(temp),
          :ok <- File.rename(temp, path),
@@ -30,33 +30,17 @@ defmodule VialKeeper.AtomicWrite do
       :ok
     else
       {:error, reason} ->
-        # The temp path is local to this clause only on the success path; best
-        # effort cleanup of any leftover temp is handled below.
-        cleanup_temps(path)
+        # Remove only this call's temp file; a concurrent writer to the same
+        # path owns its own uniquely-named temp and must not lose it mid-write.
+        _ = File.rm(temp)
         {:error, reason}
     end
-  end
-
-  defp cleanup_temps(path) do
-    root = Path.dirname(path)
-
-    case File.ls(root) do
-      {:ok, entries} ->
-        prefix = Path.basename(path) <> ".tmp."
-        Enum.each(entries, &cleanup_temp_entry(root, prefix, &1))
-
-      {:error, _} ->
-        :ok
-    end
-  end
-
-  defp cleanup_temp_entry(root, prefix, entry) do
-    if String.starts_with?(entry, prefix), do: File.rm(Path.join(root, entry))
   end
 
   defp sync(file) do
     case File.open(file, [:read, :write], fn io -> :file.sync(io) end) do
       {:ok, :ok} -> :ok
+      {:ok, {:error, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}
     end
   end
