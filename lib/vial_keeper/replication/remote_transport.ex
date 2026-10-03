@@ -290,6 +290,7 @@ defmodule VialKeeper.Replication.RemoteTransport do
       method: method,
       url: String.trim_trailing(base_url, "/") <> path,
       retry: false,
+      redirect: false,
       receive_timeout: timeout,
       connect_options: [timeout: 5_000]
     ]
@@ -303,6 +304,7 @@ defmodule VialKeeper.Replication.RemoteTransport do
       method: method,
       url: String.trim_trailing(base_url, "/") <> path,
       retry: false,
+      redirect: false,
       receive_timeout: timeout,
       connect_options: [timeout: min(timeout, 5_000)],
       decode_body: false,

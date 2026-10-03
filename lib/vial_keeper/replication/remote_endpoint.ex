@@ -36,8 +36,32 @@ defmodule VialKeeper.Replication.RemoteEndpoint do
   def new(_), do: {:error, VialKeeper.Error.invalid_request("invalid remote endpoint")}
 
   @impl true
-  def identity(endpoint),
-    do: call(endpoint, :get, "/v1/databases/#{endpoint.database_uuid}/replication/identity")
+  def identity(endpoint) do
+    with {:ok, identity} <-
+           call(endpoint, :get, "/v1/databases/#{endpoint.database_uuid}/replication/identity") do
+      validate_identity(identity)
+    end
+  end
+
+  @identity_integer_fields ~w(current_sequence retention_floor retention_floor_sequence compaction_epoch)
+
+  # A remote peer is untrusted: reject identities whose sequence or epoch fields
+  # are not non-negative integers so they cannot reach checkpoint arithmetic.
+  defp validate_identity(identity) when is_map(identity) do
+    valid? =
+      Enum.all?(@identity_integer_fields, &optional_non_neg_integer?(Map.get(identity, &1))) and
+        optional_binary?(Map.get(identity, "history_epoch"))
+
+    if valid?,
+      do: {:ok, identity},
+      else: {:error, VialKeeper.Error.invalid_request("remote replication identity is malformed")}
+  end
+
+  defp validate_identity(_identity),
+    do: {:error, VialKeeper.Error.invalid_request("remote replication identity is malformed")}
+
+  defp optional_non_neg_integer?(value), do: is_nil(value) or (is_integer(value) and value >= 0)
+  defp optional_binary?(value), do: is_nil(value) or is_binary(value)
 
   @impl true
   def has_local_origin_changes?(endpoint) do
