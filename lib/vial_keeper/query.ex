@@ -57,16 +57,15 @@ defmodule VialKeeper.Query do
     end
   end
 
+  # Checks that depend on the database's identity (the configured limit and
+  # bookmark staleness) run in the storage snapshot that executes the query
+  # (`VialKeeper.Query.SnapshotChecks`), so a query is one trip to its database.
   defp execute_normalized(uuid, request, timeout_mode) do
     with {:ok, normalized} <- Normalizer.normalize(request),
          :ok <- validate_query(normalized),
-         {:ok, identity} <-
-           command(uuid, {:command, :identity, %{}}, timeout_mode),
-         :ok <- validate_database_query(normalized, identity),
-         {:ok, prepared} <- prepare_bookmark(normalized, identity),
          {:ok, result} <-
-           command(uuid, {:command, :query, Prepared.wrap(prepared)}, timeout_mode) do
-      add_bookmark(result, prepared, identity)
+           command(uuid, {:command, :query, Prepared.wrap(normalized)}, timeout_mode) do
+      add_bookmark(result, normalized)
     end
   end
 
@@ -78,9 +77,7 @@ defmodule VialKeeper.Query do
   @spec explain(uuid(), map()) :: result(map())
   def explain(uuid, request) do
     with {:ok, normalized} <- Normalizer.normalize(request),
-         :ok <- validate_query(normalized),
-         {:ok, identity} <- DatabaseCatalog.command(uuid, {:command, :identity, %{}}),
-         :ok <- validate_database_query(normalized, identity) do
+         :ok <- validate_query(normalized) do
       DatabaseCatalog.command(uuid, {:command, :explain_query, Prepared.wrap(normalized)})
     end
   end
@@ -320,54 +317,15 @@ defmodule VialKeeper.Query do
   defp validate_bookmark_type(_),
     do: VialKeeper.Error.invalid_bookmark("bookmark must be a string")
 
-  defp validate_database_query(request, identity) do
-    limit = value_or_default(get(request, :limit), 50)
-    max = value_or_default(get_in(identity, [:config, "queries", "max_limit"]), 500)
-
-    case limit_status(limit, max) do
-      :within ->
-        :ok
-
-      :exceeds ->
-        {:error, VialKeeper.Error.resource_limit("query limit exceeds the database configuration")}
-    end
-  end
-
-  defp prepare_bookmark(request, identity) do
-    case get(request, :bookmark) do
-      nil ->
-        {:ok, request}
-
-      bookmark ->
-        with {:ok, decoded} <-
-               BookmarkCodec.decode(bookmark, %{
-                 "query_fingerprint" => request.fingerprint
-               }),
-             sequence <- decoded.sequence,
-             current <- get(identity, :current_sequence),
-             :ok <- validate_bookmark_sequence(sequence, current) do
-          {:ok,
-           request
-           |> Map.put(:after_id, decoded.last_id)
-           |> Map.put(:after_ordering, decoded.ordering_key)
-           |> Map.put(:bookmark_payload, decoded)}
-        end
-    end
-  end
-
-  defp validate_bookmark_sequence(sequence, sequence), do: :ok
-
-  defp validate_bookmark_sequence(_sequence, _current),
-    do: {:error, VialKeeper.Error.bookmark_stale("bookmark sequence is no longer current")}
-
-  defp add_bookmark(result, request, identity) do
+  defp add_bookmark(result, request) do
     case get(result, :has_more) do
-      true -> add_next_bookmark(result, request, identity)
+      true -> add_next_bookmark(result, request)
       _ -> {:ok, without_bookmark(result)}
     end
   end
 
-  defp add_next_bookmark(result, request, identity) do
+  # The storage result's sequence is the identity read in the query's snapshot.
+  defp add_next_bookmark(result, request) do
     values =
       case get(result, :results) do
         nil -> value_or_default(get(result, :documents), [])
@@ -382,10 +340,7 @@ defmodule VialKeeper.Query do
 
     last_id = get(last, :id)
 
-    sequence =
-      get(result, :sequence)
-      |> value_or_default(get(identity, :current_sequence))
-      |> value_or_default(0)
+    sequence = value_or_default(get(result, :sequence), 0)
 
     case result_plan_metadata(result, request) do
       {:ok, index_bindings, plan_digest} when is_binary(last_id) ->

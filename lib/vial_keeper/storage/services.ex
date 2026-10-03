@@ -12,7 +12,7 @@ defmodule VialKeeper.Storage.Services do
 
   alias VialKeeper.MapAccess
   alias VialKeeper.Probe
-  alias VialKeeper.Query.{Normalizer, SubscriptionRequest}
+  alias VialKeeper.Query.{Normalizer, Prepared, SnapshotChecks, SubscriptionRequest}
   alias VialKeeper.Replication.Profile
   alias VialKeeper.Search
   alias VialKeeper.Storage.BackendContext
@@ -211,12 +211,25 @@ defmodule VialKeeper.Storage.Services do
     Probe.measure :storage_execute_query do
       with_port(context, :index_candidates, fn ->
         with {:ok, current_identity} <- identity(context),
-             {:ok, normalized} <- Normalizer.normalize_public_request(request) do
-          Query.execute(context, normalized, current_identity)
+             {:ok, normalized} <- Normalizer.normalize_public_request(request),
+             {:ok, admitted} <- admit_public_query(request, normalized, current_identity) do
+          Query.execute(context, admitted, current_identity)
         end
       end)
     end
   end
+
+  # A prepared request comes from the public query service, which leaves its
+  # identity-dependent checks to this snapshot (see `SnapshotChecks`).
+  defp admit_public_query(%Prepared{}, normalized, identity),
+    do: SnapshotChecks.admit(normalized, identity)
+
+  defp admit_public_query(_request, normalized, _identity), do: {:ok, normalized}
+
+  defp check_public_query_limit(%Prepared{}, normalized, identity),
+    do: SnapshotChecks.check_limit(normalized, identity)
+
+  defp check_public_query_limit(_request, _normalized, _identity), do: :ok
 
   @doc "Normalizes and executes a public subscription snapshot."
   @spec execute_public_subscription_snapshot(BackendContext.t(), map()) ::
@@ -241,7 +254,8 @@ defmodule VialKeeper.Storage.Services do
   def explain_public_query(%BackendContext{} = context, request) when is_map(request) do
     with_port(context, :index_candidates, fn ->
       with {:ok, current_identity} <- identity(context),
-           {:ok, normalized} <- Normalizer.normalize_public_request(request) do
+           {:ok, normalized} <- Normalizer.normalize_public_request(request),
+           :ok <- check_public_query_limit(request, normalized, current_identity) do
         Query.explain(context, normalized, current_identity)
       end
     end)
