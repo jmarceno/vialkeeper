@@ -194,7 +194,7 @@ defmodule VialKeeper.Replication do
   defp finalize_read_changes(_source, context, options) do
     with {:ok, selected} <-
            take_batch_bytes(
-             terminal_changes(%{results: context.selected}, context.terminal),
+             terminal_changes(%{results: context.selected}, context.since, context.terminal),
              options
            ),
          :ok <- ensure_progress(selected, context.since, context.terminal) do
@@ -559,9 +559,10 @@ defmodule VialKeeper.Replication do
              )
            ]),
          {:ok, _confirmed} <-
-           endpoint_call(target, :confirm_durable_commit, [%{imported: imported}]) do
+           endpoint_call(target, :confirm_durable_commit, [%{imported: imported}]),
+         next_cursor = get(page, :continuation_cursor),
+         :ok <- ensure_cursor_advanced(next_cursor, cursor) do
       terminal = get(context.source_identity, :current_sequence) || context.terminal
-      next_cursor = get(page, :continuation_cursor)
 
       context =
         context
@@ -591,6 +592,7 @@ defmodule VialKeeper.Replication do
          %{
            context
            | since: terminal,
+             selected: [],
              bootstrap_required: false,
              bootstrap_applied: true
          }}
@@ -603,6 +605,13 @@ defmodule VialKeeper.Replication do
         {:error, error}
     end
   end
+
+  # A peer that repeats a pagination cursor would otherwise loop forever.
+  defp ensure_cursor_advanced(next_cursor, cursor)
+       when not is_nil(next_cursor) and next_cursor == cursor,
+       do: {:error, Error.invalid_request("replication page cursor did not advance")}
+
+  defp ensure_cursor_advanced(_next_cursor, _cursor), do: :ok
 
   defp bootstrap_chains(page) do
     case get(page, :chains) do
@@ -665,6 +674,7 @@ defmodule VialKeeper.Replication do
          install_page <- boundary_install_page(page, source, install_id, is_nil(cursor)),
          {:ok, install_result} <- endpoint_call(target, :install_boundary_pages, [install_page]),
          next_cursor <- get(page, :next_page),
+         :ok <- ensure_cursor_advanced(next_cursor, cursor),
          installed_through <-
            max(installed, MapAccess.get(install_result, :compaction_epoch, compaction_epoch)) do
       if next_cursor do
@@ -985,9 +995,19 @@ defmodule VialKeeper.Replication do
 
   defp ensure_progress(_selected, _since, _terminal), do: :ok
 
-  defp terminal_changes(changes, terminal) do
-    Enum.filter(get(changes, :results) || [], &(get(&1, :sequence) <= terminal))
+  # Only changes strictly after the checkpoint and within the captured terminal
+  # can advance the checkpoint; anything else (including a non-integer sequence
+  # from an untrusted peer) would regress `since` and replay the same batch forever.
+  defp terminal_changes(changes, since, terminal) do
+    Enum.filter(get(changes, :results) || [], &advancing_change?(&1, since, terminal))
   end
+
+  defp advancing_change?(change, since, terminal) when is_map(change) do
+    sequence = get(change, :sequence)
+    is_integer(sequence) and sequence > since and sequence <= terminal
+  end
+
+  defp advancing_change?(_change, _since, _terminal), do: false
 
   defp take_batch_bytes(changes, options) do
     maximum = batch_byte_limit(options)
