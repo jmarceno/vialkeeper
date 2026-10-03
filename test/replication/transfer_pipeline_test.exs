@@ -192,6 +192,17 @@ defmodule VialKeeper.Replication.TransferPipelineTest do
              TransferPipeline.run(nil, nil, context, config(2))
   end
 
+  test "refuses preloaded chains combined with documents to fetch" do
+    context = %{
+      documents: documents(1),
+      chains: [%{"document_id" => "preloaded", "revisions" => []}],
+      transfer_preloaded: true
+    }
+
+    assert {:error, %Error{code: :invalid_request}} =
+             TransferPipeline.run(nil, nil, context, config(2))
+  end
+
   test "normalizes malformed and non-Error endpoint responses" do
     malformed = %VialKeeper.Replication.TransferPipelineTestErrorEndpoint{
       response: {:ok, %{}}

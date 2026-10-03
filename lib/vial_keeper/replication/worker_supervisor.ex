@@ -7,5 +7,9 @@ defmodule VialKeeper.Replication.WorkerSupervisor do
   def start_link(_args \\ []), do: DynamicSupervisor.start_link(__MODULE__, [], name: __MODULE__)
 
   @impl true
-  def init(_args), do: DynamicSupervisor.init(strategy: :one_for_one)
+  def init(_args) do
+    # Enforces the worker cap atomically; JobManager's pre-check alone can race.
+    max_workers = VialKeeper.Config.host_limits()[:max_replication_workers] || 32
+    DynamicSupervisor.init(strategy: :one_for_one, max_children: max_workers)
+  end
 end

@@ -12,6 +12,7 @@ defmodule VialKeeper.Replication.JobManager do
   alias VialKeeper.Replication.LocalEndpoint
   alias VialKeeper.Replication.RemoteEndpoint
   alias VialKeeper.Runtime.DatabaseCatalog
+  require Logger
   @table :vial_keeper_replication_jobs
 
   @type job_reply :: {:ok, map()} | {:error, Error.t()}
@@ -43,7 +44,9 @@ defmodule VialKeeper.Replication.JobManager do
 
   @impl true
   def init(_args) do
-    _ = ensure_table()
+    # The table must be owned by this long-lived process: a table created lazily
+    # by a caller (an HTTP request, say) would vanish when that caller exits.
+    _ = :ets.new(@table, [:named_table, :public, :set])
     {:ok, %{}}
   end
 
@@ -72,8 +75,17 @@ defmodule VialKeeper.Replication.JobManager do
   defp resume_job(uuid, job) do
     definition = job.definition
 
-    if job.enabled and option(definition, :mode, "one_shot") in ["continuous", :continuous],
-      do: start(uuid, job.job_id)
+    if job.enabled and option(definition, :mode, "one_shot") in ["continuous", :continuous] do
+      case start(uuid, job.job_id) do
+        {:ok, _} ->
+          :ok
+
+        {:error, %Error{} = error} ->
+          Logger.warning(
+            "replication job did not resume job_id=#{job.job_id} code=#{error.code} error=#{error.message}"
+          )
+      end
+    end
   end
 
   @spec get(binary(), binary()) :: job_reply()
@@ -110,7 +122,7 @@ defmodule VialKeeper.Replication.JobManager do
   def active?(uuid) do
     ensure_table()
     |> :ets.select(active_state_match_specs(uuid))
-    |> Enum.any?(&active_state?/1)
+    |> Enum.any?(fn {state, pid} -> live_active?(state, pid) end)
   end
 
   @doc """
@@ -160,8 +172,8 @@ defmodule VialKeeper.Replication.JobManager do
 
   defp active_state_match_specs(uuid) do
     [
-      {{:"$1", :"$2", :"$3", :"$4", :"$5", :"$6"}, [{:==, :"$4", uuid}], [:"$2"]},
-      {{:"$1", :"$2", :"$3", :"$4", :"$5"}, [{:==, :"$4", uuid}], [:"$2"]}
+      {{:"$1", :"$2", :"$3", :"$4", :"$5", :"$6"}, [{:==, :"$4", uuid}], [{{:"$2", :"$3"}}]},
+      {{:"$1", :"$2", :"$3", :"$4", :"$5"}, [{:==, :"$4", uuid}], [{{:"$2", :"$3"}}]}
     ]
   end
 
@@ -244,7 +256,7 @@ defmodule VialKeeper.Replication.JobManager do
     end
   end
 
-  defp cancel_entry(_uuid, _job_id, []),
+  defp cancel_entry(_uuid, _job_id, _entries),
     do: {:error, Error.replication_job_not_found("replication job is not running")}
 
   @spec cancel(binary()) :: job_reply()
@@ -273,12 +285,19 @@ defmodule VialKeeper.Replication.JobManager do
   @spec delete(binary(), binary()) :: :ok | {:ok, map()} | {:error, Error.t()}
   def delete(uuid, job_id) do
     case :ets.lookup(ensure_table(), job_id) do
-      [{^job_id, state, _pid, ^uuid, _, _details}] when state in @active_states ->
-        {:error, Error.database_not_closable("replication job is active")}
+      [{^job_id, state, pid, ^uuid, _, _details}] when state in @active_states ->
+        if Process.alive?(pid),
+          do: {:error, Error.database_not_closable("replication job is active")},
+          else: delete_job(uuid, job_id)
 
       _ ->
-        DatabaseCatalog.command(uuid, {:command, :delete_job, job_id})
+        delete_job(uuid, job_id)
     end
+  end
+
+  defp delete_job(uuid, job_id) do
+    _ = :ets.delete(ensure_table(), job_id)
+    DatabaseCatalog.command(uuid, {:command, :delete_job, job_id})
   end
 
   @spec report(binary(), atom()) :: :ok
@@ -324,6 +343,9 @@ defmodule VialKeeper.Replication.JobManager do
 
         {:error, {:shutdown, %Error{} = error}} ->
           {:error, error}
+
+        {:error, :max_children} ->
+          {:error, Error.resource_limit("maximum replication worker count reached")}
 
         {:error, {:already_started, _pid}} ->
           {:error, Error.replication_already_running("replication worker is already running")}
@@ -794,12 +816,11 @@ defmodule VialKeeper.Replication.JobManager do
 
   defp active_state?(state), do: state in @active_states
 
-  defp ensure_table do
-    case :ets.whereis(@table) do
-      :undefined -> :ets.new(@table, [:named_table, :public, :set])
-      _ -> @table
-    end
-  end
+  # A worker killed without reporting leaves its last active state behind; only a
+  # live worker can keep a job (and its database) active.
+  defp live_active?(state, pid), do: active_state?(state) and is_pid(pid) and Process.alive?(pid)
+
+  defp ensure_table, do: @table
 
   defp option(map, key, default) when is_map(map),
     do: MapAccess.get(map, key, default)

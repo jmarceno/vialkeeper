@@ -312,7 +312,14 @@ defmodule VialKeeper.Replication.TransferPipeline do
     end
   end
 
-  defp preloaded_state(_chunks, _chains, _blob_mode), do: {:ok, {%{}, [], %{}}}
+  defp preloaded_state(_chunks, [], _blob_mode), do: {:ok, {%{}, [], %{}}}
+
+  # Preloaded chains and fetched chunks would both claim ordinal 0; refuse rather
+  # than silently dropping the preloaded chains.
+  defp preloaded_state(_chunks, _chains, _blob_mode),
+    do:
+      {:error,
+       Error.invalid_request("replication transfer cannot mix preloaded and fetched chains")}
 
   defp run_transfer_loop(state) do
     state = receive_cancel(state)
@@ -485,11 +492,16 @@ defmodule VialKeeper.Replication.TransferPipeline do
   defp take_blob_starts([], _available, _reserved, _max_bytes, started),
     do: {Enum.reverse(started), []}
 
+  # `reserved` accumulates the bytes of blobs started in this pass as well.
   defp take_blob_starts([obligation | rest], available, reserved, max_bytes, started) do
-    started_bytes = Enum.reduce(started, 0, &(&1.length + &2))
-
-    if reserved + started_bytes + obligation.length <= max_bytes do
-      take_blob_starts(rest, available - 1, reserved, max_bytes, [obligation | started])
+    if reserved + obligation.length <= max_bytes do
+      take_blob_starts(
+        rest,
+        available - 1,
+        reserved + obligation.length,
+        max_bytes,
+        [obligation | started]
+      )
     else
       # FIFO head-of-line: keep this blob and every later blob queued until budget frees.
       {Enum.reverse(started), [obligation | rest]}
@@ -553,15 +565,8 @@ defmodule VialKeeper.Replication.TransferPipeline do
       when is_map_key(state.blob_diff_tasks, ref) or is_map_key(state.blob_tasks, ref) ->
         fail_tasks(state, Error.internal_error("replication blob transfer failed"))
 
-      {:DOWN, ref, :process, _pid, :normal} when is_map_key(state.chain_tasks, ref) ->
-        receive_one_task_result(state)
-
       {:DOWN, ref, :process, _pid, reason} when is_map_key(state.chain_tasks, ref) ->
         fail_tasks(state, normalize_chain_error(reason))
-
-      {:DOWN, ref, :process, _pid, :normal}
-      when is_map_key(state.blob_diff_tasks, ref) or is_map_key(state.blob_tasks, ref) ->
-        receive_one_task_result(state)
 
       {:DOWN, ref, :process, _pid, reason}
       when is_map_key(state.blob_diff_tasks, ref) or is_map_key(state.blob_tasks, ref) ->
@@ -613,11 +618,20 @@ defmodule VialKeeper.Replication.TransferPipeline do
 
     Enum.each(all_tasks(state), fn {ref, _task} ->
       _ = Process.demonitor(ref, [:flush])
+      flush_reply(ref)
     end)
 
     _state = release_blob_reservations(state)
 
     {:error, error, measurements(state)}
+  end
+
+  defp flush_reply(ref) do
+    receive do
+      {^ref, _reply} -> :ok
+    after
+      0 -> :ok
+    end
   end
 
   defp measurements(state) do
@@ -884,8 +898,16 @@ defmodule VialKeeper.Replication.TransferPipeline do
   defp endpoint_call(%module{} = endpoint, function, args) when is_atom(module),
     do: apply(module, function, [endpoint | args])
 
+  # A tracked task only reaches :DOWN while still tracked when it exited without a
+  # recognised reply (replies demonitor with :flush). Waiting again would hang.
+  defp normalize_chain_error(:normal),
+    do: Error.internal_error("replication chain fetch returned an invalid result")
+
   defp normalize_chain_error(%Error{} = error), do: error
   defp normalize_chain_error(_reason), do: Error.internal_error("replication chain fetch failed")
+
+  defp normalize_blob_error(:normal),
+    do: Error.internal_error("replication blob transfer returned an invalid result")
 
   defp normalize_blob_error({:vial_keeper_transfer_stream_error, %Error{} = error}), do: error
   defp normalize_blob_error(%Error{} = error), do: error
