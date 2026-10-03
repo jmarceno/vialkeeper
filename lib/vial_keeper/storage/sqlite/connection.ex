@@ -8,6 +8,15 @@ defmodule VialKeeper.Storage.SQLite.Connection do
 
   @type handle :: reference()
 
+  # Rows are fetched in chunks: each ExQLite call is a dirty-scheduler hop, so
+  # one call per chunk instead of one per row (plus a final call to observe
+  # completion) is the dominant saving for small and large results alike.
+  @fetch_chunk_rows 100
+
+  @doc "Rows fetched per ExQLite call; benchmarks replay with the same size."
+  @spec fetch_chunk_rows() :: pos_integer()
+  def fetch_chunk_rows, do: @fetch_chunk_rows
+
   @spec open(binary(), keyword()) :: {:ok, handle()} | {:error, term()}
   def open(path, opts \\ []) do
     Sqlite3.open(path, opts)
@@ -76,11 +85,17 @@ defmodule VialKeeper.Storage.SQLite.Connection do
   defp run(conn, sql, params, collect_rows) do
     sql = IO.iodata_to_binary(sql)
 
-    with {:ok, statement, origin} <- Statements.checkout(conn, sql),
-         :ok <- maybe_reset_statement(statement, origin),
-         :ok <- bind(statement, params) do
+    with {:ok, statement} <- Statements.checkout(conn, sql) do
+      result = bind_and_fetch(conn, statement, params, collect_rows)
+      :ok = Statements.checkin(conn)
+      result
+    end
+  end
+
+  defp bind_and_fetch(conn, statement, params, collect_rows) do
+    with :ok <- bind(statement, params) do
       Probe.measure :sqlite_step do
-        step(conn, statement, collect_rows, [])
+        fetch(conn, statement, collect_rows, [])
       end
     end
   end
@@ -91,21 +106,19 @@ defmodule VialKeeper.Storage.SQLite.Connection do
     end
   end
 
-  defp maybe_reset_statement(_statement, :new), do: :ok
-
-  defp maybe_reset_statement(statement, :cached) do
-    Probe.measure :sqlite_reset do
-      Sqlite3.reset(statement)
-    end
-  end
-
-  defp step(conn, statement, collect_rows, rows) do
-    case Sqlite3.step(conn, statement) do
-      {:row, row} when collect_rows -> step(conn, statement, collect_rows, [row | rows])
-      {:row, _row} -> step(conn, statement, collect_rows, rows)
-      :done -> {:ok, Enum.reverse(rows)}
+  defp fetch(conn, statement, collect_rows, chunks) do
+    case Sqlite3.multi_step(conn, statement, @fetch_chunk_rows) do
+      {:done, rows} -> {:ok, collected(rows, chunks, collect_rows)}
+      {:rows, rows} -> fetch(conn, statement, collect_rows, collect(rows, chunks, collect_rows))
       {:error, reason} -> {:error, reason}
       other -> {:error, other}
     end
   end
+
+  defp collect(_rows, chunks, false), do: chunks
+  defp collect(rows, chunks, true), do: [rows | chunks]
+
+  defp collected(_rows, _chunks, false), do: []
+  defp collected(rows, [], true), do: rows
+  defp collected(rows, chunks, true), do: Enum.concat(Enum.reverse([rows | chunks]))
 end

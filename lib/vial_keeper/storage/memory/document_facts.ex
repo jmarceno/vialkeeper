@@ -7,11 +7,20 @@ defmodule VialKeeper.Storage.Memory.DocumentFacts do
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Memory.{Context, Store}
   alias VialKeeper.Storage.Ports.Errors
+  alias VialKeeper.Storage.Results
 
   @impl true
   def find_document(%BackendContext{} = context, document_id) when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context) do
       {:ok, Store.find_document(Store.get(adapter.store), document_id)}
+    end
+  end
+
+  @impl true
+  def find_winner(%BackendContext{} = context, document_id) when is_binary(document_id) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      state = Store.get(adapter.store)
+      state |> Store.find_document(document_id) |> winner(state)
     end
   end
 
@@ -28,6 +37,21 @@ defmodule VialKeeper.Storage.Memory.DocumentFacts do
       when is_binary(document_id) and is_binary(revision_id) do
     with {:ok, adapter} <- Context.unwrap(context) do
       lookup_revision(Store.get(adapter.store), document_id, revision_id)
+    end
+  end
+
+  @impl true
+  def find_revision_for_document(
+        %BackendContext{} = context,
+        %{document_id: document_id},
+        revision_id
+      )
+      when is_binary(document_id) and is_binary(revision_id) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      case Store.find_revision(Store.get(adapter.store), document_id, revision_id) do
+        {:ok, revision} -> {:ok, revision}
+        {:error, reason} -> {:error, Errors.normalize(reason)}
+      end
     end
   end
 
@@ -64,6 +88,11 @@ defmodule VialKeeper.Storage.Memory.DocumentFacts do
       end
     end
   end
+
+  @impl true
+  def list_leaves_for_document(%BackendContext{} = context, %{document_id: document_id})
+      when is_binary(document_id),
+      do: list_leaves(context, document_id)
 
   @impl true
   def list_ancestors(%BackendContext{} = context, document_id, revision_id)
@@ -273,6 +302,20 @@ defmodule VialKeeper.Storage.Memory.DocumentFacts do
           {:ok, revision} -> {:ok, revision}
           {:error, reason} -> {:error, Errors.normalize(reason)}
         end
+    end
+  end
+
+  defp winner(nil, _state), do: {:ok, nil}
+
+  defp winner(%{winning_deleted: true, winning_revision: revision_id}, _state),
+    do: {:ok, {:deleted, revision_id}}
+
+  defp winner(%{winning_revision: nil}, _state), do: {:ok, nil}
+
+  defp winner(document, state) do
+    case Store.find_revision(state, document.document_id, document.winning_revision) do
+      {:ok, revision} -> {:ok, Results.document_map(document, revision, [])}
+      {:error, reason} -> {:error, Errors.normalize(reason)}
     end
   end
 

@@ -1148,10 +1148,12 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     run_exqlite_ops(conn, rest, if(count_rows, do: rows + stepped, else: rows))
   end
 
+  # Fetches the way `Connection` does (one ExQLite call per chunk of rows), so
+  # L1 and L2 differ only in the wrapper, not in the fetch strategy.
   defp step_count(conn, statement, rows) do
-    case Sqlite3.step(conn, statement) do
-      {:row, _row} -> step_count(conn, statement, rows + 1)
-      :done -> rows
+    case Sqlite3.multi_step(conn, statement, Connection.fetch_chunk_rows()) do
+      {:rows, chunk} -> step_count(conn, statement, rows + length(chunk))
+      {:done, chunk} -> rows + length(chunk)
       other -> Mix.raise("exqlite replay step failed: #{inspect(other)}")
     end
   end
@@ -1946,6 +1948,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     @moduledoc false
 
     alias Exqlite.Sqlite3
+    alias VialKeeper.Storage.SQLite.Connection
 
     def prepare_many(conn, definitions) do
       Map.new(definitions, fn {name, sql} -> {name, prepare!(conn, sql)} end)
@@ -1991,13 +1994,12 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
       :ok
     end
 
-    defp step(conn, statement, rows) do
-      case Sqlite3.step(conn, statement) do
-        {:row, row} -> step(conn, statement, [row | rows])
-        :done -> {:ok, Enum.reverse(rows)}
+    defp step(conn, statement, chunks) do
+      case Sqlite3.multi_step(conn, statement, Connection.fetch_chunk_rows()) do
+        {:rows, chunk} -> step(conn, statement, [chunk | chunks])
+        {:done, chunk} -> {:ok, Enum.concat(Enum.reverse([chunk | chunks]))}
         :busy -> {:error, :busy}
         {:error, reason} -> {:error, reason}
-        other -> {:error, other}
       end
     end
   end
