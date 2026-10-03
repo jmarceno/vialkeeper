@@ -17,15 +17,22 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     * `exqlite_replay` (L1) — the same statements through `Exqlite.Sqlite3`.
     * `connection_replay` (L2) — the same statements through VialKeeper's
       `Connection` wrapper and statement cache.
-    * `vial_keeper_adapter` (L3) — the public SQLite adapter operation.
+    * `vial_keeper_storage` (L3) — `Storage.Services`, the storage entry point
+      the database owner and read workers call, on the SQLite backend.
     * `vial_keeper_service` (L4, disk mode) — `Documents`, `Changes`, and
       `Query` through the database catalog, admission, owner, and read pool.
     * `vial_keeper_http` (L5, disk mode) — the `/v1` Plug router in process
       (request decoding, routing, response encoding; no socket).
 
   `exqlite_minimal` is a side reference: hand-written minimal SQL through
-  ExQLite. Comparing it with `exqlite_replay` shows what the SQL the adapter
-  chooses to issue costs, separately from the cost of issuing it.
+  ExQLite. Comparing it with `exqlite_replay` shows what the SQL the storage
+  layer chooses to issue costs, separately from the cost of issuing it.
+
+  Every variant also records `VialKeeper.Probe` deltas (both
+  tiers enabled) around each timed call, outside the timer, so each layer
+  reports where its time went. The per-call probe cost is measured once per
+  run and multiplied by each variant's probe calls per operation to report the
+  probes' own overhead.
 
   Measurement rules (see `VialKeeper.Benchmarks.Overhead.Sampler`):
 
@@ -46,8 +53,11 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   alias VialKeeper.Benchmarks.ExqliteOverhead.Raw
   alias VialKeeper.Benchmarks.Overhead.{Capture, Environment, Native, Sampler, Stats}
   alias VialKeeper.JSON.Canonical
+  require VialKeeper.Probe
+  alias VialKeeper.Probe
   alias VialKeeper.Revisions.Id
   alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.Services
   alias VialKeeper.Storage.SQLite.{Adapter, Connection, TermBlob}
 
   @scenarios [:point_read, :bulk_write, :changes_read, :indexed_query]
@@ -56,7 +66,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     :native_replay,
     :exqlite_replay,
     :connection_replay,
-    :vial_keeper_adapter,
+    :vial_keeper_storage,
     :vial_keeper_service,
     :vial_keeper_http
   ]
@@ -68,7 +78,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     :native_replay,
     :exqlite_replay,
     :connection_replay,
-    :vial_keeper_adapter,
+    :vial_keeper_storage,
     :exqlite_minimal
   ]
 
@@ -76,9 +86,9 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     {:native_replay, :exqlite_replay} =>
       "ExQLite NIF boundary: dirty-scheduler hops, parameter binding calls, row term construction",
     {:exqlite_replay, :connection_replay} => "VialKeeper Connection wrapper and statement cache",
-    {:connection_replay, :vial_keeper_adapter} =>
-      "Adapter work between the same statements: validation, revision logic, encoding and decoding",
-    {:vial_keeper_adapter, :vial_keeper_service} =>
+    {:connection_replay, :vial_keeper_storage} =>
+      "Storage work between the same statements: validation, revision logic, encoding and decoding",
+    {:vial_keeper_storage, :vial_keeper_service} =>
       "Service validation, catalog routing, admission, owner and read-pool process hops",
     {:vial_keeper_service, :vial_keeper_http} =>
       "Plug router, JSON request decoding and response encoding (no socket)"
@@ -182,7 +192,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   @pending_key "pending_local_causal"
   @pending_json Canonical.encode!(%{"pending_any" => true, "peers" => %{}})
 
-  defstruct [:kind, :mode, :adapter, :conn, :path, :port, :uuid, statements: %{}]
+  defstruct [:kind, :mode, :adapter, :context, :conn, :path, :port, :uuid, statements: %{}]
 
   @doc false
   @spec main([binary()]) :: :ok
@@ -196,6 +206,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
     with_isolated_runtime(config, fn ->
       started_at = DateTime.utc_now() |> DateTime.to_iso8601()
+      probe_cost = probe_cost_ns()
+      config = Map.put(config, "probe_cost_ns", probe_cost)
 
       results =
         for mode <- modes, scenario <- scenarios do
@@ -203,11 +215,14 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
         end
 
       report = %{
-        "schema_version" => 3,
+        "schema_version" => 4,
         "benchmark" => "vial_keeper_layer_ladder",
         "started_at" => started_at,
         "environment" =>
-          sqlite_metadata() |> Environment.metadata() |> Map.put("native_control", native),
+          sqlite_metadata()
+          |> Environment.metadata()
+          |> Map.put("native_control", native)
+          |> Map.put("probe_cost_ns", probe_cost),
         "configuration" => Map.put(config, "variants", Enum.map(requested, &Atom.to_string/1)),
         "results" => results
       }
@@ -228,6 +243,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     Application.put_env(:vial_keeper, :database_root, root)
     Application.put_env(:vial_keeper, :listener, ip: {127, 0, 0, 1}, port: 0)
     Process.put({__MODULE__, :run_dir}, run_dir)
+    previous_tiers = Application.get_env(:vial_keeper, :performance_probe_tiers)
+    Application.put_env(:vial_keeper, :performance_probe_tiers, [:standard, :detail])
 
     try do
       {:ok, _started} = Application.ensure_all_started(:vial_keeper)
@@ -236,6 +253,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
       _ = Application.stop(:vial_keeper)
       restore_application_env(:database_root, previous_root)
       restore_application_env(:listener, previous_listener)
+      restore_application_env(:performance_probe_tiers, previous_tiers)
       _ = File.rm_rf(run_dir)
     end
   end
@@ -453,7 +471,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
           min_iterations: config["min_iterations"],
           max_iterations: config["max_iterations"],
           target_ci_pct: config["target_ci_pct"],
-          budget_ms: config["budget_ms"]
+          budget_ms: config["budget_ms"],
+          observe: {&Probe.snapshot/0, &Probe.diff(&1, Probe.snapshot())}
         )
 
       validate_measured_state!(state, length(collected.samples))
@@ -509,7 +528,16 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   defp open_variant!(kind, mode) do
     adapter = create_adapter!(kind, mode)
-    %__MODULE__{kind: kind, mode: mode, adapter: adapter, conn: adapter.conn, path: adapter.path}
+    context = if kind == :vial_keeper_storage, do: Adapter.to_context(adapter)
+
+    %__MODULE__{
+      kind: kind,
+      mode: mode,
+      adapter: adapter,
+      context: context,
+      conn: adapter.conn,
+      path: adapter.path
+    }
   end
 
   defp create_adapter!(label, mode, run_dir \\ Process.get({__MODULE__, :run_dir})) do
@@ -565,12 +593,14 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     Capture.start(fn ->
       adapter = create_adapter!(:capture, mode, run_dir)
       seed_adapter!(adapter, documents)
-      adapter
+      %{adapter: adapter, context: Adapter.to_context(adapter)}
     end)
   end
 
   defp stop_capture(worker) do
-    path = Capture.run(worker, fn adapter -> _ = Adapter.close(adapter) && adapter.path end)
+    path =
+      Capture.run(worker, fn %{adapter: adapter} -> _ = Adapter.close(adapter) && adapter.path end)
+
     Capture.stop(worker)
     cleanup_path(path)
   end
@@ -694,7 +724,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
     observed =
       if state.worker,
-        do: [{:capture, Capture.run(state.worker, &table_counts(&1.conn))} | observed],
+        do: [{:capture, Capture.run(state.worker, &table_counts(&1.adapter.conn))} | observed],
         else: observed
 
     Enum.each(observed, fn {kind, counts} ->
@@ -712,7 +742,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
     index_ids =
       if state.worker,
-        do: [Capture.run(state.worker, &create_index!/1) | index_ids],
+        do: [Capture.run(state.worker, &create_index!(&1.adapter)) | index_ids],
         else: index_ids
 
     if Enum.uniq(index_ids) |> length() != 1 do
@@ -761,10 +791,10 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   # statement it executed is planned through the structured index.
   defp verify_adapter_plan!(state) do
     request = indexed_request(state.config)
-    {_, ops} = Capture.capture(state.worker, &Adapter.execute_query(&1, request))
+    {_, ops} = Capture.capture(state.worker, &Services.execute_public_query(&1.context, request))
     queries = Enum.filter(ops, &(&1.kind == :query))
 
-    Capture.run(state.worker, fn adapter ->
+    Capture.run(state.worker, fn %{adapter: adapter} ->
       if Enum.any?(queries, &plan_uses_index?(adapter.conn, &1.sql, &1.params)),
         do: true,
         else: Mix.raise("adapter indexed query did not use the structured index")
@@ -939,7 +969,9 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   defp base_input(_scenario, _token, _config), do: nil
 
   defp capture_replay(state, base) do
-    {:ok, ops} = Capture.capture(state.worker, &adapter_operation!(&1, state.scenario, base, state))
+    {:ok, ops} =
+      Capture.capture(state.worker, &storage_operation!(&1.context, state.scenario, base, state))
+
     record_capture_profile(ops)
 
     replay = %{
@@ -1077,8 +1109,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     check_rows!(:connection_replay, rows, replay.expected_rows)
   end
 
-  defp invoke!(state, :vial_keeper_adapter, %{base: base}) do
-    adapter_operation!(state.variants.vial_keeper_adapter.adapter, state.scenario, base, state)
+  defp invoke!(state, :vial_keeper_storage, %{base: base}) do
+    storage_operation!(state.variants.vial_keeper_storage.context, state.scenario, base, state)
   end
 
   defp invoke!(state, :vial_keeper_service, %{base: base}) do
@@ -1141,46 +1173,47 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     run_connection_ops(conn, rest, rows + length(result))
   end
 
-  # The adapter operation for a sample; runs both in the capture worker
-  # (traced, untimed) and as the measured adapter variant.
-  defp adapter_operation!(adapter, :point_read, ids, _state) do
+  # The storage operation for a sample, through `Storage.Services` (the entry
+  # point the database owner and read workers call). Runs both in the capture
+  # worker (traced, untimed) and as the measured storage variants.
+  defp storage_operation!(context, :point_read, ids, _state) do
     Enum.each(ids, fn id ->
-      case Adapter.get_document(adapter, %{document_id: id}) do
+      case Services.get_document(context, %{document_id: id}) do
         {:ok, %{id: ^id, deleted: false, body: body}} when is_map(body) -> :ok
-        other -> Mix.raise("point-read adapter result was invalid: #{inspect(other)}")
+        other -> Mix.raise("storage point read was invalid: #{inspect(other)}")
       end
     end)
   end
 
-  defp adapter_operation!(adapter, :bulk_write, %{operations: operations}, _state) do
-    case Adapter.apply_bulk_mutation(adapter, %{operations: operations}) do
+  defp storage_operation!(context, :bulk_write, %{operations: operations}, _state) do
+    case Services.apply_bulk_mutation(context, %{operations: operations}) do
       {:ok, results} when length(results) == length(operations) -> :ok
-      other -> Mix.raise("bulk-write adapter result was invalid: #{inspect(other)}")
+      other -> Mix.raise("storage bulk write was invalid: #{inspect(other)}")
     end
   end
 
-  defp adapter_operation!(adapter, :changes_read, _base, state) do
+  defp storage_operation!(context, :changes_read, _base, state) do
     limit = changes_limit(state.config)
     expected_has_more = limit < state.config["dataset_size"]
 
     repeat(state.config["repeat"], fn ->
-      case Adapter.read_changes(adapter, %{since: 0, limit: limit}) do
+      case Services.read_changes(context, %{since: 0, limit: limit}) do
         {:ok, %{results: results, has_more: ^expected_has_more}} when length(results) == limit ->
           :ok
 
         other ->
-          Mix.raise("changes adapter result was invalid: #{inspect(other)}")
+          Mix.raise("storage changes read was invalid: #{inspect(other)}")
       end
     end)
   end
 
-  defp adapter_operation!(adapter, :indexed_query, _base, state) do
+  defp storage_operation!(context, :indexed_query, _base, state) do
     request = indexed_request(state.config)
 
     repeat(state.config["repeat"], fn ->
-      case Adapter.execute_query(adapter, request) do
+      case Services.execute_public_query(context, request) do
         {:ok, result} -> check_query_results!(result, state)
-        other -> Mix.raise("indexed-query adapter result was invalid: #{inspect(other)}")
+        other -> Mix.raise("storage indexed query was invalid: #{inspect(other)}")
       end
     end)
   end
@@ -1399,6 +1432,13 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
           )
           |> Map.put("gcs_per_sample_median", Stats.round_float(Stats.median(series.(kind, :gcs))))
           |> Map.merge(native_counters(kind, samples, operations))
+          # Probe totals are means; compare them with this, not the median.
+          |> Map.put(
+            "mean_ns_per_operation",
+            Stats.round_float(Enum.sum(ns[kind]) / length(ns[kind]) / operations)
+          )
+          |> Map.put("probes", probe_breakdown(samples, kind, operations))
+          |> then(&Map.put(&1, "probe_overhead_estimate", probe_overhead_estimate(&1, state)))
 
         {Atom.to_string(kind), summary}
       end)
@@ -1469,6 +1509,134 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     }
   end
 
+  @probe_cost_calls 200_000
+
+  # Per-call cost of one probe, enabled and disabled, measured in a tight loop
+  # (the median of five rounds). Multiplied by a variant's probe calls per
+  # operation, it estimates the probe overhead more precisely than a paired
+  # on/off comparison of whole operations can on a noisy host.
+  defp probe_cost_ns do
+    :ok = Probe.enable(:detail)
+    enabled = probe_loop_ns()
+    :ok = Probe.disable(:detail)
+
+    disabled =
+      try do
+        probe_loop_ns()
+      after
+        :ok = Probe.enable(:detail)
+      end
+
+    baseline = empty_loop_ns()
+
+    %{
+      "enabled" => Stats.round_float(max(enabled - baseline, 0.0), 1),
+      "disabled" => Stats.round_float(max(disabled - baseline, 0.0), 1)
+    }
+  end
+
+  defp probe_loop_ns do
+    Stats.median(
+      for _ <- 1..5 do
+        started = System.monotonic_time()
+        probe_loop(@probe_cost_calls)
+
+        System.convert_time_unit(System.monotonic_time() - started, :native, :nanosecond) /
+          @probe_cost_calls
+      end
+    )
+  end
+
+  defp empty_loop_ns do
+    Stats.median(
+      for _ <- 1..5 do
+        started = System.monotonic_time()
+        empty_loop(@probe_cost_calls)
+
+        System.convert_time_unit(System.monotonic_time() - started, :native, :nanosecond) /
+          @probe_cost_calls
+      end
+    )
+  end
+
+  defp probe_loop(0), do: :ok
+
+  defp probe_loop(count) do
+    :ok =
+      Probe.measure :sqlite_bind do
+        :ok
+      end
+
+    probe_loop(count - 1)
+  end
+
+  defp empty_loop(0), do: :ok
+
+  defp empty_loop(count) do
+    :ok = identity(:ok)
+    empty_loop(count - 1)
+  end
+
+  defp identity(value), do: value
+
+  # Probe deltas summed over every measured sample of one variant, expressed
+  # per benchmark operation. Probes are inclusive and nest across areas.
+  defp probe_breakdown(samples, kind, operations) do
+    total_operations = length(samples) * operations
+
+    samples
+    |> Enum.map(&get_in(&1, [kind, :observed]))
+    |> Enum.reduce(%{}, &merge_probe_deltas/2)
+    |> Probe.summarize()
+    |> Map.new(fn {name, summary} ->
+      {name,
+       Map.merge(summary, %{
+         "calls_per_operation" => Stats.round_float(summary["count"] / total_operations),
+         "ns_per_operation" => Stats.round_float(summary["total_ns"] / total_operations)
+       })}
+    end)
+  end
+
+  # Probe calls per operation times the measured per-call cost: with both
+  # tiers on (how this benchmark runs) and with the production default
+  # (standard tier on, detail tier compiled in but disabled).
+  defp probe_overhead_estimate(summary, state) do
+    cost = state.config["probe_cost_ns"]
+    probes = Map.values(summary["probes"])
+
+    calls = fn tier ->
+      probes
+      |> Enum.filter(&(&1["tier"] == tier))
+      |> Enum.map(& &1["calls_per_operation"])
+      |> Enum.sum()
+    end
+
+    standard = calls.("standard")
+    detail = calls.("detail")
+    profiling = (standard + detail) * cost["enabled"]
+    default = standard * cost["enabled"] + detail * cost["disabled"]
+    mean = summary["mean_ns_per_operation"]
+
+    %{
+      "standard_calls_per_operation" => Stats.round_float(standard),
+      "detail_calls_per_operation" => Stats.round_float(detail),
+      "profiling_ns_per_operation" => Stats.round_float(profiling),
+      "profiling_pct_of_mean" => Stats.round_float(profiling / mean * 100),
+      "default_ns_per_operation" => Stats.round_float(default),
+      "default_pct_of_mean" => Stats.round_float(default / mean * 100)
+    }
+  end
+
+  defp merge_probe_deltas(delta, acc) do
+    Map.merge(acc, delta, fn _probe, left, right ->
+      %Probe.Stats{
+        count: left.count + right.count,
+        total_ns: left.total_ns + right.total_ns,
+        buckets: Enum.zip_with(left.buckets, right.buckets, &(&1 + &2))
+      }
+    end)
+  end
+
   defp native_counters(:native_replay, samples, operations) do
     %{
       "median_vm_steps_per_operation" =>
@@ -1510,7 +1678,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   defp layer_label(:native_replay), do: "L0 native SQLite"
   defp layer_label(:exqlite_replay), do: "L1 ExQLite"
   defp layer_label(:connection_replay), do: "L2 Connection"
-  defp layer_label(:vial_keeper_adapter), do: "L3 adapter"
+  defp layer_label(:vial_keeper_storage), do: "L3 storage"
   defp layer_label(:vial_keeper_service), do: "L4 service"
   defp layer_label(:vial_keeper_http), do: "L5 HTTP router"
   defp layer_label(:exqlite_minimal), do: "reference: minimal SQL"
@@ -1535,6 +1703,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
       "category_task_documents" => fixture.category_match_count,
       "seed_sequence" => length(fixture.documents),
       "seeded_through" => "Adapter.apply_bulk_mutation (service layers: Documents.bulk_write)",
+      "probe_tiers" => Enum.map(Probe.enabled_tiers(), &Atom.to_string/1),
       "body_shape" => "category, priority, title, tags",
       "attachments" => "none"
     }
@@ -1682,6 +1851,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
           "    #{pad(summary["layer"], 24)} #{pad(name, 22)} " <>
             "#{pad(format_us(summary["median_ns_per_operation"]) <> "/op", 14)} #{ratio}"
         )
+
+        print_top_probes(summary["probes"], summary["probe_overhead_estimate"])
       end)
 
       Enum.each(result["ladder"], fn step ->
@@ -1692,6 +1863,27 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
         )
       end)
     end)
+  end
+
+  @printed_probes 6
+
+  defp print_top_probes(probes, _estimate) when map_size(probes) == 0, do: :ok
+
+  defp print_top_probes(probes, estimate) do
+    line =
+      probes
+      |> Enum.sort_by(fn {_name, probe} -> -probe["ns_per_operation"] end)
+      |> Enum.take(@printed_probes)
+      |> Enum.map_join(", ", fn {name, probe} ->
+        "#{name} #{format_us(probe["ns_per_operation"])} x#{probe["calls_per_operation"]}"
+      end)
+
+    IO.puts("        probes, mean per op: #{line}")
+
+    IO.puts(
+      "        probe overhead estimate: #{estimate["profiling_pct_of_mean"]}% profiling, " <>
+        "#{estimate["default_pct_of_mean"]}% production default"
+    )
   end
 
   defp variant_rank(name) do

@@ -67,6 +67,8 @@
       "VialKeeper.Commands",
       "VialKeeper.Query.*",
       "VialKeeper.Error",
+      # Dependency-free performance counters, used from every layer.
+      "VialKeeper.Probe",
       "VialKeeper.Headers",
       "VialKeeper.UUID",
       "VialKeeper.DurableFS",

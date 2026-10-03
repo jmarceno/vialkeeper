@@ -3,9 +3,11 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
 
   use GenServer
 
+  require VialKeeper.Probe
   alias VialKeeper.Deadline
   alias VialKeeper.Error
   alias VialKeeper.Observability.Instrumentation.Database, as: DatabaseInstrumentation
+  alias VialKeeper.Probe
 
   alias VialKeeper.Runtime.{
     AdmissionCapacity,
@@ -198,24 +200,28 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
   @spec execute_with_deadline(binary(), service_class(), term(), Deadline.t()) ::
           term() | {:error, Error.t()}
   def execute_with_deadline(uuid, class, command, :infinity) when is_binary(uuid) do
-    execute_owner_with_deadline(
-      uuid,
-      class,
-      fn -> DatabaseOwner.command(uuid, command, :infinity) end,
-      :infinity,
-      probe_op_from_command(command)
-    )
+    Probe.measure :admission_execute do
+      execute_owner_with_deadline(
+        uuid,
+        class,
+        fn -> DatabaseOwner.command(uuid, command, :infinity) end,
+        :infinity,
+        probe_op_from_command(command)
+      )
+    end
   end
 
   def execute_with_deadline(uuid, class, command, deadline_ms)
       when is_binary(uuid) and is_integer(deadline_ms) do
-    execute_owner_with_deadline(
-      uuid,
-      class,
-      fn -> DatabaseOwner.command(uuid, command, Deadline.call_timeout(deadline_ms)) end,
-      deadline_ms,
-      probe_op_from_command(command)
-    )
+    Probe.measure :admission_execute do
+      execute_owner_with_deadline(
+        uuid,
+        class,
+        fn -> DatabaseOwner.command(uuid, command, Deadline.call_timeout(deadline_ms)) end,
+        deadline_ms,
+        probe_op_from_command(command)
+      )
+    end
   end
 
   @spec execute_owner(binary(), service_class(), (-> term()), timeout(), term()) ::

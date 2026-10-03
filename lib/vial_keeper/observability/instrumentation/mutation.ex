@@ -8,6 +8,7 @@ defmodule VialKeeper.Observability.Instrumentation.Mutation do
   """
 
   alias VialKeeper.Observability.Meters
+  alias VialKeeper.Probe
 
   @operation_key {__MODULE__, :operation}
   @operations [:put, :delete, :resolve, :bulk_write, :import]
@@ -96,6 +97,7 @@ defmodule VialKeeper.Observability.Instrumentation.Mutation do
   def record(operation, phase, duration, outcome)
       when operation in @operations and phase in @phases and is_integer(duration) and
              duration >= 0 and outcome in [:ok, :error] do
+    Probe.add(Probe.mutation_probe(phase), duration)
     attrs = [mutation_operation: operation, mutation_phase: phase, outcome: outcome]
     Meters.record(:"vial_keeper.document.mutation.phase.duration", duration, attrs)
 

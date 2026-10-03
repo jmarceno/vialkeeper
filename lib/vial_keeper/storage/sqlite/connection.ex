@@ -1,6 +1,9 @@
 defmodule VialKeeper.Storage.SQLite.Connection do
   @moduledoc "Private SQLite connection and statement execution primitives."
+  require VialKeeper.Probe
+
   alias Exqlite.Sqlite3
+  alias VialKeeper.Probe
   alias VialKeeper.Storage.SQLite.Statements
 
   @type handle :: reference()
@@ -42,7 +45,11 @@ defmodule VialKeeper.Storage.SQLite.Connection do
   statements; SQLite treats those as connection state changes.
   """
   @spec exec(handle(), binary()) :: :ok | {:error, term()}
-  def exec(conn, sql) when is_binary(sql), do: Sqlite3.execute(conn, sql)
+  def exec(conn, sql) when is_binary(sql) do
+    Probe.measure :sqlite_exec do
+      Sqlite3.execute(conn, sql)
+    end
+  end
 
   @spec query(handle(), iodata(), list()) :: {:ok, [list()]} | {:error, term()}
   def query(conn, sql, params \\ []), do: run(conn, sql, params, true)
@@ -71,13 +78,26 @@ defmodule VialKeeper.Storage.SQLite.Connection do
 
     with {:ok, statement, origin} <- Statements.checkout(conn, sql),
          :ok <- maybe_reset_statement(statement, origin),
-         :ok <- Sqlite3.bind(statement, params) do
-      step(conn, statement, collect_rows, [])
+         :ok <- bind(statement, params) do
+      Probe.measure :sqlite_step do
+        step(conn, statement, collect_rows, [])
+      end
+    end
+  end
+
+  defp bind(statement, params) do
+    Probe.measure :sqlite_bind do
+      Sqlite3.bind(statement, params)
     end
   end
 
   defp maybe_reset_statement(_statement, :new), do: :ok
-  defp maybe_reset_statement(statement, :cached), do: Sqlite3.reset(statement)
+
+  defp maybe_reset_statement(statement, :cached) do
+    Probe.measure :sqlite_reset do
+      Sqlite3.reset(statement)
+    end
+  end
 
   defp step(conn, statement, collect_rows, rows) do
     case Sqlite3.step(conn, statement) do

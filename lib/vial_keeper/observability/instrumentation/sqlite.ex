@@ -34,6 +34,7 @@ defmodule VialKeeper.Observability.Instrumentation.SQLite do
   """
 
   alias VialKeeper.Observability.Tracer
+  alias VialKeeper.Probe
   @phase_timing_key {__MODULE__, :phase_timings}
 
   @typedoc "A stable SQLite phase key mapped to a low-cardinality span name."
@@ -95,7 +96,10 @@ defmodule VialKeeper.Observability.Instrumentation.SQLite do
       when is_atom(phase) and is_list(attrs) and is_function(fun, 0) do
     case Process.get(@phase_timing_key) do
       nil ->
-        if Tracer.tracing_enabled?(), do: run_phase(phase, attrs, fun), else: fun.()
+        started = Probe.start(:standard)
+        result = if Tracer.tracing_enabled?(), do: run_phase(phase, attrs, fun), else: fun.()
+        if started, do: Probe.record_since(Probe.sqlite_phase_probe(phase), started)
+        result
 
       timings ->
         started = System.monotonic_time()
@@ -108,6 +112,10 @@ defmodule VialKeeper.Observability.Instrumentation.SQLite do
         end
     end
   end
+
+  @doc "Returns the closed SQLite phase vocabulary."
+  @spec phases() :: [sqlite_phase()]
+  def phases, do: Map.keys(@span_names)
 
   @doc "Enables process-local phase timing until `take_phase_timings/0` is called."
   @spec start_phase_timings() :: :ok

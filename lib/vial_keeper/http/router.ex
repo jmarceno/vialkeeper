@@ -3,6 +3,8 @@ defmodule VialKeeper.HTTP.Router do
   use Plug.Router
   use VialKeeper.HTTP.RouterSpecs
 
+  require VialKeeper.Probe
+
   alias VialKeeper.HTTP.Response
 
   alias VialKeeper.HTTP.Routes.{
@@ -23,6 +25,7 @@ defmodule VialKeeper.HTTP.Router do
 
   alias VialKeeper.Observability.Dashboard
   alias VialKeeper.Observability.Instrumentation.HTTP
+  alias VialKeeper.Probe
   alias VialKeeper.WebUI.Router, as: WebUIRouter
 
   # Replication JSON compression is path-scoped and does not authorize. Auth
@@ -38,9 +41,11 @@ defmodule VialKeeper.HTTP.Router do
   # than using a plug guarantees the span is ended and the prior trace context
   # is restored even when a downstream plug raises before any response is sent.
   def call(conn, opts) do
-    HTTP.wrap(conn, fn conn ->
-      super(conn, opts)
-    end)
+    Probe.measure :http_request do
+      HTTP.wrap(conn, fn conn ->
+        super(conn, opts)
+      end)
+    end
   end
 
   # More specific database-scoped resources first so they are not swallowed by

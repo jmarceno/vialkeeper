@@ -9,10 +9,12 @@ defmodule VialKeeper.Runtime.ReadWorker do
   """
   use GenServer
 
+  require VialKeeper.Probe
   alias VialKeeper.Commands
   alias VialKeeper.Deadline
   alias VialKeeper.Error
   alias VialKeeper.MapAccess
+  alias VialKeeper.Probe
 
   alias VialKeeper.Runtime.{
     ChildSpec,
@@ -74,7 +76,11 @@ defmodule VialKeeper.Runtime.ReadWorker do
   end
 
   def handle_cast({:run, job}, state) do
-    result = execute_job(state, job)
+    result =
+      Probe.measure :read_worker_job do
+        execute_job(state, job)
+      end
+
     complete_read(state.uuid, job, enforce_deadline(result, job))
     {:noreply, state}
   end
@@ -129,7 +135,12 @@ defmodule VialKeeper.Runtime.ReadWorker do
   end
 
   defp complete_read(uuid, job, result) do
-    if ReadPool.complete(uuid, self(), job) == :reply do
+    completion =
+      Probe.measure :read_pool_complete do
+        ReadPool.complete(uuid, self(), job)
+      end
+
+    if completion == :reply do
       GenServer.reply(job.from, result)
     end
 

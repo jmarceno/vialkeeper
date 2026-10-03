@@ -5,11 +5,13 @@ defmodule VialKeeper.Application do
   @spec start(Application.start_type(), term()) :: {:ok, pid()} | {:error, term()}
 
   alias VialKeeper.HostConfig
+  alias VialKeeper.Probe
   alias VialKeeper.Storage.OpaqueHandle.Server, as: OpaqueHandleServer
 
   @impl true
   def start(_type, _args) do
     _ = VialKeeper.Diagnostics.validate_backend!()
+    :ok = Probe.install()
     listener = Application.get_env(:vial_keeper, :listener, ip: {127, 0, 0, 1}, port: 4000)
 
     enforce_listener_safety!(listener)

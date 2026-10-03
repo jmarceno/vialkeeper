@@ -3,7 +3,9 @@ defmodule VialKeeper.Query do
 
   alias VialKeeper.Config
   alias VialKeeper.JSON.{Canonical, Pointer}
+  require VialKeeper.Probe
   alias VialKeeper.MapAccess
+  alias VialKeeper.Probe
   alias VialKeeper.Query.{BookmarkCodec, Normalizer, Prepared}
   alias VialKeeper.Runtime.DatabaseCatalog
 
@@ -50,6 +52,12 @@ defmodule VialKeeper.Query do
   end
 
   defp execute_internal(uuid, request, timeout_mode) do
+    Probe.measure :query_execute do
+      execute_normalized(uuid, request, timeout_mode)
+    end
+  end
+
+  defp execute_normalized(uuid, request, timeout_mode) do
     with {:ok, normalized} <- Normalizer.normalize(request),
          :ok <- validate_query(normalized),
          {:ok, identity} <-

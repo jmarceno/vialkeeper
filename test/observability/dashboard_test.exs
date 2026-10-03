@@ -9,6 +9,7 @@ defmodule VialKeeper.Observability.DashboardTest do
   alias VialKeeper.HTTP.Router
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.Observability.Dashboard
+  alias VialKeeper.Probe
   alias VialKeeper.Runtime.{DatabaseAdmission, DatabaseCatalog}
 
   setup do
@@ -79,10 +80,15 @@ defmodule VialKeeper.Observability.DashboardTest do
 
     assert enabled.status == 200
 
-    assert {:ok, %{"data" => %{"runtime" => runtime}}} =
+    assert {:ok, %{"data" => %{"runtime" => runtime, "performance_probes" => probes}}} =
              StrictDecoder.decode(enabled.resp_body)
 
     assert is_integer(runtime["memory_bytes"])
+    assert "standard" in probes["tiers"]
+    assert probes["bucket_bounds_ns"] == Probe.bucket_bounds_ns()
+    # The earlier (disabled) snapshot request passed through the HTTP router probe.
+    assert %{"http_request" => %{"count" => count, "area" => "http"}} = probes["probes"]
+    assert count >= 1
   end
 
   test "runtime snapshot exposes admission active class and per-class queue depths" do

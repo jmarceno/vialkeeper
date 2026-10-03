@@ -2,6 +2,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   @moduledoc "Registration catalog and lazy database runtime manager."
   use GenServer
   require Logger
+  require VialKeeper.Probe
   alias VialKeeper.DatabaseBundle
   alias VialKeeper.Deadline
   alias VialKeeper.DerivedView.Manager, as: DerivedViewManager
@@ -9,6 +10,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   alias VialKeeper.MapAccess
   alias VialKeeper.Observability.Instrumentation.Database
   alias VialKeeper.PathSafety
+  alias VialKeeper.Probe
   alias VialKeeper.Query.SubscriptionHub
   alias VialKeeper.Replication.JobManager
 
@@ -645,10 +647,12 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   end
 
   defp route_command(uuid, class, command, deadline) do
-    case {command_io_class(command), ReadPool.enabled?(uuid)} do
-      {:read, true} -> ReadPool.execute(uuid, class, command, deadline)
-      {:exclusive, true} -> exclusive_command(uuid, class, command, deadline)
-      _ -> DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
+    Probe.measure :catalog_route do
+      case {command_io_class(command), ReadPool.enabled?(uuid)} do
+        {:read, true} -> ReadPool.execute(uuid, class, command, deadline)
+        {:exclusive, true} -> exclusive_command(uuid, class, command, deadline)
+        _ -> DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
+      end
     end
   end
 
