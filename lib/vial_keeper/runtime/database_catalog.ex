@@ -82,6 +82,22 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   def unregister(uuid),
     do: GenServer.call(__MODULE__, {:unregister, uuid}, VialKeeper.Config.request_timeout_ms())
 
+  @doc """
+  Re-runs the boot-time replication job resume for every registered database.
+
+  Used after the replication runtime restarts. A no-op while the catalog is not
+  running yet, because the catalog performs the same resume when it starts.
+  """
+  @spec resume_replication_jobs() :: :ok
+  def resume_replication_jobs do
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> send(pid, :resume_registered_jobs)
+    end
+
+    :ok
+  end
+
   @spec list() :: {:ok, [map()]} | {:error, Error.t()}
   def list, do: GenServer.call(__MODULE__, :list, VialKeeper.Config.request_timeout_ms())
 
