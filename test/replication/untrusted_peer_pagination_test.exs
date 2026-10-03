@@ -21,7 +21,7 @@ defmodule VialKeeper.Replication.UntrustedPeerPaginationTest do
     # in `rogue`, which returns a misbehaving page.
     defstruct [:inner, :rogue, :database_uuid]
 
-    overridden = [read_boundary_pages: 2, read_changes: 2]
+    overridden = [read_boundary_pages: 2, read_changes: 2, identity: 1]
 
     for {name, arity} <- Endpoint.behaviour_info(:callbacks),
         {name, arity} not in overridden do
@@ -43,6 +43,14 @@ defmodule VialKeeper.Replication.UntrustedPeerPaginationTest do
 
     defp put_next_page(page, cursor) when is_struct(page), do: %{page | next_page: cursor}
     defp put_next_page(page, cursor), do: Map.put(page, "next_page", cursor)
+
+    def identity(%__MODULE__{rogue: :bad_expiry, inner: inner}) do
+      with {:ok, identity} <- LocalEndpoint.identity(inner) do
+        {:ok, Map.put(identity, :config, %{"retention" => %{"peer_expiry_ms" => "forever"}})}
+      end
+    end
+
+    def identity(%__MODULE__{inner: inner}), do: LocalEndpoint.identity(inner)
 
     def read_changes(%__MODULE__{rogue: :stale_changes}, _request) do
       {:ok, %{results: [%{sequence: 0, document_id: "stale", leaf_revisions: []}]}}
@@ -102,5 +110,13 @@ defmodule VialKeeper.Replication.UntrustedPeerPaginationTest do
       end)
 
     assert {:error, %VialKeeper.Error{}} = Task.await(task, 10_000)
+  end
+
+  test "a non-integer peer_expiry_ms falls back to the default lease", %{
+    source: source,
+    target: target
+  } do
+    assert {:ok, %{status: :completed}} =
+             Replication.one_shot_endpoints(rogue(source, :bad_expiry), target, %{})
   end
 end

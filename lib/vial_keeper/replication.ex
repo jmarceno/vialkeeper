@@ -343,24 +343,17 @@ defmodule VialKeeper.Replication do
                limit: option(options, :batch, @default_batch),
                wait_ms: option(options, :wait_ms, 1_000)
              }
-           ]) do
-      selected = get(changes, :results) || []
-
-      terminal =
-        case endpoint_call(source, :identity, []) do
-          {:ok, identity} -> get(identity, :current_sequence) || context.since
-          _ -> context.since
-        end
-
-      context =
-        context
-        |> Map.put(:terminal, terminal)
-        |> Map.put(:selected, selected)
-        |> Map.put(:source_identity, source_identity)
-
-      with :ok <- phase_hook(options, :after_waiting, context) do
-        {:ok, context}
-      end
+           ]),
+         # Re-read the identity after the long-poll so the terminal covers changes
+         # that arrived while waiting; a failure surfaces to the worker's backoff.
+         {:ok, identity} <- endpoint_call(source, :identity, []),
+         context =
+           context
+           |> Map.put(:terminal, get(identity, :current_sequence) || context.since)
+           |> Map.put(:selected, get(changes, :results) || [])
+           |> Map.put(:source_identity, source_identity),
+         :ok <- phase_hook(options, :after_waiting, context) do
+      {:ok, context}
     end
   end
 
@@ -917,9 +910,23 @@ defmodule VialKeeper.Replication do
     end
   end
 
+  @default_peer_expiry_ms 86_400_000
+
+  # The source identity may come from an untrusted peer; anything other than a
+  # positive integer falls back to the default instead of crashing DateTime.add/3,
+  # and the host's own maximum still bounds the lease.
   defp peer_expiry_ms(identity) do
-    get_in(identity, [:config, "retention", "peer_expiry_ms"]) ||
-      get_in(identity, ["config", "retention", "peer_expiry_ms"]) || 86_400_000
+    config = get(identity, :config)
+    retention = if is_map(config), do: get(config, :retention)
+    expiry = if is_map(retention), do: get(retention, :peer_expiry_ms)
+
+    maximum = VialKeeper.Config.host_limits()[:max_peer_expiry_ms]
+
+    cond do
+      not is_integer(expiry) or expiry <= 0 -> @default_peer_expiry_ms
+      is_integer(maximum) -> min(expiry, maximum)
+      true -> expiry
+    end
   end
 
   defp apply_read_changes_result(
