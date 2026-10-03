@@ -102,9 +102,59 @@ defmodule VialKeeper.Storage.SQLite.Connection do
 
   defp bind(statement, params) do
     Probe.measure :sqlite_bind do
-      Sqlite3.bind(statement, params)
+      if Enum.all?(params, &plain_param?/1),
+        do: bind_plain(statement, params),
+        else: Sqlite3.bind(statement, params)
     end
   end
+
+  # Parameters of the types storage binds go straight to ExQLite's typed bind
+  # calls. `Sqlite3.bind/2` would look up `:exqlite` type extensions in the
+  # application environment once per parameter; VialKeeper configures none, so
+  # for these types the result is identical. Anything else (dates, atoms,
+  # iodata) still goes through `Sqlite3.bind/2`.
+  defp plain_param?(value)
+       when is_integer(value) or is_float(value) or is_binary(value) or is_nil(value),
+       do: true
+
+  defp plain_param?({:blob, value}) when is_binary(value), do: true
+  defp plain_param?(_value), do: false
+
+  defp bind_plain(statement, params) do
+    param_count = length(params)
+
+    case Sqlite3.bind_parameter_count(statement) do
+      ^param_count ->
+        bind_plain(statement, params, 1)
+
+      {:error, _reason} = error ->
+        error
+
+      count ->
+        raise ArgumentError, "expected #{count} arguments, got #{param_count}"
+    end
+  end
+
+  defp bind_plain(_statement, [], _index), do: :ok
+
+  defp bind_plain(statement, [value | rest], index) do
+    :ok = bind_value(statement, index, value)
+    bind_plain(statement, rest, index + 1)
+  end
+
+  defp bind_value(statement, index, value) when is_integer(value),
+    do: Sqlite3.bind_integer(statement, index, value)
+
+  defp bind_value(statement, index, value) when is_float(value),
+    do: Sqlite3.bind_float(statement, index, value)
+
+  defp bind_value(statement, index, value) when is_binary(value),
+    do: Sqlite3.bind_text(statement, index, value)
+
+  defp bind_value(statement, index, nil), do: Sqlite3.bind_null(statement, index)
+
+  defp bind_value(statement, index, {:blob, value}),
+    do: Sqlite3.bind_blob(statement, index, value)
 
   defp fetch(conn, statement, collect_rows, chunks) do
     case Sqlite3.multi_step(conn, statement, @fetch_chunk_rows) do

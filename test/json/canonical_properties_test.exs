@@ -23,6 +23,15 @@ defmodule VialKeeper.JSON.CanonicalPropertiesTest do
     end
   end
 
+  property "an embedded fragment encodes exactly like the value it stands for" do
+    check all(value <- json_value(), outer_key <- StreamData.string(:printable), max_runs: 60) do
+      assert {:ok, value_json} = Canonical.encode(value)
+
+      assert Canonical.encode(%{outer_key => Canonical.fragment(value_json), "z" => [1]}) ==
+               Canonical.encode(%{outer_key => value, "z" => [1]})
+    end
+  end
+
   test "float members still round-trip through StrictDecoder" do
     body = %{"n" => 1.0}
     assert {:ok, encoded} = Canonical.encode(body)
