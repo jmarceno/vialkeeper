@@ -24,7 +24,7 @@ defmodule VialKeeper.Quality.ReachSmells.JustifiedSuppressions do
     |> Enum.flat_map(&scan_file/1)
   end
 
-  @spec scan_file(Path.t()) :: [Finding.t()]
+  @spec scan_file(Path.t()) :: [%Finding{}]
   def scan_file(file) do
     lines =
       file

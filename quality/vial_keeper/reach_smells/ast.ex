@@ -53,7 +53,7 @@ defmodule VialKeeper.Quality.ReachSmells.AST do
     :"::"
   ]
 
-  @spec walk_modules(Macro.t(), (module_name(), Macro.t() -> [Finding.t()])) :: [Finding.t()]
+  @spec walk_modules(Macro.t(), (module_name(), Macro.t() -> [%Finding{}])) :: [%Finding{}]
   def walk_modules(ast, visitor) when is_function(visitor, 2) do
     {_ast, findings} =
       Macro.prewalk(ast, [], fn
@@ -79,7 +79,7 @@ defmodule VialKeeper.Quality.ReachSmells.AST do
   def line({_, meta, _}) when is_list(meta), do: line(meta)
   def line(_node), do: 1
 
-  @spec finding(atom(), String.t(), Path.t(), keyword() | Macro.t()) :: Finding.t()
+  @spec finding(atom(), String.t(), Path.t(), keyword() | Macro.t()) :: %Finding{}
   def finding(kind, message, file, meta) do
     Finding.new(
       kind: kind,

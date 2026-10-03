@@ -350,20 +350,21 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
     flush_hook_mailbox!(hook_ref)
     maybe_suspend_replication(uuid, job_id)
 
-    try do
-      run_fairness_measurement!(
-        uuid,
-        probe_ref,
-        hook_ref,
-        limit,
-        backlog_per_class,
-        grant_target,
-        spawn_request
-      )
-    after
-      maybe_resume_replication(uuid, job_id)
-      Agent.stop(counter)
-    end
+    _ =
+      try do
+        run_fairness_measurement!(
+          uuid,
+          probe_ref,
+          hook_ref,
+          limit,
+          backlog_per_class,
+          grant_target,
+          spawn_request
+        )
+      after
+        maybe_resume_replication(uuid, job_id)
+        Agent.stop(counter)
+      end
 
     :ok
   end
@@ -414,7 +415,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :blocked end)
       end)
 
-    assert_receive {^gate_ref, :before_begin, blocker_executor}, 2_000
+    _ = assert_receive {^gate_ref, :before_begin, blocker_executor}, 2_000
     flush_hook_mailbox!(hook_ref)
 
     enqueue_order = %{foreground: [], subscription: [], replication: [], maintenance: []}
@@ -422,13 +423,13 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
     enqueue_order =
       Enum.reduce(1..backlog_per_class, enqueue_order, fn _index, acc ->
         Enum.reduce(ServiceClass.classes(), acc, fn class, inner ->
-          spawn_real_path_request!(uuid, class)
-          assert_receive {^hook_ref, :enqueued, request_ref, ^class, _op, _caller}, 5_000
+          _ = spawn_real_path_request!(uuid, class)
+          _ = assert_receive {^hook_ref, :enqueued, request_ref, ^class, _op, _caller}, 5_000
           Map.update!(inner, class, &Enum.concat(&1, [request_ref]))
         end)
       end)
 
-    await_stats(uuid, &fairness_backlog_ready?(&1, backlog_per_class), timeout: 10_000)
+    _ = await_stats(uuid, &fairness_backlog_ready?(&1, backlog_per_class), timeout: 10_000)
 
     # Release only the blocker; keep the sync gate so later grants pause at before_begin
     # until we re-enqueue the granted class (continuous four-class backlog).
@@ -561,13 +562,13 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
        ) do
     receive do
       {^hook_ref, :granted, request_ref, class, op} ->
-        assert_receive {^gate_ref, :before_begin, executor_pid}, 5_000
+        _ = assert_receive {^gate_ref, :before_begin, executor_pid}, 5_000
         next_grants = Enum.concat(grants, [{class, op, request_ref}])
 
         enqueue_order =
           if length(next_grants) < grant_target do
-            spawn_real_path_request!(uuid, class)
-            assert_receive {^hook_ref, :enqueued, new_ref, ^class, _op, _caller}, 5_000
+            _ = spawn_real_path_request!(uuid, class)
+            _ = assert_receive {^hook_ref, :enqueued, new_ref, ^class, _op, _caller}, 5_000
             Map.update!(enqueue_order, class, &Enum.concat(&1, [new_ref]))
           else
             enqueue_order
@@ -689,17 +690,17 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :blocked end)
       end)
 
-    assert_receive {^gate_ref, :before_begin, blocker_executor}, 2_000
+    _ = assert_receive {^gate_ref, :before_begin, blocker_executor}, 2_000
     flush_hook_mailbox!(hook_ref)
     _ = drain_grants(probe_ref, 0)
 
     # Enqueue deterministically per class so FIFO probe ops match grant order.
     for class <- ServiceClass.classes(), index <- 1..backlog_per_class do
-      spawn_request.(class)
-      assert_receive {^hook_ref, :enqueued, _ref, ^class, {^class, ^index}, _caller}, 5_000
+      _ = spawn_request.(class)
+      _ = assert_receive {^hook_ref, :enqueued, _ref, ^class, {^class, ^index}, _caller}, 5_000
     end
 
-    await_stats(uuid, &fairness_backlog_ready?(&1, backlog_per_class), timeout: 10_000)
+    _ = await_stats(uuid, &fairness_backlog_ready?(&1, backlog_per_class), timeout: 10_000)
 
     send(blocker_executor, {:go, gate_ref})
     assert :blocked = Task.await(blocker, 10_000)
@@ -789,13 +790,14 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
       {^probe_ref, :admission_grant, class, op} ->
         grants =
           if synthetic_probe_op?(op) do
-            assert_receive {^gate_ref, :before_begin, executor_pid}, 5_000
+            _ = assert_receive {^gate_ref, :before_begin, executor_pid}, 5_000
             next = Enum.concat(grants, [{class, op}])
 
-            if length(next) < grant_target do
-              spawn_request.(class)
-              assert_receive {^hook_ref, :enqueued, _ref, ^class, _op, _caller}, 5_000
-            end
+            _ =
+              if length(next) < grant_target do
+                _ = spawn_request.(class)
+                assert_receive {^hook_ref, :enqueued, _ref, ^class, _op, _caller}, 5_000
+              end
 
             send(executor_pid, {:go, gate_ref})
             next
@@ -845,7 +847,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
   end
 
   defp do_assert_reservation_pressure!(uuid, limit) do
-    await_stats(uuid, &(&1.total_occupancy == 0 and &1.active_class == nil), timeout: 15_000)
+    _ = await_stats(uuid, &(&1.total_occupancy == 0 and &1.active_class == nil), timeout: 15_000)
 
     parent = self()
     gate_ref = make_ref()
@@ -861,20 +863,22 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :blocked end)
       end)
 
-    assert_receive {^gate_ref, :before_begin, blocker_executor}, 2_000
+    _ = assert_receive {^gate_ref, :before_begin, blocker_executor}, 2_000
 
     flood_tasks = spawn_foreground_floods(uuid, flood_count)
 
-    await_stats(
-      uuid,
-      fn stats ->
-        stats.active_class == :foreground and stats.queued_foreground >= flood_count
-      end,
-      timeout: 10_000
-    )
+    _ =
+      await_stats(
+        uuid,
+        fn stats ->
+          stats.active_class == :foreground and stats.queued_foreground >= flood_count
+        end,
+        timeout: 10_000
+      )
 
-    assert {:error, %VialKeeper.Error{code: :database_overloaded}} =
-             DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :rejected end)
+    _ =
+      assert {:error, %VialKeeper.Error{code: :database_overloaded}} =
+               DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :rejected end)
 
     sub_task =
       Task.async(fn ->
@@ -891,14 +895,15 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         DatabaseAdmission.execute_owner(uuid, :maintenance, fn -> :reserved_mnt end)
       end)
 
-    await_stats(
-      uuid,
-      fn stats ->
-        stats.queued_subscription >= 1 and stats.queued_replication >= 1 and
-          stats.queued_maintenance >= 1
-      end,
-      timeout: 10_000
-    )
+    _ =
+      await_stats(
+        uuid,
+        fn stats ->
+          stats.queued_subscription >= 1 and stats.queued_replication >= 1 and
+            stats.queued_maintenance >= 1
+        end,
+        timeout: 10_000
+      )
 
     send(blocker_executor, {:go, gate_ref})
     Application.delete_env(:vial_keeper, :admitted_command_sync)
@@ -907,7 +912,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
       assert Task.await(task, 10_000)
     end
 
-    await_stats(uuid, &(&1.total_occupancy == 0), timeout: 15_000)
+    _ = await_stats(uuid, &(&1.total_occupancy == 0), timeout: 15_000)
     :ok
   end
 
@@ -935,7 +940,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
 
   @spec with_suspended_replication_workers!(binary(), (-> term())) :: term()
   def with_suspended_replication_workers!(uuid, fun) when is_function(fun, 0) do
-    suspend_replication_workers!(uuid)
+    _ = suspend_replication_workers!(uuid)
 
     try do
       fun.()
@@ -952,28 +957,29 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
   end
 
   defp do_assert_killed_queued_never_granted!(uuid, probe_ref, hook_ref) do
-    await_stats(uuid, &(&1.total_occupancy == 0), timeout: 15_000)
+    _ = await_stats(uuid, &(&1.total_occupancy == 0), timeout: 15_000)
     _ = drain_grants(probe_ref, 0)
     flush_hook_mailbox!(hook_ref)
 
     {blocker, gate_ref, executor_pid} = hold_admission_slot!(uuid)
     {fg_ref, repl_ref, victims} = enqueue_kill_victims!(uuid, hook_ref)
 
-    await_stats(
-      uuid,
-      &(&1.queued_foreground >= 1 and &1.queued_replication >= 1),
-      timeout: 5_000
-    )
+    _ =
+      await_stats(
+        uuid,
+        &(&1.queued_foreground >= 1 and &1.queued_replication >= 1),
+        timeout: 5_000
+      )
 
-    refute_hook_grants!(hook_ref, [fg_ref, repl_ref], 0)
+    _ = refute_hook_grants!(hook_ref, [fg_ref, repl_ref], 0)
     kill_queued_victims!(uuid, victims)
-    refute_hook_grants!(hook_ref, [fg_ref, repl_ref], 0)
+    _ = refute_hook_grants!(hook_ref, [fg_ref, repl_ref], 0)
 
     send(executor_pid, {:go, gate_ref})
     Application.delete_env(:vial_keeper, :admitted_command_sync)
     assert :hold = Task.await(blocker, 5_000)
 
-    refute_hook_grants!(hook_ref, [fg_ref, repl_ref], 200)
+    _ = refute_hook_grants!(hook_ref, [fg_ref, repl_ref], 200)
     refute_victim_probe_grants!(probe_ref)
     assert_after_kill_successor!(uuid)
     :ok
@@ -989,7 +995,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :hold end)
       end)
 
-    assert_receive {^gate_ref, :before_begin, executor_pid}, 2_000
+    _ = assert_receive {^gate_ref, :before_begin, executor_pid}, 2_000
     {blocker, gate_ref, executor_pid}
   end
 
@@ -1009,9 +1015,10 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         end
       end)
 
-    assert_receive {^hook_ref, :enqueued, fg_ref, :foreground, {:victim, :foreground},
-                    ^foreground_victim},
-                   5_000
+    _ =
+      assert_receive {^hook_ref, :enqueued, fg_ref, :foreground, {:victim, :foreground},
+                      ^foreground_victim},
+                     5_000
 
     # Real replication catalog path (command_as :replication). Identity is a
     # classified read and no longer occupies the writer scheduler.
@@ -1033,8 +1040,9 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         end
       end)
 
-    assert_receive {^hook_ref, :enqueued, repl_ref, :replication, _op, ^replication_helper},
-                   5_000
+    _ =
+      assert_receive {^hook_ref, :enqueued, repl_ref, :replication, _op, ^replication_helper},
+                     5_000
 
     {fg_ref, repl_ref, [foreground_victim, replication_helper]}
   end
@@ -1048,7 +1056,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
 
     for victim <- victims do
       mon = Process.monitor(victim)
-      assert_receive {:DOWN, ^mon, :process, ^victim, _}, 2_000
+      _ = assert_receive {:DOWN, ^mon, :process, ^victim, _}, 2_000
     end
 
     Eventual.eventually(
@@ -1102,7 +1110,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
   end
 
   defp do_assert_timeout_race_clean!(uuid, hook_ref) do
-    await_stats(uuid, &(&1.total_occupancy == 0), timeout: 15_000)
+    _ = await_stats(uuid, &(&1.total_occupancy == 0), timeout: 15_000)
     flush_hook_mailbox!(hook_ref)
 
     parent = self()
@@ -1116,7 +1124,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         DatabaseAdmission.execute_owner(uuid, :foreground, fn -> :held end)
       end)
 
-    assert_receive {^holder_gate, :before_begin, holder_executor}, 5_000
+    _ = assert_receive {^holder_gate, :before_begin, holder_executor}, 5_000
 
     # Caller stays alive across a finite GenServer.call timeout that races the grant:
     # grant reaches before_begin, then the acquire call times out and cancel cleans up.
@@ -1141,27 +1149,27 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
         send(parent, {:race_result, result})
       end)
 
-    assert_receive {^hook_ref, :enqueued, racer_ref, :foreground, :race_victim, ^racer}, 5_000
-    await_stats(uuid, &(&1.queued_foreground >= 1), timeout: 5_000)
+    _ = assert_receive {^hook_ref, :enqueued, racer_ref, :foreground, :race_victim, ^racer}, 5_000
+    _ = await_stats(uuid, &(&1.queued_foreground >= 1), timeout: 5_000)
 
     :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, racer_gate, uuid})
     send(holder_executor, {:go, holder_gate})
     assert :held = Task.await(holder, 5_000)
 
-    assert_receive {^hook_ref, :granted, ^racer_ref, :foreground, :race_victim}, 5_000
-    assert_receive {^racer_gate, :before_begin, racer_executor}, 5_000
+    _ = assert_receive {^hook_ref, :granted, ^racer_ref, :foreground, :race_victim}, 5_000
+    _ = assert_receive {^racer_gate, :before_begin, racer_executor}, 5_000
 
-    assert_receive {:race_result, result}, 5_000
+    _ = assert_receive {:race_result, result}, 5_000
     refute_receive {^body_ref, :executed}, 0
     refute result == :raced
 
-    await_stats(uuid, &(&1.total_occupancy == 0 and &1.queued_foreground == 0), timeout: 15_000)
+    _ = await_stats(uuid, &(&1.total_occupancy == 0 and &1.queued_foreground == 0), timeout: 15_000)
 
     send(racer_executor, {:go, racer_gate})
     Application.delete_env(:vial_keeper, :admitted_command_sync)
 
     racer_mon = Process.monitor(racer)
-    assert_receive {:DOWN, ^racer_mon, :process, ^racer, _}, 2_000
+    _ = assert_receive {:DOWN, ^racer_mon, :process, ^racer, _}, 2_000
 
     successor =
       Task.async(fn ->

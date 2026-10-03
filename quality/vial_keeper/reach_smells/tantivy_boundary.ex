@@ -26,7 +26,7 @@ defmodule VialKeeper.Quality.ReachSmells.TantivyBoundary do
   def run(project), do: Files.scan(project, &Files.not_quality?/1, &findings/2)
 
   @impl true
-  @spec findings(Macro.t(), Path.t()) :: [Reach.Smell.Finding.t()]
+  @spec findings(Macro.t(), Path.t()) :: [%Reach.Smell.Finding{}]
   def findings(ast, file) do
     AST.walk_modules(ast, fn module, body ->
       if module in @allowed do

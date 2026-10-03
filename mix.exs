@@ -24,7 +24,10 @@ defmodule VialKeeper.MixProject do
           :opentelemetry_api_experimental,
           :opentelemetry,
           :opentelemetry_experimental,
-          :opentelemetry_exporter
+          :opentelemetry_exporter,
+          :reach,
+          :libgraph,
+          :sourceror
         ]
       ],
       releases: releases()

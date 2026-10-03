@@ -103,15 +103,17 @@ defmodule VialKeeper.Storage.Contracts.Derived do
           []
         )
 
-      assert {:ok, %{applied: true, last_sequence: first_sequence}} =
-               adapter_mod.apply_derived_source_batch(ctx.adapter, batch)
+      _ =
+        assert {:ok, %{applied: true, last_sequence: first_sequence}} =
+                 adapter_mod.apply_derived_source_batch(ctx.adapter, batch)
 
       assert first_sequence > 0
 
       generated_id = Engine.map_document_id(ctx.source_uuid, "one")
 
-      assert {:ok, %{body: body}} =
-               adapter_mod.get_document(ctx.adapter, %{document_id: generated_id})
+      _ =
+        assert {:ok, %{body: body}} =
+                 adapter_mod.get_document(ctx.adapter, %{document_id: generated_id})
 
       assert body == %{
                "key" => ["alpha"],
@@ -120,8 +122,9 @@ defmodule VialKeeper.Storage.Contracts.Derived do
                "source_document_id" => "one"
              }
 
-      assert {:ok, %{applied: false, last_sequence: 0}} =
-               adapter_mod.apply_derived_source_batch(ctx.adapter, batch)
+      _ =
+        assert {:ok, %{applied: false, last_sequence: 0}} =
+                 adapter_mod.apply_derived_source_batch(ctx.adapter, batch)
 
       removal = %{
         batch
@@ -131,7 +134,9 @@ defmodule VialKeeper.Storage.Contracts.Derived do
           removals: ["one"]
       }
 
-      assert {:ok, %{applied: true}} = adapter_mod.apply_derived_source_batch(ctx.adapter, removal)
+      _ =
+        assert {:ok, %{applied: true}} =
+                 adapter_mod.apply_derived_source_batch(ctx.adapter, removal)
 
       case adapter_mod.get_document(ctx.adapter, %{document_id: generated_id}) do
         {:error, %VialKeeper.Error{code: :document_not_found}} -> :ok
@@ -161,10 +166,10 @@ defmodule VialKeeper.Storage.Contracts.Derived do
           []
         )
 
-      assert {:ok, %{applied: true}} = adapter_mod.apply_derived_source_batch(adapter, batch)
+      _ = assert {:ok, %{applied: true}} = adapter_mod.apply_derived_source_batch(adapter, batch)
 
       {:ok, group_id} = Engine.group_document_id(["alpha"])
-      assert {:ok, %{body: body}} = adapter_mod.get_document(adapter, %{document_id: group_id})
+      _ = assert {:ok, %{body: body}} = adapter_mod.get_document(adapter, %{document_id: group_id})
 
       assert body == %{
                "key" => ["alpha"],
@@ -195,59 +200,66 @@ defmodule VialKeeper.Storage.Contracts.Derived do
           []
         )
 
-      assert {:ok, %{applied: true}} = adapter_mod.apply_derived_source_batch(ctx.adapter, batch)
+      _ =
+        assert {:ok, %{applied: true}} = adapter_mod.apply_derived_source_batch(ctx.adapter, batch)
 
-      assert {:error, %VialKeeper.Error{code: :source_history_reset}} =
-               adapter_mod.apply_derived_source_batch(ctx.adapter, %{
-                 batch
-                 | source_history_epoch: UUID.v4(),
-                   expected_checkpoint_sequence: 1,
-                   through_sequence: 2
-               })
+      _ =
+        assert {:error, %VialKeeper.Error{code: :source_history_reset}} =
+                 adapter_mod.apply_derived_source_batch(ctx.adapter, %{
+                   batch
+                   | source_history_epoch: UUID.v4(),
+                     expected_checkpoint_sequence: 1,
+                     through_sequence: 2
+                 })
 
-      assert {:ok, %{generation: generation}} =
-               adapter_mod.begin_derived_source_rebuild(ctx.adapter, %{
-                 materialization_id: ctx.materialization_id,
-                 source_database_uuid: ctx.source_uuid,
-                 start_sequence: 0
-               })
+      _ =
+        assert {:ok, %{generation: generation}} =
+                 adapter_mod.begin_derived_source_rebuild(ctx.adapter, %{
+                   materialization_id: ctx.materialization_id,
+                   source_database_uuid: ctx.source_uuid,
+                   start_sequence: 0
+                 })
 
-      assert {:ok, _} =
-               adapter_mod.apply_derived_rebuild_page(ctx.adapter, %{
-                 materialization_id: ctx.materialization_id,
-                 source_database_uuid: ctx.source_uuid,
-                 generation: generation,
-                 rows: [
-                   Engine.source_row("keep", "2-keep", ["alpha"], 9)
-                 ],
-                 removals: [],
-                 after_document_id: "keep"
-               })
+      _ =
+        assert {:ok, _} =
+                 adapter_mod.apply_derived_rebuild_page(ctx.adapter, %{
+                   materialization_id: ctx.materialization_id,
+                   source_database_uuid: ctx.source_uuid,
+                   generation: generation,
+                   rows: [
+                     Engine.source_row("keep", "2-keep", ["alpha"], 9)
+                   ],
+                   removals: [],
+                   after_document_id: "keep"
+                 })
 
-      assert {:ok, %{removed: 1, has_more: false}} =
-               adapter_mod.prune_derived_rebuild_stale_page(ctx.adapter, %{
-                 materialization_id: ctx.materialization_id,
-                 source_database_uuid: ctx.source_uuid,
-                 generation: generation,
-                 limit: 10
-               })
+      _ =
+        assert {:ok, %{removed: 1, has_more: false}} =
+                 adapter_mod.prune_derived_rebuild_stale_page(ctx.adapter, %{
+                   materialization_id: ctx.materialization_id,
+                   source_database_uuid: ctx.source_uuid,
+                   generation: generation,
+                   limit: 10
+                 })
 
       new_epoch = UUID.v4()
 
-      assert {:ok, _} =
-               adapter_mod.finish_derived_source_rebuild(ctx.adapter, %{
-                 materialization_id: ctx.materialization_id,
-                 source_database_uuid: ctx.source_uuid,
-                 generation: generation,
-                 catchup_sequence: 1,
-                 source_history_epoch: new_epoch
-               })
+      _ =
+        assert {:ok, _} =
+                 adapter_mod.finish_derived_source_rebuild(ctx.adapter, %{
+                   materialization_id: ctx.materialization_id,
+                   source_database_uuid: ctx.source_uuid,
+                   generation: generation,
+                   catchup_sequence: 1,
+                   source_history_epoch: new_epoch
+                 })
 
       keep_id = Engine.map_document_id(ctx.source_uuid, "keep")
       drop_id = Engine.map_document_id(ctx.source_uuid, "drop")
 
-      assert {:ok, %{body: %{"value" => 9}}} =
-               adapter_mod.get_document(ctx.adapter, %{document_id: keep_id})
+      _ =
+        assert {:ok, %{body: %{"value" => 9}}} =
+                 adapter_mod.get_document(ctx.adapter, %{document_id: keep_id})
 
       case adapter_mod.get_document(ctx.adapter, %{document_id: drop_id}) do
         {:error, %VialKeeper.Error{code: :document_not_found}} -> :ok
@@ -257,8 +269,9 @@ defmodule VialKeeper.Storage.Contracts.Derived do
 
       reopened = AdapterCase.reopen!(adapter_mod, ctx.adapter, ctx.path)
 
-      assert {:ok, %{body: %{"value" => 9}}} =
-               adapter_mod.get_document(reopened, %{document_id: keep_id})
+      _ =
+        assert {:ok, %{body: %{"value" => 9}}} =
+                 adapter_mod.get_document(reopened, %{document_id: keep_id})
 
       assert :ok = adapter_mod.close(reopened)
     end

@@ -20,7 +20,7 @@ defmodule VialKeeper.Quality.ReachSmells.ExplicitGenServerTimeout do
   def run(project), do: Files.scan(project, &Files.production_or_bench?/1, &findings/2)
 
   @impl true
-  @spec findings(Macro.t(), Path.t()) :: [Reach.Smell.Finding.t()]
+  @spec findings(Macro.t(), Path.t()) :: [%Reach.Smell.Finding{}]
   def findings(ast, file) do
     AST.each_call(ast, fn
       module_ast, :call, args, meta ->

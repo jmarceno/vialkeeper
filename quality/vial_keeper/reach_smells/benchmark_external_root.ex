@@ -20,7 +20,7 @@ defmodule VialKeeper.Quality.ReachSmells.BenchmarkExternalRoot do
   def run(project), do: Files.scan(project, &SourcePaths.bench_support?/1, &findings/2)
 
   @impl true
-  @spec findings(Macro.t(), Path.t()) :: [Reach.Smell.Finding.t()]
+  @spec findings(Macro.t(), Path.t()) :: [%Reach.Smell.Finding{}]
   def findings(ast, file) do
     tmp_dir_findings(ast, file) ++ tmp_literal_findings(ast, file)
   end

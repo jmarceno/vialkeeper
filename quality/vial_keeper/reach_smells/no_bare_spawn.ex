@@ -24,7 +24,7 @@ defmodule VialKeeper.Quality.ReachSmells.NoBareSpawn do
   def run(project), do: Files.scan(project, &Files.lib?/1, &findings/2)
 
   @impl true
-  @spec findings(Macro.t(), Path.t()) :: [Reach.Smell.Finding.t()]
+  @spec findings(Macro.t(), Path.t()) :: [%Reach.Smell.Finding{}]
   def findings(ast, file) do
     AST.walk_modules(ast, fn module, body ->
       if module in @allowed do
