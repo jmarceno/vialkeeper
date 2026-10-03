@@ -185,4 +185,18 @@ defmodule VialKeeper.Replication.CheckpointRecoveryTest do
         String.slice(hex, 11, 3) <> "-" <> String.slice(hex, 14, 12)
     end)
   end
+
+  test "common_sequence ignores malformed remote checkpoint history" do
+    good = %{"session_id" => "s", "source_sequence" => 5}
+    bad = %{"session_id" => "t", "source_sequence" => "9"}
+
+    assert CheckpointReconciler.common_sequence(%{"history" => [bad, good]}, %{
+             "history" => [bad, good]
+           }) == 5
+
+    assert CheckpointReconciler.common_sequence(%{"history" => "x"}, %{"history" => [good]}) == 0
+
+    assert CheckpointReconciler.common_sequence(%{"history" => [1, good]}, %{"history" => [good]}) ==
+             5
+  end
 end

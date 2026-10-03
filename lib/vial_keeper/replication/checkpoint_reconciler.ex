@@ -17,14 +17,15 @@ defmodule VialKeeper.Replication.CheckpointReconciler do
   def common_sequence(_source, nil), do: 0
 
   def common_sequence(source, target) when is_map(source) and is_map(target) do
-    source_history = MapAccess.get(source, :history, [])
-    target_history = MapAccess.get(target, :history, [])
+    source_history = history(source)
+    target_history = history(target)
 
     source_history
-    |> Enum.sort_by(&MapAccess.get(&1, :source_sequence, 0), :desc)
+    |> Enum.filter(&valid_entry?/1)
+    |> Enum.sort_by(&MapAccess.get(&1, :source_sequence), :desc)
     |> Enum.find_value(0, fn source_entry ->
       if Enum.any?(target_history, &same_session?(&1, source_entry)),
-        do: MapAccess.get(source_entry, :source_sequence, 0),
+        do: MapAccess.get(source_entry, :source_sequence),
         else: nil
     end)
   end
@@ -122,6 +123,23 @@ defmodule VialKeeper.Replication.CheckpointReconciler do
   defp no_valid_epoch?(checkpoint_epoch, source_epoch) do
     not is_binary(checkpoint_epoch) or checkpoint_epoch == "" or checkpoint_epoch != source_epoch
   end
+
+  # SAFETY: remote checkpoints are untrusted. A non-list history or an entry whose
+  # sequence is not a non-negative integer would otherwise crash Enum or leak a
+  # non-integer `since` (which sorts above every integer in term order).
+  defp history(checkpoint) do
+    case MapAccess.get(checkpoint, :history, []) do
+      history when is_list(history) -> history
+      _ -> []
+    end
+  end
+
+  defp valid_entry?(entry) when is_map(entry),
+    do: non_neg_integer?(MapAccess.get(entry, :source_sequence))
+
+  defp valid_entry?(_entry), do: false
+
+  defp non_neg_integer?(value), do: is_integer(value) and value >= 0
 
   defp same_session?(left, right) when is_map(left) and is_map(right),
     do:
