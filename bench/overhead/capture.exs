@@ -7,8 +7,9 @@ defmodule VialKeeper.Benchmarks.Overhead.Capture do
   Erlang call tracing on the three functions every SQLite statement passes
   through:
 
-    * `Connection.query/3` and `Connection.execute/3` — prepared statements
-      (recorded with SQL, parameters, and, for `query/3`, the returned row
+    * `Connection.query/3` and `Connection.execute/3`, and their
+      `point_query/3` / `point_execute/3` variants — prepared statements
+      (recorded with SQL, parameters, and, for queries, the returned row
       count),
     * `Connection.exec/2` — unprepared control SQL such as `BEGIN IMMEDIATE`.
 
@@ -21,7 +22,15 @@ defmodule VialKeeper.Benchmarks.Overhead.Capture do
   alias VialKeeper.Storage.SQLite.Connection
 
   @timeout 120_000
-  @traced [{Connection, :query, 3}, {Connection, :execute, 3}, {Connection, :exec, 2}]
+  @traced [
+    {Connection, :query, 3},
+    {Connection, :execute, 3},
+    {Connection, :point_query, 3},
+    {Connection, :point_execute, 3},
+    {Connection, :exec, 2}
+  ]
+  @queries [:query, :point_query]
+  @executes [:execute, :point_execute]
 
   @type op ::
           %{kind: :query | :execute, sql: binary(), params: list(), rows: non_neg_integer() | nil}
@@ -105,12 +114,12 @@ defmodule VialKeeper.Benchmarks.Overhead.Capture do
 
   defp collect(worker, ops) do
     receive do
-      {:trace, ^worker, :call, {Connection, :query, [_conn, sql, params]}} ->
+      {:trace, ^worker, :call, {Connection, name, [_conn, sql, params]}} when name in @queries ->
         collect(worker, [
           %{kind: :query, sql: IO.iodata_to_binary(sql), params: params, rows: nil} | ops
         ])
 
-      {:trace, ^worker, :call, {Connection, :execute, [_conn, sql, params]}} ->
+      {:trace, ^worker, :call, {Connection, name, [_conn, sql, params]}} when name in @executes ->
         collect(worker, [
           %{kind: :execute, sql: IO.iodata_to_binary(sql), params: params, rows: nil} | ops
         ])
@@ -118,12 +127,12 @@ defmodule VialKeeper.Benchmarks.Overhead.Capture do
       {:trace, ^worker, :call, {Connection, :exec, [_conn, sql]}} ->
         collect(worker, [%{kind: :exec, sql: sql} | ops])
 
-      {:trace, ^worker, :return_from, {Connection, :query, 3}, result} ->
+      {:trace, ^worker, :return_from, {Connection, name, 3}, result} when name in @queries ->
         [last | rest] = ops
         collect(worker, [%{last | rows: returned_rows(result)} | rest])
 
       {:trace, ^worker, :return_from, {Connection, name, _arity}, result}
-      when name in [:execute, :exec] ->
+      when name in [:exec | @executes] ->
         unless result == :ok, do: Mix.raise("captured #{name} failed: #{inspect(result)}")
         collect(worker, ops)
     after

@@ -45,7 +45,8 @@ defmodule VialKeeper.Bench.OverheadCaptureTest do
   test "removes trace patterns after a capture", %{worker: worker} do
     {_result, _ops} = Capture.capture(worker, &Adapter.get_document(&1, %{document_id: "doc"}))
 
-    for mfa <- [{Connection, :query, 3}, {Connection, :execute, 3}, {Connection, :exec, 2}] do
+    for name <- [:query, :execute, :point_query, :point_execute],
+        mfa <- [{Connection, name, 3}, {Connection, :exec, 2}] do
       assert :erlang.trace_info(mfa, :traced) == {:traced, false}
     end
 

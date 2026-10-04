@@ -74,6 +74,17 @@ cleanup) drain snapshots before the writer runs, then resume the reader pool.
 Runtime code never names sidecar files; this backend document does because it
 owns the artifact.
 
+## Statement scheduling
+
+The SQLite NIF is a vendored, trimmed exqlite (`native/exqlite`, see its
+`VENDORED.md`). Statements normally step on a dirty IO scheduler. Point
+statements on the single-document write path (key lookups and single-row
+writes, `Connection.point_query/3` and `point_execute/3`) step on the calling
+scheduler while the owner holds its `BEGIN IMMEDIATE` write transaction: there
+they cannot wait on a lock, and their SQLite work is smaller than a
+dirty-scheduler hop. `BEGIN`, `COMMIT` (which may checkpoint), reads outside a
+write transaction and every other statement stay on dirty schedulers.
+
 ## Integrity probes
 
 Product integrity rules run over normalized domain facts. The SQLite backend

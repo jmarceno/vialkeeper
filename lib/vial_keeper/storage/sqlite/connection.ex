@@ -13,6 +13,8 @@ defmodule VialKeeper.Storage.SQLite.Connection do
   # completion) is the dominant saving for small and large results alike.
   @fetch_chunk_rows 100
 
+  @write_transaction_key :vial_keeper_sqlite_write_transaction
+
   @doc "Rows fetched per ExQLite call; benchmarks replay with the same size."
   @spec fetch_chunk_rows() :: pos_integer()
   def fetch_chunk_rows, do: @fetch_chunk_rows
@@ -63,6 +65,52 @@ defmodule VialKeeper.Storage.SQLite.Connection do
   @spec query(handle(), iodata(), list()) :: {:ok, [list()]} | {:error, term()}
   def query(conn, sql, params \\ []), do: run(conn, sql, params, true)
 
+  @doc """
+  Like `query/3`, for a point statement: a key lookup or single-row write whose
+  work is bounded.
+
+  Inside this process's write transaction on `conn` the statement steps on the
+  calling scheduler. The writer already holds the write lock there, so the
+  statement cannot wait in the busy handler, and SQLite's work (about a
+  microsecond) is smaller than a dirty-scheduler hop. Elsewhere it runs exactly
+  like `query/3`.
+  """
+  @spec point_query(handle(), iodata(), list()) :: {:ok, [list()]} | {:error, term()}
+  def point_query(conn, sql, params \\ []), do: run(conn, sql, params, true, stepper(conn))
+
+  @doc "Like `execute/3`, for a point statement (see `point_query/3`)."
+  @spec point_execute(handle(), iodata(), list()) :: :ok | {:error, term()}
+  def point_execute(conn, sql, params \\ []) do
+    case run(conn, sql, params, false, stepper(conn)) do
+      {:ok, _rows} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Runs `fun` as this process's write transaction body on `conn`.
+
+  Only the transaction owner calls this, after `BEGIN IMMEDIATE` succeeded and
+  before `COMMIT` or `ROLLBACK`; point statements run inline while it lasts.
+  """
+  @spec in_write_transaction(handle(), (-> result)) :: result when result: term()
+  def in_write_transaction(conn, fun) when is_function(fun, 0) do
+    Process.put({@write_transaction_key, conn}, true)
+
+    try do
+      fun.()
+    after
+      Process.delete({@write_transaction_key, conn})
+    end
+  end
+
+  defp stepper(conn) do
+    case Process.get({@write_transaction_key, conn}) do
+      true -> :inline
+      nil -> :dirty
+    end
+  end
+
   @spec pragma(handle(), binary()) :: {:ok, [list()]} | {:error, term()}
   def pragma(conn, statement), do: query(conn, "PRAGMA " <> statement)
 
@@ -82,20 +130,20 @@ defmodule VialKeeper.Storage.SQLite.Connection do
     end
   end
 
-  defp run(conn, sql, params, collect_rows) do
+  defp run(conn, sql, params, collect_rows, stepper \\ :dirty) do
     sql = IO.iodata_to_binary(sql)
 
     with {:ok, statement} <- Statements.checkout(conn, sql) do
-      result = bind_and_fetch(conn, statement, params, collect_rows)
+      result = bind_and_fetch(conn, statement, params, collect_rows, stepper)
       :ok = Statements.checkin(conn)
       result
     end
   end
 
-  defp bind_and_fetch(conn, statement, params, collect_rows) do
+  defp bind_and_fetch(conn, statement, params, collect_rows, stepper) do
     with :ok <- bind(statement, params) do
       Probe.measure :sqlite_step do
-        fetch(conn, statement, collect_rows, [])
+        fetch(conn, statement, collect_rows, [], stepper)
       end
     end
   end
@@ -156,14 +204,26 @@ defmodule VialKeeper.Storage.SQLite.Connection do
   defp bind_value(statement, index, {:blob, value}),
     do: Sqlite3.bind_blob(statement, index, value)
 
-  defp fetch(conn, statement, collect_rows, chunks) do
-    case Sqlite3.multi_step(conn, statement, @fetch_chunk_rows) do
-      {:done, rows} -> {:ok, collected(rows, chunks, collect_rows)}
-      {:rows, rows} -> fetch(conn, statement, collect_rows, collect(rows, chunks, collect_rows))
-      {:error, reason} -> {:error, reason}
-      other -> {:error, other}
+  defp fetch(conn, statement, collect_rows, chunks, stepper) do
+    case step(stepper, conn, statement) do
+      {:done, rows} ->
+        {:ok, collected(rows, chunks, collect_rows)}
+
+      {:rows, rows} ->
+        fetch(conn, statement, collect_rows, collect(rows, chunks, collect_rows), stepper)
+
+      {:error, reason} ->
+        {:error, reason}
+
+      other ->
+        {:error, other}
     end
   end
+
+  defp step(:dirty, conn, statement), do: Sqlite3.multi_step(conn, statement, @fetch_chunk_rows)
+
+  defp step(:inline, conn, statement),
+    do: Sqlite3.multi_step_inline(conn, statement, @fetch_chunk_rows)
 
   defp collect(_rows, chunks, false), do: chunks
   defp collect(rows, chunks, true), do: [rows | chunks]

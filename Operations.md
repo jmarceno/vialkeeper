@@ -31,8 +31,9 @@ VIAL_KEEPER_ROOT/
 
 ## Build the release
 
-Pinned toolchain: Elixir 1.20.2 / OTP 29.0.4 (`mise.toml`). Rust stable
-toolchain required (vendored `native/tantivy_ex` compiles a NIF at build time).
+Pinned toolchain: Elixir 1.20.2 / OTP 29.0.4 (`mise.toml`). A Rust stable
+toolchain and a C compiler with `make` are required: the vendored
+`native/tantivy_ex` and `native/exqlite` (SQLite) NIFs compile at build time.
 
 ```sh
 export MIX_ENV=prod

@@ -63,7 +63,9 @@ defmodule VialKeeper.MixProject do
 
   defp deps do
     [
-      {:exqlite, "0.39.0"},
+      # Vendored, trimmed exqlite: adds non-dirty stepping for point statements
+      # (see native/exqlite/VENDORED.md).
+      {:exqlite, path: "native/exqlite"},
       # Rust-backed JSON parsing handles the hot decode path; Decimal preserves
       # the strict binary64 overflow and underflow checks at the Elixir boundary.
       {:rustyjson, "0.3.13"},

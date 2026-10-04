@@ -112,11 +112,15 @@ defmodule VialKeeper.StorageAdapter.PointReadTest do
 
   defp traced(fun) do
     {result, calls} =
-      VialKeeper.CallTrace.run([{Connection, :query, 3}, {Connection, :exec, 2}], fun)
+      VialKeeper.CallTrace.run(
+        [{Connection, :query, 3}, {Connection, :point_query, 3}, {Connection, :exec, 2}],
+        fun
+      )
 
     {result,
      Enum.map(calls, fn
        {Connection, :query, [_conn, sql, _params]} -> {:query, sql}
+       {Connection, :point_query, [_conn, sql, _params]} -> {:query, sql}
        {Connection, :exec, [_conn, sql]} -> {:exec, sql}
      end)}
   end

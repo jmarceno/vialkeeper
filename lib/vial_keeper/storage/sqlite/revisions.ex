@@ -37,7 +37,7 @@ defmodule VialKeeper.Storage.SQLite.Revisions do
     do: {:error, VialKeeper.Error.document_not_found("document has no winning revision")}
 
   def find(conn, doc_key, revision_id) do
-    case Connection.query(
+    case Connection.point_query(
            conn,
            """
            SELECT r.revision_id, r.generation, r.parent_revision, r.history_id,
@@ -108,7 +108,7 @@ defmodule VialKeeper.Storage.SQLite.Revisions do
   @spec load_leaves(Connection.handle(), integer()) ::
           {:ok, [Revision.t()]} | {:error, VialKeeper.Error.t()}
   def load_leaves(conn, doc_key) do
-    case Connection.query(
+    case Connection.point_query(
            conn,
            "SELECT r.revision_id, r.generation, r.parent_revision, r.history_id, r.digest, r.deleted, r.body_json, r.body_term, r.insertion_sequence, a.attachment_name, a.blob_digest, a.logical_size, a.content_type FROM revisions AS r LEFT JOIN revision_attachments AS a ON a.doc_key = r.doc_key AND a.revision_id = r.revision_id WHERE r.doc_key = ? AND r.is_leaf = 1 ORDER BY r.revision_id, a.attachment_name",
            [doc_key]
@@ -309,7 +309,7 @@ defmodule VialKeeper.Storage.SQLite.Revisions do
     with {:ok, body_term} <- stored_body_term(revision, body),
          :ok <- clear_parent_leaf(conn, doc_key, revision.parent_revision),
          :ok <-
-           Connection.execute(
+           Connection.point_execute(
              conn,
              "INSERT INTO revisions(doc_key, revision_id, generation, parent_revision, history_id, digest, deleted, body_json, body_term, insertion_sequence, is_leaf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
              [
@@ -340,7 +340,7 @@ defmodule VialKeeper.Storage.SQLite.Revisions do
   defp clear_parent_leaf(_conn, _doc_key, nil), do: :ok
 
   defp clear_parent_leaf(conn, doc_key, parent_revision) do
-    Connection.execute(
+    Connection.point_execute(
       conn,
       "UPDATE revisions SET is_leaf = 0 WHERE doc_key = ? AND revision_id = ?",
       [doc_key, parent_revision]

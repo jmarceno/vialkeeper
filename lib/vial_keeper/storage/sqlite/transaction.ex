@@ -107,7 +107,7 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
   end
 
   defp transaction_body(%Adapter{conn: conn} = adapter, fun, invalidate_cache?, trace?) do
-    case fun.(adapter) do
+    case body_result(adapter, fun, trace?) do
       {:ok, value} ->
         commit_transaction(conn, value, invalidate_cache?, trace?)
 
@@ -117,6 +117,13 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
         {:error, Errors.normalize(error)}
     end
   end
+
+  # Write transactions hold the write lock for their whole body, which lets
+  # point statements step inline (see `Connection.point_query/3`).
+  defp body_result(%Adapter{conn: conn} = adapter, fun, true),
+    do: Connection.in_write_transaction(conn, fn -> fun.(adapter) end)
+
+  defp body_result(adapter, fun, false), do: fun.(adapter)
 
   defp commit_transaction(conn, value, invalidate_cache?, trace?) do
     case control(conn, "COMMIT", :transaction_commit, trace?) do
