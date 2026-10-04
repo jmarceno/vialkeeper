@@ -116,6 +116,7 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
           active: active_permit() | nil,
           closing?: boolean(),
           admitted_command_supervisor: pid(),
+          idle_executor: {pid(), reference()} | nil,
           idle_waiters: [GenServer.from()],
           peak_occupancy: non_neg_integer()
         }
@@ -132,6 +133,7 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
     :active,
     :closing?,
     :admitted_command_supervisor,
+    :idle_executor,
     :idle_waiters,
     :peak_occupancy
   ]
@@ -329,6 +331,7 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
            active: nil,
            closing?: false,
            admitted_command_supervisor: admitted_command_supervisor,
+           idle_executor: nil,
            idle_waiters: [],
            peak_occupancy: 0
          }}
@@ -478,12 +481,12 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
     end
   end
 
-  def handle_info({:admitted_command_done, request_ref, result}, state) do
+  # The executor has already replied to the caller; park it for the next grant.
+  def handle_info({:admitted_command_done, request_ref, executor_pid}, state) do
     case state.active do
-      %ActivePermit{request_ref: ^request_ref, from: from} = active ->
-        if from, do: GenServer.reply(from, result)
-
-        {:noreply, grant_loop(clear_active(state, active))}
+      %ActivePermit{request_ref: ^request_ref, executor_pid: ^executor_pid} = active ->
+        state = %{state | idle_executor: {executor_pid, active.executor_monitor_ref}}
+        {:noreply, grant_loop(clear_active(state, %{active | executor_monitor_ref: nil}))}
 
       _ ->
         {:noreply, state}
@@ -493,6 +496,7 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
   def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
     state =
       state
+      |> handle_idle_executor_down(monitor_ref)
       |> handle_executor_drain_down(monitor_ref, pid)
       |> handle_executor_down(monitor_ref, reason)
       |> handle_active_caller_down(monitor_ref, pid)
@@ -766,19 +770,18 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
   end
 
   defp start_executor(%__MODULE__{active: %ActivePermit{} = active} = state) do
-    args = %{
-      uuid: state.uuid,
-      scheduler_pid: self(),
-      request_ref: active.request_ref,
-      owner_fun: active.owner_fun,
-      deadline_ms: active.deadline_ms,
-      trace_context: active.trace_context,
-      probe_op: active.probe_op
-    }
-
-    case AdmittedCommand.start(state.admitted_command_supervisor, args) do
-      {:ok, executor_pid} ->
-        executor_monitor_ref = Process.monitor(executor_pid)
+    case checkout_executor(state) do
+      {:ok, executor_pid, executor_monitor_ref, state} ->
+        :ok =
+          AdmittedCommand.run(executor_pid, %{
+            uuid: state.uuid,
+            request_ref: active.request_ref,
+            from: active.from,
+            owner_fun: active.owner_fun,
+            deadline_ms: active.deadline_ms,
+            trace_context: active.trace_context,
+            probe_op: active.probe_op
+          })
 
         active = %{
           active
@@ -800,6 +803,24 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
         grant_loop(clear_active(state, active))
     end
   end
+
+  defp checkout_executor(%__MODULE__{idle_executor: {pid, monitor_ref}} = state),
+    do: {:ok, pid, monitor_ref, %{state | idle_executor: nil}}
+
+  defp checkout_executor(%__MODULE__{idle_executor: nil} = state) do
+    case AdmittedCommand.start(state.admitted_command_supervisor, self()) do
+      {:ok, pid} -> {:ok, pid, Process.monitor(pid), state}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp handle_idle_executor_down(
+         %__MODULE__{idle_executor: {_pid, monitor_ref}} = state,
+         monitor_ref
+       ),
+       do: %{state | idle_executor: nil}
+
+  defp handle_idle_executor_down(%__MODULE__{} = state, _monitor_ref), do: state
 
   defp handle_executor_down(%__MODULE__{} = state, monitor_ref, reason) do
     case state.active do
