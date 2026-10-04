@@ -138,26 +138,62 @@ defmodule VialKeeper.Revisions.Id do
     calculate(document_id, history_id, nil, false, body, attachments)
   end
 
+  # Revision and history IDs are matched as binaries rather than with regexes,
+  # which are recompiled on every call on recent OTP releases. The matches
+  # accept exactly what `~r/^(\d+)-[0-9a-f]{64}$/` and the case-insensitive
+  # UUID regex accepted, including one trailing newline before the end.
+  defguardp digit?(byte) when byte in ?0..?9
+  defguardp lower_hex?(byte) when byte in ?0..?9 or byte in ?a..?f
+  defguardp hex?(byte) when lower_hex?(byte) or byte in ?A..?F
+
   @spec generation(binary()) :: {:ok, pos_integer()} | {:error, VialKeeper.Error.t()}
   def generation(revision_id) when is_binary(revision_id) do
-    case Regex.run(~r/^(\d+)-[0-9a-f]{64}$/, revision_id) do
-      [_, generation] -> {:ok, String.to_integer(generation)}
+    with [digits, digest] when digits != "" <- :binary.split(revision_id, "-"),
+         true <- all_digits?(digits),
+         true <- revision_digest?(digest) do
+      {:ok, String.to_integer(digits)}
+    else
       _ -> {:error, VialKeeper.Error.invalid_request("invalid revision id")}
     end
   end
 
+  defp all_digits?(<<byte, rest::binary>>) when digit?(byte), do: all_digits?(rest)
+  defp all_digits?(<<>>), do: true
+  defp all_digits?(_binary), do: false
+
+  defp revision_digest?(<<digest::binary-size(64)>>), do: lower_hex_digest?(digest)
+  defp revision_digest?(<<digest::binary-size(64), ?\n>>), do: lower_hex_digest?(digest)
+  defp revision_digest?(_binary), do: false
+
+  defp lower_hex_digest?(<<byte, rest::binary>>) when lower_hex?(byte),
+    do: lower_hex_digest?(rest)
+
+  defp lower_hex_digest?(<<>>), do: true
+  defp lower_hex_digest?(_binary), do: false
+
   @spec validate_history_id(binary()) :: :ok | {:error, VialKeeper.Error.t()}
-  def validate_history_id(history_id) when is_binary(history_id) do
-    if Regex.match?(
-         ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-         history_id
-       ),
-       do: :ok,
-       else: {:error, VialKeeper.Error.invalid_request("invalid history id")}
-  end
+  def validate_history_id(<<uuid::binary-size(36)>>), do: validate_uuid(uuid)
+  def validate_history_id(<<uuid::binary-size(36), ?\n>>), do: validate_uuid(uuid)
 
   def validate_history_id(_),
     do: {:error, VialKeeper.Error.invalid_request("invalid history id")}
+
+  defp validate_uuid(
+         <<a::binary-size(8), ?-, b::binary-size(4), ?-, version, c::binary-size(3), ?-, variant,
+           d::binary-size(3), ?-, e::binary-size(12)>>
+       )
+       when version in ?1..?5 and variant in [?8, ?9, ?a, ?b, ?A, ?B] do
+    if Enum.all?([a, b, c, d, e], &all_hex?/1),
+      do: :ok,
+      else: {:error, VialKeeper.Error.invalid_request("invalid history id")}
+  end
+
+  defp validate_uuid(_uuid),
+    do: {:error, VialKeeper.Error.invalid_request("invalid history id")}
+
+  defp all_hex?(<<byte, rest::binary>>) when hex?(byte), do: all_hex?(rest)
+  defp all_hex?(<<>>), do: true
+  defp all_hex?(_binary), do: false
 
   defp payload_body(true, _body, _body_json), do: nil
   defp payload_body(false, body, nil), do: body
