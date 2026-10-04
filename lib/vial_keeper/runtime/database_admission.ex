@@ -77,7 +77,7 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
                   :drain_monitor_ref,
                   :trace_context,
                   :probe_op,
-                  executor_started?: false
+                  :start_flag
                 ]
 
     @type t :: %__MODULE__{
@@ -97,7 +97,7 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
             drain_monitor_ref: reference() | nil,
             trace_context: term() | nil,
             probe_op: term() | nil,
-            executor_started?: boolean()
+            start_flag: AdmittedCommand.start_flag() | nil
           }
   end
 
@@ -389,24 +389,6 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
     handle_acquire(request_ref, class, deadline_ms, mode, trace_context, from, state, probe_op)
   end
 
-  def handle_call({:admitted_command_begin, request_ref, executor_pid}, _from, state) do
-    case state.active do
-      %ActivePermit{
-        request_ref: ^request_ref,
-        executor_pid: ^executor_pid,
-        executor_started?: false
-      } = active ->
-        if caller_abandoned?(active) do
-          {:reply, :cancel, state |> abandon_pre_start(active) |> grant_loop()}
-        else
-          {:reply, :proceed, %{state | active: %{active | executor_started?: true}}}
-        end
-
-      _ ->
-        {:reply, :cancel, state}
-    end
-  end
-
   def handle_call({:release, request_ref, token}, _from, state) do
     case state.active do
       %ActivePermit{request_ref: ^request_ref, token: ^token} = active ->
@@ -426,18 +408,21 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
         %ActivePermit{request_ref: ^request_ref, mode: :permit} = active ->
           clear_active(state, active)
 
-        %ActivePermit{request_ref: ^request_ref, executor_started?: true} = active ->
-          abandon_post_start(state, active)
-
-        %ActivePermit{request_ref: ^request_ref, from: from} = active ->
-          if from, do: GenServer.reply(from, deadline_error())
-          abandon_pre_start(state, active)
+        %ActivePermit{request_ref: ^request_ref} = active ->
+          cancel_active(state, active, AdmittedCommand.claim_unstarted(active.start_flag))
 
         _ ->
           cancel_queued_waiter(state, request_ref)
       end
 
     {:reply, :ok, grant_loop(state)}
+  end
+
+  defp cancel_active(state, active, :started), do: abandon_post_start(state, active)
+
+  defp cancel_active(state, %ActivePermit{from: from} = active, :unstarted) do
+    if from, do: GenServer.reply(from, deadline_error())
+    abandon_pre_start(state, active)
   end
 
   defp cancel_queued_waiter(%__MODULE__{} = state, request_ref) do
@@ -772,10 +757,14 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
   defp start_executor(%__MODULE__{active: %ActivePermit{} = active} = state) do
     case checkout_executor(state) do
       {:ok, executor_pid, executor_monitor_ref, state} ->
+        start_flag = AdmittedCommand.new_start_flag()
+
         :ok =
           AdmittedCommand.run(executor_pid, %{
             uuid: state.uuid,
             request_ref: active.request_ref,
+            caller_pid: active.caller_pid,
+            start_flag: start_flag,
             from: active.from,
             owner_fun: active.owner_fun,
             deadline_ms: active.deadline_ms,
@@ -786,7 +775,8 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
         active = %{
           active
           | executor_pid: executor_pid,
-            executor_monitor_ref: executor_monitor_ref
+            executor_monitor_ref: executor_monitor_ref,
+            start_flag: start_flag
         }
 
         %{state | active: active}
@@ -824,31 +814,32 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
 
   defp handle_executor_down(%__MODULE__{} = state, monitor_ref, reason) do
     case state.active do
-      %ActivePermit{executor_monitor_ref: ^monitor_ref, executor_started?: false} = active ->
+      %ActivePermit{executor_monitor_ref: ^monitor_ref} = active ->
         reply_executor_crash(active, reason)
-        clear_active(state, active)
-
-      %ActivePermit{executor_monitor_ref: ^monitor_ref, executor_started?: true} = active ->
-        reply_executor_crash(active, reason)
-
-        if active.executor_monitor_ref,
-          do: Process.demonitor(active.executor_monitor_ref, [:flush])
-
-        send(self(), {:executor_drain, active.request_ref})
-
-        %{
-          state
-          | active: %{
-              active
-              | from: nil,
-                executor_pid: nil,
-                executor_monitor_ref: nil
-            }
-        }
+        executor_down(state, active, AdmittedCommand.claim_unstarted(active.start_flag))
 
       _ ->
         state
     end
+  end
+
+  defp executor_down(state, active, :unstarted), do: clear_active(state, active)
+
+  defp executor_down(state, active, :started) do
+    if active.executor_monitor_ref,
+      do: Process.demonitor(active.executor_monitor_ref, [:flush])
+
+    send(self(), {:executor_drain, active.request_ref})
+
+    %{
+      state
+      | active: %{
+          active
+          | from: nil,
+            executor_pid: nil,
+            executor_monitor_ref: nil
+        }
+    }
   end
 
   defp handle_executor_drain_down(%__MODULE__{} = state, monitor_ref, pid) do
@@ -880,8 +871,11 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
 
   defp handle_active_caller_down(%__MODULE__{} = state, monitor_ref, _pid) do
     case state.active do
-      %ActivePermit{caller_monitor_ref: ^monitor_ref, executor_started?: true} = active ->
-        abandon_post_start(state, active)
+      %ActivePermit{caller_monitor_ref: ^monitor_ref, mode: {:execute, _owner_fun}} = active ->
+        case AdmittedCommand.claim_unstarted(active.start_flag) do
+          :started -> abandon_post_start(state, active)
+          :unstarted -> abandon_pre_start(state, active)
+        end
 
       %ActivePermit{caller_monitor_ref: ^monitor_ref} = active ->
         abandon_pre_start(state, active)
@@ -902,12 +896,6 @@ defmodule VialKeeper.Runtime.DatabaseAdmission do
     state
     |> terminate_executor(active)
     |> clear_active(active)
-  end
-
-  defp caller_abandoned?(%ActivePermit{caller_monitor_ref: :DOWN}), do: true
-
-  defp caller_abandoned?(%ActivePermit{caller_pid: caller_pid}) do
-    not Process.alive?(caller_pid)
   end
 
   defp terminate_executor(%__MODULE__{} = state, %ActivePermit{executor_pid: pid})

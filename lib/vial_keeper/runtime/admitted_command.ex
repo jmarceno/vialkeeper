@@ -7,15 +7,30 @@ defmodule VialKeeper.Runtime.AdmittedCommand do
   executor runs one command at a time and replies to the caller directly. It
   lives under the same `:one_for_all` supervisor as its scheduler, so the two
   restart together.
+
+  Each admitted command carries a start flag that the executor and the
+  scheduler both race on with a compare-and-swap: the executor moves it from
+  granted to started before it calls the owner, and the scheduler moves it
+  from granted to cancelled when it abandons the command first. Exactly one of
+  them wins, so a command either runs or is abandoned without a message round
+  trip between them.
   """
   use GenServer
 
   alias VialKeeper.Deadline
   alias VialKeeper.Error
 
+  @granted 0
+  @started 1
+  @cancelled 2
+
+  @opaque start_flag :: :atomics.atomics_ref()
+
   @type run_args :: %{
           uuid: binary(),
           request_ref: reference(),
+          caller_pid: pid(),
+          start_flag: start_flag(),
           from: GenServer.from() | nil,
           owner_fun: (-> term()),
           deadline_ms: Deadline.t(),
@@ -45,6 +60,27 @@ defmodule VialKeeper.Runtime.AdmittedCommand do
     :ok
   end
 
+  @doc "Creates the start flag for one admitted command, in the granted state."
+  @spec new_start_flag() :: start_flag()
+  def new_start_flag, do: :atomics.new(1, signed: false)
+
+  @doc """
+  Cancels a command whose executor has not started it.
+
+  Returns `:started` when the executor already started the command (it will
+  run to completion), or `:unstarted` when it has not and now never will.
+  """
+  @spec claim_unstarted(start_flag() | nil) :: :started | :unstarted
+  def claim_unstarted(nil), do: :unstarted
+
+  def claim_unstarted(start_flag) do
+    case :atomics.compare_exchange(start_flag, 1, @granted, @cancelled) do
+      :ok -> :unstarted
+      @cancelled -> :unstarted
+      @started -> :started
+    end
+  end
+
   @impl true
   def init(scheduler_pid), do: {:ok, %{scheduler_pid: scheduler_pid}}
 
@@ -52,11 +88,7 @@ defmodule VialKeeper.Runtime.AdmittedCommand do
   def handle_info({:run, args}, state) do
     sync_before_begin(args.uuid, args.probe_op)
 
-    case GenServer.call(
-           state.scheduler_pid,
-           {:admitted_command_begin, args.request_ref, self()},
-           5_000
-         ) do
+    case begin(args) do
       :proceed ->
         result =
           run_owner_fun(
@@ -79,6 +111,15 @@ defmodule VialKeeper.Runtime.AdmittedCommand do
   # A late reply to an owner call that already timed out, or a test gate
   # release sent after the gate was passed.
   def handle_info(_message, state), do: {:noreply, state}
+
+  # A caller that is already gone is not started; the scheduler abandons the
+  # command when it handles the caller's exit.
+  defp begin(%{caller_pid: caller_pid, start_flag: start_flag}) do
+    if Process.alive?(caller_pid) and
+         :atomics.compare_exchange(start_flag, 1, @granted, @started) == :ok,
+       do: :proceed,
+       else: :cancel
+  end
 
   # The executor replies first so the caller does not wait for the scheduler
   # hop. A caller that already gave up has a deactivated reply alias, so the
