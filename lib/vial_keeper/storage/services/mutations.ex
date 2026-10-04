@@ -45,7 +45,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
       # TX-006: insert_local_revision owns the single unified replay/winner check. An
       # identical existing revision replays only when it is still the winner; a
       # superseded retry surfaces revision_conflict with operation_already_committed: true.
-      insert_local_revision(context, doc, candidate, if_revision, operation)
+      insert_local_revision(context, doc, candidate, current, if_revision, operation)
     end
   end
 
@@ -398,7 +398,14 @@ defmodule VialKeeper.Storage.Services.Mutations do
      })}
   end
 
-  defp insert_local_revision(context, nil, %Revision{} = candidate, _if_revision, _operation) do
+  defp insert_local_revision(
+         context,
+         nil,
+         %Revision{} = candidate,
+         _current,
+         _if_revision,
+         _operation
+       ) do
     document_id = candidate.document_id
 
     with {:ok, _doc} <-
@@ -423,29 +430,36 @@ defmodule VialKeeper.Storage.Services.Mutations do
     end
   end
 
-  defp insert_local_revision(context, doc, %Revision{} = candidate, _if_revision, _operation) do
-    case Facts.find_revision(context, doc.document_id, candidate.revision_id) do
+  defp insert_local_revision(
+         context,
+         doc,
+         %Revision{} = candidate,
+         current,
+         _if_revision,
+         _operation
+       ) do
+    case Facts.find_revision_for_document(context, doc, candidate.revision_id) do
       {:ok, existing} ->
         existing_local_revision_result(existing, doc, candidate)
 
       {:error, %Error{code: :revision_not_found}} ->
-        insert_missing_local_revision(context, doc, candidate)
+        insert_missing_local_revision(context, doc, candidate, current)
 
       {:error, error} ->
         {:error, error}
     end
   end
 
-  defp insert_missing_local_revision(context, doc, candidate) do
+  defp insert_missing_local_revision(context, doc, candidate, current) do
     with :ok <-
            Mutation.phase(:fact_reads, fn ->
-             Facts.ensure_parent(context, doc.document_id, candidate.parent_revision)
+             ensure_parent(context, doc, candidate.parent_revision, current)
            end),
          :ok <-
            Mutation.phase(:revision_writes, fn ->
-             Facts.insert_revision_with_body(
+             Facts.insert_revision_with_body_for_document(
                context,
-               doc.document_id,
+               doc,
                candidate,
                revision_body_json(candidate)
              )
@@ -478,7 +492,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
        })}
 
   defp finalize_document(context, document_id, _candidate) do
-    finalize_document(context, document_id, nil, :load, nil, true)
+    finalize_document(context, document_id, nil, :load, nil, true, nil)
   end
 
   defp finalize_document(
@@ -487,18 +501,19 @@ defmodule VialKeeper.Storage.Services.Mutations do
          _candidate,
          ready_indexes,
          allocated_sequence,
-         mark_pending?
+         mark_pending?,
+         known_doc
        ) do
     with {:ok, {doc, all_leaves, winner, leaf_json}} <-
            Mutation.phase(:fact_reads, fn ->
-             load_finalization_facts(context, document_id)
+             load_finalization_facts(context, document_id, known_doc)
            end),
          {:ok, sequence} <- allocated_or_new_sequence(context, allocated_sequence),
          :ok <-
            Mutation.phase(:revision_writes, fn ->
-             Facts.update_winning_with_body(
+             Facts.update_winning_with_body_for_document(
                context,
-               document_id,
+               doc,
                winner,
                sequence,
                revision_body_json(winner)
@@ -563,9 +578,11 @@ defmodule VialKeeper.Storage.Services.Mutations do
     end
   end
 
-  defp load_finalization_facts(context, document_id) do
-    with {:ok, doc} <- Facts.find_document(context, document_id),
-         {:ok, all_leaves} <- Facts.list_leaves(context, document_id),
+  # A fact read earlier in this transaction still names the same row: only its
+  # winner columns change, and finalization reads the winner from the leaves.
+  defp load_finalization_facts(context, document_id, known_doc) do
+    with {:ok, doc} <- finalization_document(context, document_id, known_doc),
+         {:ok, all_leaves} <- Facts.list_leaves_for_document(context, doc),
          {:ok, winner} <- Winner.select(all_leaves),
          {:ok, leaf_json} <- Facts.encode_leaf_set(all_leaves) do
       {:ok, {doc, all_leaves, winner, leaf_json}}
@@ -631,7 +648,8 @@ defmodule VialKeeper.Storage.Services.Mutations do
        do:
          Map.put(affected, document_id, %{
            document_id: document_id,
-           fast_candidate: Map.get(effect, :fast_candidate)
+           fast_candidate: Map.get(effect, :fast_candidate),
+           document: Map.get(effect, :document)
          })
 
   defp update_affected(affected, _effect), do: affected
@@ -701,6 +719,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
         context,
         doc,
         candidate_state,
+        current,
         document_id,
         ready_indexes,
         materialize_pending?
@@ -712,6 +731,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
          context,
          nil,
          candidate,
+         _current,
          document_id,
          ready_indexes,
          true
@@ -735,6 +755,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
          _context,
          nil,
          candidate,
+         _current,
          document_id,
          _ready_indexes,
          false
@@ -751,20 +772,21 @@ defmodule VialKeeper.Storage.Services.Mutations do
          context,
          doc,
          candidate,
+         current,
          document_id,
          ready_indexes,
          materialize_pending?
        ) do
-    case Facts.find_revision(context, doc.document_id, candidate.revision_id) do
+    case Facts.find_revision_for_document(context, doc, candidate.revision_id) do
       {:ok, existing} ->
         existing_bulk_revision(existing, doc, candidate, document_id)
 
       {:error, %Error{code: :revision_not_found}} ->
-        with :ok <- Facts.ensure_parent(context, doc.document_id, candidate.parent_revision),
+        with :ok <- ensure_parent(context, doc, candidate.parent_revision, current),
              :ok <-
-               Facts.insert_revision_with_body(
+               Facts.insert_revision_with_body_for_document(
                  context,
-                 doc.document_id,
+                 doc,
                  candidate,
                  revision_body_json(candidate)
                ),
@@ -778,12 +800,9 @@ defmodule VialKeeper.Storage.Services.Mutations do
                  materialize_pending?
                ) do
           {:ok,
-           bulk_effect(
-             document_id,
-             true,
-             false,
-             %{revision: candidate.revision_id, sequence: 0}
-           )}
+           document_id
+           |> bulk_effect(true, false, %{revision: candidate.revision_id, sequence: 0})
+           |> Map.put(:document, doc)}
         end
 
       {:error, error} ->
@@ -1098,7 +1117,8 @@ defmodule VialKeeper.Storage.Services.Mutations do
             nil,
             ready_indexes,
             sequence,
-            false
+            false,
+            Map.get(entry, :document)
           )
       end
 
@@ -1319,7 +1339,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
       operation = attachment_operation(parent_revision_id, current)
 
       with {:ok, parent_manifest} <-
-             parent_manifest_for(context, doc, parent_revision_id, intent, operation),
+             parent_manifest_for(context, doc, parent_revision_id, current, intent, operation),
            {:ok, manifest} <- resolve_attachment_intent(operation, intent, parent_manifest),
            :ok <- Facts.ensure_manifest_reachable(context, manifest) do
         {:ok, manifest}
@@ -1348,23 +1368,35 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp attachment_operation(nil, _current), do: :create
   defp attachment_operation(_parent, _current), do: :update
 
-  defp parent_manifest_for(_context, _doc, _parent, intent, :create)
+  defp parent_manifest_for(_context, _doc, _parent, _current, intent, :create)
        when intent in [:omitted, :inherit],
        do: {:ok, nil}
 
-  defp parent_manifest_for(_context, _doc, _parent, intent, _operation)
+  defp parent_manifest_for(_context, _doc, _parent, _current, intent, _operation)
        when is_map(intent),
        do: {:ok, nil}
 
-  defp parent_manifest_for(context, doc, parent_revision_id, intent, :update)
+  # The parent is the current winner, already read in this transaction.
+  defp parent_manifest_for(
+         _context,
+         _doc,
+         parent_revision_id,
+         %Revision{revision_id: parent_revision_id} = current,
+         intent,
+         :update
+       )
+       when intent in [:omitted, :inherit],
+       do: {:ok, current.attachments}
+
+  defp parent_manifest_for(context, doc, parent_revision_id, _current, intent, :update)
        when intent in [:omitted, :inherit] and is_binary(parent_revision_id) do
-    case Facts.find_revision(context, doc.document_id, parent_revision_id) do
+    case Facts.find_revision_for_document(context, doc, parent_revision_id) do
       {:ok, parent} -> {:ok, parent.attachments}
       {:error, error} -> {:error, error}
     end
   end
 
-  defp parent_manifest_for(_context, _doc, _parent, intent, :update)
+  defp parent_manifest_for(_context, _doc, _parent, _current, intent, :update)
        when intent in [:omitted, :inherit],
        do: {:ok, nil}
 
@@ -1451,6 +1483,19 @@ defmodule VialKeeper.Storage.Services.Mutations do
     {:ok, {nil, root_history_id(history_id)}}
   end
 
+  # The expected parent is the current winner, already read in this transaction.
+  defp revision_parent_and_history(
+         _context,
+         _doc,
+         _document_id,
+         %Revision{revision_id: if_revision} = current,
+         if_revision,
+         _deleted,
+         _history_id
+       )
+       when is_binary(if_revision),
+       do: {:ok, {if_revision, current.history_id}}
+
   defp revision_parent_and_history(
          context,
          doc,
@@ -1461,7 +1506,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
          _history_id
        )
        when is_binary(if_revision) do
-    case Facts.find_revision(context, doc.document_id, if_revision) do
+    case Facts.find_revision_for_document(context, doc, if_revision) do
       {:ok, parent} ->
         {:ok, {if_revision, parent.history_id}}
 
@@ -1553,7 +1598,26 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp current_winner(_context, %{winning_revision: nil}), do: {:ok, nil}
 
   defp current_winner(context, doc),
-    do: Facts.find_revision(context, doc.document_id, doc.winning_revision)
+    do: Facts.find_revision_for_document(context, doc, doc.winning_revision)
+
+  # A parent that is the current winner was read in this transaction, so it
+  # exists; any other parent is checked against storage.
+  defp ensure_parent(_context, _doc, parent, %Revision{revision_id: parent})
+       when is_binary(parent),
+       do: :ok
+
+  defp ensure_parent(context, doc, parent, _current),
+    do: Facts.ensure_parent(context, doc.document_id, parent)
+
+  defp finalization_document(context, document_id, nil),
+    do: require_document(Facts.find_document(context, document_id))
+
+  defp finalization_document(_context, _document_id, doc), do: {:ok, doc}
+
+  defp require_document({:ok, nil}),
+    do: {:error, Error.document_not_found("document not found")}
+
+  defp require_document(result), do: result
 
   defp adapter_identity(context) do
     identity = Facts.identity(context)

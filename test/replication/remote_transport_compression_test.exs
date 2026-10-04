@@ -20,7 +20,7 @@ defmodule VialKeeper.Replication.RemoteTransportCompressionTest do
     assert {:ok, identity} = DatabaseCatalog.create(path)
     uuid = identity.database_uuid
     assert {:ok, _} = DatabaseCatalog.open(uuid)
-    {:ok, captured} = Agent.start_link(fn -> [] end)
+    captured = start_supervised!({Agent, fn -> [] end})
 
     server =
       TestServer.start_supervised!(
@@ -34,7 +34,6 @@ defmodule VialKeeper.Replication.RemoteTransportCompressionTest do
       )
 
     on_exit(fn ->
-      if Process.alive?(captured), do: Agent.stop(captured)
       _ = DatabaseCatalog.close(uuid)
       _ = DatabaseCatalog.unregister(uuid)
       VialKeeper.TempDatabase.cleanup(absolute)

@@ -23,6 +23,25 @@ defmodule VialKeeper.Contract.TermBlobTest do
     assert {:fallback, :digest_mismatch} = TermBlob.decode(blob, changed_json)
   end
 
+  test "a repeated encode reuses the last blob only for the identical term" do
+    json = ~s({"n":1,"s":"caf\u00E9"})
+    integer = %{"n" => 1, "s" => "caf\u00E9"}
+    float = %{"n" => 1.0, "s" => "caf\u00E9"}
+
+    assert {:ok, integer_blob} = TermBlob.encode(integer, json)
+    assert {:ok, ^integer_blob} = TermBlob.encode(integer, json)
+    assert {:ok, float_blob} = TermBlob.encode(float, json)
+    refute float_blob == integer_blob
+    assert {:ok, ^float} = TermBlob.decode(float_blob, json)
+    assert {:ok, ^integer} = TermBlob.decode(TermBlob.encode(integer, json) |> elem(1), json)
+
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
+             TermBlob.encode(%{"s" => <<0xFF>>}, json)
+
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
+             TermBlob.encode(%{"s" => <<0xFF>>}, json)
+  end
+
   test "rejects malformed and unsafe payloads" do
     json = "{}"
     digest = :crypto.hash(:sha256, json)

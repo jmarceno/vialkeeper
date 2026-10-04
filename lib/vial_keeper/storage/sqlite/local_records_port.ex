@@ -7,7 +7,7 @@ defmodule VialKeeper.Storage.SQLite.LocalRecordsPort do
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Ports.Errors
-  alias VialKeeper.Storage.SQLite.{Connection, Context, LocalRecords, Transaction}
+  alias VialKeeper.Storage.SQLite.{Connection, Context, LocalRecords, RetentionRecords, Transaction}
 
   @impl true
   def get(%BackendContext{} = context, namespace, key)
@@ -81,6 +81,8 @@ defmodule VialKeeper.Storage.SQLite.LocalRecordsPort do
   end
 
   defp delete_record(conn, namespace, key) do
+    :ok = RetentionRecords.forget_pending_local_causal(conn)
+
     case Connection.execute(
            conn,
            "DELETE FROM local_records WHERE namespace = ? AND record_key = ?",

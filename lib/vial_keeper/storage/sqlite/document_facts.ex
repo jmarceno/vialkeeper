@@ -346,6 +346,21 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
   end
 
   @impl true
+  def insert_revision_with_body_for_document(
+        %BackendContext{} = context,
+        document,
+        %Revision{} = revision,
+        body_json
+      ) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc_key} <- fact_doc_key(document, revision.document_id) do
+      Errors.wrap(Revisions.insert(adapter.conn, doc_key, revision, body_json))
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
   def insert_or_accept_revision(%BackendContext{} = context, document_id, %Revision{} = revision)
       when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context),
@@ -410,6 +425,24 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
     with {:ok, adapter} <- Context.unwrap(context),
          {:ok, doc_key} <- fact_doc_key(document, winner.document_id) do
       Errors.wrap(Documents.update(adapter.conn, doc_key, winner, sequence))
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
+  def update_winning_with_body_for_document(
+        %BackendContext{} = context,
+        document,
+        %Revision{} = winner,
+        sequence,
+        body_json
+      )
+      when is_integer(sequence) and sequence >= 0 do
+    # Leaves loaded by doc_key carry no document id, so the fact alone names the row.
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc_key} <- document_doc_key(document) do
+      Errors.wrap(Documents.update(adapter.conn, doc_key, winner, sequence, body_json))
     else
       {:error, reason} -> {:error, Errors.normalize(reason)}
     end

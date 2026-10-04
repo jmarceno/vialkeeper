@@ -13,7 +13,9 @@ defmodule VialKeeper.Storage.SQLite.TermBlob do
   @version 1
   @safe_integer_max 9_007_199_254_740_991
   @max_term_depth 256
+  @ascii_word_high_bits 0x80808080808080
   @cache_key :vial_keeper_sqlite_term_blob_cache
+  @encode_memo_key :vial_keeper_sqlite_term_blob_encoded
 
   require VialKeeper.Probe
 
@@ -30,7 +32,24 @@ defmodule VialKeeper.Storage.SQLite.TermBlob do
           {:ok, binary()} | {:error, VialKeeper.Error.t()}
   def encode(value, canonical_json) when is_binary(canonical_json) do
     Probe.measure :term_encode do
-      encode_valid(value, canonical_json)
+      encode_remembered(value, canonical_json)
+    end
+  end
+
+  # A write stores the same body in its revision row and its document row, so
+  # the last successful encoding is kept and reused when both arguments are
+  # exactly the same terms (`===`, which is a pointer check when the caller
+  # passes the term it already holds).
+  defp encode_remembered(value, canonical_json) do
+    case Process.get(@encode_memo_key) do
+      {^canonical_json, remembered, blob} when remembered === value ->
+        {:ok, blob}
+
+      _other ->
+        with {:ok, blob} = result <- encode_valid(value, canonical_json) do
+          Process.put(@encode_memo_key, {canonical_json, value, blob})
+          result
+        end
     end
   end
 
@@ -184,23 +203,33 @@ defmodule VialKeeper.Storage.SQLite.TermBlob do
     _error in [ArgumentError, SystemLimitError] -> {:fallback, :invalid_term}
   end
 
-  defp valid_json_term?(value, depth, max_depth)
-       when depth <= @max_term_depth and depth <= max_depth do
-    case value do
-      value when is_map(value) -> valid_map?(value, depth, max_depth)
-      value when is_list(value) -> valid_list?(value, depth, max_depth)
-      scalar -> valid_scalar?(scalar)
-    end
-  end
+  defp valid_json_term?(_value, depth, max_depth)
+       when depth > @max_term_depth or depth > max_depth,
+       do: false
 
-  defp valid_json_term?(_value, _depth, _max_depth), do: false
+  defp valid_json_term?(value, depth, max_depth) when is_map(value),
+    do: valid_members?(:maps.next(:maps.iterator(value)), depth, max_depth)
+
+  defp valid_json_term?(value, depth, max_depth) when is_list(value),
+    do: valid_list?(value, depth, max_depth)
+
+  defp valid_json_term?(value, _depth, _max_depth), do: valid_scalar?(value)
 
   defp valid_scalar?(nil), do: true
   defp valid_scalar?(value) when is_boolean(value), do: true
-  defp valid_scalar?(value) when is_binary(value), do: String.valid?(value)
+  defp valid_scalar?(value) when is_binary(value), do: valid_utf8?(value)
   defp valid_scalar?(value) when is_integer(value), do: abs(value) <= @safe_integer_max
   defp valid_scalar?(value) when is_float(value), do: finite_float?(value)
   defp valid_scalar?(_value), do: false
+
+  # Seven ASCII bytes per step, then one code point at a time.
+  defp valid_utf8?(<<word::56, rest::binary>>) when Bitwise.band(word, @ascii_word_high_bits) == 0,
+    do: valid_utf8?(rest)
+
+  defp valid_utf8?(<<byte, rest::binary>>) when byte < 0x80, do: valid_utf8?(rest)
+  defp valid_utf8?(<<_codepoint::utf8, rest::binary>>), do: valid_utf8?(rest)
+  defp valid_utf8?(<<>>), do: true
+  defp valid_utf8?(_binary), do: false
 
   defp finite_float?(value) do
     not (value !== value) and finite_float_magnitude?(abs(value))
@@ -211,11 +240,14 @@ defmodule VialKeeper.Storage.SQLite.TermBlob do
     value < maximum or value == maximum
   end
 
-  defp valid_map?(value, depth, max_depth) do
-    Enum.all?(value, fn {key, nested} ->
-      is_binary(key) and String.valid?(key) and valid_json_term?(nested, depth + 1, max_depth)
-    end)
+  defp valid_members?(:none, _depth, _max_depth), do: true
+
+  defp valid_members?({key, nested, iterator}, depth, max_depth) when is_binary(key) do
+    valid_utf8?(key) and valid_json_term?(nested, depth + 1, max_depth) and
+      valid_members?(:maps.next(iterator), depth, max_depth)
   end
+
+  defp valid_members?(_member, _depth, _max_depth), do: false
 
   defp valid_list?([], _depth, _max_depth), do: true
 

@@ -33,6 +33,10 @@ defmodule VialKeeper.Storage.SQLite.RetentionRecords do
   # NUL cannot appear in UTF-8 document IDs or UUID text.
   @boundary_key_sep <<0>>
 
+  # Process-dictionary marker, keyed by writer connection: the pending local
+  # causal flag is known to be fully set (`pending_any` and every peer `true`).
+  @pending_marked_key :vial_keeper_sqlite_pending_local_causal_marked
+
   @spec boundary_key(binary(), binary(), binary()) :: binary()
   def boundary_key(source_database_uuid, document_id, history_id),
     do: BoundaryPage.record_key(source_database_uuid, document_id, history_id)
@@ -653,23 +657,53 @@ defmodule VialKeeper.Storage.SQLite.RetentionRecords do
     end
   end
 
+  @doc """
+  Marks local causal work pending for every peer.
+
+  Almost every local write finds the flag already set, so the writer connection
+  remembers that it is set and skips both the read and the rewrite. The marker
+  is dropped whenever this record may change: any other write to it, any write
+  through the generic local-record port, and every rolled-back write
+  transaction (`forget_pending_local_causal/1`).
+  """
   @spec mark_pending_local_causal(Connection.handle()) :: :ok | {:error, VialKeeper.Error.t()}
   def mark_pending_local_causal(conn) do
-    case fetch_pending_local_causal(conn) do
-      {:ok, state} ->
-        peers =
-          state
-          |> Map.get("peers", %{})
-          |> Map.new(fn {peer, _} -> {peer, true} end)
-
-        put_replication_state(conn, "pending_local_causal", %{
-          "pending_any" => true,
-          "peers" => peers
-        })
-
-      {:error, error} ->
-        {:error, error}
+    if Process.get({@pending_marked_key, conn}) == true do
+      :ok
+    else
+      mark_pending_local_causal_uncached(conn)
     end
+  end
+
+  defp mark_pending_local_causal_uncached(conn) do
+    with {:ok, state} <- fetch_pending_local_causal(conn),
+         :ok <- write_marked_state(conn, state) do
+      Process.put({@pending_marked_key, conn}, true)
+      :ok
+    end
+  end
+
+  defp write_marked_state(conn, %{"pending_any" => pending_any, "peers" => peers}) do
+    if pending_any and Enum.all?(peers, fn {_peer, pending} -> pending end) do
+      :ok
+    else
+      put_replication_state(conn, "pending_local_causal", %{
+        "pending_any" => true,
+        "peers" => Map.new(peers, fn {peer, _} -> {peer, true} end)
+      })
+    end
+  end
+
+  @doc """
+  Drops the remembered "pending local causal is set" marker for `conn`.
+
+  Called after a write transaction rolls back and whenever the record may be
+  changed by a path that does not maintain the marker itself.
+  """
+  @spec forget_pending_local_causal(Connection.handle()) :: :ok
+  def forget_pending_local_causal(conn) do
+    Process.delete({@pending_marked_key, conn})
+    :ok
   end
 
   @spec set_pending_local_causal(Connection.handle(), boolean()) ::
@@ -1018,6 +1052,7 @@ defmodule VialKeeper.Storage.SQLite.RetentionRecords do
   end
 
   defp put_replication_state(conn, key, value) do
+    forget_pending_local_causal(conn)
     put_local_record(conn, @replication_state, key, value)
   end
 
