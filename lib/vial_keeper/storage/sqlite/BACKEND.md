@@ -74,6 +74,24 @@ cleanup) drain snapshots before the writer runs, then resume the reader pool.
 Runtime code never names sidecar files; this backend document does because it
 owns the artifact.
 
+## Statement scheduling
+
+The SQLite driver is the `native/vial_sqlite` NIF (Rust over `rusqlite` with
+bundled SQLite), called only through `Connection`. Each statement is one NIF
+call that prepares from the connection's statement cache, binds, steps to
+completion and returns the rows. Statements normally run on a dirty IO
+scheduler. Point statements on the single-document write path (key lookups
+and single-row writes, `Connection.point_query/3` and `point_execute/3`) run
+on the calling scheduler while the owner holds its `BEGIN IMMEDIATE` write
+transaction: there they cannot wait on a lock, and their SQLite work is
+smaller than a dirty-scheduler hop. `BEGIN`, `COMMIT` (which may checkpoint),
+reads outside a write transaction and every other statement stay on dirty
+schedulers.
+
+The driver installs its own busy handler (2000 ms default, polled in short
+sleeps) so `Connection.close/1` and `Connection.interrupt/1` wake a caller
+waiting on another connection's lock.
+
 ## Integrity probes
 
 Product integrity rules run over normalized domain facts. The SQLite backend

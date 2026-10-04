@@ -1,9 +1,9 @@
 /*
- * Native SQLite replay control for bench/sqlite_exqlite_overhead_benchmark.exs.
+ * Native SQLite replay control for bench/sqlite_driver_overhead_benchmark.exs.
  *
- * Built by the benchmark against the same sqlite3.c amalgamation ExQLite
- * vendors (deps/exqlite/c_src) with ExQLite's SQLite compile definitions, so
- * the SQLite engine is identical and only the calling layer differs.
+ * Built by the benchmark against the same sqlite3.c amalgamation the driver
+ * NIF bundles (libsqlite3-sys) with the driver's SQLite compile definitions,
+ * so the SQLite engine is identical and only the calling layer differs.
  *
  * The program runs as an Erlang port ({packet, 4}). Every request is one
  * packet; every request gets exactly one reply packet.
@@ -26,15 +26,15 @@
  * Replies: 'k' ok, 'e' + message on error, 't' + text for 'S', and for 'R':
  *   'r' u64 elapsed_ns, u64 rows, u64 vm_steps, u64 statements
  *
- * Rows are consumed for every statement (ExQLite materialises every stepped
+ * Rows are consumed for every statement (the driver materialises every stepped
  * row), but only statements flagged count_rows add to the reported row count:
  * those are the ones whose rows the product collects, which lets the harness
  * check the replay returned exactly what the captured run returned.
  *
  * Only the execution loop of 'R' is timed: the request is fully decoded first.
- * Each statement binds every parameter with SQLITE_TRANSIENT (as ExQLite
- * does), steps to SQLITE_DONE, copies every column value out of SQLite (as
- * ExQLite materialises rows), and is reset for reuse.
+ * Each statement binds every parameter with SQLITE_TRANSIENT, steps to
+ * SQLITE_DONE, copies every column value out of SQLite (as the driver
+ * materialises rows), and is reset for reuse.
  */
 #include <errno.h>
 #include <stdint.h>
@@ -240,7 +240,7 @@ handle_open(cursor_t* cursor)
     }
 
     /* Restore the image into a regular ":memory:" database through the backup
-     * API, so the pager is the same one an ExQLite ":memory:" handle uses. */
+     * API, so the pager is the same one a driver ":memory:" handle uses. */
     sqlite3* image = NULL;
     unsigned char* copy = sqlite3_malloc64(length);
     if (copy == NULL) {

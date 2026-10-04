@@ -26,7 +26,6 @@ defmodule VialKeeper.Storage.Services.Mutations do
   def apply_local_tx(%BackendContext{} = context, request) do
     operation = MapAccess.get(request, :operation, :put)
     document_id = MapAccess.get(request, :document_id)
-    if_revision = MapAccess.get(request, :if_revision)
     deleted = operation in [:delete, "delete"]
     body = if deleted, do: nil, else: MapAccess.get(request, :body)
     body_json = if deleted, do: nil, else: MapAccess.get(request, :body_json)
@@ -34,7 +33,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
     with :ok <- validate_mutation_operation(operation),
          {:ok, body_json} <-
            validate_document_input(context, document_id, deleted, body, body_json),
-         {:ok, {doc, current}} <-
+         {:ok, {doc, current, leaves}} <-
            Mutation.phase(:fact_reads, fn -> load_document_state(context, document_id) end),
          {:ok, candidate} <-
            candidate_revision(
@@ -45,7 +44,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
       # TX-006: insert_local_revision owns the single unified replay/winner check. An
       # identical existing revision replays only when it is still the winner; a
       # superseded retry surfaces revision_conflict with operation_already_committed: true.
-      insert_local_revision(context, doc, candidate, current, if_revision, operation)
+      insert_local_revision(context, doc, candidate, {current, leaves})
     end
   end
 
@@ -398,26 +397,20 @@ defmodule VialKeeper.Storage.Services.Mutations do
      })}
   end
 
-  defp insert_local_revision(
-         context,
-         nil,
-         %Revision{} = candidate,
-         _current,
-         _if_revision,
-         _operation
-       ) do
+  # A new document is inserted with its winner, revision and leaf set already
+  # known, so nothing written in this transaction is read back.
+  defp insert_local_revision(context, nil, %Revision{} = candidate, _current) do
     document_id = candidate.document_id
 
-    with {:ok, _doc} <-
+    with {:ok, sequence} <- Facts.allocate_sequence(context),
+         {:ok, leaf_json} <- Facts.encode_leaf_set([candidate]),
+         {:ok, doc} <-
            Mutation.phase(:revision_writes, fn ->
-             Facts.ensure_document(context, document_id)
-           end),
-         :ok <-
-           Mutation.phase(:revision_writes, fn ->
-             Facts.insert_revision_with_body(
+             Facts.insert_document_with_revision(
                context,
                document_id,
                candidate,
+               sequence,
                revision_body_json(candidate)
              )
            end),
@@ -425,32 +418,39 @@ defmodule VialKeeper.Storage.Services.Mutations do
            Mutation.phase(:attachment_metadata, fn ->
              Facts.clear_pending_for_manifest(context, candidate.attachments)
            end),
-         {:ok, result} <- finalize_document(context, document_id, candidate) do
-      {:ok, Map.put(result, :replayed, false)}
+         :ok <-
+           Mutation.phase(:revision_writes, fn ->
+             refresh_ready_indexes(context, document_id, candidate, :load)
+           end),
+         :ok <-
+           Mutation.phase(:change_log, fn ->
+             Facts.append_change(
+               context,
+               new_bulk_change(document_id, candidate, sequence, leaf_json, doc)
+             )
+           end),
+         :ok <- mark_pending_if_needed(context, true) do
+      {:ok,
+       document_id
+       |> publishless_result(candidate.revision_id, sequence, candidate.deleted, [])
+       |> Map.put(:replayed, false)}
     end
   end
 
-  defp insert_local_revision(
-         context,
-         doc,
-         %Revision{} = candidate,
-         current,
-         _if_revision,
-         _operation
-       ) do
+  defp insert_local_revision(context, doc, %Revision{} = candidate, {current, leaves}) do
     case Facts.find_revision_for_document(context, doc, candidate.revision_id) do
       {:ok, existing} ->
         existing_local_revision_result(existing, doc, candidate)
 
       {:error, %Error{code: :revision_not_found}} ->
-        insert_missing_local_revision(context, doc, candidate, current)
+        insert_missing_local_revision(context, doc, candidate, current, leaves)
 
       {:error, error} ->
         {:error, error}
     end
   end
 
-  defp insert_missing_local_revision(context, doc, candidate, current) do
+  defp insert_missing_local_revision(context, doc, candidate, current, leaves) do
     with :ok <-
            Mutation.phase(:fact_reads, fn ->
              ensure_parent(context, doc, candidate.parent_revision, current)
@@ -469,9 +469,29 @@ defmodule VialKeeper.Storage.Services.Mutations do
              Facts.clear_pending_for_manifest(context, candidate.attachments)
            end),
          {:ok, result} <-
-           finalize_document(context, candidate.document_id, candidate) do
+           finalize_document(
+             context,
+             candidate.document_id,
+             candidate,
+             :load,
+             nil,
+             true,
+             doc,
+             leaves_after_insert(leaves, candidate)
+           ) do
       {:ok, Map.put(result, :replayed, false)}
     end
+  end
+
+  # Mirrors the storage leaf rule: the new revision is a leaf and its parent no
+  # longer is. Leaves stay in revision-id order, the order storage lists them.
+  defp leaves_after_insert(nil, _candidate), do: nil
+
+  defp leaves_after_insert(leaves, %Revision{parent_revision: parent} = candidate) do
+    leaves
+    |> Enum.reject(&(&1.revision_id == parent))
+    |> List.insert_at(0, candidate)
+    |> Enum.sort_by(& &1.revision_id)
   end
 
   defp existing_local_revision_result(existing, doc, candidate) do
@@ -492,8 +512,29 @@ defmodule VialKeeper.Storage.Services.Mutations do
        })}
 
   defp finalize_document(context, document_id, _candidate) do
-    finalize_document(context, document_id, nil, :load, nil, true, nil)
+    finalize_document(context, document_id, nil, :load, nil, true, nil, nil)
   end
+
+  defp finalize_document(
+         context,
+         document_id,
+         candidate,
+         ready_indexes,
+         allocated_sequence,
+         mark_pending?,
+         known_doc
+       ),
+       do:
+         finalize_document(
+           context,
+           document_id,
+           candidate,
+           ready_indexes,
+           allocated_sequence,
+           mark_pending?,
+           known_doc,
+           nil
+         )
 
   defp finalize_document(
          context,
@@ -502,11 +543,12 @@ defmodule VialKeeper.Storage.Services.Mutations do
          ready_indexes,
          allocated_sequence,
          mark_pending?,
-         known_doc
+         known_doc,
+         known_leaves
        ) do
     with {:ok, {doc, all_leaves, winner, leaf_json}} <-
            Mutation.phase(:fact_reads, fn ->
-             load_finalization_facts(context, document_id, known_doc)
+             load_finalization_facts(context, document_id, known_doc, known_leaves)
            end),
          {:ok, sequence} <- allocated_or_new_sequence(context, allocated_sequence),
          :ok <-
@@ -571,23 +613,52 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp mark_pending_if_needed(context, true),
     do: Facts.mark_pending_local_causal(context)
 
+  # The leaves hold the current winner, so one read serves both the parent
+  # check and the leaf set finalization writes. The leaves are read without
+  # bodies: the new revision usually wins, and a leaf body is read only when
+  # an existing leaf does (see `winner_with_body/3`).
   defp load_document_state(context, document_id) do
     with {:ok, doc} <- Facts.find_document(context, document_id),
-         {:ok, current} <- current_winner(context, doc) do
-      {:ok, {doc, current}}
+         {:ok, {current, leaves}} <- current_winner_and_leaves(context, doc) do
+      {:ok, {doc, current, leaves}}
     end
+  end
+
+  defp current_winner_and_leaves(_context, nil), do: {:ok, {nil, nil}}
+  defp current_winner_and_leaves(_context, %{winning_revision: nil}), do: {:ok, {nil, nil}}
+
+  defp current_winner_and_leaves(context, doc) do
+    with {:ok, leaves} <- Facts.list_leaf_heads_for_document(context, doc) do
+      case Enum.find(leaves, &(&1.revision_id == doc.winning_revision)) do
+        %Revision{} = current -> {:ok, {current, leaves}}
+        nil -> winner_outside_leaves(context, doc)
+      end
+    end
+  end
+
+  # Storage keeps the winner among the leaves; read it directly if it is not.
+  defp winner_outside_leaves(context, doc) do
+    with {:ok, current} <- current_winner(context, doc), do: {:ok, {current, nil}}
   end
 
   # A fact read earlier in this transaction still names the same row: only its
   # winner columns change, and finalization reads the winner from the leaves.
-  defp load_finalization_facts(context, document_id, known_doc) do
+  defp load_finalization_facts(context, document_id, known_doc, known_leaves) do
     with {:ok, doc} <- finalization_document(context, document_id, known_doc),
-         {:ok, all_leaves} <- Facts.list_leaves_for_document(context, doc),
+         {:ok, all_leaves} <- finalization_leaves(context, doc, known_leaves),
          {:ok, winner} <- Winner.select(all_leaves),
+         {:ok, winner} <- winner_with_body(context, doc, winner),
          {:ok, leaf_json} <- Facts.encode_leaf_set(all_leaves) do
       {:ok, {doc, all_leaves, winner, leaf_json}}
     end
   end
+
+  # Known leaves come from `list_leaf_heads_for_document/2`; only a live winner
+  # other than the new revision lacks the body the document row needs.
+  defp winner_with_body(context, doc, %Revision{deleted: false, body: nil} = winner),
+    do: Facts.find_revision_for_document(context, doc, winner.revision_id)
+
+  defp winner_with_body(_context, _doc, winner), do: {:ok, winner}
 
   defp prepare_bulk_operations(
          context,
@@ -1613,6 +1684,9 @@ defmodule VialKeeper.Storage.Services.Mutations do
     do: require_document(Facts.find_document(context, document_id))
 
   defp finalization_document(_context, _document_id, doc), do: {:ok, doc}
+
+  defp finalization_leaves(context, doc, nil), do: Facts.list_leaves_for_document(context, doc)
+  defp finalization_leaves(_context, _doc, leaves), do: {:ok, leaves}
 
   defp require_document({:ok, nil}),
     do: {:error, Error.document_not_found("document not found")}

@@ -64,13 +64,8 @@ CREATE TABLE IF NOT EXISTS revisions (
   insertion_sequence INTEGER NOT NULL CHECK (insertion_sequence >= 0),
   is_leaf INTEGER NOT NULL CHECK (is_leaf IN (0, 1)),
   PRIMARY KEY (doc_key, revision_id),
-  CHECK ((deleted = 1 AND body_json IS NULL AND body_term IS NULL) OR (deleted = 0 AND body_json IS NOT NULL AND body_term IS NOT NULL)),
-  UNIQUE (doc_key, parent_revision, revision_id)
+  CHECK ((deleted = 1 AND body_json IS NULL AND body_term IS NULL) OR (deleted = 0 AND body_json IS NOT NULL AND body_term IS NOT NULL))
 ) STRICT;
-
-CREATE INDEX IF NOT EXISTS revisions_leaves ON revisions(doc_key, is_leaf);
-CREATE INDEX IF NOT EXISTS revisions_leaf_winner ON revisions(doc_key, is_leaf, deleted, generation, revision_id);
-CREATE INDEX IF NOT EXISTS revisions_parents ON revisions(doc_key, parent_revision);
 
 CREATE TABLE IF NOT EXISTS changes (
   sequence INTEGER PRIMARY KEY,

@@ -4,7 +4,7 @@ Code.require_file("overhead/environment.exs", __DIR__)
 Code.require_file("overhead/native.exs", __DIR__)
 Code.require_file("overhead/capture.exs", __DIR__)
 
-defmodule VialKeeper.Benchmarks.ExqliteOverhead do
+defmodule VialKeeper.Benchmarks.DriverOverhead do
   @moduledoc """
   Layer-by-layer latency ladder from native SQLite up to the HTTP router.
 
@@ -12,11 +12,14 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   same deterministic fixture through the SQLite adapter. The ladder, from the
   floor up:
 
-    * `native_replay` (L0) — a C program built from ExQLite's own `sqlite3.c`
-      replays the exact statements the adapter executed (see `Capture`).
-    * `exqlite_replay` (L1) — the same statements through `Exqlite.Sqlite3`.
+    * `native_replay` (L0) — a C program built from the `sqlite3.c` the
+      driver NIF bundles, with the driver's SQLite compile definitions, replays
+      the exact statements the adapter executed (see `Capture`).
+    * `driver_replay` (L1) — the same statements through the driver NIF
+      (`Storage.SQLite.Native.query/3`, one call per statement; the statement
+      cache lives inside the driver).
     * `connection_replay` (L2) — the same statements through VialKeeper's
-      `Connection` wrapper and statement cache.
+      `Connection` wrapper.
     * `vial_keeper_storage` (L3) — `Storage.Services`, the storage entry point
       the database owner and read workers call, on the SQLite backend.
     * `vial_keeper_service` (L4, disk mode) — `Documents`, `Changes`, and
@@ -24,8 +27,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     * `vial_keeper_http` (L5, disk mode) — the `/v1` Plug router in process
       (request decoding, routing, response encoding; no socket).
 
-  `exqlite_minimal` is a side reference: hand-written minimal SQL through
-  ExQLite. Comparing it with `exqlite_replay` shows what the SQL the storage
+  `driver_minimal` is a side reference: hand-written minimal SQL through
+  the driver NIF. Comparing it with `driver_replay` shows what the SQL the storage
   layer chooses to issue costs, separately from the cost of issuing it.
 
   Every variant also records `VialKeeper.Probe` deltas (both
@@ -49,8 +52,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
       database must end in the expected state.
   """
 
-  alias Exqlite.Sqlite3
-  alias VialKeeper.Benchmarks.ExqliteOverhead.Raw
+  alias VialKeeper.Benchmarks.DriverOverhead.Raw
   alias VialKeeper.Benchmarks.Overhead.{Capture, Environment, Native, Sampler, Stats}
   alias VialKeeper.JSON.Canonical
   require VialKeeper.Probe
@@ -59,33 +61,35 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   alias VialKeeper.Runtime.DatabaseCatalog
   alias VialKeeper.Storage.Services
   alias VialKeeper.Storage.SQLite.{Adapter, Connection, TermBlob}
+  alias VialKeeper.Storage.SQLite.Native, as: Driver
 
   @scenarios [:point_read, :bulk_write, :changes_read, :indexed_query]
   @modes [:memory, :disk]
   @ladder [
     :native_replay,
-    :exqlite_replay,
+    :driver_replay,
     :connection_replay,
     :vial_keeper_storage,
     :vial_keeper_service,
     :vial_keeper_http
   ]
-  @references [:exqlite_minimal]
+  @references [:driver_minimal]
   @all_variants @ladder ++ @references
   @disk_only [:vial_keeper_service, :vial_keeper_http]
-  @replay_variants [:native_replay, :exqlite_replay, :connection_replay]
+  @replay_variants [:native_replay, :driver_replay, :connection_replay]
   @adapter_level [
     :native_replay,
-    :exqlite_replay,
+    :driver_replay,
     :connection_replay,
     :vial_keeper_storage,
-    :exqlite_minimal
+    :driver_minimal
   ]
 
   @step_descriptions %{
-    {:native_replay, :exqlite_replay} =>
-      "ExQLite NIF boundary: dirty-scheduler hops, parameter binding calls, row term construction",
-    {:exqlite_replay, :connection_replay} => "VialKeeper Connection wrapper and statement cache",
+    {:native_replay, :driver_replay} =>
+      "Driver NIF boundary: dirty-scheduler hop, statement-cache lookup, parameter binding, row term construction",
+    {:driver_replay, :connection_replay} =>
+      "VialKeeper Connection wrapper: SQL and parameter normalization, probes",
     {:connection_replay, :vial_keeper_storage} =>
       "Storage work between the same statements: validation, revision logic, encoding and decoding",
     {:vial_keeper_storage, :vial_keeper_service} =>
@@ -191,6 +195,9 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   @pending_namespace "replication_state"
   @pending_key "pending_local_causal"
   @pending_json Canonical.encode!(%{"pending_any" => true, "peers" => %{}})
+
+  # SQLite open flags: SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE.
+  @open_readwrite_create 0x6
 
   defstruct [:kind, :mode, :adapter, :context, :conn, :path, :port, :uuid, statements: %{}]
 
@@ -438,7 +445,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   defp run_case(mode, scenario, config, selected, native) do
     if selected == [], do: Mix.raise("no selected variant applies to #{mode} mode")
     documents = Enum.map(0..(config["dataset_size"] - 1), &fixture_document/1)
-    reset_statement_registries()
+    reset_native_registry()
     state = %{mode: mode, scenario: scenario, config: config, documents: documents}
     variants = open_variants!(selected, mode)
     Process.put({__MODULE__, :open_variants}, variants)
@@ -479,8 +486,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
       case_report(state, reference, verification, collected)
     after
       variants = Process.delete({__MODULE__, :open_variants}) || variants
-      # Statements must be finalized before their connection closes.
-      release_statement_registries(variants)
+      reset_native_registry()
       Enum.each(Map.values(variants), &close_variant/1)
       if worker, do: stop_capture(worker)
     end
@@ -572,12 +578,6 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     cleanup_path(path)
   end
 
-  defp close_variant(%__MODULE__{kind: :exqlite_minimal, conn: conn, adapter: adapter} = variant) do
-    Raw.release_all(conn, Map.values(variant.statements))
-    _ = Adapter.close(adapter)
-    cleanup_path(variant.path)
-  end
-
   defp close_variant(%__MODULE__{adapter: nil, path: path}), do: cleanup_path(path)
 
   defp close_variant(%__MODULE__{adapter: adapter, path: path}) do
@@ -663,7 +663,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     sample = List.first(documents)
 
     [[revision]] =
-      Raw.one_off_query!(conn, "SELECT winning_revision FROM documents WHERE document_id = ?", [
+      Raw.query!(conn, "SELECT winning_revision FROM documents WHERE document_id = ?", [
         sample.id
       ])
 
@@ -673,10 +673,10 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   end
 
   defp table_counts(conn) do
-    [[documents]] = Raw.one_off_query!(conn, "SELECT count(*) FROM documents")
-    [[revisions]] = Raw.one_off_query!(conn, "SELECT count(*) FROM revisions")
-    [[changes]] = Raw.one_off_query!(conn, "SELECT count(*) FROM changes")
-    [[sequence]] = Raw.one_off_query!(conn, "SELECT current_sequence FROM db_meta WHERE id = 1")
+    [[documents]] = Raw.query!(conn, "SELECT count(*) FROM documents")
+    [[revisions]] = Raw.query!(conn, "SELECT count(*) FROM revisions")
+    [[changes]] = Raw.query!(conn, "SELECT count(*) FROM changes")
+    [[sequence]] = Raw.query!(conn, "SELECT current_sequence FROM db_meta WHERE id = 1")
     {documents, revisions, changes, sequence}
   end
 
@@ -761,8 +761,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     %{
       "adapter_plan_uses_index" => if(state.worker, do: verify_adapter_plan!(state)),
       "minimal_sql_uses_index" =>
-        if(Map.has_key?(state.variants, :exqlite_minimal),
-          do: verify_minimal_plan!(state.variants.exqlite_minimal.conn)
+        if(Map.has_key?(state.variants, :driver_minimal),
+          do: verify_minimal_plan!(state.variants.driver_minimal.conn)
         ),
       "service_plan_uses_index" => if(service_variants(state) != [], do: true)
     }
@@ -776,7 +776,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   end
 
   defp verify_index_exists!(conn) do
-    rows = Raw.one_off_query!(conn, "SELECT name FROM sqlite_master WHERE type = 'index'")
+    rows = Raw.query!(conn, "SELECT name FROM sqlite_master WHERE type = 'index'")
 
     unless Enum.any?(rows, fn [name] -> is_binary(name) and String.starts_with?(name, "exdb_s_") end) do
       Mix.raise("benchmark structured index is missing")
@@ -816,7 +816,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   defp plan_uses_index?(conn, sql, params) do
     conn
-    |> Raw.one_off_query!("EXPLAIN QUERY PLAN " <> sql, params)
+    |> Raw.query!("EXPLAIN QUERY PLAN " <> sql, Enum.map(params, &driver_param/1))
     |> Enum.any?(fn row -> row |> List.last() |> to_string() |> String.contains?("exdb_s_") end)
   end
 
@@ -860,9 +860,10 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
          "sqlite_version" => engine["version"],
          "source_id_and_compile_options_match" => true,
          "aligned_pragmas" => Map.new(pragmas),
-         # Compile options are compared without the COMPILER entry: ExQLite may
-         # ship a precompiled NIF built by a different compiler version.
-         "exqlite_compiler" =>
+         # Compile options are compared without the COMPILER entry: the driver's
+         # SQLite is compiled by the Rust build, which may pick a different C
+         # compiler version than `CC`.
+         "driver_compiler" =>
            Enum.find(engine["compile_options"], &String.starts_with?(&1, "COMPILER=")),
          "native_compiler" => native["compiler"]
        }}
@@ -876,7 +877,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   defp finalize_native(variants, _native, _mode), do: {variants, nil}
 
   defp open_native!(port, variant, :memory) do
-    {:ok, image} = Sqlite3.serialize(variant.conn, "main")
+    {:ok, image} = Driver.serialize(variant.conn)
     _ = Adapter.close(variant.adapter)
     Native.open_image(port, image)
   end
@@ -901,8 +902,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
     if comparable.(native) != comparable.(engine) do
       Mix.raise(
-        "native control SQLite build differs from ExQLite:\n" <>
-          "native: #{inspect(native)}\nexqlite: #{inspect(engine)}"
+        "native control SQLite build differs from the driver:\n" <>
+          "native: #{inspect(native)}\ndriver: #{inspect(engine)}"
       )
     end
   end
@@ -981,8 +982,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     }
 
     replay =
-      if Map.has_key?(state.variants, :exqlite_replay),
-        do: Map.put(replay, :exqlite, exqlite_ops(state.variants.exqlite_replay.conn, ops)),
+      if Map.has_key?(state.variants, :driver_replay),
+        do: Map.put(replay, :driver, driver_ops(ops)),
         else: replay
 
     if Map.has_key?(state.variants, :native_replay),
@@ -990,15 +991,28 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
       else: replay
   end
 
-  defp exqlite_ops(conn, ops) do
+  # Parameters are converted here, outside the timer, the way `Connection`
+  # normalizes them before it calls the driver.
+  defp driver_ops(ops) do
     Enum.map(ops, fn
       %{kind: :exec, sql: sql} ->
         {:exec, sql}
 
       %{kind: kind, sql: sql, params: params} ->
-        {:stmt, exqlite_statement(conn, sql), params, kind == :query}
+        {:query, sql, Enum.map(params, &driver_param/1), kind == :query}
     end)
   end
+
+  defp driver_param(value)
+       when is_integer(value) or is_float(value) or is_binary(value) or is_nil(value),
+       do: value
+
+  defp driver_param({:blob, value}), do: {:blob, IO.iodata_to_binary(value)}
+  defp driver_param(value) when is_list(value), do: IO.iodata_to_binary(value)
+  defp driver_param(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp driver_param(value),
+    do: Mix.raise("captured parameter has no driver replay conversion: #{inspect(value)}")
 
   defp native_request(port, ops) do
     ops
@@ -1013,39 +1027,10 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     |> IO.iodata_to_binary()
   end
 
-  @exqlite_registry {__MODULE__, :exqlite_statements}
   @native_registry {__MODULE__, :native_statements}
 
-  defp reset_statement_registries do
-    Process.put(@exqlite_registry, %{})
-    Process.put(@native_registry, %{})
-  end
-
-  defp release_statement_registries(variants) do
-    case variants do
-      %{exqlite_replay: %{conn: conn}} ->
-        Raw.release_all(conn, Map.values(Process.get(@exqlite_registry, %{})))
-
-      _ ->
-        :ok
-    end
-
-    reset_statement_registries()
-  end
-
-  defp exqlite_statement(conn, sql) do
-    registry = Process.get(@exqlite_registry)
-
-    case Map.fetch(registry, sql) do
-      {:ok, statement} ->
-        statement
-
-      :error ->
-        statement = Raw.prepare!(conn, sql)
-        Process.put(@exqlite_registry, Map.put(registry, sql, statement))
-        statement
-    end
-  end
+  # Statement IDs prepared in the native control, by SQL text.
+  defp reset_native_registry, do: Process.put(@native_registry, %{})
 
   defp native_statement(port, sql) do
     registry = Process.get(@native_registry)
@@ -1099,9 +1084,9 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     {:timed, result.ns, %{vm_steps: result.vm_steps, statements: result.statements}}
   end
 
-  defp invoke!(state, :exqlite_replay, %{replay: replay}) do
-    rows = run_exqlite_ops(state.variants.exqlite_replay.conn, replay.exqlite, 0)
-    check_rows!(:exqlite_replay, rows, replay.expected_rows)
+  defp invoke!(state, :driver_replay, %{replay: replay}) do
+    rows = run_driver_ops(state.variants.driver_replay.conn, replay.driver, 0)
+    check_rows!(:driver_replay, rows, replay.expected_rows)
   end
 
   defp invoke!(state, :connection_replay, %{replay: replay}) do
@@ -1129,6 +1114,10 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     end)
   end
 
+  defp invoke!(state, :driver_minimal, %{base: base}) do
+    minimal_operation!(state.variants.driver_minimal, state.scenario, base, state)
+  end
+
   # The Plug test adapter mails every sent response (and a "sent" marker) to
   # the calling process; a real server writes it to the socket instead. Left
   # in the mailbox they pile up across samples and every garbage collection
@@ -1149,36 +1138,23 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     end
   end
 
-  defp invoke!(state, :exqlite_minimal, %{base: base}) do
-    minimal_operation!(state.variants.exqlite_minimal, state.scenario, base, state)
-  end
-
   defp check_rows!(_variant, rows, rows), do: :ok
 
   defp check_rows!(variant, rows, expected),
     do: Mix.raise("#{variant} returned #{rows} rows; the captured run returned #{expected}")
 
-  defp run_exqlite_ops(_conn, [], rows), do: rows
+  # One driver call per statement, as `Connection` makes, so L1 and L2 differ
+  # only in the wrapper.
+  defp run_driver_ops(_conn, [], rows), do: rows
 
-  defp run_exqlite_ops(conn, [{:exec, sql} | rest], rows) do
-    :ok = Sqlite3.execute(conn, sql)
-    run_exqlite_ops(conn, rest, rows)
+  defp run_driver_ops(conn, [{:exec, sql} | rest], rows) do
+    :ok = Driver.execute(conn, sql)
+    run_driver_ops(conn, rest, rows)
   end
 
-  defp run_exqlite_ops(conn, [{:stmt, statement, params, count_rows} | rest], rows) do
-    :ok = Sqlite3.bind(statement, params)
-    stepped = step_count(conn, statement, 0)
-    run_exqlite_ops(conn, rest, if(count_rows, do: rows + stepped, else: rows))
-  end
-
-  # Fetches the way `Connection` does (one ExQLite call per chunk of rows), so
-  # L1 and L2 differ only in the wrapper, not in the fetch strategy.
-  defp step_count(conn, statement, rows) do
-    case Sqlite3.multi_step(conn, statement, Connection.fetch_chunk_rows()) do
-      {:rows, chunk} -> step_count(conn, statement, rows + length(chunk))
-      {:done, chunk} -> rows + length(chunk)
-      other -> Mix.raise("exqlite replay step failed: #{inspect(other)}")
-    end
+  defp run_driver_ops(conn, [{:query, sql, params, count_rows} | rest], rows) do
+    {:ok, result} = Driver.query(conn, sql, params)
+    run_driver_ops(conn, rest, if(count_rows, do: rows + length(result), else: rows))
   end
 
   defp run_connection_ops(_conn, [], rows), do: rows
@@ -1309,11 +1285,10 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   defp minimal_statements(:point_read), do: [{:winner_select, @winner_select_sql}]
 
+  # Transaction control runs through `Driver.execute/2`, outside the statement
+  # cache, as `Connection.exec/2` does.
   defp minimal_statements(:bulk_write) do
     [
-      {:begin, @begin_sql},
-      {:rollback, @rollback_sql},
-      {:commit, @commit_sql},
       {:document_insert, @document_insert_sql},
       {:revision_insert, @revision_insert_sql},
       {:change_insert, @change_insert_sql},
@@ -1327,9 +1302,11 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   defp minimal_statements(:indexed_query), do: [{:indexed_query, @indexed_query_sql}]
 
-  defp prepare_minimal(%{exqlite_minimal: variant} = variants, scenario) do
-    statements = Raw.prepare_many(variant.conn, minimal_statements(scenario))
-    variants = Map.put(variants, :exqlite_minimal, %{variant | statements: statements})
+  # The driver prepares and caches statements itself; the minimal reference
+  # keeps only the SQL text per statement name.
+  defp prepare_minimal(%{driver_minimal: variant} = variants, scenario) do
+    statements = Map.new(minimal_statements(scenario))
+    variants = Map.put(variants, :driver_minimal, %{variant | statements: statements})
     Process.put({__MODULE__, :open_variants}, variants)
     variants
   end
@@ -1342,13 +1319,13 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   defp run_minimal!(conn, statements, :point_read, ids, _state) do
     Enum.each(ids, fn id ->
       [[^id, _revision, _json, _term, 0, _sequence, nil, _digest, _size, _type]] =
-        Raw.run!(conn, statements.winner_select, [id])
+        Raw.query!(conn, statements.winner_select, [id])
     end)
   end
 
   defp run_minimal!(conn, statements, :bulk_write, %{batch: batch}, _state) do
-    run = fn name, params -> Raw.run!(conn, Map.fetch!(statements, name), params) end
-    physical_bulk_write!(conn, batch, run, fn -> Raw.run(conn, statements.rollback, []) end)
+    run = fn name, params -> Raw.query!(conn, Map.fetch!(statements, name), params) end
+    physical_bulk_write!(conn, batch, run)
   end
 
   defp run_minimal!(conn, statements, :changes_read, _base, state) do
@@ -1356,9 +1333,9 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     expected_has_more = if limit < state.config["dataset_size"], do: 1, else: 0
 
     repeat(state.config["repeat"], fn ->
-      rows = Raw.run!(conn, statements.changes_select, [0, limit])
+      rows = Raw.query!(conn, statements.changes_select, [0, limit])
       last = rows |> List.last([0]) |> List.first()
-      [[has_more]] = Raw.run!(conn, statements.changes_exists, [last])
+      [[has_more]] = Raw.query!(conn, statements.changes_exists, [last])
 
       if length(rows) == limit and has_more == expected_has_more,
         do: :ok,
@@ -1371,7 +1348,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     expected = state.fixture.category_match_count
 
     repeat(state.config["repeat"], fn ->
-      rows = Raw.run!(conn, statements.indexed_query, ["task", "task", limit + 1])
+      rows = Raw.query!(conn, statements.indexed_query, ["task", "task", limit + 1])
       count = if rows == [], do: 0, else: rows |> List.last() |> List.last()
 
       if length(rows) == min(limit + 1, expected) and count == expected,
@@ -1382,8 +1359,8 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   # One transaction writing the final document, revision, change, sequence and
   # replication-state rows, one INSERT per row.
-  defp physical_bulk_write!(conn, batch, run, rollback) do
-    run.(:begin, [])
+  defp physical_bulk_write!(conn, batch, run) do
+    :ok = Raw.execute!(conn, @begin_sql)
 
     try do
       Enum.each(batch, fn document ->
@@ -1396,7 +1373,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
           document.sequence
         ])
 
-        {:ok, doc_key} = Sqlite3.last_insert_rowid(conn)
+        {:ok, doc_key} = Driver.last_insert_rowid(conn)
 
         run.(:revision_insert, [
           doc_key,
@@ -1426,11 +1403,10 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
       run.(:sequence_update, [List.last(batch).sequence])
       run.(:local_record_upsert, [@pending_namespace, @pending_key, @pending_json])
-      run.(:commit, [])
-      :ok
+      Raw.execute!(conn, @commit_sql)
     rescue
       exception ->
-        _ = rollback.()
+        _ = Driver.execute(conn, @rollback_sql)
         reraise exception, __STACKTRACE__
     end
   end
@@ -1588,7 +1564,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   defp probe_loop(count) do
     :ok =
-      Probe.measure :sqlite_bind do
+      Probe.measure :sqlite_step do
         :ok
       end
 
@@ -1675,12 +1651,13 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
 
   defp sql_shape(ns, operations) do
     case ns do
-      %{exqlite_minimal: minimal, exqlite_replay: replay} ->
+      %{driver_minimal: minimal, driver_replay: replay} ->
         Stats.compare(minimal, replay)
         |> Map.merge(%{
-          "from" => "exqlite_minimal",
-          "to" => "exqlite_replay",
-          "adds" => "SQL the adapter issues versus hand-written minimal SQL, both through ExQLite",
+          "from" => "driver_minimal",
+          "to" => "driver_replay",
+          "adds" =>
+            "SQL the adapter issues versus hand-written minimal SQL, both through the driver NIF",
           "median_delta_ns_per_operation" =>
             Stats.round_float(Stats.median(Stats.paired_deltas(minimal, replay)) / operations)
         })
@@ -1701,12 +1678,12 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   end
 
   defp layer_label(:native_replay), do: "L0 native SQLite"
-  defp layer_label(:exqlite_replay), do: "L1 ExQLite"
+  defp layer_label(:driver_replay), do: "L1 driver"
   defp layer_label(:connection_replay), do: "L2 Connection"
   defp layer_label(:vial_keeper_storage), do: "L3 storage"
   defp layer_label(:vial_keeper_service), do: "L4 service"
   defp layer_label(:vial_keeper_http), do: "L5 HTTP router"
-  defp layer_label(:exqlite_minimal), do: "reference: minimal SQL"
+  defp layer_label(:driver_minimal), do: "reference: minimal SQL"
 
   defp per_op(values, operations), do: Stats.round_float(Stats.median(values) / operations)
 
@@ -1826,20 +1803,20 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   ## Output
 
   defp sqlite_metadata do
-    {:ok, conn} = Sqlite3.open(":memory:")
+    {:ok, conn} = Driver.open(":memory:", @open_readwrite_create)
 
     try do
       sqlite_metadata(conn)
     after
-      Sqlite3.close(conn)
+      :ok = Driver.close(conn)
     end
   end
 
   defp sqlite_metadata(conn) do
     [[version, source_id]] =
-      Raw.one_off_query!(conn, "SELECT sqlite_version(), sqlite_source_id()")
+      Raw.query!(conn, "SELECT sqlite_version(), sqlite_source_id()")
 
-    options = conn |> Raw.one_off_query!("PRAGMA compile_options") |> Enum.map(&List.first/1)
+    options = conn |> Raw.query!("PRAGMA compile_options") |> Enum.map(&List.first/1)
     %{"version" => version, "source_id" => source_id, "compile_options" => options}
   end
 
@@ -1939,7 +1916,7 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
     """
     Usage:
       scripts/bench_overhead.sh [options]
-      MIX_ENV=prod mix run --no-start bench/sqlite_exqlite_overhead_benchmark.exs -- [options]
+      MIX_ENV=prod mix run --no-start bench/sqlite_driver_overhead_benchmark.exs -- [options]
 
     Options:
       --mode memory|disk|both       SQLite mode (default: memory). The service and
@@ -1970,62 +1947,22 @@ defmodule VialKeeper.Benchmarks.ExqliteOverhead do
   defmodule Raw do
     @moduledoc false
 
-    alias Exqlite.Sqlite3
-    alias VialKeeper.Storage.SQLite.Connection
+    alias VialKeeper.Storage.SQLite.Native, as: Driver
 
-    def prepare_many(conn, definitions) do
-      Map.new(definitions, fn {name, sql} -> {name, prepare!(conn, sql)} end)
-    end
-
-    def prepare!(conn, sql) do
-      case Sqlite3.prepare(conn, sql) do
-        {:ok, statement} -> statement
-        {:error, reason} -> Mix.raise("could not prepare benchmark SQL: #{inspect(reason)}")
-      end
-    end
-
-    def run!(conn, statement, params \\ []) do
-      case run(conn, statement, params) do
+    def query!(conn, sql, params \\ []) do
+      case Driver.query(conn, sql, params) do
         {:ok, rows} -> rows
-        {:error, reason} -> Mix.raise("ExQLite benchmark SQL failed: #{inspect(reason)}")
+        {:error, reason} -> Mix.raise("benchmark SQL failed: #{inspect(reason)}")
       end
     end
 
-    def run(_conn, nil, _params), do: {:error, :missing_statement}
-
-    def run(conn, statement, params) do
-      with :ok <- Sqlite3.bind(statement, params) do
-        step(conn, statement, [])
-      end
-    end
-
-    def one_off_query!(conn, sql, params \\ []) do
-      statement = prepare!(conn, sql)
-
-      try do
-        run!(conn, statement, params)
-      after
-        _ = Sqlite3.release(conn, statement)
-      end
-    end
-
-    def release_all(conn, statements) do
-      Enum.each(statements, fn statement ->
-        _ = Sqlite3.release(conn, statement)
-      end)
-
-      :ok
-    end
-
-    defp step(conn, statement, chunks) do
-      case Sqlite3.multi_step(conn, statement, Connection.fetch_chunk_rows()) do
-        {:rows, chunk} -> step(conn, statement, [chunk | chunks])
-        {:done, chunk} -> {:ok, Enum.concat(Enum.reverse([chunk | chunks]))}
-        :busy -> {:error, :busy}
-        {:error, reason} -> {:error, reason}
+    def execute!(conn, sql) do
+      case Driver.execute(conn, sql) do
+        :ok -> :ok
+        {:error, reason} -> Mix.raise("benchmark control SQL failed: #{inspect(reason)}")
       end
     end
   end
 end
 
-VialKeeper.Benchmarks.ExqliteOverhead.main(System.argv())
+VialKeeper.Benchmarks.DriverOverhead.main(System.argv())

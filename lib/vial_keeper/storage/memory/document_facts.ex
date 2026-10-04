@@ -95,6 +95,13 @@ defmodule VialKeeper.Storage.Memory.DocumentFacts do
       do: list_leaves(context, document_id)
 
   @impl true
+  def list_leaf_heads_for_document(%BackendContext{} = context, document) do
+    with {:ok, leaves} <- list_leaves_for_document(context, document) do
+      {:ok, Enum.map(leaves, &%{&1 | body: nil, body_json: nil})}
+    end
+  end
+
+  @impl true
   def list_ancestors(%BackendContext{} = context, document_id, revision_id)
       when is_binary(document_id) and is_binary(revision_id) do
     with {:ok, adapter} <- Context.unwrap(context),

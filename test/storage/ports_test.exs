@@ -57,7 +57,7 @@ defmodule VialKeeper.Storage.PortsTest do
     for family <- [:lifecycle, :transaction, :ownership] do
       module = Sentinel.port(family)
       source = module.__info__(:compile)[:source] |> List.to_string() |> File.read!()
-      refute source =~ "Exqlite"
+      refute source =~ "SQLite.Native"
       refute source =~ "BEGIN "
       refute source =~ "COMMIT"
       refute source =~ "PRAGMA"
@@ -240,6 +240,6 @@ defmodule VialKeeper.Storage.PortsTest do
     transaction_source = File.read!("lib/vial_keeper/storage/transaction.ex")
     refute transaction_source =~ "BEGIN"
     refute transaction_source =~ "COMMIT"
-    refute transaction_source =~ "Exqlite"
+    refute transaction_source =~ "SQLite.Native"
   end
 end

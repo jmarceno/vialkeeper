@@ -4,24 +4,33 @@ defmodule VialKeeper.Benchmarks.Overhead.Capture do
 
   A dedicated worker process owns a private capture database (seeded like every
   other variant) and runs each sample's adapter operation there, untimed, with
-  Erlang call tracing on the three functions every SQLite statement passes
-  through:
+  Erlang call tracing on the `Connection` functions every SQLite statement
+  passes through:
 
-    * `Connection.query/3` and `Connection.execute/3` — prepared statements
-      (recorded with SQL, parameters, and, for `query/3`, the returned row
-      count),
-    * `Connection.exec/2` — unprepared control SQL such as `BEGIN IMMEDIATE`.
+    * `Connection.query/3` and `Connection.execute/3`, and their
+      `point_query/3` / `point_execute/3` variants — statements the driver
+      prepares from its statement cache (recorded with SQL, parameters, and,
+      for queries, the returned row count),
+    * `Connection.exec/2` — uncached control SQL such as `BEGIN IMMEDIATE`.
 
-  The worker is a separate process so its process-local caches (prepared
-  statements, decoded bodies, index catalogs) never warm the measured adapter
-  variant. Trace patterns are installed only for the duration of one capture
+  The worker is a separate process on its own connection so its caches
+  (driver statement cache, decoded bodies, index catalogs) never warm the
+  measured adapter variant. Trace patterns are installed only for the duration of one capture
   and removed before any timed code runs.
   """
 
   alias VialKeeper.Storage.SQLite.Connection
 
   @timeout 120_000
-  @traced [{Connection, :query, 3}, {Connection, :execute, 3}, {Connection, :exec, 2}]
+  @traced [
+    {Connection, :query, 3},
+    {Connection, :execute, 3},
+    {Connection, :point_query, 3},
+    {Connection, :point_execute, 3},
+    {Connection, :exec, 2}
+  ]
+  @queries [:query, :point_query]
+  @executes [:execute, :point_execute]
 
   @type op ::
           %{kind: :query | :execute, sql: binary(), params: list(), rows: non_neg_integer() | nil}
@@ -105,12 +114,12 @@ defmodule VialKeeper.Benchmarks.Overhead.Capture do
 
   defp collect(worker, ops) do
     receive do
-      {:trace, ^worker, :call, {Connection, :query, [_conn, sql, params]}} ->
+      {:trace, ^worker, :call, {Connection, name, [_conn, sql, params]}} when name in @queries ->
         collect(worker, [
           %{kind: :query, sql: IO.iodata_to_binary(sql), params: params, rows: nil} | ops
         ])
 
-      {:trace, ^worker, :call, {Connection, :execute, [_conn, sql, params]}} ->
+      {:trace, ^worker, :call, {Connection, name, [_conn, sql, params]}} when name in @executes ->
         collect(worker, [
           %{kind: :execute, sql: IO.iodata_to_binary(sql), params: params, rows: nil} | ops
         ])
@@ -118,12 +127,12 @@ defmodule VialKeeper.Benchmarks.Overhead.Capture do
       {:trace, ^worker, :call, {Connection, :exec, [_conn, sql]}} ->
         collect(worker, [%{kind: :exec, sql: sql} | ops])
 
-      {:trace, ^worker, :return_from, {Connection, :query, 3}, result} ->
+      {:trace, ^worker, :return_from, {Connection, name, 3}, result} when name in @queries ->
         [last | rest] = ops
         collect(worker, [%{last | rows: returned_rows(result)} | rest])
 
       {:trace, ^worker, :return_from, {Connection, name, _arity}, result}
-      when name in [:execute, :exec] ->
+      when name in [:exec | @executes] ->
         unless result == :ok, do: Mix.raise("captured #{name} failed: #{inspect(result)}")
         collect(worker, ops)
     after

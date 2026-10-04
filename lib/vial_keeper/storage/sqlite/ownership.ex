@@ -42,7 +42,7 @@ defmodule VialKeeper.Storage.SQLite.Ownership do
   end
 
   defp set_busy_timeout(conn) do
-    Exqlite.Sqlite3.set_busy_timeout(conn, 0)
+    Connection.set_busy_timeout(conn, 0)
   end
 
   defp acquire(conn) do

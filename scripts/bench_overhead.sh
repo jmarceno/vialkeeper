@@ -8,8 +8,8 @@
 #                       the whole VM, including dirty schedulers, to those CPUs.
 #   BENCH_ERL_OPTIONS   Optional extra VM flags, appended to ELIXIR_ERL_OPTIONS.
 #
-# The VM keeps production scheduler defaults on purpose. ExQLite runs every
-# SQLite call on a dirty scheduler; disabling scheduler busy-waiting
+# The VM keeps production scheduler defaults on purpose. The SQLite driver NIF
+# runs most statements on a dirty scheduler; disabling scheduler busy-waiting
 # (+sbwt/+sbwtdcpu/+sbwtdio none) makes each of those hops several times more
 # expensive and would charge the benchmark a cost production does not pay.
 set -Eeuo pipefail
@@ -23,7 +23,7 @@ fi
 
 export MIX_ENV=prod
 
-command=(mix run --no-start bench/sqlite_exqlite_overhead_benchmark.exs -- "$@")
+command=(mix run --no-start bench/sqlite_driver_overhead_benchmark.exs -- "$@")
 
 if [[ -n "${BENCH_CPUS:-}" ]]; then
   exec taskset --cpu-list "$BENCH_CPUS" "${command[@]}"

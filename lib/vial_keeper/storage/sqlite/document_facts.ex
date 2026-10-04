@@ -195,6 +195,18 @@ defmodule VialKeeper.Storage.SQLite.DocumentFacts do
   end
 
   @impl true
+  def list_leaf_heads_for_document(%BackendContext{} = context, document)
+      when is_map(document) do
+    with {:ok, adapter} <- Context.unwrap(context),
+         {:ok, doc_key} <- document_doc_key(document),
+         {:ok, leaves} <- Revisions.load_leaf_heads(adapter.conn, doc_key) do
+      {:ok, leaves}
+    else
+      {:error, reason} -> {:error, Errors.normalize(reason)}
+    end
+  end
+
+  @impl true
   def list_ancestors(%BackendContext{} = context, document_id, revision_id)
       when is_binary(document_id) and is_binary(revision_id) do
     with {:ok, adapter} <- Context.unwrap(context),

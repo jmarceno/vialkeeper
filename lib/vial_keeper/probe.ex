@@ -129,7 +129,7 @@ defmodule VialKeeper.Probe do
     mutation: Enum.map(@mutation_phases, &:"mutation_#{&1}"),
     sqlite_phase: Enum.map(@sqlite_phases, &:"sqlite_#{&1}"),
     codec: [:term_encode, :term_decode, :json_canonical_encode, :json_strict_decode],
-    connection: [:sqlite_prepare, :sqlite_bind, :sqlite_step, :sqlite_reset, :sqlite_exec]
+    connection: [:sqlite_step, :sqlite_exec]
   ]
   @detail_areas [:codec, :connection]
 

@@ -45,7 +45,7 @@ defmodule VialKeeper.Storage.SQLite.Changes do
   def allocate_sequences(_conn, 0), do: {:ok, []}
 
   def allocate_sequences(conn, count) when is_integer(count) and count > 0 do
-    case Connection.query(
+    case Connection.point_query(
            conn,
            "UPDATE db_meta SET current_sequence = current_sequence + ? WHERE id = 1 RETURNING current_sequence",
            [count]
@@ -76,7 +76,7 @@ defmodule VialKeeper.Storage.SQLite.Changes do
         ) :: :ok | {:error, term()}
   def insert(conn, sequence, doc_key, document_id, winner, leaf_json, origin, leaves \\ nil) do
     with {:ok, leaf_term} <- leaf_term(leaves, leaf_json) do
-      Connection.execute(
+      Connection.point_execute(
         conn,
         "INSERT INTO changes(sequence, doc_key, document_id, winning_revision, winning_deleted, leaf_set_json, leaf_set_term, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [

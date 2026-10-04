@@ -3,12 +3,15 @@ Code.require_file("../../bench/overhead/native.exs", __DIR__)
 defmodule VialKeeper.Bench.OverheadNativeTest do
   use ExUnit.Case, async: true
 
-  alias Exqlite.Sqlite3
   alias VialKeeper.Benchmarks.Overhead.Native
+  alias VialKeeper.Storage.SQLite.Native, as: Driver
 
   # Compiles sqlite3.c once (cached under _build), which takes about a minute.
   @moduletag :slow
   @moduletag timeout: 600_000
+
+  # SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+  @open_flags 0x6
 
   setup_all do
     %{build: Native.build!()}
@@ -20,26 +23,32 @@ defmodule VialKeeper.Bench.OverheadNativeTest do
     %{port: port}
   end
 
-  test "runs the same SQLite engine as ExQLite", %{port: port} do
-    {:ok, conn} = Sqlite3.open(":memory:")
-    {:ok, image} = Sqlite3.serialize(conn, "main")
+  test "runs the same SQLite engine as the driver", %{port: port} do
+    {:ok, conn} = Driver.open(":memory:", @open_flags)
+    {:ok, image} = Driver.serialize(conn)
     :ok = Native.open_image(port, image)
 
-    {:ok, statement} = Sqlite3.prepare(conn, "PRAGMA compile_options")
-    exqlite_options = collect(conn, statement) |> Enum.map(&List.first/1)
+    {:ok, rows} = Driver.query(conn, "PRAGMA compile_options", [])
+    driver_options = Enum.map(rows, &List.first/1)
     native_options = Native.scalar(port, "PRAGMA compile_options")
     without_compiler = &Enum.reject(&1, fn option -> String.starts_with?(option, "COMPILER=") end)
 
-    assert without_compiler.(native_options) == without_compiler.(exqlite_options)
-    Sqlite3.close(conn)
+    assert without_compiler.(native_options) == without_compiler.(driver_options)
+
+    {:ok, [[version, source_id]]} =
+      Driver.query(conn, "SELECT sqlite_version(), sqlite_source_id()", [])
+
+    assert Native.scalar(port, "SELECT sqlite_version()") == [version]
+    assert Native.scalar(port, "SELECT sqlite_source_id()") == [source_id]
+    :ok = Driver.close(conn)
   end
 
   test "restores an image and replays every parameter type", %{port: port} do
-    {:ok, conn} = Sqlite3.open(":memory:")
-    :ok = Sqlite3.execute(conn, "CREATE TABLE t(i INTEGER, r REAL, s TEXT, b BLOB, n)")
-    :ok = Sqlite3.execute(conn, "INSERT INTO t VALUES (1, 1.5, 'seed', x'00', NULL)")
-    {:ok, image} = Sqlite3.serialize(conn, "main")
-    Sqlite3.close(conn)
+    {:ok, conn} = Driver.open(":memory:", @open_flags)
+    :ok = Driver.execute(conn, "CREATE TABLE t(i INTEGER, r REAL, s TEXT, b BLOB, n)")
+    :ok = Driver.execute(conn, "INSERT INTO t VALUES (1, 1.5, 'seed', x'00', NULL)")
+    {:ok, image} = Driver.serialize(conn)
+    :ok = Driver.close(conn)
 
     :ok = Native.open_image(port, image)
     :ok = Native.prepare(port, 0, "INSERT INTO t VALUES (?, ?, ?, ?, ?)")
@@ -61,12 +70,5 @@ defmodule VialKeeper.Bench.OverheadNativeTest do
              "SELECT i || '|' || r || '|' || s || '|' || hex(b) FROM t ORDER BY i"
            ) ==
              ["-9007199254740993|2.25|text|010203", "1|1.5|seed|00"]
-  end
-
-  defp collect(conn, statement) do
-    case Sqlite3.step(conn, statement) do
-      {:row, row} -> [row | collect(conn, statement)]
-      :done -> []
-    end
   end
 end

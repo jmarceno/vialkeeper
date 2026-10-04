@@ -102,7 +102,7 @@ defmodule VialKeeper.Storage.BoundaryGuardTest do
     refute Map.has_key?(context.capabilities, :sql)
 
     source = File.read!("lib/vial_keeper/storage/sentinel/adapter.ex")
-    refute source =~ "Exqlite"
+    refute source =~ "SQLite.Native"
     refute source =~ "PRAGMA"
     refute source =~ "SELECT "
     refute source =~ "database.sqlite3"

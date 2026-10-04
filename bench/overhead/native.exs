@@ -2,9 +2,12 @@ defmodule VialKeeper.Benchmarks.Overhead.Native do
   @moduledoc """
   Builds and drives `bench/native/vk_replay.c`, the native SQLite control.
 
-  The program is compiled from ExQLite's vendored `sqlite3.c` amalgamation with
-  ExQLite's own SQLite compile definitions (read from its Makefile), so both
-  sides run the same SQLite engine. The build is cached under
+  The program is compiled from the `sqlite3.c` amalgamation that the driver
+  NIF (`native/vial_sqlite`) bundles through `libsqlite3-sys`, with the SQLite
+  compile definitions that crate's build script passes for a bundled Unix
+  build plus the crate's `LIBSQLITE3_FLAGS` (from
+  `native/vial_sqlite/.cargo/config.toml`, unless the environment sets it), so
+  both sides run the same SQLite engine. The build is cached under
   `_build/<env>/bench/` keyed by the compiler, flags, and source contents.
 
   The process is an Erlang port with 4-byte length framing; see the C file for
@@ -13,6 +16,16 @@ defmodule VialKeeper.Benchmarks.Overhead.Native do
   """
 
   @request_timeout 120_000
+  @driver_crate Path.expand("../../native/vial_sqlite", __DIR__)
+  @sqlite_sys "libsqlite3-sys"
+
+  # Cargo's release profile (opt-level 3, which rustler always builds) makes
+  # the cc crate compile the bundled SQLite at -O3.
+  @optimization ["-O3"]
+
+  # Environment variables libsqlite3-sys's build script turns into SQLite
+  # limits for a bundled build.
+  @limit_env ~w(SQLITE_MAX_VARIABLE_NUMBER SQLITE_MAX_EXPR_DEPTH SQLITE_MAX_COLUMN)
 
   @type port_handle :: port()
   @type op :: {:stmt, boolean(), non_neg_integer(), list()} | {:exec, binary()}
@@ -20,13 +33,17 @@ defmodule VialKeeper.Benchmarks.Overhead.Native do
   @doc "Compiles the native control if needed and returns build metadata."
   @spec build!() :: map()
   def build! do
-    exqlite = Map.fetch!(Mix.Project.deps_paths(), :exqlite)
-    c_src = Path.join(exqlite, "c_src")
-    amalgamation = Path.join(c_src, "sqlite3.c")
+    sqlite_sys = sqlite_sys_package!()
+    sqlite_dir = Path.join(Path.dirname(sqlite_sys["manifest_path"]), "sqlite3")
+    amalgamation = Path.join(sqlite_dir, "sqlite3.c")
     source = Path.expand("../native/vk_replay.c", __DIR__)
     compiler = System.get_env("CC", "cc")
-    definitions = exqlite_definitions(Path.join(exqlite, "Makefile"))
-    flags = ["-O2", "-DNDEBUG=1" | definitions]
+
+    definitions =
+      bundled_definitions(Path.join(Path.dirname(sqlite_sys["manifest_path"]), "build.rs")) ++
+        limit_definitions() ++ extra_definitions()
+
+    flags = @optimization ++ resolve_undefines(definitions)
     compiler_version = compiler_version!(compiler)
 
     key =
@@ -45,7 +62,7 @@ defmodule VialKeeper.Benchmarks.Overhead.Native do
       File.mkdir_p!(Path.dirname(output))
       IO.puts("Building native SQLite control (one-time, cached): #{output}")
 
-      args = flags ++ ["-I", c_src, source, amalgamation, "-lpthread", "-lm", "-o", output]
+      args = flags ++ ["-I", sqlite_dir, source, amalgamation, "-lpthread", "-lm", "-o", output]
 
       case System.cmd(compiler, args, stderr_to_stdout: true) do
         {_output, 0} -> :ok
@@ -57,7 +74,9 @@ defmodule VialKeeper.Benchmarks.Overhead.Native do
       "path" => output,
       "compiler" => compiler_version,
       "flags" => flags,
-      "amalgamation" => Path.relative_to_cwd(amalgamation)
+      "sqlite_sys_version" => sqlite_sys["version"],
+      "amalgamation" =>
+        Path.join([@sqlite_sys <> "-" <> sqlite_sys["version"], "sqlite3", "sqlite3.c"])
     }
   end
 
@@ -152,7 +171,7 @@ defmodule VialKeeper.Benchmarks.Overhead.Native do
     ]
   end
 
-  # Mirrors Exqlite.Sqlite3.bind/2 value conversion.
+  # Mirrors the parameter conversion `Connection` applies before the driver.
   defp encode_param(nil), do: <<0>>
   defp encode_param(:undefined), do: <<0>>
   defp encode_param(value) when is_integer(value), do: <<1, value::signed-64>>
@@ -164,17 +183,116 @@ defmodule VialKeeper.Benchmarks.Overhead.Native do
 
   defp string(value), do: [<<byte_size(value)::32>>, value]
 
-  defp exqlite_definitions(makefile) do
-    makefile
-    |> File.read!()
-    |> String.split("\n")
-    |> Enum.flat_map(fn line ->
-      case Regex.run(~r/^CFLAGS \+= (-D\S+)\s*$/, line) do
+  defp sqlite_sys_package! do
+    manifest = Path.join(@driver_crate, "Cargo.toml")
+    args = ["metadata", "--format-version", "1", "--manifest-path", manifest]
+
+    case System.cmd("cargo", args) do
+      {json, 0} ->
+        case json
+             |> JSON.decode!()
+             |> Map.fetch!("packages")
+             |> Enum.filter(&(&1["name"] == @sqlite_sys)) do
+          [package] ->
+            package
+
+          other ->
+            Mix.raise("expected one #{@sqlite_sys} package in cargo metadata, got #{length(other)}")
+        end
+
+      {_output, status} ->
+        Mix.raise("cargo metadata failed (#{status}) for #{manifest}")
+    end
+  rescue
+    ErlangError -> Mix.raise("cargo is not available; it is needed to locate the driver's SQLite")
+  end
+
+  # The `-D`/`-U` flags of the bundled build's `cc::Build` chain, then the
+  # definition libsqlite3-sys adds for every non-Windows target.
+  defp bundled_definitions(build_rs) do
+    source = File.read!(build_rs)
+
+    chain =
+      case Regex.run(
+             ~r/cfg\.file\(format!\("\{lib_name\}\/sqlite3\.c"\)\)(.*?)\.warnings\(false\);/s,
+             source
+           ) do
+        [_, chain] -> chain
+        nil -> Mix.raise("#{build_rs}: bundled SQLite build definitions not found")
+      end
+
+    unix =
+      case Regex.run(~r/if !win_target\(\) \{\s*cfg\.flag\("(-D[^"]+)"\);\s*\}/, source) do
         [_, definition] -> [definition]
+        nil -> Mix.raise("#{build_rs}: non-Windows SQLite definition not found")
+      end
+
+    case Regex.scan(~r/\.flag\("(-[DU][^"]+)"\)/, chain, capture: :all_but_first) do
+      [] -> Mix.raise("#{build_rs}: no SQLite definitions in the bundled build")
+      found -> List.flatten(found) ++ unix
+    end
+  end
+
+  defp limit_definitions do
+    Enum.flat_map(@limit_env, fn name ->
+      case System.get_env(name) do
         nil -> []
+        limit -> ["-D#{name}=#{limit}"]
       end
     end)
   end
+
+  # Cargo's `[env]` table does not override a variable already set in the
+  # environment, so an exported LIBSQLITE3_FLAGS wins, as it does for cargo.
+  defp extra_definitions do
+    case System.get_env("LIBSQLITE3_FLAGS") do
+      nil -> configured_extra_flags()
+      flags -> flags
+    end
+    |> String.split()
+    |> Enum.map(fn
+      "-D" <> _ = flag -> flag
+      "-U" <> _ = flag -> flag
+      "SQLITE_" <> _ = flag -> "-D" <> flag
+      flag -> Mix.raise("LIBSQLITE3_FLAGS entry #{inspect(flag)} is not understood")
+    end)
+  end
+
+  defp configured_extra_flags do
+    config = Path.join([@driver_crate, ".cargo", "config.toml"])
+
+    case File.read(config) do
+      {:ok, contents} ->
+        case Regex.run(~r/^LIBSQLITE3_FLAGS\s*=\s*"([^"]*)"/m, contents) do
+          [_, flags] ->
+            flags
+
+          nil ->
+            if String.contains?(contents, "LIBSQLITE3_FLAGS"),
+              do: Mix.raise("#{config}: LIBSQLITE3_FLAGS is not a plain string entry"),
+              else: ""
+        end
+
+      {:error, :enoent} ->
+        ""
+
+      {:error, reason} ->
+        Mix.raise("could not read #{config}: #{inspect(reason)}")
+    end
+  end
+
+  # `-UNAME` cancels every earlier definition of NAME, as it does on the C
+  # compiler command line; the resolved list keeps only effective definitions.
+  defp resolve_undefines(flags) do
+    flags
+    |> Enum.reduce([], fn
+      "-U" <> name, acc -> Enum.reject(acc, &(macro_name(&1) == name))
+      "-D" <> _ = flag, acc -> [flag | acc]
+    end)
+    |> Enum.reverse()
+  end
+
+  defp macro_name("-D" <> definition), do: definition |> String.split("=", parts: 2) |> hd()
 
   defp compiler_version!(compiler) do
     case System.cmd(compiler, ["--version"], stderr_to_stdout: true) do

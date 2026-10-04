@@ -32,7 +32,8 @@ VIAL_KEEPER_ROOT/
 ## Build the release
 
 Pinned toolchain: Elixir 1.20.2 / OTP 29.0.4 (`mise.toml`). Rust stable
-toolchain required (vendored `native/tantivy_ex` compiles a NIF at build time).
+toolchain required (the vendored `native/tantivy_ex` and the storage driver
+compile NIFs at build time).
 
 ```sh
 export MIX_ENV=prod

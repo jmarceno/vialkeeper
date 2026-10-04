@@ -63,7 +63,9 @@ defmodule VialKeeper.MixProject do
 
   defp deps do
     [
-      {:exqlite, "0.39.0"},
+      # Builds the SQLite driver NIF in native/vial_sqlite, with the same Rust
+      # toolchain tantivy_ex uses.
+      {:rustler, "0.38.0", runtime: false},
       # Rust-backed JSON parsing handles the hot decode path; Decimal preserves
       # the strict binary64 overflow and underflow checks at the Elixir boundary.
       {:rustyjson, "0.3.13"},
@@ -152,7 +154,7 @@ defmodule VialKeeper.MixProject do
       "bench.fts": ["run --no-start bench/fts_benchmark.exs"],
       "bench.stress": ["run --no-start bench/pmc_stress_benchmark.exs"],
       "bench.torture": ["run --no-start bench/open_images_torture_benchmark.exs"],
-      "bench.overhead": ["run --no-start bench/sqlite_exqlite_overhead_benchmark.exs"],
+      "bench.overhead": ["run --no-start bench/sqlite_driver_overhead_benchmark.exs"],
       "bench.replication": ["run --no-start bench/replication_wire_benchmark.exs"],
       "release.build": ["deps.get", "compile", "release --overwrite"]
     ]

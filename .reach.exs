@@ -135,7 +135,7 @@
           "VialKeeper.Storage.Registry",
           "VialKeeper.Storage.Sentinel.*"
         ],
-        ["VialKeeper.Storage.SQLite.*", "Exqlite.*", "Exqlite.Sqlite3.*"]
+        ["VialKeeper.Storage.SQLite.*"]
       },
       {
         [

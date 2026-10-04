@@ -9,8 +9,8 @@ There are three families:
 - **Synthetic product controls** — small isolated databases, Tantivy
   generations, and JSON reports under `tmp/bench/vialkeeper/` in the checkout.
   See the sections below.
-- **Layer ladder** — native SQLite, ExQLite, and each VialKeeper layer measured
-  side by side on the same statements (`mix bench.overhead`, see
+- **Layer ladder** — native SQLite, the SQLite driver NIF, and each VialKeeper
+  layer measured side by side on the same statements (`mix bench.overhead`, see
   [Layer ladder](#layer-ladder-sqlite-backend-diagnostic)).
 - **Dataset-backed suites** — TREC-COVID FTS, Simple Wikipedia stress, and Open
   Images torture. Source data, generated manifests, work databases, caches, and
@@ -328,7 +328,7 @@ removed after the report is written; the small report remains under
 
 ## Layer ladder (SQLite backend diagnostic)
 
-`sqlite_exqlite_overhead_benchmark.exs` measures how much latency each
+`sqlite_driver_overhead_benchmark.exs` measures how much latency each
 VialKeeper layer adds on top of native SQLite, one layer at a time. It is a
 diagnostic for choosing optimisation targets, not a product latency claim.
 Run it in the production environment so OpenTelemetry uses its no-op provider:
@@ -337,7 +337,7 @@ Run it in the production environment so OpenTelemetry uses its no-op provider:
 scripts/bench_overhead.sh --mode memory --scenario all \
   --output output/benchmarks/layer-ladder-memory.json
 scripts/bench_overhead.sh --mode disk --work-dir /dev/shm/vialkeeper-ladder
-# equivalent to: MIX_ENV=prod mix run --no-start bench/sqlite_exqlite_overhead_benchmark.exs -- ...
+# equivalent to: MIX_ENV=prod mix run --no-start bench/sqlite_driver_overhead_benchmark.exs -- ...
 ```
 
 Every variant runs the same scenario on its own database. The ladder, from the
@@ -346,19 +346,19 @@ floor up:
 | Variant | Layer | What it runs |
 | --- | --- | --- |
 | `native_replay` | L0 native SQLite | A C program replays the exact statements the storage layer executed |
-| `exqlite_replay` | L1 ExQLite | The same statements through `Exqlite.Sqlite3` |
+| `driver_replay` | L1 driver | The same statements through the SQLite driver NIF (`Storage.SQLite.Native.query/3`), one call per statement |
 | `connection_replay` | L2 Connection | The same statements through `Storage.SQLite.Connection` |
 | `vial_keeper_storage` | L3 storage | `Storage.Services` on the SQLite backend: the storage entry point the database owner and read workers call |
 | `vial_keeper_service` | L4 service | `Documents` / `Changes` / `Query` through the catalog, admission, owner and read pool (disk mode) |
 | `vial_keeper_http` | L5 HTTP router | The `/v1` Plug router in process: request decoding, routing, response encoding; no socket (disk mode) |
-| `exqlite_minimal` | reference | Hand-written minimal SQL through ExQLite |
+| `driver_minimal` | reference | Hand-written minimal SQL through the driver NIF |
 
 The difference between neighbouring layers is that layer's cost; the report's
 `ladder` list gives each step as a paired ratio and a per-operation delta with
-95% confidence intervals. `sql_shape` compares `exqlite_minimal` with
-`exqlite_replay`: what the SQL the storage layer chooses costs, separately
+95% confidence intervals. `sql_shape` compares `driver_minimal` with
+`driver_replay`: what the SQL the storage layer chooses costs, separately
 from the cost of issuing it. Select a subset with `--variants`, for example
-`--variants native_replay,exqlite_replay,vial_keeper_storage`.
+`--variants native_replay,driver_replay,vial_keeper_storage`.
 
 L3 calls `Storage.Services` rather than the SQLite adapter's own read API
 (`Adapter.get_document/2`, `Adapter.execute_query/2`): the adapter API takes
@@ -387,7 +387,8 @@ production default (`default_*`, standard tier only).
 
 - **Same statements.** A capture worker owns a private database seeded like
   every other variant and runs each sample's storage operation there, untimed,
-  under Erlang call tracing of `Connection.query/3`, `Connection.execute/3`, and
+  under Erlang call tracing of `Connection.query/3`, `Connection.execute/3`,
+  their `point_query/3` and `point_execute/3` variants, and
   `Connection.exec/2`. The recorded SQL and parameters are what L0–L2 replay
   for that sample. The worker is a separate process so its process-local
   caches never warm the measured storage variant, and trace patterns are removed
@@ -396,25 +397,28 @@ production default (`default_*`, standard tier only).
   returned, and every database (including the native one) must end each case
   in the expected state.
 - **Same SQLite.** The native control (`bench/native/vk_replay.c`) is compiled
-  from ExQLite's vendored `sqlite3.c` with ExQLite's SQLite compile
-  definitions, read from its Makefile. The build is cached under
-  `_build/<env>/bench/`; it needs only a C compiler (`CC`, default `cc`). Each
-  case checks that both sides report the same SQLite version, source ID, and
-  compile options, and copies the adapter connection's pragmas to the native
-  connection and reads them back. A precompiled ExQLite NIF may come from a
-  different compiler version; the report records both compilers, and
-  `config :exqlite, force_build: true` builds the NIF locally to match.
+  from the `sqlite3.c` the driver NIF (`native/vial_sqlite`) bundles through
+  `libsqlite3-sys`, located with `cargo metadata`, with the SQLite compile
+  definitions that crate's build script uses for a bundled build plus the
+  crate's `LIBSQLITE3_FLAGS` (`native/vial_sqlite/.cargo/config.toml`), at the
+  release profile's `-O3`. The build is cached under `_build/<env>/bench/`; it
+  needs `cargo` and a C compiler (`CC`, default `cc`). Each case checks that
+  both sides report the same SQLite version, source ID, and compile options
+  (ignoring the `COMPILER=` entry, which the report records for both sides),
+  and copies the adapter connection's pragmas to the native connection and
+  reads them back.
 - **Same database.** In memory mode the native control restores a serialized
   image of a seeded adapter database into a regular `:memory:` database; in
   disk mode it opens the seeded file after the adapter closes it.
 - **Fair floor.** The native control binds with `SQLITE_TRANSIENT`, steps to
-  `SQLITE_DONE`, copies every column value out of SQLite (as ExQLite builds
-  every row), resets the statement, and times only that loop. It uses the
-  system allocator; ExQLite routes SQLite allocations through `enif_alloc`,
-  which is part of the measured L0→L1 step.
-- **Same fetch strategy.** L1 and the `exqlite_minimal` reference fetch rows
-  with `Exqlite.Sqlite3.multi_step/3` at `Connection.fetch_chunk_rows/0` rows
-  per call, as `Connection` does, so L1→L2 measures only the wrapper.
+  `SQLITE_DONE`, copies every column value out of SQLite (as the driver builds
+  every row), resets the statement, and times only that loop. Both sides use
+  the system allocator.
+- **Same call shape.** L1 and the `driver_minimal` reference make one driver
+  call per statement (prepare from the driver's statement cache, bind, step to
+  completion, return every row), as `Connection` does, so L1→L2 measures only
+  the wrapper. L2 replays point statements through `Connection.query/3` and
+  `Connection.execute/3`, so it always takes the dirty-scheduler path.
 
 The service and HTTP layers use catalog bundles seeded through
 `Documents.bulk_write`, so their revision IDs differ from the adapter-level
@@ -458,9 +462,9 @@ path.
   (default 300) or the per-case `--budget-ms` (default 30000). The report
   records which rule stopped each case (`stop_reason`). `--iterations N` fixes
   the count instead.
-- **Production VM flags.** ExQLite runs SQLite calls on dirty schedulers.
-  Disabling scheduler busy-waiting (`+sbwt none` and friends) makes every
-  such hop several times more expensive than in a default release, so the
+- **Production VM flags.** The driver NIF runs most SQLite calls on dirty
+  schedulers. Disabling scheduler busy-waiting (`+sbwt none` and friends)
+  makes every such hop several times more expensive than in a default release, so the
   wrapper keeps the defaults. `BENCH_CPUS=2-5` optionally pins the VM with
   `taskset`; `BENCH_ERL_OPTIONS` appends VM flags for experiments.
 
@@ -498,7 +502,7 @@ query, index-build, search-rebuild, and changes spans remain exercised through
 their real instrumentation modules. Span counts are reset for each case; metric datapoint
 counts are exporter observations and can include multiple aggregation exports.
 
-The ExQLite overhead runner also emits low-cardinality SQLite child spans when
+The driver overhead runner also emits low-cardinality SQLite child spans when
 an OTLP endpoint is configured. They are deliberately phase-level backend
 diagnostics, not one span per SQL statement or document:
 
@@ -544,6 +548,6 @@ approach:
   make regression comparisons unreliable.
 
 Consequently, normal CI proves correctness, the product runner produces
-comparable local baselines, and the ExQLite runner remains an explicit SQLite
+comparable local baselines, and the driver overhead runner remains an explicit SQLite
 control. The optional threshold is only applied when a prior run is provided
 explicitly.

@@ -70,6 +70,12 @@ defmodule VialKeeper.Storage.Services.Facts do
   def list_leaves_for_document(%BackendContext{} = ctx, document),
     do: Access.port(ctx, :document_facts).list_leaves_for_document(ctx, document)
 
+  @doc "Lists leaf revisions of a document fact without their bodies."
+  @spec list_leaf_heads_for_document(BackendContext.t(), map()) ::
+          {:ok, [Revision.t()]} | {:error, VialKeeper.Error.t()}
+  def list_leaf_heads_for_document(%BackendContext{} = ctx, document),
+    do: Access.port(ctx, :document_facts).list_leaf_heads_for_document(ctx, document)
+
   @doc "Lists ancestors of a revision."
   @spec list_ancestors(BackendContext.t(), binary(), binary()) ::
           {:ok, [Revision.t()]} | {:error, VialKeeper.Error.t()}
