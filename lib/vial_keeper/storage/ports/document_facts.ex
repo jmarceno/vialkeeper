@@ -85,6 +85,12 @@ defmodule VialKeeper.Storage.Ports.DocumentFacts do
               :ok | {:error, VialKeeper.Error.t()}
   @callback insert_revision_for_document(BackendContext.t(), document_fact(), Revision.t()) ::
               :ok | {:error, VialKeeper.Error.t()}
+  @callback insert_revision_with_body_for_document(
+              BackendContext.t(),
+              document_fact(),
+              Revision.t(),
+              binary() | nil
+            ) :: :ok | {:error, VialKeeper.Error.t()}
   @callback insert_or_accept_revision(BackendContext.t(), binary(), Revision.t()) ::
               :ok | {:error, VialKeeper.Error.t()}
   @callback update_winning(BackendContext.t(), binary(), Revision.t(), non_neg_integer()) ::
@@ -101,6 +107,13 @@ defmodule VialKeeper.Storage.Ports.DocumentFacts do
               document_fact(),
               Revision.t(),
               non_neg_integer()
+            ) :: :ok | {:error, VialKeeper.Error.t()}
+  @callback update_winning_with_body_for_document(
+              BackendContext.t(),
+              document_fact(),
+              Revision.t(),
+              non_neg_integer(),
+              binary() | nil
             ) :: :ok | {:error, VialKeeper.Error.t()}
   @callback empty_document(BackendContext.t(), binary()) :: :ok | {:error, VialKeeper.Error.t()}
   @callback delete_history(BackendContext.t(), binary(), binary()) ::

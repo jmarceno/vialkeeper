@@ -5,7 +5,7 @@ defmodule VialKeeper.Storage.SQLite.MutationsContractTest do
 
   @moduletag :sqlite_physical
 
-  alias VialKeeper.Storage.SQLite.Connection
+  alias VialKeeper.Storage.SQLite.{Connection, RetentionRecords, Transaction}
 
   test "bulk-created documents remain queryable, indexed, and in changes", %{
     adapter: adapter
@@ -67,5 +67,35 @@ defmodule VialKeeper.Storage.SQLite.MutationsContractTest do
 
     assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
              @adapter.integrity_check(adapter, %{})
+  end
+
+  test "writes mark pending local causal work again after a clear and after a rollback", %{
+    adapter: adapter
+  } do
+    put = fn value ->
+      @adapter.apply_bulk_mutation(adapter, %{
+        operations: [%{operation: :put, document_id: "doc-#{value}", body: %{"value" => value}}]
+      })
+    end
+
+    assert {:ok, [_]} = put.(1)
+    assert {:ok, true} = @adapter.has_local_origin_changes?(adapter)
+
+    assert {:ok, :cleared} = @adapter.clear_pending_local_causal(adapter)
+    assert {:ok, false} = @adapter.has_local_origin_changes?(adapter)
+    assert {:ok, [_]} = put.(2)
+    assert {:ok, true} = @adapter.has_local_origin_changes?(adapter)
+
+    assert {:ok, :cleared} = @adapter.clear_pending_local_causal(adapter)
+
+    assert {:error, %VialKeeper.Error{code: :internal_error}} =
+             Transaction.run_on_adapter(adapter, fn tx_adapter ->
+               :ok = RetentionRecords.mark_pending_local_causal(tx_adapter.conn)
+               {:error, VialKeeper.Error.internal_error("abort after marking")}
+             end)
+
+    assert {:ok, false} = @adapter.has_local_origin_changes?(adapter)
+    assert {:ok, [_]} = put.(3)
+    assert {:ok, true} = @adapter.has_local_origin_changes?(adapter)
   end
 end

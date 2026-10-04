@@ -12,7 +12,7 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
   alias VialKeeper.Observability.Instrumentation.SQLite
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Ports.Errors
-  alias VialKeeper.Storage.SQLite.{Adapter, Connection, Context}
+  alias VialKeeper.Storage.SQLite.{Adapter, Connection, Context, RetentionRecords}
 
   # quality:reason rollback then reraise is the only control flow after a failed write
   @dialyzer {:nowarn_function, rollback_and_reraise: 3}
@@ -113,7 +113,7 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
 
       {:error, error} ->
         _ = control(conn, "ROLLBACK", :transaction_rollback, trace?)
-        maybe_invalidate(conn, invalidate_cache?)
+        forget_rolled_back(conn, invalidate_cache?)
         {:error, Errors.normalize(error)}
     end
   end
@@ -126,7 +126,7 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
 
       {:error, reason} ->
         _ = control(conn, "ROLLBACK", :transaction_rollback, trace?)
-        maybe_invalidate(conn, invalidate_cache?)
+        forget_rolled_back(conn, invalidate_cache?)
         {:error, Errors.normalize(reason)}
     end
   end
@@ -151,9 +151,16 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
   defp maybe_invalidate(conn, true), do: Adapter.invalidate_identity_cache(conn)
   defp maybe_invalidate(_conn, false), do: :ok
 
+  # A rolled-back write may have set state that writer-side caches remembered.
+  defp forget_rolled_back(conn, invalidate_cache?) do
+    maybe_invalidate(conn, invalidate_cache?)
+    RetentionRecords.forget_pending_local_causal(conn)
+  end
+
   defp rollback_and_reraise(conn, exception, stacktrace) do
     _ = Connection.exec(conn, "ROLLBACK")
     Adapter.invalidate_identity_cache(conn)
+    RetentionRecords.forget_pending_local_causal(conn)
     reraise exception, stacktrace
   end
 end

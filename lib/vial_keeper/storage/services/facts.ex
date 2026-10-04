@@ -112,6 +112,51 @@ defmodule VialKeeper.Storage.Services.Facts do
           body_json
         )
 
+  @doc "Inserts a revision under a document fact read earlier in the same transaction."
+  @spec insert_revision_with_body_for_document(
+          BackendContext.t(),
+          map(),
+          Revision.t(),
+          binary() | nil
+        ) :: :ok | {:error, VialKeeper.Error.t()}
+  def insert_revision_with_body_for_document(
+        %BackendContext{} = ctx,
+        document,
+        revision,
+        body_json
+      ),
+      do:
+        Access.port(ctx, :document_facts).insert_revision_with_body_for_document(
+          ctx,
+          document,
+          revision,
+          body_json
+        )
+
+  @doc "Updates the winner of a document fact read earlier in the same transaction."
+  @spec update_winning_with_body_for_document(
+          BackendContext.t(),
+          map(),
+          Revision.t(),
+          non_neg_integer(),
+          binary() | nil
+        ) :: :ok | {:error, VialKeeper.Error.t()}
+  def update_winning_with_body_for_document(
+        %BackendContext{} = ctx,
+        document,
+        winner,
+        sequence,
+        body_json
+      ),
+      do:
+        Access.port(ctx, :document_facts).update_winning_with_body_for_document(
+          ctx,
+          document,
+          winner,
+          sequence,
+          body_json
+        )
+
   @doc "Inserts new documents with their first winning revisions in one port call."
   @spec insert_documents_with_revisions(BackendContext.t(), [map()]) ::
           {:ok, [map()]} | {:error, VialKeeper.Error.t()}

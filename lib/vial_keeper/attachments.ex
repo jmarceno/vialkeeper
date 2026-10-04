@@ -1190,12 +1190,9 @@ defmodule VialKeeper.Attachments do
   defp optional_revision(_),
     do: {:error, VialKeeper.Error.invalid_request("attachment revision must be a string or null")}
 
-  defp ensure_open(uuid) do
-    case DatabaseCatalog.open(uuid) do
-      {:ok, _} -> :ok
-      {:error, _} = error -> error
-    end
-  end
+  # The catalog index answers for an open database without a call to the
+  # host-global catalog process, the same check command routing makes.
+  defp ensure_open(uuid), do: DatabaseCatalog.ensure_command_target(uuid)
 
   defp ensure_writable(uuid, admission_class) do
     case DatabaseCatalog.command_as(uuid, admission_class, {:command, :identity, %{}}) do

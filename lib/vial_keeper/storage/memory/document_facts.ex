@@ -216,6 +216,15 @@ defmodule VialKeeper.Storage.Memory.DocumentFacts do
   end
 
   @impl true
+  def insert_revision_with_body_for_document(
+        %BackendContext{} = context,
+        document,
+        revision,
+        _body_json
+      ),
+      do: insert_revision_for_document(context, document, revision)
+
+  @impl true
   def insert_or_accept_revision(%BackendContext{} = context, document_id, %Revision{} = revision)
       when is_binary(document_id) do
     with {:ok, adapter} <- Context.unwrap(context) do
@@ -251,6 +260,16 @@ defmodule VialKeeper.Storage.Memory.DocumentFacts do
       when is_binary(document_id) and is_integer(sequence) and sequence >= 0 do
     update_winning(context, document_id, winner, sequence)
   end
+
+  @impl true
+  def update_winning_with_body_for_document(
+        %BackendContext{} = context,
+        document,
+        winner,
+        sequence,
+        _body_json
+      ),
+      do: update_winning_for_document(context, document, winner, sequence)
 
   @impl true
   def empty_document(%BackendContext{} = context, document_id) when is_binary(document_id) do

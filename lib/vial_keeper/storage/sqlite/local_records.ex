@@ -8,7 +8,7 @@ defmodule VialKeeper.Storage.SQLite.LocalRecords do
 
   alias VialKeeper.JSON.{Canonical, StrictDecoder}
   alias VialKeeper.MapAccess
-  alias VialKeeper.Storage.SQLite.{Adapter, Checkpoints, Connection}
+  alias VialKeeper.Storage.SQLite.{Adapter, Checkpoints, Connection, RetentionRecords}
   @doc "Adapter compatibility entry that loads one local record."
   @spec get(map(), binary(), binary()) :: {:ok, map() | nil} | {:error, VialKeeper.Error.t()}
   def get(adapter, namespace, key),
@@ -51,6 +51,7 @@ defmodule VialKeeper.Storage.SQLite.LocalRecords do
     key = MapAccess.get(request, :key)
     expected = MapAccess.get(request, :expected_version, 0)
     value = MapAccess.get(request, :value)
+    :ok = RetentionRecords.forget_pending_local_causal(conn)
 
     with {:ok, current} <- fetch(conn, namespace, key),
          observed <- if(is_nil(current), do: 0, else: current.version),
