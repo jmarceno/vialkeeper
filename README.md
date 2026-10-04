@@ -153,9 +153,8 @@ data in front of users.
 Production and staging run an assembled OTP release:
 
 ```sh
-# Pinned toolchain from mise.toml (Elixir 1.20.2 / OTP 29.0.4). A Rust toolchain
-# and a C compiler with make are required: the vendored Tantivy and SQLite NIFs
-# compile at build time.
+# Pinned toolchain from mise.toml (Elixir 1.20.2 / OTP 29.0.4); a Rust
+# toolchain is required because the Tantivy and SQLite NIFs compile at build time.
 MIX_ENV=prod mix release.build
 
 export VIAL_KEEPER_ROOT=/var/lib/vialkeeper

@@ -7,7 +7,6 @@ defmodule VialKeeper.Storage.SQLite.Documents do
   adapter.
   """
 
-  alias Exqlite.Sqlite3
   alias VialKeeper.Attachments.Manifest
   alias VialKeeper.Domain.Revision
   alias VialKeeper.JSON.{Canonical, StrictDecoder}
@@ -57,11 +56,11 @@ defmodule VialKeeper.Storage.SQLite.Documents do
   def find(conn, document_id) do
     case Connection.point_query(
            conn,
-           "SELECT doc_key, document_id, winning_revision, winning_body_json, winning_deleted, update_sequence FROM documents WHERE document_id = ?",
+           "SELECT doc_key, document_id, winning_revision, winning_deleted, update_sequence FROM documents WHERE document_id = ?",
            [document_id]
          ) do
-      {:ok, [[key, id, winning, body, deleted, sequence]]} ->
-        {:ok, document_from_row([key, id, winning, body, deleted, sequence])}
+      {:ok, [[key, id, winning, deleted, sequence]]} ->
+        {:ok, document_from_row([key, id, winning, deleted, sequence])}
 
       {:ok, []} ->
         {:ok, nil}
@@ -107,7 +106,7 @@ defmodule VialKeeper.Storage.SQLite.Documents do
 
     case Connection.query(
            conn,
-           "SELECT doc_key, document_id, winning_revision, winning_body_json, winning_deleted, update_sequence FROM documents WHERE document_id IN (" <>
+           "SELECT doc_key, document_id, winning_revision, winning_deleted, update_sequence FROM documents WHERE document_id IN (" <>
              placeholders <> ")",
            document_ids
          ) do
@@ -139,7 +138,7 @@ defmodule VialKeeper.Storage.SQLite.Documents do
            [id]
          ) do
       :ok ->
-        Sqlite3.last_insert_rowid(conn)
+        Connection.last_insert_rowid(conn)
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
@@ -315,12 +314,11 @@ defmodule VialKeeper.Storage.SQLite.Documents do
   def materialized_body_term(%Revision{body: body}, body_json) when is_binary(body_json),
     do: TermBlob.encode(body, body_json)
 
-  defp document_from_row([key, id, winning, body, deleted, sequence]) do
+  defp document_from_row([key, id, winning, deleted, sequence]) do
     %{
       doc_key: key,
       document_id: id,
       winning_revision: winning,
-      winning_body_json: body,
       winning_deleted: deleted == 1,
       update_sequence: sequence
     }

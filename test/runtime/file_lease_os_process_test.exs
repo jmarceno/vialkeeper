@@ -42,7 +42,6 @@ defmodule VialKeeper.Storage.SQLite.OwnershipOsProcessTest do
     project = File.cwd!()
 
     script = """
-    {:ok, _} = Application.ensure_all_started(:exqlite)
     path = #{inspect(path)}
     ready = #{inspect(ready)}
     stop = #{inspect(stop)}

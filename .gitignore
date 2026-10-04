@@ -38,3 +38,4 @@ plans/
 # Others
 .directory
 customers/
+/priv/native/

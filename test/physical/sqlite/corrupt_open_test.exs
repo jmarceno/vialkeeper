@@ -5,7 +5,7 @@ defmodule VialKeeper.StorageAdapter.CorruptOpenTest do
 
   @moduletag :sqlite_physical
 
-  alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.Storage.SQLite.{Adapter, Connection}
 
   test "open returns a typed error for random 4 KiB input" do
     path = corrupt_path("vialkeeper-random-sqlite", :crypto.strong_rand_bytes(4_096))
@@ -29,12 +29,16 @@ defmodule VialKeeper.StorageAdapter.CorruptOpenTest do
 
   test "open rejects a foreign SQLite schema with unsupported_format" do
     {bundle, path} = database_path("vialkeeper-foreign-sqlite")
-    {:ok, conn} = Exqlite.Sqlite3.open(path)
+    {:ok, conn} = Connection.open(path)
 
     try do
-      assert :ok = Exqlite.Sqlite3.execute(conn, "CREATE TABLE foreign_data(id INTEGER)")
+      assert :ok =
+               Connection.exec(
+                 conn,
+                 "CREATE TABLE foreign_data(id INTEGER)"
+               )
     after
-      assert :ok = Exqlite.Sqlite3.close(conn)
+      assert :ok = Connection.close(conn)
     end
 
     on_exit(fn -> VialKeeper.TempDatabase.cleanup(bundle) end)

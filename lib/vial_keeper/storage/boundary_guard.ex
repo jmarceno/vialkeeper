@@ -2,7 +2,7 @@ defmodule VialKeeper.Storage.BoundaryGuard do
   @moduledoc """
   Static physical-reference guard for the storage boundary.
 
-  Scans product source and documentation for SQLite/Exqlite/SQL physical markers outside
+  Scans product source and documentation for SQLite driver and SQL physical markers outside
   `VialKeeper.Storage.PhysicalAllowlist`. Findings are returned to the caller so
   every exception is explicit and reviewable.
   """
@@ -18,7 +18,7 @@ defmodule VialKeeper.Storage.BoundaryGuard do
 
   @patterns [
     {:storage_sqlite, ~r/\bVialKeeper\.Storage\.SQLite\b|\bStorage\.SQLite\b/},
-    {:exqlite, ~r/\bExqlite\b/},
+    {:sqlite_driver, ~r/\bExqlite\b|\brusqlite\b|\bvial_sqlite\b/},
     {:database_sqlite3, ~r/database\.sqlite3/},
     {:sqlite_path, ~r/\bsqlite_path\b/},
     {:validate_sqlite, ~r/\bvalidate_sqlite!?\b/},

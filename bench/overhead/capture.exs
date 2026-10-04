@@ -4,18 +4,18 @@ defmodule VialKeeper.Benchmarks.Overhead.Capture do
 
   A dedicated worker process owns a private capture database (seeded like every
   other variant) and runs each sample's adapter operation there, untimed, with
-  Erlang call tracing on the three functions every SQLite statement passes
-  through:
+  Erlang call tracing on the `Connection` functions every SQLite statement
+  passes through:
 
     * `Connection.query/3` and `Connection.execute/3`, and their
-      `point_query/3` / `point_execute/3` variants — prepared statements
-      (recorded with SQL, parameters, and, for queries, the returned row
-      count),
-    * `Connection.exec/2` — unprepared control SQL such as `BEGIN IMMEDIATE`.
+      `point_query/3` / `point_execute/3` variants — statements the driver
+      prepares from its statement cache (recorded with SQL, parameters, and,
+      for queries, the returned row count),
+    * `Connection.exec/2` — uncached control SQL such as `BEGIN IMMEDIATE`.
 
-  The worker is a separate process so its process-local caches (prepared
-  statements, decoded bodies, index catalogs) never warm the measured adapter
-  variant. Trace patterns are installed only for the duration of one capture
+  The worker is a separate process on its own connection so its caches
+  (driver statement cache, decoded bodies, index catalogs) never warm the
+  measured adapter variant. Trace patterns are installed only for the duration of one capture
   and removed before any timed code runs.
   """
 

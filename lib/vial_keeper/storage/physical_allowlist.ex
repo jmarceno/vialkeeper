@@ -1,6 +1,6 @@
 defmodule VialKeeper.Storage.PhysicalAllowlist do
   @moduledoc """
-  Approved locations for SQLite/Exqlite physical details.
+  Approved locations for SQLite and SQLite driver physical details.
 
   Outside this allowlist, product, runtime, domain, and documentation sources
   must not embed engine names, SQL transaction modes, PRAGMA, rowid, or the
@@ -26,7 +26,7 @@ defmodule VialKeeper.Storage.PhysicalAllowlist do
     "lib/vial_keeper/storage/ports.ex",
     "lib/vial_keeper/storage/sentinel/context.ex",
     "lib/mix/tasks/vialkeeper.backup.manifest.ex",
-    "bench/sqlite_exqlite_overhead_benchmark.exs",
+    "bench/sqlite_driver_overhead_benchmark.exs",
     "bench/product_benchmark.exs",
     "bench/README.md",
     "config/config.exs",
@@ -54,7 +54,7 @@ defmodule VialKeeper.Storage.PhysicalAllowlist do
     "test/support/storage/adapter_case.ex"
   ]
 
-  @doc "Path prefixes where physical SQLite/Exqlite details are allowed."
+  @doc "Path prefixes where physical SQLite and driver details are allowed."
   @spec path_prefixes() :: [binary()]
   def path_prefixes, do: @path_prefixes
 

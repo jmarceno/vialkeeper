@@ -2,7 +2,7 @@ defmodule VialKeeper.Storage.SQLite.Transaction do
   @moduledoc """
   SQLite implementation of the storage transaction port.
 
-  Owns BEGIN/COMMIT/ROLLBACK text and Exqlite error translation. Callers receive
+  Owns BEGIN/COMMIT/ROLLBACK text and SQLite driver error translation. Callers receive
   only an opaque `BackendContext`. Write transactions use `BEGIN IMMEDIATE`.
   Snapshots use deferred `BEGIN` and never take the write lock.
   """

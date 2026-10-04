@@ -55,7 +55,7 @@ defmodule VialKeeper.Storage.SQLite.Capabilities do
 
       %{
         engine: "sqlite",
-        exqlite: Application.spec(:exqlite, :vsn) |> to_string(),
+        driver: "rusqlite",
         sqlite: sqlite_version,
         sqlite_compile_options: Enum.map(compile_options, &List.first/1),
         fts5_contentless_delete: contentless_delete

@@ -7,7 +7,6 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
   Every generated file lives below the verified external benchmark root.
   """
 
-  alias Exqlite.Sqlite3
   alias VialKeeper.Attachments
   alias VialKeeper.Attachments.{FilesystemStore, Representation, StoreRef}
 
@@ -22,7 +21,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
   alias VialKeeper.Search
   alias VialKeeper.Search.Tantivy
   alias VialKeeper.Storage.Services
-  alias VialKeeper.Storage.SQLite.{Adapter, Connection, Schema, TermBlob}
+  alias VialKeeper.Storage.SQLite.{Adapter, Connection, Native, Schema, TermBlob}
 
   @sections [:documents, :database, :attachments, :search]
   @default_counts [100, 1_000, 10_000]
@@ -203,20 +202,16 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
 
   defp raw_document_control(work_path, documents) do
     with_adapter(work_path, "raw-documents", fn adapter ->
-      statements = prepare_raw_statements(adapter.conn)
+      statements = raw_statements()
 
-      try do
-        {total_us, samples, phases} =
-          Enum.reduce(documents, {0, [], %{}}, fn document, {total, samples, phases} ->
-            {elapsed, phase_row} = raw_insert_document(adapter.conn, statements, document)
-            {total + elapsed, [elapsed | samples], merge_phases(phases, phase_row)}
-          end)
+      {total_us, samples, phases} =
+        Enum.reduce(documents, {0, [], %{}}, fn document, {total, samples, phases} ->
+          {elapsed, phase_row} = raw_insert_document(adapter.conn, statements, document)
+          {total + elapsed, [elapsed | samples], merge_phases(phases, phase_row)}
+        end)
 
-        phase_report(total_us, Enum.reverse(samples), phases, length(documents))
-        |> Map.put("pragmas", connection_pragmas(adapter.conn))
-      after
-        release_statements(adapter.conn, statements)
-      end
+      phase_report(total_us, Enum.reverse(samples), phases, length(documents))
+      |> Map.put("pragmas", connection_pragmas(adapter.conn))
     end)
   end
 
@@ -373,12 +368,12 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     schema_sql = File.read!(schema_path)
     started = System.monotonic_time(:microsecond)
 
-    {open_us, {:ok, conn}} = :timer.tc(fn -> Sqlite3.open(path) end)
+    {open_us, {:ok, conn}} = :timer.tc(fn -> Native.open(path, 0x6) end)
     {configure_us, :ok} = :timer.tc(fn -> Schema.configure(conn) end)
-    {begin_us, :ok} = :timer.tc(fn -> Sqlite3.execute(conn, @begin_sql) end)
+    {begin_us, :ok} = :timer.tc(fn -> Native.execute(conn, @begin_sql) end)
     {schema_us, :ok} = :timer.tc(fn -> execute_script(conn, schema_sql) end)
-    {commit_us, :ok} = :timer.tc(fn -> Sqlite3.execute(conn, @commit_sql) end)
-    {close_us, :ok} = :timer.tc(fn -> Sqlite3.close(conn) end)
+    {commit_us, :ok} = :timer.tc(fn -> Native.execute(conn, @commit_sql) end)
+    {close_us, :ok} = :timer.tc(fn -> Native.close(conn) end)
 
     %{
       total: System.monotonic_time(:microsecond) - started,
@@ -988,7 +983,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
           document.sequence
         ])
 
-      {:ok, doc_key} = Sqlite3.last_insert_rowid(conn)
+      {:ok, doc_key} = Native.last_insert_rowid(conn)
 
       _ =
         raw_run!(conn, statements.revision_insert, [
@@ -1023,7 +1018,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     end
   end
 
-  defp prepare_raw_statements(conn) do
+  defp raw_statements do
     Map.new(
       [
         begin: @begin_sql,
@@ -1035,15 +1030,8 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
         sequence_update: @sequence_update_sql,
         pending_upsert: @pending_upsert_sql
       ],
-      fn {name, sql} ->
-        {:ok, statement} = Sqlite3.prepare(conn, String.trim(sql))
-        {name, statement}
-      end
+      fn {name, sql} -> {name, String.trim(sql)} end
     )
-  end
-
-  defp release_statements(conn, statements) do
-    Enum.each(statements, fn {_name, statement} -> _ = Sqlite3.release(conn, statement) end)
   end
 
   defp raw_run!(conn, statement, params \\ []) do
@@ -1053,21 +1041,8 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     end
   end
 
-  defp raw_run(conn, statement, params) do
-    with :ok <- Sqlite3.reset(statement),
-         :ok <- Sqlite3.bind(statement, params) do
-      raw_step(conn, statement, [])
-    end
-  end
-
-  defp raw_step(conn, statement, rows) do
-    case Sqlite3.step(conn, statement) do
-      {:row, row} -> raw_step(conn, statement, [row | rows])
-      :done -> {:ok, Enum.reverse(rows)}
-      :busy -> {:error, :busy}
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  # The driver keeps each statement prepared in its connection cache.
+  defp raw_run(conn, sql, params), do: Native.query(conn, sql, params)
 
   defp connection_pragmas(conn) do
     Map.new(
@@ -1496,7 +1471,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.reduce_while(:ok, fn statement, :ok ->
-      case Sqlite3.execute(conn, statement) do
+      case Native.execute(conn, statement) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end

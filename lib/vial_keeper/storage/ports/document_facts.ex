@@ -65,6 +65,13 @@ defmodule VialKeeper.Storage.Ports.DocumentFacts do
   @doc "Lists leaf revisions of a document fact already read in the same snapshot."
   @callback list_leaves_for_document(BackendContext.t(), document_fact()) ::
               result([Revision.t()])
+  @doc """
+  Like `list_leaves_for_document/2`, without bodies: `body` and `body_json`
+  are nil on every leaf. Callers read a leaf body they need with
+  `find_revision_for_document/3`.
+  """
+  @callback list_leaf_heads_for_document(BackendContext.t(), document_fact()) ::
+              result([Revision.t()])
   @callback list_ancestors(BackendContext.t(), binary(), binary()) :: result([Revision.t()])
   @callback list_document_page(BackendContext.t(), binary() | nil, pos_integer()) ::
               result(%{document_ids: [binary()], next_cursor: binary() | nil})

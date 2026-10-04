@@ -9,7 +9,6 @@ defmodule VialKeeper.Attachments.GCTest do
 
   @moduletag :integration
 
-  alias Exqlite.Sqlite3
   alias VialKeeper.Attachments
   alias VialKeeper.Attachments.FilesystemStore
   alias VialKeeper.Attachments.Manifest
@@ -18,6 +17,7 @@ defmodule VialKeeper.Attachments.GCTest do
   alias VialKeeper.Eventual
   alias VialKeeper.Revisions.{Id, Wire}
   alias VialKeeper.Runtime.{AttachmentCoordinator, DatabaseCatalog}
+  alias VialKeeper.Storage.SQLite.Connection
 
   setup do
     previous_hook = Application.get_env(:vial_keeper, :attachment_gc_hook)
@@ -590,20 +590,17 @@ defmodule VialKeeper.Attachments.GCTest do
     path = Path.join(DatabaseBundle.root(bundle), "database.sqlite3")
     past = DateTime.utc_now() |> DateTime.add(-3_600, :second) |> DateTime.to_iso8601()
 
-    {:ok, conn} = Sqlite3.open(path)
+    {:ok, conn} = Connection.open(path)
 
     try do
-      {:ok, stmt} =
-        Sqlite3.prepare(
+      :ok =
+        Connection.execute(
           conn,
-          "UPDATE pending_blobs SET expires_at = ? WHERE blob_digest = ?"
+          "UPDATE pending_blobs SET expires_at = ? WHERE blob_digest = ?",
+          [past, digest]
         )
-
-      :ok = Sqlite3.bind(stmt, [past, digest])
-      :done = Sqlite3.step(conn, stmt)
-      :ok = Sqlite3.release(conn, stmt)
     after
-      Sqlite3.close(conn)
+      Connection.close(conn)
     end
   end
 

@@ -9,6 +9,7 @@ defmodule VialKeeper.HTTP.UnsupportedFormatTest do
   alias VialKeeper.HTTP.Router
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Storage.SQLite.Connection
 
   test "document access returns unsupported_format after a future user_version bump" do
     path = "format-http-#{System.unique_integer([:positive])}.vialkeeper"
@@ -29,12 +30,12 @@ defmodule VialKeeper.HTTP.UnsupportedFormatTest do
     sqlite =
       VialKeeper.TempDatabase.sqlite_path(Path.join(VialKeeper.Config.database_root(), path))
 
-    {:ok, conn} = Exqlite.Sqlite3.open(sqlite)
+    {:ok, conn} = Connection.open(sqlite)
 
     try do
-      assert :ok = Exqlite.Sqlite3.execute(conn, "PRAGMA user_version = 2")
+      assert :ok = Connection.exec(conn, "PRAGMA user_version = 2")
     after
-      assert :ok = Exqlite.Sqlite3.close(conn)
+      assert :ok = Connection.close(conn)
     end
 
     get = request(:post, "/v1/databases/#{uuid}/documents/get", %{"id" => "doc"})

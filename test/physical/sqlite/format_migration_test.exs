@@ -31,13 +31,16 @@ defmodule VialKeeper.StorageAdapter.FormatMigrationTest do
 
   test "CHECK constraints refuse an in-place file_format_version bump" do
     {_bundle, path} = closed_v1("vialkeeper-format-check")
-    {:ok, conn} = Exqlite.Sqlite3.open(path)
+    {:ok, conn} = Connection.open(path)
 
     try do
       assert {:error, _reason} =
-               Exqlite.Sqlite3.execute(conn, "UPDATE db_meta SET file_format_version = 2")
+               Connection.exec(
+                 conn,
+                 "UPDATE db_meta SET file_format_version = 2"
+               )
     after
-      assert :ok = Exqlite.Sqlite3.close(conn)
+      assert :ok = Connection.close(conn)
     end
 
     assert {:ok, adapter} = Adapter.open(path)
@@ -57,12 +60,16 @@ defmodule VialKeeper.StorageAdapter.FormatMigrationTest do
 
   test "open refuses a foreign SQLite file without converting it to WAL" do
     {bundle, path} = database_path("vialkeeper-format-foreign")
-    {:ok, conn} = Exqlite.Sqlite3.open(path)
+    {:ok, conn} = Connection.open(path)
 
     try do
-      assert :ok = Exqlite.Sqlite3.execute(conn, "CREATE TABLE foreign_data(id INTEGER)")
+      assert :ok =
+               Connection.exec(
+                 conn,
+                 "CREATE TABLE foreign_data(id INTEGER)"
+               )
     after
-      assert :ok = Exqlite.Sqlite3.close(conn)
+      assert :ok = Connection.close(conn)
     end
 
     on_exit(fn -> VialKeeper.TempDatabase.cleanup(bundle) end)

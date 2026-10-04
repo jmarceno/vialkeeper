@@ -54,23 +54,23 @@ defmodule VialKeeper.ProbeTest do
     before = Probe.snapshot()
 
     value =
-      Probe.measure :sqlite_bind do
+      Probe.measure :sqlite_step do
         :value
       end
 
     assert value == :value
 
-    refute Map.has_key?(Probe.diff(before, Probe.snapshot()), :sqlite_bind)
+    refute Map.has_key?(Probe.diff(before, Probe.snapshot()), :sqlite_step)
 
     :ok = Probe.enable(:detail)
     assert :detail in Probe.enabled_tiers()
 
     :ok =
-      Probe.measure :sqlite_bind do
+      Probe.measure :sqlite_step do
         :ok
       end
 
-    assert %{sqlite_bind: %{count: 1}} = Probe.diff(before, Probe.snapshot())
+    assert %{sqlite_step: %{count: 1}} = Probe.diff(before, Probe.snapshot())
   end
 
   test "pre-measured durations are recorded under standard probes" do

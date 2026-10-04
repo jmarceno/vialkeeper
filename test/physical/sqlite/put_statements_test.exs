@@ -5,9 +5,10 @@ defmodule VialKeeper.StorageAdapter.PutStatementsTest do
 
   @moduletag :sqlite_physical
 
-  alias Exqlite.Sqlite3
+  alias VialKeeper.Revisions.Id
+  alias VialKeeper.Storage.AdapterCase
   alias VialKeeper.Storage.Services
-  alias VialKeeper.Storage.SQLite.{Adapter, Connection}
+  alias VialKeeper.Storage.SQLite.{Adapter, Connection, Native}
 
   @statements [
     {Connection, :query, 3},
@@ -16,7 +17,7 @@ defmodule VialKeeper.StorageAdapter.PutStatementsTest do
     {Connection, :point_execute, 3},
     {Connection, :exec, 2}
   ]
-  @steps [{Sqlite3, :multi_step, 3}, {Sqlite3, :multi_step_inline, 3}]
+  @steps [{Native, :query, 3}, {Native, :query_inline, 3}]
 
   setup do
     {:ok, adapter} = Adapter.create(":memory:", %{storage_mode: :memory})
@@ -74,13 +75,50 @@ defmodule VialKeeper.StorageAdapter.PutStatementsTest do
 
     # The five point statements of the insert; the only other statement is the
     # process-cached replication marker read (see `statements/1`).
-    assert 5 == Enum.count(calls, &match?({Sqlite3, :multi_step_inline, _}, &1))
+    assert 5 == Enum.count(calls, &match?({Native, :query_inline, _}, &1))
 
     {result, calls} =
       traced(fn -> Services.get_document(context, %{document_id: "doc"}) end, @steps)
 
     assert {:ok, %{body: %{"n" => 1}}} = result
-    assert [{Sqlite3, :multi_step, _}] = calls
+    assert [{Native, :query, _}] = calls
+  end
+
+  test "deleting the winner of a conflicted document materializes the surviving leaf", %{
+    context: context
+  } do
+    history_id = VialKeeper.RevisionFixtures.shared_history_id()
+    {:ok, root} = Id.calculate("doc", history_id, nil, false, %{"v" => 0}, %{})
+    {:ok, left} = Id.calculate("doc", history_id, root, false, %{"v" => "left"}, %{})
+    {:ok, right} = Id.calculate("doc", history_id, root, false, %{"v" => "right"}, %{})
+
+    for {leaf, body} <- [{left, "left"}, {right, "right"}] do
+      chain = %{
+        document_id: "doc",
+        leaf_revision: leaf,
+        revisions: [
+          AdapterCase.wire_revision("doc", root, nil, false, %{"v" => 0}),
+          AdapterCase.wire_revision("doc", leaf, root, false, %{"v" => body})
+        ]
+      }
+
+      assert {:ok, _} = Services.import_revision_chains(context, %{chains: [chain]})
+    end
+
+    {winner, loser, loser_body} =
+      if left > right, do: {left, right, "right"}, else: {right, left, "left"}
+
+    assert {:ok, %{revision: ^winner}} = Services.get_document(context, %{document_id: "doc"})
+
+    assert {:ok, %{revision: ^loser, conflicts: []}} =
+             Services.apply_local_mutation(context, %{
+               operation: :delete,
+               document_id: "doc",
+               if_revision: winner
+             })
+
+    assert {:ok, %{revision: ^loser, body: %{"v" => ^loser_body}}} =
+             Services.get_document(context, %{document_id: "doc"})
   end
 
   defp put(context, request),

@@ -614,7 +614,9 @@ defmodule VialKeeper.Storage.Services.Mutations do
     do: Facts.mark_pending_local_causal(context)
 
   # The leaves hold the current winner, so one read serves both the parent
-  # check and the leaf set finalization writes.
+  # check and the leaf set finalization writes. The leaves are read without
+  # bodies: the new revision usually wins, and a leaf body is read only when
+  # an existing leaf does (see `winner_with_body/3`).
   defp load_document_state(context, document_id) do
     with {:ok, doc} <- Facts.find_document(context, document_id),
          {:ok, {current, leaves}} <- current_winner_and_leaves(context, doc) do
@@ -626,7 +628,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
   defp current_winner_and_leaves(_context, %{winning_revision: nil}), do: {:ok, {nil, nil}}
 
   defp current_winner_and_leaves(context, doc) do
-    with {:ok, leaves} <- Facts.list_leaves_for_document(context, doc) do
+    with {:ok, leaves} <- Facts.list_leaf_heads_for_document(context, doc) do
       case Enum.find(leaves, &(&1.revision_id == doc.winning_revision)) do
         %Revision{} = current -> {:ok, {current, leaves}}
         nil -> winner_outside_leaves(context, doc)
@@ -645,10 +647,18 @@ defmodule VialKeeper.Storage.Services.Mutations do
     with {:ok, doc} <- finalization_document(context, document_id, known_doc),
          {:ok, all_leaves} <- finalization_leaves(context, doc, known_leaves),
          {:ok, winner} <- Winner.select(all_leaves),
+         {:ok, winner} <- winner_with_body(context, doc, winner),
          {:ok, leaf_json} <- Facts.encode_leaf_set(all_leaves) do
       {:ok, {doc, all_leaves, winner, leaf_json}}
     end
   end
+
+  # Known leaves come from `list_leaf_heads_for_document/2`; only a live winner
+  # other than the new revision lacks the body the document row needs.
+  defp winner_with_body(context, doc, %Revision{deleted: false, body: nil} = winner),
+    do: Facts.find_revision_for_document(context, doc, winner.revision_id)
+
+  defp winner_with_body(_context, _doc, winner), do: {:ok, winner}
 
   defp prepare_bulk_operations(
          context,
