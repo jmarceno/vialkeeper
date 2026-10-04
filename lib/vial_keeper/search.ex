@@ -28,8 +28,12 @@ defmodule VialKeeper.Search do
   @spec stop(BackendContext.t()) :: :ok
   def stop(%BackendContext{} = context) do
     case session(context) do
-      {:ok, uuid, _tmp_path} -> Supervisor.stop_owner(uuid)
-      {:error, _} -> :ok
+      {:ok, uuid, _tmp_path} ->
+        :ok = Supervisor.stop_owner(uuid)
+        Owner.forget_absent(uuid)
+
+      {:error, _} ->
+        :ok
     end
   end
 
@@ -148,7 +152,7 @@ defmodule VialKeeper.Search do
           {:ok, [map()]} | {:error, VialKeeper.Error.t()}
   def search(%BackendContext{} = context, index_id, text, mode)
       when is_binary(index_id) and is_binary(text) and is_binary(mode) do
-    call(context, {:search, index_id, text, mode})
+    search_published(context, index_id, text, mode, nil)
   end
 
   @doc "Searches one index for a ranked candidate window, expanding score ties when needed."
@@ -157,7 +161,14 @@ defmodule VialKeeper.Search do
   def search_page(%BackendContext{} = context, index_id, text, mode, limit)
       when is_binary(index_id) and is_binary(text) and is_binary(mode) and is_integer(limit) and
              limit > 0 do
-    call(context, {:search, index_id, text, mode, limit})
+    search_published(context, index_id, text, mode, limit)
+  end
+
+  defp search_published(context, index_id, text, mode, limit) do
+    with {:ok, uuid, tmp_path} <- session(context),
+         {:ok, pid} <- ensure_owner(uuid, tmp_path) do
+      Owner.search(uuid, pid, index_id, text, mode, limit, query_timeout())
+    end
   end
 
   @spec record_winner(binary(), map()) :: :ok
@@ -217,12 +228,18 @@ defmodule VialKeeper.Search do
   defp call_existing(uuid, tmp_path, context, request) do
     case Owner.whereis(uuid) do
       pid when is_pid(pid) -> GenServer.call(pid, request, call_timeout(request))
-      :undefined -> call_if_persisted(tmp_path, context, request)
+      :undefined -> call_if_persisted(uuid, tmp_path, context, request)
     end
   end
 
-  defp call_if_persisted(tmp_path, context, request) do
-    if persist_present?(tmp_path), do: call(context, request), else: :ok
+  # Most databases never get a full-text index; remembering that the index
+  # directory is absent keeps every write from probing the disk for it.
+  defp call_if_persisted(uuid, tmp_path, context, request) do
+    cond do
+      Owner.known_absent?(uuid) -> :ok
+      persist_present?(tmp_path) -> call(context, request)
+      true -> Owner.remember_absent(uuid)
+    end
   end
 
   defp persist_present?(tmp_path) do
