@@ -1133,6 +1133,31 @@ defmodule VialKeeper.Runtime.AdmissionSchedulerTest do
     end
   end
 
+  describe "executor reuse" do
+    test "sequential commands run on the same parked executor", %{uuid: uuid} do
+      first = DatabaseAdmission.execute_owner(uuid, :foreground, fn -> self() end)
+      second = DatabaseAdmission.execute_owner(uuid, :foreground, fn -> self() end)
+
+      assert is_pid(first)
+      assert first == second
+      assert first != self()
+      await_stats(uuid, &(&1.total_occupancy == 0))
+    end
+
+    test "a crashed executor is replaced for the next command", %{uuid: uuid} do
+      first = DatabaseAdmission.execute_owner(uuid, :foreground, fn -> self() end)
+      ref = Process.monitor(first)
+      Process.exit(first, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first, :killed}, 2_000
+
+      second = DatabaseAdmission.execute_owner(uuid, :foreground, fn -> self() end)
+
+      assert is_pid(second)
+      assert second != first
+      await_stats(uuid, &(&1.total_occupancy == 0))
+    end
+  end
+
   describe "deadline budget" do
     test "execute_owner fails immediately when timeout budget is exhausted", %{uuid: uuid} do
       assert {:error, %VialKeeper.Error{}} =

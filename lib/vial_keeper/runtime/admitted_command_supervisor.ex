@@ -1,5 +1,5 @@
 defmodule VialKeeper.Runtime.AdmittedCommandSupervisor do
-  @moduledoc "Dynamic supervisor for the short-lived executors of admitted commands."
+  @moduledoc "Dynamic supervisor for the admitted-command executor and its drain tasks."
   use DynamicSupervisor
 
   alias VialKeeper.Runtime.ChildSpec

@@ -1,25 +1,33 @@
 defmodule VialKeeper.Runtime.AdmittedCommand do
-  @moduledoc "Executes one admitted owner command and reports its completion to the scheduler."
+  @moduledoc """
+  Executes admitted owner commands for one scheduler and reports each completion.
+
+  The scheduler keeps one executor per database and reuses it between commands,
+  so a command costs a message instead of a supervised process start. The
+  executor runs one command at a time and replies to the caller directly. It
+  lives under the same `:one_for_all` supervisor as its scheduler, so the two
+  restart together.
+  """
   use GenServer
 
   alias VialKeeper.Deadline
   alias VialKeeper.Error
 
-  @type args :: %{
+  @type run_args :: %{
           uuid: binary(),
-          scheduler_pid: pid(),
           request_ref: reference(),
+          from: GenServer.from() | nil,
           owner_fun: (-> term()),
           deadline_ms: Deadline.t(),
           trace_context: term(),
           probe_op: term() | nil
         }
 
-  @spec start(pid(), args()) :: {:ok, pid()} | {:error, term()}
-  def start(supervisor, %{} = args) do
+  @spec start(pid(), pid()) :: DynamicSupervisor.on_start_child()
+  def start(supervisor, scheduler_pid) when is_pid(scheduler_pid) do
     spec = %{
-      id: {__MODULE__, args.request_ref},
-      start: {__MODULE__, :start_link, [args]},
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [scheduler_pid]},
       restart: :temporary,
       shutdown: 5_000
     }
@@ -27,52 +35,57 @@ defmodule VialKeeper.Runtime.AdmittedCommand do
     DynamicSupervisor.start_child(supervisor, spec)
   end
 
-  @spec start_link(args()) :: GenServer.on_start()
-  def start_link(args), do: GenServer.start_link(__MODULE__, args)
+  @spec start_link(pid()) :: GenServer.on_start()
+  def start_link(scheduler_pid), do: GenServer.start_link(__MODULE__, scheduler_pid)
 
-  @impl true
-  def init(%{scheduler_pid: scheduler_pid, request_ref: request_ref} = args) do
-    send(self(), :run)
-    {:ok, Map.put(args, :scheduler_pid, scheduler_pid) |> Map.put(:request_ref, request_ref)}
+  @doc "Hands one admitted command to an idle executor."
+  @spec run(pid(), run_args()) :: :ok
+  def run(executor_pid, %{} = args) do
+    send(executor_pid, {:run, args})
+    :ok
   end
 
   @impl true
-  def handle_info(:run, state) do
-    sync_before_begin(state.uuid, state[:probe_op])
+  def init(scheduler_pid), do: {:ok, %{scheduler_pid: scheduler_pid}}
 
-    result =
-      case GenServer.call(
-             state.scheduler_pid,
-             {:admitted_command_begin, state.request_ref, self()},
-             5_000
-           ) do
-        :proceed ->
-          {:run,
-           run_owner_fun(
-             state.uuid,
-             state.owner_fun,
-             state.deadline_ms,
-             state.trace_context,
-             state[:probe_op]
-           )}
+  @impl true
+  def handle_info({:run, args}, state) do
+    sync_before_begin(args.uuid, args.probe_op)
 
-        :cancel ->
-          :cancelled
-      end
+    case GenServer.call(
+           state.scheduler_pid,
+           {:admitted_command_begin, args.request_ref, self()},
+           5_000
+         ) do
+      :proceed ->
+        result =
+          run_owner_fun(
+            args.uuid,
+            args.owner_fun,
+            args.deadline_ms,
+            args.trace_context,
+            args.probe_op
+          )
 
-    try do
-      :ok
-    after
-      report_completion(state, result)
+        report_completion(state, args, result)
+
+      :cancel ->
+        :ok
     end
 
-    {:stop, :normal, state}
+    {:noreply, state}
   end
 
-  defp report_completion(_state, :cancelled), do: :ok
+  # A late reply to an owner call that already timed out, or a test gate
+  # release sent after the gate was passed.
+  def handle_info(_message, state), do: {:noreply, state}
 
-  defp report_completion(state, {:run, result}) do
-    send(state.scheduler_pid, {:admitted_command_done, state.request_ref, result})
+  # The executor replies first so the caller does not wait for the scheduler
+  # hop. A caller that already gave up has a deactivated reply alias, so the
+  # late reply is dropped.
+  defp report_completion(state, %{from: from, request_ref: request_ref}, result) do
+    if from, do: GenServer.reply(from, result)
+    send(state.scheduler_pid, {:admitted_command_done, request_ref, self()})
   end
 
   defp sync_before_begin(uuid, probe_op) when is_binary(uuid) do
