@@ -28,5 +28,8 @@ defmodule VialKeeper.Search.Supervisor do
   end
 
   @impl true
-  def init(_args), do: DynamicSupervisor.init(strategy: :one_for_one)
+  def init(_args) do
+    :ok = Owner.create_published_table()
+    DynamicSupervisor.init(strategy: :one_for_one)
+  end
 end

@@ -32,6 +32,9 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
   @default_attachment_chunk_sizes [65_536, 262_144, 1_048_576]
   @default_attachment_concurrency [1, 2, 4, 8, 16]
   @database_create_samples 20
+  @indexed_write_documents 1_000
+  @indexed_query_count 2_000
+  @indexed_query_concurrency [1, 8]
   @chunk_size 65_536
   @mutation_phase_event [:vial_keeper, :document, :mutation, :phase]
   @attachment_phase_events [
@@ -695,6 +698,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
       end)
 
     full_rebuild = full_search_rebuild_control(context, documents)
+    indexed_writes = indexed_write_controls(context, documents)
 
     %{
       "documents" => count,
@@ -702,6 +706,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
       "vial_keeper_tantivy_by_batch_size" => boundary,
       "search_owner_by_batch_size" => owner,
       "storage_winner_stream_full_rebuild" => full_rebuild,
+      "indexed_writes_and_queries" => indexed_writes,
       "writer_settings" => tantivy_settings()
     }
   end
@@ -859,6 +864,78 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
       summarize_operations([elapsed], length(documents))
     end)
   end
+
+  # Single-document writes against a database that already has a full-text
+  # index, then queries alone, interleaved with writes, and from concurrent
+  # callers. Covers the incremental refresh path that rebuild controls skip.
+  defp indexed_write_controls(context, documents) do
+    documents = Enum.take(documents, @indexed_write_documents)
+    {writes, queries} = Enum.split(documents, div(length(documents), 2))
+
+    with_public_database(context, "search-indexed-writes", fn uuid ->
+      {:ok, _index} =
+        Query.create_index(uuid, %{
+          "name" => "diagnostic-search",
+          "type" => "full_text",
+          "fields" => ["/title", "/text"]
+        })
+
+      {put_samples, phase_samples} =
+        capture_mutation_phases(fn -> put_documents(uuid, writes) end)
+
+      put_then_query = Enum.map(queries, &put_then_query(uuid, &1))
+      concurrent = Map.new(@indexed_query_concurrency, &concurrent_query_control(uuid, &1))
+
+      %{
+        "documents_put" =>
+          summarize_operations(put_samples, length(writes))
+          |> Map.put("mutation_phases", mutation_phase_report(phase_samples)),
+        "documents_put_then_query" => summarize_operations(put_then_query, length(queries)),
+        "queries_by_concurrency" => concurrent
+      }
+    end)
+  end
+
+  defp put_then_query(uuid, document) do
+    timed_result!(fn ->
+      with {:ok, _} <- Documents.put(uuid, %{"id" => document.id, "body" => document.body}) do
+        search_query(uuid, "article #{document_index(document)}")
+      end
+    end)
+  end
+
+  defp concurrent_query_control(uuid, concurrency) do
+    started = System.monotonic_time(:microsecond)
+
+    samples =
+      1..@indexed_query_count
+      |> Task.async_stream(
+        fn sample -> timed_result!(fn -> search_query(uuid, "article #{sample}") end) end,
+        max_concurrency: concurrency,
+        timeout: 60_000
+      )
+      |> Enum.map(fn {:ok, elapsed} -> elapsed end)
+
+    wall_us = System.monotonic_time(:microsecond) - started
+
+    {"concurrency_#{concurrency}",
+     Statistics.summarize(samples, 1)
+     |> Map.merge(%{
+       "count" => @indexed_query_count,
+       "wall_elapsed_us" => wall_us,
+       "operations_per_second" => Statistics.per_sec(@indexed_query_count, wall_us)
+     })}
+  end
+
+  defp search_query(uuid, text) do
+    Query.execute(uuid, %{
+      "search" => %{"index" => "diagnostic-search", "text" => text, "mode" => "all"},
+      "limit" => 10
+    })
+  end
+
+  defp document_index("search-" <> suffix), do: String.to_integer(suffix)
+  defp document_index(%{id: id}), do: document_index(id)
 
   defp bulk_write_search_documents(uuid, batch) do
     {:ok, _results} = Documents.bulk_write(uuid, Enum.map(batch, &bulk_put_operation/1))

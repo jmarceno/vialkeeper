@@ -6,6 +6,13 @@ defmodule VialKeeper.Search.Owner do
   serving searches. Only the owner publishes a completed generation or applies
   incremental winner updates, so a failed or interrupted build is invisible to
   readers.
+
+  Incremental updates are staged in the Tantivy writer and published as a group:
+  after `@publish_delay_ms`, once `@publish_max_pending` updates are staged, or
+  before any search that follows them. Published searchers live in a public ETS
+  table so searches run in the caller, concurrently, instead of queueing behind
+  the owner. A `pending` marker file in the index root records staged updates, so
+  a generation that lost them to a crash is rebuilt instead of served stale.
   """
   use GenServer
 
@@ -19,6 +26,10 @@ defmodule VialKeeper.Search.Owner do
   @backend "tantivy_ex"
   @open_attempts 8
   @open_retry_ms 25
+  @pending_marker "pending"
+  @published VialKeeper.Search.Published
+  @publish_delay_ms 200
+  @publish_max_pending 1_000
 
   @type args :: {binary(), binary() | nil}
 
@@ -66,10 +77,79 @@ defmodule VialKeeper.Search.Owner do
 
   def persist_path(_tmp_path), do: nil
 
+  @doc "Creates the table that holds published searchers; owned by the search supervisor."
+  @spec create_published_table() :: :ok
+  def create_published_table do
+    _ = :ets.new(@published, [:set, :public, :named_table, read_concurrency: true])
+    :ok
+  end
+
+  @doc "Whether a database is known to have no persisted indexes and no running owner."
+  @spec known_absent?(binary()) :: boolean()
+  def known_absent?(uuid) when is_binary(uuid), do: :ets.member(@published, {uuid, :absent})
+
+  @doc """
+  Records that a database has no persisted indexes. An owner that starts
+  concurrently clears the record in `init/1`, after it is registered, so the
+  record never outlives a check that raced with an owner start.
+  """
+  @spec remember_absent(binary()) :: :ok
+  def remember_absent(uuid) when is_binary(uuid) do
+    true = :ets.insert(@published, {{uuid, :absent}, true})
+    if is_pid(whereis(uuid)), do: forget_absent(uuid), else: :ok
+  end
+
+  @spec forget_absent(binary()) :: :ok
+  def forget_absent(uuid) when is_binary(uuid) do
+    true = :ets.delete(@published, {uuid, :absent})
+    :ok
+  end
+
+  @doc """
+  Searches the published generation of `index_id` in the calling process.
+
+  Staged updates are published first, so a search observes every write that
+  completed before it. Falls back to the owner when no searcher is published,
+  which reports the precise missing-index error.
+  """
+  @spec search(binary(), pid(), binary(), binary(), binary(), pos_integer() | nil, timeout()) ::
+          {:ok, [map()]} | {:error, VialKeeper.Error.t()}
+  def search(uuid, pid, index_id, text, mode, limit, timeout)
+      when is_binary(uuid) and is_pid(pid) and is_binary(index_id) do
+    if :ets.member(@published, {uuid, :pending}) do
+      :ok = GenServer.call(pid, :publish_pending, timeout)
+    end
+
+    case :ets.lookup(@published, {uuid, index_id}) do
+      [{_key, handle}] ->
+        SearchInstrumentation.query(uuid, mode, fn -> search_handle(handle, text, mode, limit) end)
+
+      [] ->
+        GenServer.call(pid, search_request(index_id, text, mode, limit), timeout)
+    end
+  end
+
+  defp search_request(index_id, text, mode, nil), do: {:search, index_id, text, mode}
+  defp search_request(index_id, text, mode, limit), do: {:search, index_id, text, mode, limit}
+
   @impl true
   def init({uuid, tmp_path}) do
-    state = %{uuid: uuid, tmp_path: tmp_path, indexes: %{}, rebuilds: %{}}
-    {:ok, load_existing(state)}
+    Process.flag(:trap_exit, true)
+    true = :ets.match_delete(@published, {{uuid, :_}, :_})
+
+    state = %{
+      uuid: uuid,
+      tmp_path: tmp_path,
+      indexes: %{},
+      rebuilds: %{},
+      pending: %{},
+      pending_count: 0,
+      publish_timer: nil
+    }
+
+    state = load_existing(state)
+    Enum.each(state.indexes, fn {index_id, entry} -> put_published(state, index_id, entry) end)
+    {:ok, state}
   end
 
   @impl true
@@ -86,6 +166,7 @@ defmodule VialKeeper.Search.Owner do
 
       entry = %{entry | definition: definition}
       new_state = %{state | indexes: Map.put(state.indexes, index_id, entry)}
+      put_published(new_state, index_id, entry)
       {:reply, persist_manifest(new_state, index_id, entry), new_state}
     else
       {:reply, {:error, VialKeeper.Error.invalid_request("full-text index id is required")}, state}
@@ -93,7 +174,8 @@ defmodule VialKeeper.Search.Owner do
   end
 
   def handle_call({:drop_index, index_id}, _from, state) do
-    state = abort_rebuild_state(state, index_id)
+    state = state |> abort_rebuild_state(index_id) |> discard_pending(index_id)
+    true = :ets.delete(@published, {state.uuid, index_id})
 
     new_state = %{
       state
@@ -171,7 +253,7 @@ defmodule VialKeeper.Search.Owner do
   def handle_call({:refresh, document_id, body, deleted}, _from, state) do
     {reply, new_state} =
       SearchInstrumentation.refresh(state.uuid, 1, fn ->
-        refresh_indexes(state, [{document_id, body, deleted}])
+        stage_updates(state, [{document_id, body, deleted}])
       end)
 
     {:reply, reply, new_state}
@@ -180,19 +262,22 @@ defmodule VialKeeper.Search.Owner do
   def handle_call({:refresh_many, updates}, _from, state) when is_list(updates) do
     {reply, new_state} =
       SearchInstrumentation.refresh(state.uuid, length(updates), fn ->
-        refresh_indexes(state, updates)
+        stage_updates(state, updates)
       end)
 
     {:reply, reply, new_state}
   end
 
+  def handle_call(:publish_pending, _from, state),
+    do: {:reply, :ok, publish_pending(state)}
+
   def handle_call({:search, index_id, text, mode}, _from, state) do
-    search_reply(state, index_id, text, mode, nil)
+    search_reply(publish_pending(state), index_id, text, mode, nil)
   end
 
   def handle_call({:search, index_id, text, mode, limit}, _from, state)
       when is_integer(limit) and limit > 0 do
-    search_reply(state, index_id, text, mode, limit)
+    search_reply(publish_pending(state), index_id, text, mode, limit)
   end
 
   def handle_call(:has_indexes, _from, state),
@@ -220,7 +305,15 @@ defmodule VialKeeper.Search.Owner do
   defp search_handle(handle, text, mode, limit), do: Tantivy.search(handle, text, mode, limit)
 
   @impl true
-  def terminate(_reason, _state), do: :ok
+  def handle_info(:publish_pending, state),
+    do: {:noreply, publish_pending(%{state | publish_timer: nil})}
+
+  @impl true
+  def terminate(_reason, state) do
+    _ = publish_pending(state)
+    true = :ets.match_delete(@published, {{state.uuid, :_}, :_})
+    :ok
+  end
 
   defp load_existing(state) do
     case persist_path(state.tmp_path) do
@@ -271,6 +364,7 @@ defmodule VialKeeper.Search.Owner do
          true <- schema_fingerprint == Tantivy.schema_fingerprint(),
          true <- is_binary(index_id) and is_integer(generation) and is_map(definition),
          {:ok, root} <- index_root(state.tmp_path, index_id),
+         false <- File.exists?(Path.join(root, @pending_marker)),
          generation_path = Path.join(root, "generation-#{generation}"),
          {:ok, handle} <- open_published_generation(generation_path, definition) do
       entry = %IndexGeneration{
@@ -348,37 +442,139 @@ defmodule VialKeeper.Search.Owner do
 
   defp document_values(_), do: :skip
 
-  defp refresh_indexes(state, updates) do
-    results =
-      state.indexes
-      |> Enum.reduce_while({:ok, state}, fn {index_id, entry}, {:ok, acc} ->
+  # Stages updates in every built index's writer without committing. A failed
+  # batch is rolled back and the index's earlier staged updates are re-applied,
+  # so only the failed batch is lost, as with a per-write commit.
+  defp stage_updates(state, updates) do
+    updates = deduplicate_updates(updates)
+
+    result =
+      Enum.reduce_while(state.indexes, {:ok, state}, fn {index_id, entry}, {:ok, acc} ->
         case entry.handle do
           nil -> {:cont, {:ok, acc}}
-          handle -> refresh_one(acc, index_id, entry, handle, updates)
+          handle -> stage_one(acc, index_id, handle, updates)
         end
       end)
 
-    case results do
-      {:ok, new_state} -> {:ok, new_state}
-      {:error, _} = error -> {error, state}
+    case result do
+      {:ok, new_state} -> {:ok, publish_when_full(new_state)}
+      {:error, reason, new_state} -> {{:error, reason}, new_state}
     end
   end
 
-  defp refresh_one(state, index_id, entry, handle, updates) do
+  defp stage_one(state, index_id, handle, updates) do
     case apply_updates(handle, updates) do
-      {:ok, updated} ->
-        case Tantivy.publish(updated) do
-          {:ok, committed} ->
-            {:cont, {:ok, put_in(state.indexes[index_id], %{entry | handle: committed})}}
-
-          {:error, reason} ->
-            _ = Tantivy.rollback(updated)
-            {:halt, {:error, reason}}
-        end
+      {:ok, _handle} ->
+        {:cont, {:ok, mark_pending(state, index_id, updates)}}
 
       {:error, reason} ->
-        _ = Tantivy.rollback(handle)
-        {:halt, {:error, reason}}
+        {:halt, {:error, reason, restore_staged(state, index_id, handle)}}
+    end
+  end
+
+  defp restore_staged(state, index_id, handle) do
+    _ = Tantivy.rollback(handle)
+    staged = state.pending |> Map.get(index_id, []) |> Enum.reverse()
+
+    case apply_updates(handle, staged) do
+      {:ok, _handle} -> state
+      {:error, _reason} -> invalidate_index(state, index_id)
+    end
+  end
+
+  defp mark_pending(state, index_id, updates) do
+    if state.pending == %{}, do: true = :ets.insert(@published, {{state.uuid, :pending}, true})
+    _ = if not Map.has_key?(state.pending, index_id), do: write_pending_marker(state, index_id)
+
+    pending = Map.update(state.pending, index_id, Enum.reverse(updates), &Enum.reverse(updates, &1))
+
+    %{
+      state
+      | pending: pending,
+        pending_count: state.pending_count + length(updates),
+        publish_timer: state.publish_timer || schedule_publish()
+    }
+  end
+
+  defp schedule_publish, do: Process.send_after(self(), :publish_pending, @publish_delay_ms)
+
+  defp publish_when_full(%{pending_count: count} = state) when count >= @publish_max_pending,
+    do: publish_pending(state)
+
+  defp publish_when_full(state), do: state
+
+  # One commit and one new searcher per index with staged updates, however many
+  # writes were staged. Publishes the searchers before clearing the pending flag
+  # so a search that sees the flag cleared also sees the new searcher.
+  defp publish_pending(%{pending: pending} = state) when pending == %{}, do: state
+
+  defp publish_pending(state) do
+    _ = if state.publish_timer, do: Process.cancel_timer(state.publish_timer)
+
+    state =
+      Enum.reduce(state.pending, state, fn {index_id, _updates}, acc ->
+        publish_index(acc, index_id)
+      end)
+
+    true = :ets.delete(@published, {state.uuid, :pending})
+    %{state | pending: %{}, pending_count: 0, publish_timer: nil}
+  end
+
+  defp publish_index(state, index_id) do
+    entry = Map.fetch!(state.indexes, index_id)
+
+    case Tantivy.publish(entry.handle) do
+      {:ok, committed} ->
+        entry = %{entry | handle: committed}
+        put_published(state, index_id, entry)
+        _ = remove_pending_marker(state, index_id)
+        put_in(state.indexes[index_id], entry)
+
+      {:error, _reason} ->
+        _ = Tantivy.rollback(entry.handle)
+        invalidate_index(state, index_id)
+    end
+  end
+
+  # A generation that lost staged updates no longer matches the documents, so it
+  # stops serving; the next search reports it unbuilt and triggers a rebuild.
+  defp invalidate_index(state, index_id) do
+    true = :ets.delete(@published, {state.uuid, index_id})
+    state = discard_pending(state, index_id)
+    %{state | indexes: Map.update!(state.indexes, index_id, &%{&1 | handle: nil})}
+  end
+
+  defp discard_pending(state, index_id) do
+    case Map.pop(state.pending, index_id) do
+      {nil, _pending} ->
+        state
+
+      {staged, pending} ->
+        if pending == %{}, do: true = :ets.delete(@published, {state.uuid, :pending})
+        %{state | pending: pending, pending_count: state.pending_count - length(staged)}
+    end
+  end
+
+  defp put_published(state, index_id, %IndexGeneration{handle: %{searcher: searcher} = handle})
+       when not is_nil(searcher) do
+    true = :ets.insert(@published, {{state.uuid, index_id}, handle})
+    :ok
+  end
+
+  defp put_published(state, index_id, _entry) do
+    true = :ets.delete(@published, {state.uuid, index_id})
+    :ok
+  end
+
+  defp write_pending_marker(state, index_id) do
+    with {:ok, root} <- index_root(state.tmp_path, index_id) do
+      File.write(Path.join(root, @pending_marker), "")
+    end
+  end
+
+  defp remove_pending_marker(state, index_id) do
+    with {:ok, root} <- index_root(state.tmp_path, index_id) do
+      File.rm(Path.join(root, @pending_marker))
     end
   end
 
@@ -428,6 +624,12 @@ defmodule VialKeeper.Search.Owner do
 
         case persist_manifest(new_state, index_id, entry) do
           :ok ->
+            # Updates staged on the replaced generation are covered by the
+            # rebuild and are never committed.
+            new_state = discard_pending(new_state, index_id)
+            put_published(new_state, index_id, entry)
+            _ = remove_pending_marker(new_state, index_id)
+
             {:reply, {:ok, rebuild.entries},
              cleanup_generations(new_state, index_id, rebuild.generation)}
 
