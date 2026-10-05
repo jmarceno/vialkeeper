@@ -101,11 +101,12 @@ defmodule VialKeeper.Storage.Memory.ChangeLog do
       |> Enum.filter(&(&1.sequence > since and &1.sequence <= through))
       |> Enum.take(limit + 1)
 
-    page = Enum.take(changes, limit)
-    has_more = length(changes) > limit
-
     # Holes are allowed: a final page reaches `through`.
-    last = if has_more, do: List.last(page).sequence, else: through
+    {page, last, has_more} =
+      case Enum.split(changes, limit) do
+        {page, []} -> {page, through, false}
+        {page, [_next | _]} -> {page, Enum.at(page, limit - 1).sequence, true}
+      end
 
     Page.new(Enum.map(page, &change_row/1), last, has_more)
   end

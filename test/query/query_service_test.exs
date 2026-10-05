@@ -31,7 +31,7 @@ defmodule VialKeeper.Query.QueryServiceTest do
       assert {:ok, _} = VialKeeper.Documents.put(uuid, %{id: id, body: %{"type" => "task"}})
     end
 
-    {:ok, uuid: uuid}
+    {:ok, uuid: uuid, relative: relative}
   end
 
   test "a query and an explain each make one database trip", %{uuid: uuid} do
@@ -101,6 +101,28 @@ defmodule VialKeeper.Query.QueryServiceTest do
     assert SequenceLedger.visible(uuid) >= sequence
   end
 
+  test "a bookmark survives a close and reopen with no writes", %{uuid: uuid} = context do
+    request = %{"selector" => %{"/type" => "task"}, "limit" => 2}
+    assert {:ok, %{bookmark: bookmark}} = VialKeeper.Query.execute(uuid, request)
+
+    reopen!(context)
+
+    assert {:ok, %{documents: [%{id: "c"}], has_more: false}} =
+             VialKeeper.Query.execute(uuid, Map.put(request, "bookmark", bookmark))
+  end
+
+  test "a bookmark is stale after a reopen when a write happened before the close",
+       %{uuid: uuid} = context do
+    request = %{"selector" => %{"/type" => "task"}, "limit" => 2}
+    assert {:ok, %{bookmark: bookmark}} = VialKeeper.Query.execute(uuid, request)
+    assert {:ok, _} = VialKeeper.Documents.put(uuid, %{id: "d", body: %{"type" => "task"}})
+
+    reopen!(context)
+
+    assert {:error, %Error{code: :bookmark_stale}} =
+             VialKeeper.Query.execute(uuid, Map.put(request, "bookmark", bookmark))
+  end
+
   test "the database's configured limit bounds queries and explains", %{uuid: uuid} do
     assert {:ok, _} =
              DatabaseCatalog.command(
@@ -119,6 +141,14 @@ defmodule VialKeeper.Query.QueryServiceTest do
 
     assert {:ok, %{documents: [_, _]}} =
              VialKeeper.Query.execute(uuid, Map.put(request, "limit", 2))
+  end
+
+  defp reopen!(%{uuid: uuid, relative: relative}) do
+    assert :ok = DatabaseCatalog.close(uuid)
+    assert :ok = DatabaseCatalog.unregister(uuid)
+    assert {:ok, %{database_uuid: ^uuid}} = DatabaseCatalog.register(relative)
+    assert {:ok, _} = DatabaseCatalog.open(uuid)
+    assert :ok = Manager.await_resumed(uuid)
   end
 
   defp catalog_entry_points do

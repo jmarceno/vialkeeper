@@ -22,13 +22,7 @@ defmodule VialKeeper.Storage.BackendContext do
   The visible sequence and data version a reader fixed before its snapshot
   began; `nil` reads them from the sequence ledger when needed.
   """
-  @type sequence_view ::
-          nil
-          | %{
-              visible: non_neg_integer(),
-              data_version: pos_integer(),
-              data_version_base: pos_integer()
-            }
+  @type sequence_view :: nil | VialKeeper.Storage.SequenceView.t()
 
   @typedoc """
   `:concurrent` makes write transactions use the backend's concurrent

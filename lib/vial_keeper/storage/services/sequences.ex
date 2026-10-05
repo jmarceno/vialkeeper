@@ -21,6 +21,7 @@ defmodule VialKeeper.Storage.Services.Sequences do
   alias VialKeeper.MapAccess
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Ports.Access
+  alias VialKeeper.Storage.SequenceView
 
   @reservation_key :vial_keeper_sequence_reservation
   @view_key :vial_keeper_sequence_view
@@ -34,16 +35,7 @@ defmodule VialKeeper.Storage.Services.Sequences do
           max_used: non_neg_integer()
         }
 
-  @typedoc """
-  The visible watermark, the data version, and the data version the serving
-  ledger started its run at (`data_version_base`). Every data version of an
-  earlier run is below the base.
-  """
-  @type view :: %{
-          visible: non_neg_integer(),
-          data_version: pos_integer(),
-          data_version_base: pos_integer()
-        }
+  @type view :: SequenceView.t()
 
   @doc "Stores a reserved range `first..last` for `database_uuid` in this process."
   @spec put_reservation(binary(), reference(), pos_integer(), pos_integer()) :: :ok
@@ -106,7 +98,7 @@ defmodule VialKeeper.Storage.Services.Sequences do
   """
   @spec overlay(BackendContext.t(), map()) :: {:ok, map()} | {:error, Error.t()}
   def overlay(%BackendContext{} = context, identity) when is_map(identity) do
-    with {:ok, %{visible: visible, data_version: version, data_version_base: base}} <-
+    with {:ok, %SequenceView{visible: visible, data_version: version, data_version_base: base}} <-
            view(context) do
       {:ok,
        identity
@@ -172,7 +164,7 @@ defmodule VialKeeper.Storage.Services.Sequences do
         if Process.alive?(ledger),
           do:
             {:ok,
-             %{
+             %SequenceView{
                visible: :atomics.get(cell, @visible_slot),
                data_version: :atomics.get(cell, @version_slot),
                data_version_base: base
@@ -236,7 +228,12 @@ defmodule VialKeeper.Storage.Services.Sequences do
 
   defp standalone_view(context) do
     with {:ok, high_water} <- high_water(context) do
-      {:ok, %{visible: high_water, data_version: high_water + 1, data_version_base: high_water + 1}}
+      {:ok,
+       %SequenceView{
+         visible: high_water,
+         data_version: high_water + 1,
+         data_version_base: high_water + 1
+       }}
     end
   end
 

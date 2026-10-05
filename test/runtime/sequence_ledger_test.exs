@@ -10,6 +10,7 @@ defmodule VialKeeper.Runtime.SequenceLedgerTest do
   alias VialKeeper.Deadline
   alias VialKeeper.Error
   alias VialKeeper.Runtime.{ChangeNotifier, SequenceLedger}
+  alias VialKeeper.Storage.Services.Sequences
   alias VialKeeper.Storage.SQLite.{Adapter, Connection}
 
   setup do
@@ -208,7 +209,7 @@ defmodule VialKeeper.Runtime.SequenceLedgerTest do
         identity: %{database_uuid: uuid}
       }
 
-      VialKeeper.Storage.Services.Sequences.take(context, count)
+      Sequences.take(context, count)
     end
 
     assert {{:ok, [1, 2]}, 2} =

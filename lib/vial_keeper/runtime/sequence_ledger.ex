@@ -37,7 +37,7 @@ defmodule VialKeeper.Runtime.SequenceLedger do
   @block 4096
 
   @type outcome :: :committed | :aborted
-  @type view :: %{visible: non_neg_integer(), data_version: pos_integer()}
+  @type view :: Sequences.view()
 
   @spec child_spec(binary()) :: map()
   def child_spec(uuid) when is_binary(uuid) do
@@ -89,8 +89,17 @@ defmodule VialKeeper.Runtime.SequenceLedger do
   """
   @spec complete(binary(), reference(), outcome(), non_neg_integer() | :all) :: :ok
   def complete(uuid, token, outcome, used_through \\ :all)
+
+  def complete(uuid, token, outcome, :all)
+      when is_binary(uuid) and is_reference(token) and outcome in [:committed, :aborted],
+      do: send_complete(uuid, token, outcome, :all)
+
+  def complete(uuid, token, outcome, used_through)
       when is_binary(uuid) and is_reference(token) and outcome in [:committed, :aborted] and
-             (used_through == :all or (is_integer(used_through) and used_through >= 0)) do
+             is_integer(used_through) and used_through >= 0,
+      do: send_complete(uuid, token, outcome, used_through)
+
+  defp send_complete(uuid, token, outcome, used_through) do
     message = {:complete, token, outcome, used_through}
 
     case call(uuid, message, VialKeeper.Config.shutdown_timeout()) do
