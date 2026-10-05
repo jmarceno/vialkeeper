@@ -848,7 +848,15 @@ and a bind-mounted destination `VIAL_KEEPER_ROOT`.
 drill (integrity, replication delay, container and network loss, and a burst
 benchmark). It is excluded from `mix test`, `mix check.fast`,
 `mix check.integration`, and `mix check.full`. Pass `--burst N` to change the
-burst size. The drill needs the same container engine as the restore drill.
+burst size. Pass `--duration SECONDS` to repeat complete write, partition,
+restart, convergence, and integrity cycles for at least that workload duration
+(for example, `mix test.container_replication --duration 3600 --burst 48`).
+Setup is outside that duration; the last cycle finishes before cleanup. Each
+cycle prints timing evidence and checks the previous cycle's documents after
+restart; the driver retains only two cycles of expectations in memory. This
+is a synthetic replication soak, with no adopter workload, backup/restore,
+upgrade, or resource-trend coverage. The drill needs the same container engine
+as the restore drill.
 
 Please report security issues privately rather than in a public issue — see
 [SECURITY.md](SECURITY.md).

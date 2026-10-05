@@ -9,7 +9,7 @@ defmodule VialKeeper.TestSupport.ContainerReplicationCluster do
   at least three containers.
 
   Containers publish loopback ports for the test process and replicate to each
-  other's bridge IPs. `isolate!/2` drops traffic to and from the other
+  other's bridge DNS names. `isolate!/2` drops traffic to and from the other
   containers with iptables inside the target network namespace, leaving the
   loopback published port usable. `stop_container!/2` and `start_container!/2`
   power a container off and on without deleting its data root.
@@ -51,7 +51,7 @@ defmodule VialKeeper.TestSupport.ContainerReplicationCluster do
   @spec start!(keyword()) :: t()
   def start!(opts \\ []) when is_list(opts) do
     count = container_count!(opts)
-    id = System.unique_integer([:positive])
+    id = Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
     work = Path.join(System.tmp_dir!(), "vialkeeper-container-repl-#{id}")
     network = "vk-repl-#{id}"
     containers = Enum.map(1..count, &container_name(id, &1))
@@ -192,7 +192,7 @@ defmodule VialKeeper.TestSupport.ContainerReplicationCluster do
       container: spec.container,
       host_port: spec.host_port,
       base_url: "http://127.0.0.1:#{spec.host_port}",
-      peer_base_url: "http://#{ip}:#{@internal_port}",
+      peer_base_url: "http://#{spec.container}:#{@internal_port}",
       data_root: spec.data_root,
       ip: ip
     }

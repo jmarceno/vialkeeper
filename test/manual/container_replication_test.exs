@@ -6,6 +6,7 @@ defmodule VialKeeper.Manual.ContainerReplicationTest do
 
       mix test.container_replication
       mix test.container_replication --burst 48
+      mix test.container_replication --duration 3600 --burst 48
 
   `mix test`, `mix check.fast`, `mix check.integration`, and `mix check.full`
   exclude this module. The body also refuses to run unless
@@ -19,7 +20,9 @@ defmodule VialKeeper.Manual.ContainerReplicationTest do
   alias VialKeeper.Eventual
   alias VialKeeper.TestSupport.ContainerReplicationCluster
 
-  @tag timeout: 900_000
+  @duration_seconds System.get_env("VIAL_KEEPER_CONTAINER_REPLICATION_DURATION", "0")
+                    |> String.to_integer()
+  @tag timeout: 900_000 + @duration_seconds * 1_000
   test "three containers replicate through network loss, restart, and a burst" do
     assert System.get_env("VIAL_KEEPER_CONTAINER_REPLICATION") == "1",
            "run this drill with mix test.container_replication"
@@ -30,19 +33,33 @@ defmodule VialKeeper.Manual.ContainerReplicationTest do
     nodes = Enum.map(cluster.nodes, &await_and_create!(cluster, &1))
     start_mesh!(cluster, nodes)
 
-    seed_ms = replicate_seed!(cluster, nodes)
-    replicate_from_second!(cluster, nodes)
-    partition_ms = partition_and_recover!(cluster, nodes)
-    restart_ms = stop_and_recover!(cluster, nodes)
-    burst = burst!(cluster, nodes, burst_count())
+    started = System.monotonic_time(:millisecond)
+    run_rounds!(cluster, nodes, burst_count(), started, 1, [])
+  end
+
+  defp run_rounds!(cluster, nodes, count, started, round, previous_docs) do
+    {seed_ms, seed} = replicate_seed!(cluster, nodes, round)
+    second = replicate_from_node!(cluster, nodes, "n2", round)
+    {partition_ms, partition} = partition_and_recover!(cluster, nodes, round)
+    {restart_ms, restart} = stop_and_recover!(cluster, nodes, round)
+    resumed = replicate_from_node!(cluster, nodes, "n3", round)
+    phase_docs = [seed, second, partition, restart, resumed]
+    converge_burst!(cluster, nodes, previous_docs ++ phase_docs)
+    burst = burst!(cluster, nodes, count, round)
     assert_integrity!(cluster, nodes)
+    elapsed = System.monotonic_time(:millisecond) - started
 
     IO.puts(
-      "[container-replication] nodes=#{length(nodes)} seed_ms=#{seed_ms} " <>
+      "[container-replication] round=#{round} elapsed_ms=#{elapsed} " <>
+        "nodes=#{length(nodes)} seed_ms=#{seed_ms} " <>
         "partition_catch_up_ms=#{partition_ms} restart_catch_up_ms=#{restart_ms} " <>
         "burst=#{burst.count} write_ms=#{burst.write_ms} docs_per_s=#{burst.docs_per_s} " <>
         "converge_ms=#{burst.converge_ms}"
     )
+
+    if elapsed < @duration_seconds * 1_000 do
+      run_rounds!(cluster, nodes, count, started, round + 1, phase_docs ++ burst.docs)
+    end
   end
 
   defp await_and_create!(cluster, node) do
@@ -52,17 +69,19 @@ defmodule VialKeeper.Manual.ContainerReplicationTest do
   end
 
   defp await_ready!(cluster, node) do
-    Eventual.eventually(
-      fn ->
-        case Req.get(node.base_url <> "/v1/databases", request_opts(cluster.token, 2_000)) do
-          {:ok, %{status: 200}} -> true
-          _ -> false
-        end
-      end,
-      timeout: 180_000,
-      interval: 500,
-      message: ready_message(cluster, node)
-    )
+    result =
+      Eventual.await(
+        fn ->
+          case Req.get(node.base_url <> "/v1/databases", request_opts(cluster.token, 2_000)) do
+            {:ok, %{status: 200}} -> true
+            _ -> false
+          end
+        end,
+        timeout: 180_000,
+        interval: 500
+      )
+
+    assert result == :ok, ready_message(cluster, node)
   end
 
   defp ready_message(cluster, node) do
@@ -122,48 +141,53 @@ defmodule VialKeeper.Manual.ContainerReplicationTest do
     end)
   end
 
-  defp replicate_seed!(cluster, nodes) do
+  defp replicate_seed!(cluster, nodes, round) do
     source = node!(nodes, "n1")
-    body = %{"phase" => "seed", "n" => 1}
+    id = document_id(round, "seed")
+    body = %{"phase" => "seed", "round" => round}
     started = System.monotonic_time(:millisecond)
-    revision = put_document!(cluster, source, "seed", body)
-    wait_peers!(cluster, nodes, source, "seed", revision, body, 90_000)
-    System.monotonic_time(:millisecond) - started
+    revision = put_document!(cluster, source, id, body)
+    wait_peers!(cluster, nodes, source, id, revision, body, 90_000)
+    {System.monotonic_time(:millisecond) - started, {id, revision, body}}
   end
 
-  defp replicate_from_second!(cluster, nodes) do
-    source = node!(nodes, "n2")
-    body = %{"phase" => "second", "n" => 2}
-    revision = put_document!(cluster, source, "from-n2", body)
-    wait_peers!(cluster, nodes, source, "from-n2", revision, body, 90_000)
+  defp replicate_from_node!(cluster, nodes, name, round) do
+    source = node!(nodes, name)
+    id = document_id(round, "from-#{name}")
+    body = %{"phase" => name, "round" => round}
+    revision = put_document!(cluster, source, id, body)
+    wait_peers!(cluster, nodes, source, id, revision, body, 90_000)
+    {id, revision, body}
   end
 
-  defp partition_and_recover!(cluster, nodes) do
+  defp partition_and_recover!(cluster, nodes, round) do
     isolated = node!(nodes, "n2")
     writer = node!(nodes, "n1")
     observer = node!(nodes, "n3")
     :ok = ContainerReplicationCluster.isolate!(cluster, isolated)
 
-    body = %{"phase" => "partition", "n" => 3}
-    revision = put_document!(cluster, writer, "during-partition", body)
-    wait_document!(cluster, observer, "during-partition", revision, body, 90_000)
-    refute_while_isolated!(cluster, isolated, "during-partition")
+    id = document_id(round, "during-partition")
+    body = %{"phase" => "partition", "round" => round}
+    revision = put_document!(cluster, writer, id, body)
+    wait_document!(cluster, observer, id, revision, body, 90_000)
+    refute_while_isolated!(cluster, isolated, id)
 
     :ok = ContainerReplicationCluster.rejoin!(cluster, isolated)
     started = System.monotonic_time(:millisecond)
-    wait_document!(cluster, isolated, "during-partition", revision, body, 120_000)
-    System.monotonic_time(:millisecond) - started
+    wait_document!(cluster, isolated, id, revision, body, 120_000)
+    {System.monotonic_time(:millisecond) - started, {id, revision, body}}
   end
 
-  defp stop_and_recover!(cluster, nodes) do
+  defp stop_and_recover!(cluster, nodes, round) do
     stopped = node!(nodes, "n3")
     writer = node!(nodes, "n1")
     peer = node!(nodes, "n2")
     :ok = ContainerReplicationCluster.stop_container!(cluster, stopped)
 
-    body = %{"phase" => "restart", "n" => 4}
-    revision = put_document!(cluster, writer, "during-stop", body)
-    wait_document!(cluster, peer, "during-stop", revision, body, 90_000)
+    id = document_id(round, "during-stop")
+    body = %{"phase" => "restart", "round" => round}
+    revision = put_document!(cluster, writer, id, body)
+    wait_document!(cluster, peer, id, revision, body, 90_000)
 
     assert {:error, _} =
              Req.get(stopped.base_url <> "/v1/databases", request_opts(cluster.token, 2_000))
@@ -171,43 +195,50 @@ defmodule VialKeeper.Manual.ContainerReplicationTest do
     :ok = ContainerReplicationCluster.start_container!(cluster, stopped)
     await_ready!(cluster, stopped)
     started = System.monotonic_time(:millisecond)
-    wait_document!(cluster, stopped, "during-stop", revision, body, 180_000)
-    System.monotonic_time(:millisecond) - started
+    wait_document!(cluster, stopped, id, revision, body, 180_000)
+    {System.monotonic_time(:millisecond) - started, {id, revision, body}}
   end
 
-  defp burst!(cluster, nodes, count) do
+  defp burst!(cluster, nodes, count, round) do
     source = node!(nodes, "n1")
     started = System.monotonic_time(:millisecond)
 
     docs =
       Enum.map(1..count, fn index ->
-        id = "burst-" <> String.pad_leading(Integer.to_string(index), 4, "0")
-        body = %{"kind" => "burst", "i" => index}
+        id = document_id(round, "burst-#{index}")
+        body = %{"kind" => "burst", "i" => index, "round" => round}
         revision = put_document!(cluster, source, id, body)
         {id, revision, body}
       end)
 
     write_ms = max(System.monotonic_time(:millisecond) - started, 1)
     converge_started = System.monotonic_time(:millisecond)
-    converge_burst!(cluster, nodes, source, docs)
+    converge_burst!(cluster, nodes, docs)
 
     converge_ms = System.monotonic_time(:millisecond) - converge_started
     docs_per_s = Float.round(count * 1_000 / write_ms, 1)
     assert docs_per_s > 0
     assert converge_ms >= 0
 
-    %{count: count, write_ms: write_ms, docs_per_s: docs_per_s, converge_ms: converge_ms}
+    %{
+      count: count,
+      write_ms: write_ms,
+      docs_per_s: docs_per_s,
+      converge_ms: converge_ms,
+      docs: docs
+    }
   end
 
-  defp converge_burst!(cluster, nodes, source, docs) do
-    nodes
-    |> Enum.reject(&(&1.name == source.name))
-    |> Enum.each(&converge_docs!(cluster, &1, docs))
+  defp converge_burst!(cluster, nodes, docs) do
+    deadline = System.monotonic_time(:millisecond) + 180_000
+    Enum.each(nodes, &converge_docs!(cluster, &1, docs, deadline))
   end
 
-  defp converge_docs!(cluster, node, docs) do
+  defp converge_docs!(cluster, node, docs, deadline) do
     Enum.each(docs, fn {id, revision, body} ->
-      wait_document!(cluster, node, id, revision, body, 180_000)
+      timeout = deadline - System.monotonic_time(:millisecond)
+      assert timeout > 0, "batch convergence exceeded 180000ms on #{node.name} at #{id}"
+      wait_document!(cluster, node, id, revision, body, timeout)
     end)
   end
 
@@ -306,6 +337,8 @@ defmodule VialKeeper.Manual.ContainerReplicationTest do
   defp node!(nodes, name) do
     Enum.find(nodes, &(&1.name == name)) || flunk("missing container #{name}")
   end
+
+  defp document_id(round, suffix), do: "round-#{round}-#{suffix}"
 
   defp burst_count do
     case System.get_env("VIAL_KEEPER_CONTAINER_REPLICATION_BURST") do
