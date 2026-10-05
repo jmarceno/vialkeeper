@@ -20,6 +20,11 @@ defmodule VialKeeper.Storage.Ports.ChangeLog do
               :ok | {:error, VialKeeper.Error.t()}
   @callback append_change(BackendContext.t(), map()) :: :ok | {:error, VialKeeper.Error.t()}
   @callback append_changes(BackendContext.t(), [map()]) :: :ok | {:error, VialKeeper.Error.t()}
+  @doc """
+  Reads rows with `since < sequence <= through` in order, at most `limit`.
+  `last_sequence` is the last returned row while more rows remain, and
+  `through` once the page reaches it (sequences may have holes).
+  """
   @callback read_page(BackendContext.t(), non_neg_integer(), non_neg_integer(), pos_integer()) ::
               result(%{
                 results: [change_entry()],

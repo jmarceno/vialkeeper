@@ -200,26 +200,55 @@ defmodule VialKeeper.Runtime.SequenceLedgerTest do
   end
 
   test "with_reservation places numbers in the process and completes by result", %{uuid: uuid} do
-    assert {{:ok, :written}, 0} =
-             SequenceLedger.with_reservation(uuid, 2, :infinity, fn -> {:ok, :written} end)
+    uses = fn count ->
+      context = %VialKeeper.Storage.BackendContext{
+        backend: Adapter,
+        backend_ref: nil,
+        bundle_root: "",
+        identity: %{database_uuid: uuid}
+      }
+
+      VialKeeper.Storage.Services.Sequences.take(context, count)
+    end
+
+    assert {{:ok, [1, 2]}, 2} =
+             SequenceLedger.with_reservation(uuid, 2, :infinity, fn -> uses.(2) end)
 
     assert {:ok, %{visible: 2, data_version: 2}} = SequenceLedger.view(uuid)
 
+    # A committed write that used fewer numbers than reserved returns the rest
+    # while its reservation is the newest one.
+    assert {{:ok, [3]}, 3} = SequenceLedger.with_reservation(uuid, 3, :infinity, fn -> uses.(1) end)
+    assert {:ok, %{visible: 3, data_version: 3}} = SequenceLedger.view(uuid)
+
+    # Failed and raising writes stored nothing; their numbers come back too.
     assert {{:error, :failed}, 0} =
              SequenceLedger.with_reservation(uuid, 1, :infinity, fn -> {:error, :failed} end)
-
-    assert {:ok, %{visible: 3, data_version: 2}} = SequenceLedger.view(uuid)
 
     assert_raise RuntimeError, fn ->
       SequenceLedger.with_reservation(uuid, 1, :infinity, fn -> raise "boom" end)
     end
 
-    assert {:ok, %{visible: 4, data_version: 2}} = SequenceLedger.view(uuid)
+    assert {:ok, %{visible: 3, data_version: 3}} = SequenceLedger.view(uuid)
 
     assert {{:ok, :nothing}, 0} =
              SequenceLedger.with_reservation(uuid, 0, :infinity, fn -> {:ok, :nothing} end)
 
-    assert SequenceLedger.visible(uuid) == 4
+    assert {:ok, _token, 4, 4} = SequenceLedger.reserve(uuid, 1, :infinity)
+  end
+
+  test "only the newest reservation returns unused numbers", %{uuid: uuid} do
+    {:ok, a, 1, 3} = SequenceLedger.reserve(uuid, 3, :infinity)
+    {:ok, b, 4, 4} = SequenceLedger.reserve(uuid, 1, :infinity)
+
+    # Not the newest: its unused numbers 2..3 stay holes.
+    assert :ok = SequenceLedger.complete(uuid, a, :committed, 1)
+    assert SequenceLedger.visible(uuid) == 3
+
+    # The newest returns everything above what it used.
+    assert :ok = SequenceLedger.complete(uuid, b, :aborted, 0)
+    assert SequenceLedger.visible(uuid) == 3
+    assert {:ok, _c, 4, 4} = SequenceLedger.reserve(uuid, 1, :infinity)
   end
 
   defp persisted(path) do

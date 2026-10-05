@@ -78,11 +78,22 @@ defmodule VialKeeper.Runtime.SequenceLedger do
       else: call(uuid, {:reserve, count}, Deadline.call_timeout(deadline))
   end
 
-  @doc "Finishes a reservation after its transaction committed or rolled back."
-  @spec complete(binary(), reference(), outcome()) :: :ok
-  def complete(uuid, token, outcome)
-      when is_binary(uuid) and is_reference(token) and outcome in [:committed, :aborted] do
-    case call(uuid, {:complete, token, outcome}, VialKeeper.Config.shutdown_timeout()) do
+  @doc """
+  Finishes a reservation after its transaction committed or rolled back.
+
+  `used_through` is the highest sequence the write stored (0 for none), or
+  `:all` when unknown. While the reservation is still the newest one handed
+  out, its numbers above `used_through` are taken back, so a write that
+  changed nothing leaves no hole at the end of the feed. Any other unused
+  number is a permanent hole.
+  """
+  @spec complete(binary(), reference(), outcome(), non_neg_integer() | :all) :: :ok
+  def complete(uuid, token, outcome, used_through \\ :all)
+      when is_binary(uuid) and is_reference(token) and outcome in [:committed, :aborted] and
+             (used_through == :all or (is_integer(used_through) and used_through >= 0)) do
+    message = {:complete, token, outcome, used_through}
+
+    case call(uuid, message, VialKeeper.Config.shutdown_timeout()) do
       :ok -> :ok
       # A dead ledger restarted every writer with it; nothing is left to finish.
       {:error, %Error{}} -> :ok
@@ -180,7 +191,9 @@ defmodule VialKeeper.Runtime.SequenceLedger do
         nil -> 0
       end
 
-    :ok = complete(uuid, token, outcome)
+    # A rolled-back write stored nothing, whatever numbers it took.
+    used_through = if outcome == :committed, do: max_used, else: 0
+    :ok = complete(uuid, token, outcome, used_through)
     max_used
   end
 
@@ -232,8 +245,8 @@ defmodule VialKeeper.Runtime.SequenceLedger do
     end
   end
 
-  def handle_call({:complete, token, outcome}, _from, state) do
-    {:reply, :ok, finish_reservation(state, token, outcome)}
+  def handle_call({:complete, token, outcome, used_through}, _from, state) do
+    {:reply, :ok, finish_reservation(state, token, outcome, used_through)}
   end
 
   def handle_call({:await, sequence}, from, state) do
@@ -248,7 +261,7 @@ defmodule VialKeeper.Runtime.SequenceLedger do
   def handle_info({:DOWN, monitor_ref, :process, _pid, _reason}, state) do
     case Map.fetch(state.by_monitor, monitor_ref) do
       # A dead writer can never commit: its connection rolls back when closed.
-      {:ok, token} -> {:noreply, finish_reservation(state, token, :aborted)}
+      {:ok, token} -> {:noreply, finish_reservation(state, token, :aborted, :all)}
       :error -> {:noreply, state}
     end
   end
@@ -351,13 +364,13 @@ defmodule VialKeeper.Runtime.SequenceLedger do
     {token, state}
   end
 
-  defp finish_reservation(state, token, outcome) do
+  defp finish_reservation(state, token, outcome, used_through) do
     case Map.pop(state.by_token, token) do
       {nil, _by_token} ->
         state
 
       {first, by_token} ->
-        {{_last, ^token, monitor_ref, count}, outstanding} =
+        {{last, ^token, monitor_ref, count}, outstanding} =
           :gb_trees.take(first, state.outstanding)
 
         Process.demonitor(monitor_ref, [:flush])
@@ -365,6 +378,7 @@ defmodule VialKeeper.Runtime.SequenceLedger do
         %{
           state
           | outstanding: outstanding,
+            next: take_back_unused(state.next, first, last, used_through),
             by_token: by_token,
             by_monitor: Map.delete(state.by_monitor, monitor_ref),
             version: bump_version(state.version, outcome, count)
@@ -372,6 +386,15 @@ defmodule VialKeeper.Runtime.SequenceLedger do
         |> advance_visible()
     end
   end
+
+  # Only the newest reservation can return numbers: nothing above it was
+  # handed out, and every returned number is still covered by the persisted
+  # reserved-through value.
+  defp take_back_unused(next, first, last, used_through)
+       when is_integer(used_through) and last == next - 1,
+       do: max(first, used_through + 1)
+
+  defp take_back_unused(next, _first, _last, _used_through), do: next
 
   defp bump_version(version, :committed, count) when count >= 1, do: version + 1
   defp bump_version(version, _outcome, _count), do: version

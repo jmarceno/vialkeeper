@@ -591,7 +591,13 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   def read_changes(_adapter, _request),
     do: {:error, Error.invalid_request("changes request must be an object")}
 
-  @doc "Reads one decoded change-feed page with `since < sequence <= through`."
+  @doc """
+  Reads one decoded change-feed page with `since < sequence <= through`.
+
+  `last_sequence` is the last returned row, or `through` once no row up to
+  `through` remains: sequences have holes, and every sequence up to the
+  visible `through` is final.
+  """
   @spec read_change_page(t(), non_neg_integer(), non_neg_integer(), pos_integer()) ::
           {:ok, Page.t()} | {:error, Error.t()}
   def read_change_page(%__MODULE__{conn: conn}, since, through, limit) do
@@ -603,7 +609,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
            SQLite.trace_sqlite_phase(:changes_decode, [entries: length(rows)], fn ->
              Changes.decode_rows(rows)
            end) do
-      {:ok, Page.new(results, List.last(results, %{sequence: since}).sequence, has_more)}
+      {:ok, Page.new(results, page_end(results, since, through, has_more), has_more)}
     else
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -907,6 +913,9 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     |> Map.put(:compaction_epoch, Map.get(identity, :compaction_epoch, 0))
     |> Map.put(:retention_mode, get_in(config, ["retention", "mode"]) || "disabled")
   end
+
+  defp page_end(results, since, _through, true), do: List.last(results, %{sequence: since}).sequence
+  defp page_end(_results, since, through, false), do: max(since, through)
 
   defp normalize_error(:unsupported_readers), do: :unsupported_readers
   defp normalize_error(:unsupported_writers), do: :unsupported_writers
