@@ -417,10 +417,10 @@ Reopen, close, then copy. Engine-specific journal pairing is documented in
 (log and WAL sidecars) and
 [lib/vial_keeper/storage/sqlite/BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).
 
-Disk WAL uses `synchronous=NORMAL` and a 64 MiB autocheckpoint. Application
-crash recovers committed WAL frames. OS/power loss can drop a suffix of
-acknowledged commits. Clean close is the portability point with no WAL
-sidecars.
+Both engines run disk databases with `synchronous=NORMAL` (SQLite adds a
+64 MiB WAL autocheckpoint). Application crash recovers every acknowledged
+commit. OS/power loss can drop a suffix of acknowledged commits. Clean close
+is the portability point with no journal sidecars.
 
 Derived bundles are often created as
 `_derived/<slug>--<short-uuid>.derived.vialkeeper`. Path and suffix are

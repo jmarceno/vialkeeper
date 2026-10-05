@@ -252,6 +252,7 @@ defmodule VialKeeper.Storage.SQLite.Connection do
 
   defp normalize_param({:blob, value}) when is_list(value), do: {:blob, IO.iodata_to_binary(value)}
   defp normalize_param(value) when is_list(value), do: IO.iodata_to_binary(value)
+  defp normalize_param(nil), do: nil
   defp normalize_param(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_param(value), do: value
 end

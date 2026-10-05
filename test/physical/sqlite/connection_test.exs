@@ -49,15 +49,16 @@ defmodule VialKeeper.StorageAdapter.ConnectionTest do
   end
 
   test "converts non-native parameters before binding", %{conn: conn} do
-    sql = "SELECT ?, ?, ?, ?, typeof(?)"
+    sql = "SELECT ?, ?, ?, ?, typeof(?), typeof(?)"
 
-    assert {:ok, [["2026-10-04", "2026-10-04T12:00:00", "active", "ab", "blob"]]} =
+    assert {:ok, [["2026-10-04", "2026-10-04T12:00:00", "active", "ab", "blob", "null"]]} =
              Connection.query(conn, sql, [
                ~D[2026-10-04],
                ~U[2026-10-04 12:00:00Z],
                :active,
                [?a, "b"],
-               {:blob, [<<1>>, <<2>>]}
+               {:blob, [<<1>>, <<2>>]},
+               nil
              ])
   end
 
