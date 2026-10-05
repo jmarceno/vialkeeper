@@ -290,7 +290,7 @@ defmodule VialKeeper.Runtime.SequenceLedger do
 
       with {:ok, state} <- persist(state, state.next - 1 + @block) do
         state = publish_view(state)
-        :ok = Sequences.publish_view(state.uuid, self(), state.cell)
+        :ok = Sequences.publish_view(state.uuid, self(), state.cell, state.version)
         {:ok, state}
       end
     end

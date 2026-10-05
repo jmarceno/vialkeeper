@@ -343,6 +343,7 @@ defmodule VialKeeper.Query do
     last_id = get(last, :id)
 
     data_version = value_or_default(get(result, :data_version), 0)
+    visible = value_or_default(get(result, :sequence), 0)
 
     case result_plan_metadata(result, request) do
       {:ok, index_bindings, plan_digest} when is_binary(last_id) ->
@@ -354,6 +355,7 @@ defmodule VialKeeper.Query do
          encode_bookmark(response, %{
            "query_fingerprint" => request.fingerprint,
            "sequence" => data_version,
+           "visible" => visible,
            "last_id" => last_id,
            "plan_digest" => plan_digest,
            "index_bindings" => index_bindings,

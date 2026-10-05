@@ -34,7 +34,16 @@ defmodule VialKeeper.Storage.Services.Sequences do
           max_used: non_neg_integer()
         }
 
-  @type view :: %{visible: non_neg_integer(), data_version: pos_integer()}
+  @typedoc """
+  The visible watermark, the data version, and the data version the serving
+  ledger started its run at (`data_version_base`). Every data version of an
+  earlier run is below the base.
+  """
+  @type view :: %{
+          visible: non_neg_integer(),
+          data_version: pos_integer(),
+          data_version_base: pos_integer()
+        }
 
   @doc "Stores a reserved range `first..last` for `database_uuid` in this process."
   @spec put_reservation(binary(), reference(), pos_integer(), pos_integer()) :: :ok
@@ -97,8 +106,13 @@ defmodule VialKeeper.Storage.Services.Sequences do
   """
   @spec overlay(BackendContext.t(), map()) :: {:ok, map()} | {:error, Error.t()}
   def overlay(%BackendContext{} = context, identity) when is_map(identity) do
-    with {:ok, %{visible: visible, data_version: version}} <- view(context) do
-      {:ok, identity |> Map.put(:current_sequence, visible) |> Map.put(:data_version, version)}
+    with {:ok, %{visible: visible, data_version: version, data_version_base: base}} <-
+           view(context) do
+      {:ok,
+       identity
+       |> Map.put(:current_sequence, visible)
+       |> Map.put(:data_version, version)
+       |> Map.put(:data_version_base, base)}
     end
   end
 
@@ -129,15 +143,16 @@ defmodule VialKeeper.Storage.Services.Sequences do
   is written once per ledger initialization; the cell itself changes on every
   completed write without a message.
   """
-  @spec publish_view(binary(), pid(), :atomics.atomics_ref()) :: :ok
-  def publish_view(database_uuid, ledger, cell) when is_binary(database_uuid) and is_pid(ledger),
-    do: :persistent_term.put({@view_key, database_uuid}, {ledger, cell})
+  @spec publish_view(binary(), pid(), :atomics.atomics_ref(), pos_integer()) :: :ok
+  def publish_view(database_uuid, ledger, cell, data_version_base)
+      when is_binary(database_uuid) and is_pid(ledger) and is_integer(data_version_base),
+      do: :persistent_term.put({@view_key, database_uuid}, {ledger, cell, data_version_base})
 
   @doc "Withdraws the view `ledger` published for a database."
   @spec withdraw_view(binary(), pid()) :: :ok
   def withdraw_view(database_uuid, ledger) when is_binary(database_uuid) and is_pid(ledger) do
     case :persistent_term.get({@view_key, database_uuid}, nil) do
-      {^ledger, _cell} ->
+      {^ledger, _cell, _base} ->
         _ = :persistent_term.erase({@view_key, database_uuid})
         :ok
 
@@ -153,13 +168,14 @@ defmodule VialKeeper.Storage.Services.Sequences do
   @spec ledger_view(binary() | nil) :: {:ok, view()} | :none
   def ledger_view(database_uuid) when is_binary(database_uuid) do
     case :persistent_term.get({@view_key, database_uuid}, nil) do
-      {ledger, cell} ->
+      {ledger, cell, base} ->
         if Process.alive?(ledger),
           do:
             {:ok,
              %{
                visible: :atomics.get(cell, @visible_slot),
-               data_version: :atomics.get(cell, @version_slot)
+               data_version: :atomics.get(cell, @version_slot),
+               data_version_base: base
              }},
           else: :none
 
@@ -220,7 +236,7 @@ defmodule VialKeeper.Storage.Services.Sequences do
 
   defp standalone_view(context) do
     with {:ok, high_water} <- high_water(context) do
-      {:ok, %{visible: high_water, data_version: high_water + 1}}
+      {:ok, %{visible: high_water, data_version: high_water + 1, data_version_base: high_water + 1}}
     end
   end
 

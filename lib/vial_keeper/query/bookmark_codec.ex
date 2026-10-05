@@ -10,6 +10,7 @@ defmodule VialKeeper.Query.BookmarkCodec do
       "plan_digest" => bookmark.plan_digest,
       "index_bindings" => bookmark.index_bindings,
       "sequence" => bookmark.sequence,
+      "visible" => bookmark.visible,
       "sort_direction" => bookmark.sort_direction,
       "ordering_key" => bookmark.ordering_key,
       "last_id" => bookmark.last_id

@@ -20,6 +20,7 @@ defmodule VialKeeper.Domain.Bookmark do
     :plan_digest,
     :index_bindings,
     :sequence,
+    :visible,
     :sort_direction,
     :ordering_key,
     :last_id,
@@ -37,6 +38,7 @@ defmodule VialKeeper.Domain.Bookmark do
           plan_digest: binary(),
           index_bindings: [index_binding()],
           sequence: non_neg_integer(),
+          visible: non_neg_integer() | nil,
           sort_direction: binary() | nil,
           ordering_key: term(),
           last_id: binary(),
@@ -50,6 +52,7 @@ defmodule VialKeeper.Domain.Bookmark do
     :plan_digest,
     :index_bindings,
     :sequence,
+    :visible,
     :sort_direction,
     :ordering_key,
     :last_id,
@@ -63,6 +66,7 @@ defmodule VialKeeper.Domain.Bookmark do
     "plan_digest",
     "index_bindings",
     "sequence",
+    "visible",
     "sort_direction",
     "ordering_key",
     "last_id",
@@ -90,6 +94,7 @@ defmodule VialKeeper.Domain.Bookmark do
         plan_digest: attrs["plan_digest"],
         index_bindings: attrs["index_bindings"],
         sequence: attrs["sequence"],
+        visible: attrs["visible"],
         sort_direction: attrs["sort_direction"],
         ordering_key: attrs["ordering_key"],
         last_id: attrs["last_id"],
@@ -123,6 +128,7 @@ defmodule VialKeeper.Domain.Bookmark do
          nil <- validate_plan_digest(attrs),
          nil <- validate_index_bindings(attrs),
          nil <- validate_sequence(attrs),
+         nil <- validate_visible(attrs),
          nil <- validate_ordering_key(attrs),
          nil <- validate_last_id(attrs),
          nil <- validate_checksum(attrs) do
@@ -162,6 +168,15 @@ defmodule VialKeeper.Domain.Bookmark do
 
   defp validate_sequence(_),
     do: Error.invalid_bookmark("bookmark sequence must be non-negative")
+
+  # The visible sequence a page was read at; it lets a bookmark outlive a
+  # restart of the database's sequence ledger.
+  defp validate_visible(%{visible: value}) when is_integer(value) and value >= 0, do: nil
+  defp validate_visible(%{visible: nil}), do: nil
+  defp validate_visible(attrs) when not is_map_key(attrs, :visible), do: nil
+
+  defp validate_visible(_),
+    do: Error.invalid_bookmark("bookmark visible sequence must be non-negative")
 
   defp validate_last_id(%{last_id: value}) when is_binary(value), do: nil
   defp validate_last_id(_), do: Error.invalid_bookmark("bookmark last_id is required")
