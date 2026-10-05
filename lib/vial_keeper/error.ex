@@ -61,6 +61,9 @@ defmodule VialKeeper.Error do
     subscription_overloaded: {429, true},
     resource_limit: {422, false},
     database_overloaded: {429, true},
+    # Internal only: a backend reports a write-write conflict between writer
+    # connections. Writer slots retry it and never return it to clients.
+    write_conflict: {409, true},
     database_closed: {503, true},
     database_unavailable: {503, true},
     # API-016: internal_error retryability is "Depends on details". The `:depends` sentinel

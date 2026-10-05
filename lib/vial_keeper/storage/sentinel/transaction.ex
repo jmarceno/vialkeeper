@@ -20,6 +20,10 @@ defmodule VialKeeper.Storage.Sentinel.Transaction do
   end
 
   @impl true
+  def run_concurrent(%BackendContext{} = context, fun) when is_function(fun, 1),
+    do: run(context, fun)
+
+  @impl true
   def run_snapshot(%BackendContext{} = context, fun) when is_function(fun, 1) do
     run(context, fun)
   end

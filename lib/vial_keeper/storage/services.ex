@@ -30,6 +30,7 @@ defmodule VialKeeper.Storage.Services do
     Mutations,
     Query,
     Retention,
+    Sequences,
     Shadows,
     Views
   }
@@ -45,10 +46,21 @@ defmodule VialKeeper.Storage.Services do
     :attachment_metadata
   ]
 
-  @doc "Loads the current backend identity through the lifecycle port."
+  @doc """
+  Loads the current backend identity through the lifecycle port.
+
+  `current_sequence` is the visible sequence watermark and `data_version` the
+  committed-write counter; both come from the sequence ledger (see
+  `VialKeeper.Storage.Services.Sequences.overlay/2`), never from the backend.
+  """
   @spec identity(BackendContext.t()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def identity(%BackendContext{} = context),
-    do: with_port(context, :lifecycle, fn -> Access.port(context, :lifecycle).identity(context) end)
+    do:
+      with_port(context, :lifecycle, fn ->
+        with {:ok, stored} <- Access.port(context, :lifecycle).identity(context) do
+          Sequences.overlay(context, stored)
+        end
+      end)
 
   @doc "Updates backend configuration through the lifecycle port."
   @spec update_config(BackendContext.t(), map()) ::
@@ -132,7 +144,8 @@ defmodule VialKeeper.Storage.Services do
                limit,
                get_in(current_identity, [:config, "changes", "max_batch"])
              ) do
-        Access.port(context, :change_log).read_page(context, since, limit)
+        through = Map.fetch!(current_identity, :current_sequence)
+        Access.port(context, :change_log).read_page(context, since, max(since, through), limit)
       end
     end)
   end

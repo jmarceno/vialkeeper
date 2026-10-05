@@ -41,6 +41,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     QueryRunner,
     ReplicationJobs,
     Retention,
+    RetentionRecords,
     Revisions,
     Schema,
     SearchIndexes,
@@ -58,12 +59,18 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     :context_ref,
     storage_mode: :disk,
     reader?: false,
+    role: :owner,
     retention_fault: nil,
     view_fault: nil,
     derived_fault: nil
   ]
 
   @type storage_mode :: :disk | :memory
+  @typedoc """
+  `:owner` is the database owner's writer, `:writer_slot` an extra writer
+  connection (writer slots and the sequence ledger).
+  """
+  @type role :: :owner | :writer_slot
   @type retention_fault :: (atom() -> :ok | {:error, Error.t()}) | nil
   @type view_fault :: (atom() -> :ok | {:error, Error.t()}) | nil
   @type derived_fault :: (atom() -> :ok | {:error, Error.t()}) | nil
@@ -74,6 +81,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
           context_ref: OpaqueHandle.t() | nil,
           storage_mode: storage_mode(),
           reader?: boolean(),
+          role: role(),
           retention_fault: retention_fault(),
           view_fault: view_fault(),
           derived_fault: derived_fault()
@@ -206,6 +214,51 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
 
   def open_reader(_adapter), do: {:error, :unsupported_readers}
 
+  @doc """
+  Opens an extra read-write connection to the same disk database for a writer
+  slot or the sequence ledger. Its writes serialize with every other writer
+  through `BEGIN IMMEDIATE`. Memory databases return `:unsupported_writers`.
+  """
+  @spec open_writer(t()) ::
+          {:ok, t()} | {:error, :unsupported_writers} | {:error, Error.t()}
+  def open_writer(%__MODULE__{storage_mode: :disk, reader?: false, path: path, identity: identity})
+      when is_binary(path) and path != ":memory:" do
+    case Connection.open(path, mode: [:readwrite]) do
+      {:ok, conn} -> finish_open_writer(conn, path, identity)
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  def open_writer(_adapter), do: {:error, :unsupported_writers}
+
+  @doc """
+  Reports how many writer connections may run at once and how the sequence
+  ledger persists reservations. `max_writers` is the test-only
+  `:sqlite_max_writers` setting (default 1); extra SQLite writers still
+  serialize through `BEGIN IMMEDIATE`.
+  """
+  @spec writer_capabilities(t()) :: %{
+          max_writers: pos_integer(),
+          sequence_persistence: :separate_connection | :none
+        }
+  def writer_capabilities(%__MODULE__{storage_mode: storage_mode}) do
+    %{
+      max_writers: Application.get_env(:vial_keeper, :sqlite_max_writers, 1),
+      sequence_persistence: if(storage_mode == :disk, do: :separate_connection, else: :none)
+    }
+  end
+
+  @doc "Clears every per-connection cache a writer process holds for `adapter`."
+  @spec reset_writer_caches(t()) :: :ok
+  def reset_writer_caches(%__MODULE__{conn: conn}) do
+    IndexCatalog.clear_cache(conn)
+    Views.clear_cache(conn)
+    QueryRunner.clear_cache(conn)
+    invalidate_identity_cache(conn)
+    RetentionRecords.forget_pending_local_causal(conn)
+    Changes.forget_high_water(conn)
+  end
+
   @doc "Interrupts a statement running on this SQLite reader connection."
   @spec interrupt_reader(t()) :: :ok | {:error, term()}
   def interrupt_reader(%__MODULE__{storage_mode: :memory}), do: {:error, :unsupported_readers}
@@ -231,6 +284,14 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     close_sqlite(adapter, conn, context_ref)
   end
 
+  # Only the owner stops full-text search, checkpoints and removes sidecars.
+  def close(%__MODULE__{conn: conn, context_ref: context_ref, role: :writer_slot} = adapter) do
+    reset_writer_caches(adapter)
+    result = Connection.close(conn)
+    Context.release(context_ref)
+    result
+  end
+
   def close(%__MODULE__{conn: conn, context_ref: context_ref} = adapter) do
     Search.stop(to_context(adapter))
     close_sqlite(adapter, conn, context_ref)
@@ -245,7 +306,8 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
              initial_derived_view: MapAccess.get(options, :initial_derived_view),
              shadow_metadata: MapAccess.get(options, :shadow_metadata)
            ),
-         {:ok, identity} <- Schema.validate(conn, storage_mode: storage_mode) do
+         {:ok, identity} <- Schema.validate(conn, storage_mode: storage_mode),
+         :ok <- Changes.remember_high_water(conn, identity.sequence_reserved_through) do
       {:ok,
        Context.bind(%__MODULE__{
          path: path,
@@ -263,8 +325,28 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   defp finish_open(conn, path) do
     with :ok <- Schema.recognize_v1(conn),
          :ok <- Schema.configure(conn),
-         {:ok, identity} <- Schema.validate(conn) do
+         {:ok, identity} <- Schema.validate(conn),
+         :ok <- Changes.remember_high_water(conn, identity.sequence_reserved_through) do
       {:ok, Context.bind(%__MODULE__{path: path, conn: conn, identity: decode_identity(identity)})}
+    else
+      {:error, reason} ->
+        _ = Connection.close(conn)
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp finish_open_writer(conn, path, writer_identity) do
+    with :ok <- Schema.recognize_v1(conn),
+         :ok <- Schema.configure(conn),
+         {:ok, uuid} <- Schema.read_database_uuid(conn),
+         :ok <- match_reader_uuid(uuid, writer_identity) do
+      {:ok,
+       Context.bind(%__MODULE__{
+         path: path,
+         conn: conn,
+         identity: writer_identity,
+         role: :writer_slot
+       })}
     else
       {:error, reason} ->
         _ = Connection.close(conn)
@@ -296,6 +378,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     Views.clear_cache(conn)
     QueryRunner.clear_cache(conn)
     invalidate_identity_cache(conn)
+    _ = Changes.forget_high_water(conn)
     checkpoint_on_close(adapter)
     result = Connection.close(conn)
     remove_empty_sidecars(adapter)
@@ -326,12 +409,23 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
 
   defp remove_empty_sidecars(_adapter), do: :ok
 
+  @doc """
+  Loads the identity with the visible `current_sequence` and `data_version`
+  overlaid by the storage services (the legacy adapter boundary).
+  """
   @impl true
-  def identity(%__MODULE__{reader?: true, conn: conn, identity: identity}) do
+  def identity(%__MODULE__{} = adapter), do: Services.identity(to_context(adapter))
+
+  @doc """
+  Loads the stored identity fields from `db_meta`. It carries no sequence:
+  the visible sequence comes from the sequence ledger.
+  """
+  @spec stored_identity(t()) :: {:ok, map()} | {:error, Error.t()}
+  def stored_identity(%__MODULE__{reader?: true, conn: conn, identity: identity}) do
     read_identity_metadata(conn, identity)
   end
 
-  def identity(%__MODULE__{conn: conn, identity: identity}) do
+  def stored_identity(%__MODULE__{conn: conn, identity: identity}) do
     case Process.get({@identity_cache_key, conn}) do
       {:ok, _cached_identity} = cached ->
         cached
@@ -350,13 +444,12 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   defp read_identity_metadata(conn, identity) do
     case Connection.query(
            conn,
-           "SELECT database_kind, current_sequence, history_epoch, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
+           "SELECT database_kind, history_epoch, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
          ) do
       {:ok,
        [
          [
            database_kind,
-           sequence,
            history_epoch,
            floor,
            compaction_epoch,
@@ -371,7 +464,6 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
            %{
              identity
              | database_kind: database_kind,
-               current_sequence: sequence,
                history_epoch: history_epoch,
                retention_floor_sequence: floor,
                compaction_epoch: compaction_epoch,
@@ -473,7 +565,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     do: {:error, Error.invalid_request("conflict request must be an object")}
 
   @impl true
-  def read_changes(%__MODULE__{conn: conn} = adapter, request) when is_map(request) do
+  def read_changes(%__MODULE__{} = adapter, request) when is_map(request) do
     since = MapAccess.get(request, :since, 0)
     limit = MapAccess.get(request, :limit, 100)
 
@@ -486,20 +578,11 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
              limit,
              get_in(identity, [:config, "changes", "max_batch"])
            ),
-         {:ok, {rows, page_has_more}} <-
-           SQLite.trace_sqlite_phase(:changes_fetch, [entries: limit], fn ->
-             Changes.fetch_page(conn, since, limit)
-           end),
-         {:ok, results} <-
-           SQLite.trace_sqlite_phase(:changes_decode, [entries: length(rows)], fn ->
-             Changes.decode_rows(rows)
-           end),
-         last_sequence <- List.last(results, %{sequence: since}).sequence,
-         {:ok, has_more} <-
-           SQLite.trace_sqlite_phase(:changes_has_more, fn ->
-             {:ok, page_has_more}
-           end) do
-      {:ok, Page.new(results, last_sequence, has_more)}
+         {:ok, page} <-
+           read_change_page(adapter, since, max(since, identity.current_sequence), limit),
+         {:ok, _has_more} <-
+           SQLite.trace_sqlite_phase(:changes_has_more, fn -> {:ok, page.has_more} end) do
+      {:ok, page}
     else
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -507,6 +590,24 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
 
   def read_changes(_adapter, _request),
     do: {:error, Error.invalid_request("changes request must be an object")}
+
+  @doc "Reads one decoded change-feed page with `since < sequence <= through`."
+  @spec read_change_page(t(), non_neg_integer(), non_neg_integer(), pos_integer()) ::
+          {:ok, Page.t()} | {:error, Error.t()}
+  def read_change_page(%__MODULE__{conn: conn}, since, through, limit) do
+    with {:ok, {rows, has_more}} <-
+           SQLite.trace_sqlite_phase(:changes_fetch, [entries: limit], fn ->
+             Changes.fetch_page(conn, since, through, limit)
+           end),
+         {:ok, results} <-
+           SQLite.trace_sqlite_phase(:changes_decode, [entries: length(rows)], fn ->
+             Changes.decode_rows(rows)
+           end) do
+      {:ok, Page.new(results, List.last(results, %{sequence: since}).sequence, has_more)}
+    else
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
 
   @impl true
   def has_local_origin_changes?(%__MODULE__{conn: conn}),
@@ -748,7 +849,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   defp adapter_identity(adapter) do
     case identity(adapter) do
       {:ok, value} -> value
-      _ -> %{current_sequence: 0, config: VialKeeper.Config.defaults()}
+      _ -> %{config: VialKeeper.Config.defaults()}
     end
   end
 
@@ -799,6 +900,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     config = decode_json!(identity.config_json)
 
     identity
+    |> Map.delete(:sequence_reserved_through)
     |> Map.put(:config, config)
     |> Map.put(:retention_floor, Map.get(identity, :retention_floor_sequence))
     |> Map.put(:retention_floor_sequence, Map.get(identity, :retention_floor_sequence, 0))
@@ -807,6 +909,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   end
 
   defp normalize_error(:unsupported_readers), do: :unsupported_readers
+  defp normalize_error(:unsupported_writers), do: :unsupported_writers
   defp normalize_error(reason), do: Errors.normalize(reason)
 
   defp match_reader_uuid(uuid, identity) when is_map(identity) do

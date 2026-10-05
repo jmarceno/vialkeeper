@@ -567,12 +567,33 @@ orphans — rerun GC after recovery.
 
 ## Admission and fairness
 
-Each open disk database has a bounded snapshot read pool beside the single
-writer. Classified reads use up to `read_pool_size` readonly connections
-(FIFO, extra waits capped by `read_queue_limit`). Writes and exclusive work
-still go through one `DatabaseAdmission` permit onto `DatabaseOwner`. Exclusive
-commands (compact, integrity, rebuild, live-digest, blob cleanup, close) drain
-in-flight snapshots first.
+Each open disk database has a bounded snapshot read pool beside the writer.
+Classified reads use up to `read_pool_size` readonly connections (FIFO, extra
+waits capped by `read_queue_limit`).
+
+Document writes (put, delete, conflict resolution and bulk writes) run on a
+writer pool of up to `writer_pool_size` writer connections when the storage
+backend supports more than one writer; extra writes wait in a FIFO queue
+capped by `write_queue_limit`. The effective pool size is
+`min(writer_pool_size, backend writer limit)`, and the pool exists only when
+that is above one. The SQLite backend supports one writer, so with SQLite
+every write goes through `DatabaseOwner`. Writes to the same document always
+run one at a time, in arrival order. A full write queue returns the retryable
+`database_overloaded` error.
+
+Other writes (configuration, imports, index, view and derived-view
+maintenance, checkpoints, jobs, peer positions and pending blobs) and
+exclusive work go through one `DatabaseAdmission` permit onto
+`DatabaseOwner`. While a writer pool exists, they first pause it and wait for
+running document writes. Exclusive commands (compact, integrity, rebuild,
+live-digest, blob cleanup, close) also drain in-flight snapshots first.
+
+Writes may commit out of order. The changes feed and `current_sequence` only
+advance past a sequence once every lower sequence has committed or rolled
+back, so feed readers never skip a write. A successful write response means
+the changes feed already includes that write. Sequences are not contiguous: a
+write that fails or changes nothing leaves its reserved sequence unused, and
+reopening a database may skip up to 4096 sequences.
 
 | Class | Typical work |
 | ----- | ------------ |
@@ -808,6 +829,8 @@ Important `[limits]` keys (see `priv/host.toml` for defaults):
 - `admission_limit` — active + queued owner ops per open DB
 - `read_pool_size` — concurrent snapshot readers per open disk DB (`1..32`, default `4`)
 - `read_queue_limit` — queued classified reads waiting for a reader (`1..4096`, default `128`)
+- `writer_pool_size` — concurrent document writers per open disk DB (`1..64`, default `8`); the effective size is capped by the storage backend's writer limit (1 for SQLite)
+- `write_queue_limit` — queued document writes waiting for a writer (`1..4096`, default `128`)
 - `max_open_databases`, `max_replication_workers`
 - Replication chain-fetch / blob-transfer / batch / in-flight-byte ceilings
 - Live-subscription and local-view ceilings

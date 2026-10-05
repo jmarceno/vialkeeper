@@ -1697,7 +1697,7 @@ defmodule VialKeeper.Storage.Services.Mutations do
     identity = Facts.identity(context)
 
     if map_size(identity) == 0 do
-      %{current_sequence: 0, config: VialKeeper.Config.defaults()}
+      %{config: VialKeeper.Config.defaults()}
     else
       identity
     end

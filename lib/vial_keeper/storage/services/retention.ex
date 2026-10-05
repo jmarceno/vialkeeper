@@ -13,7 +13,7 @@ defmodule VialKeeper.Storage.Services.Retention do
   alias VialKeeper.Retention.Service, as: RetentionService
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Ports.Access
-  alias VialKeeper.Storage.Services.Facts
+  alias VialKeeper.Storage.Services.{Facts, Sequences}
 
   @page_size 100
 
@@ -237,23 +237,20 @@ defmodule VialKeeper.Storage.Services.Retention do
   @spec load_meta(BackendContext.t()) ::
           {:ok, RetentionService.meta()} | {:error, VialKeeper.Error.t()}
   defp load_meta(%BackendContext{} = context) do
-    case Access.port(context, :lifecycle).identity(context) do
-      {:ok, identity} when is_map(identity) ->
-        config = Map.get(identity, :config) || VialKeeper.Config.defaults()
+    with {:ok, stored} <- Access.port(context, :lifecycle).identity(context),
+         {:ok, identity} <- Sequences.overlay(context, stored) do
+      config = Map.get(identity, :config) || VialKeeper.Config.defaults()
 
-        {:ok,
-         %{
-           database_uuid: Map.fetch!(identity, :database_uuid),
-           history_epoch: Map.fetch!(identity, :history_epoch),
-           current_sequence: Map.get(identity, :current_sequence, 0),
-           retention_floor_sequence: Map.get(identity, :retention_floor_sequence, 0),
-           compaction_epoch: Map.get(identity, :compaction_epoch, 0),
-           retention_boundary_digest: Map.get(identity, :retention_boundary_digest),
-           config: config
-         }}
-
-      {:error, _} = error ->
-        error
+      {:ok,
+       %{
+         database_uuid: Map.fetch!(identity, :database_uuid),
+         history_epoch: Map.fetch!(identity, :history_epoch),
+         current_sequence: Map.fetch!(identity, :current_sequence),
+         retention_floor_sequence: Map.get(identity, :retention_floor_sequence, 0),
+         compaction_epoch: Map.get(identity, :compaction_epoch, 0),
+         retention_boundary_digest: Map.get(identity, :retention_boundary_digest),
+         config: config
+       }}
     end
   end
 

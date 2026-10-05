@@ -123,9 +123,7 @@ defmodule VialKeeper.Storage.Memory.Adapter do
   end
 
   @impl true
-  def identity(%__MODULE__{store: store}) do
-    {:ok, Store.identity(store)}
-  end
+  def identity(%__MODULE__{} = adapter), do: Services.identity(to_context(adapter))
 
   @impl true
   def update_config(%__MODULE__{store: store}, config) when is_map(config) do
@@ -215,22 +213,8 @@ defmodule VialKeeper.Storage.Memory.Adapter do
     do: {:error, VialKeeper.Error.invalid_request("conflict request must be an object")}
 
   @impl true
-  def read_changes(%__MODULE__{} = adapter, request) when is_map(request) do
-    since = MapAccess.get(request, :since, 0)
-    limit = MapAccess.get(request, :limit, 100)
-
-    with :ok <- RequestValidation.validate_non_negative_integer(since, "since"),
-         :ok <- RequestValidation.validate_positive_integer(limit, "limit"),
-         {:ok, identity} <- identity(adapter),
-         :ok <- RequestValidation.validate_changes_since_floor(since, identity),
-         :ok <-
-           RequestValidation.validate_changes_limit(
-             limit,
-             get_in(identity, [:config, "changes", "max_batch"])
-           ) do
-      ChangeLog.read_page(to_context(adapter), since, limit)
-    end
-  end
+  def read_changes(%__MODULE__{} = adapter, request) when is_map(request),
+    do: Services.read_changes(to_context(adapter), request)
 
   def read_changes(_adapter, _request),
     do: {:error, VialKeeper.Error.invalid_request("changes request must be an object")}
@@ -360,7 +344,7 @@ defmodule VialKeeper.Storage.Memory.Adapter do
       revision_algorithm_version: 1,
       canonicalization_version: 1,
       replication_protocol_major: 1,
-      current_sequence: 0,
+      sequence_reserved_through: 0,
       retention_floor_sequence: 0,
       compaction_epoch: 0,
       retention_boundary_digest: nil,

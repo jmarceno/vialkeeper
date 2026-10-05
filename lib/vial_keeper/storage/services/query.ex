@@ -433,7 +433,7 @@ defmodule VialKeeper.Storage.Services.Query do
   defp maybe_put_rank(document, _), do: document
 
   defp context_identity(%BackendContext{identity: identity}) when is_map(identity), do: identity
-  defp context_identity(_), do: %{current_sequence: 0, config: VialKeeper.Config.defaults()}
+  defp context_identity(_), do: %{config: VialKeeper.Config.defaults()}
 
   defp examined_count({:ok, %{examined: examined}}) when is_integer(examined), do: examined
   defp examined_count(_), do: 0

@@ -10,10 +10,17 @@ defmodule VialKeeper.Storage.SQLite.ChangeLog do
   alias VialKeeper.Storage.SQLite.{Adapter, Changes, Connection, Context, Retention}
 
   @impl true
-  def allocate_sequences(%BackendContext{} = context, count)
-      when is_integer(count) and count >= 0 do
+  def sequence_high_water(%BackendContext{} = context) do
     with {:ok, adapter} <- Context.unwrap(context) do
-      Errors.wrap(Changes.allocate_sequences(adapter.conn, count))
+      Errors.wrap(Changes.high_water(adapter.conn))
+    end
+  end
+
+  @impl true
+  def persist_sequence_reservation(%BackendContext{} = context, through)
+      when is_integer(through) and through >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      Errors.wrap(Changes.persist_reservation(adapter.conn, through))
     end
   end
 
@@ -63,10 +70,11 @@ defmodule VialKeeper.Storage.SQLite.ChangeLog do
   end
 
   @impl true
-  def read_page(%BackendContext{} = context, since, limit)
-      when is_integer(since) and since >= 0 and is_integer(limit) and limit > 0 do
+  def read_page(%BackendContext{} = context, since, through, limit)
+      when is_integer(since) and since >= 0 and is_integer(through) and through >= 0 and
+             is_integer(limit) and limit > 0 do
     with {:ok, adapter} <- Context.unwrap(context) do
-      Errors.wrap(Adapter.read_changes(adapter, %{since: since, limit: limit}))
+      Errors.wrap(Adapter.read_change_page(adapter, since, through, limit))
     end
   end
 

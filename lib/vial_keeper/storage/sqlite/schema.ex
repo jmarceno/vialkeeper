@@ -179,7 +179,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
          {:ok, [meta]} <-
            Connection.query(
              conn,
-             "SELECT database_uuid, database_kind, history_epoch, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, current_sequence, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
+             "SELECT database_uuid, database_kind, history_epoch, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, sequence_reserved_through, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
            ) do
       with {:ok, identity} <-
              validate_schema_metadata(
@@ -360,7 +360,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
       revision_algorithm_version: revision,
       canonicalization_version: canonical,
       replication_protocol_major: protocol,
-      current_sequence: sequence,
+      sequence_reserved_through: sequence,
       retention_floor_sequence: retention_floor,
       compaction_epoch: compaction_epoch,
       retention_boundary_digest: boundary_digest,
@@ -501,7 +501,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   defp insert_metadata(conn, database_uuid, database_kind, config_json) do
     Connection.execute(
       conn,
-      "INSERT INTO db_meta (id, database_uuid, database_kind, history_epoch, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, current_sequence, retention_floor_sequence, compaction_epoch, retention_boundary_digest, created_at, config_json) VALUES (1, ?, ?, ?, 1, 1, 1, 1, 1, 0, 0, 0, NULL, ?, ?)",
+      "INSERT INTO db_meta (id, database_uuid, database_kind, history_epoch, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, sequence_reserved_through, retention_floor_sequence, compaction_epoch, retention_boundary_digest, created_at, config_json) VALUES (1, ?, ?, ?, 1, 1, 1, 1, 1, 0, 0, 0, NULL, ?, ?)",
       [
         database_uuid,
         VialKeeper.DatabaseKind.storage(database_kind),

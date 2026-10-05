@@ -2,7 +2,7 @@ defmodule VialKeeper.Storage.SQLite.Changes do
   @moduledoc """
   Change-feed SQL helpers for the Version 1 SQLite adapter.
 
-  Owns sequence allocation, change-row insertion, and row decoding. Public
+  Owns the sequence reservation row, change-row insertion, and row decoding. Public
   `read/2` still routes through the adapter so mutation and transaction
   orchestration remain centralized until further Track A extraction.
   """
@@ -14,47 +14,121 @@ defmodule VialKeeper.Storage.SQLite.Changes do
   alias VialKeeper.Storage.SQLite.{Connection, TermBlob}
 
   @leaf_term_cache_limit 256
+  @high_water_key :vial_keeper_sqlite_sequence_high_water
   @doc false
   def read(adapter, request), do: Adapter.read_changes(adapter, request)
 
   @doc """
-  Allocates the next monotonic change sequence for the open connection.
+  Returns `db_meta.sequence_reserved_through`, the highest sequence that may
+  be in use.
+
+  The value is cached per connection in the calling process: it changes only
+  through `persist_reservation/2`, which keeps the cache current, and a
+  rolled-back write forgets it (`forget_high_water/1`).
   """
-  @spec allocate_sequence(Connection.handle()) :: {:ok, integer()} | {:error, VialKeeper.Error.t()}
-  def allocate_sequence(conn) do
-    case allocate_sequences(conn, 1) do
-      {:ok, [sequence]} -> {:ok, sequence}
-      {:error, _} = error -> error
-    end
-  end
-
-  @doc "Returns the current committed mutation sequence."
-  @spec current_sequence(Connection.handle()) ::
+  @spec high_water(Connection.handle()) ::
           {:ok, non_neg_integer()} | {:error, VialKeeper.Error.t()}
-  def current_sequence(conn) do
-    case Connection.query(conn, "SELECT current_sequence FROM db_meta WHERE id = 1") do
-      {:ok, [[sequence]]} when is_integer(sequence) and sequence >= 0 -> {:ok, sequence}
-      {:ok, _} -> {:error, VialKeeper.Error.integrity_violation("current sequence is invalid")}
-      {:error, reason} -> {:error, normalize_error(reason)}
+  def high_water(conn) do
+    case Process.get({@high_water_key, conn}) do
+      sequence when is_integer(sequence) -> {:ok, sequence}
+      nil -> load_high_water(conn)
     end
   end
 
-  @doc "Allocates one contiguous sequence range for a bulk mutation."
-  @spec allocate_sequences(Connection.handle(), non_neg_integer()) ::
-          {:ok, [integer()]} | {:error, VialKeeper.Error.t()}
-  def allocate_sequences(_conn, 0), do: {:ok, []}
+  @doc "Caches a reserved-through value just read from `db_meta` for `conn`."
+  @spec remember_high_water(Connection.handle(), non_neg_integer()) :: :ok
+  def remember_high_water(conn, sequence) when is_integer(sequence) and sequence >= 0 do
+    _ = Process.put({@high_water_key, conn}, sequence)
+    :ok
+  end
 
-  def allocate_sequences(conn, count) when is_integer(count) and count > 0 do
-    case Connection.point_query(
-           conn,
-           "UPDATE db_meta SET current_sequence = current_sequence + ? WHERE id = 1 RETURNING current_sequence",
-           [count]
-         ) do
-      {:ok, [[sequence]]} ->
-        {:ok, Enum.to_list((sequence - count + 1)..sequence)}
+  @doc "Forgets the cached reserved-through value for `conn`."
+  @spec forget_high_water(Connection.handle()) :: :ok
+  def forget_high_water(conn) do
+    _ = Process.delete({@high_water_key, conn})
+    :ok
+  end
+
+  defp load_high_water(conn) do
+    case Connection.query(conn, "SELECT sequence_reserved_through FROM db_meta WHERE id = 1") do
+      {:ok, [[sequence]]} when is_integer(sequence) and sequence >= 0 ->
+        :ok = remember_high_water(conn, sequence)
+        {:ok, sequence}
+
+      {:ok, _} ->
+        {:error, VialKeeper.Error.integrity_violation("sequence reservation is invalid")}
 
       {:error, reason} ->
         {:error, normalize_error(reason)}
+    end
+  end
+
+  @doc """
+  Durably raises `db_meta.sequence_reserved_through` to at least `through`.
+  This is the only statement that writes the column.
+
+  It runs in a transaction of its own, or joins this process's write
+  transaction on `conn` (storage used without a sequence ledger reserves
+  inside the write that uses the numbers).
+  """
+  @spec persist_reservation(Connection.handle(), non_neg_integer()) ::
+          :ok | {:error, VialKeeper.Error.t()}
+  def persist_reservation(conn, through) when is_integer(through) and through >= 0 do
+    if Connection.in_write_transaction?(conn),
+      do: raise_reservation(conn, through),
+      else: persist_reservation_transaction(conn, through)
+  end
+
+  defp persist_reservation_transaction(conn, through) do
+    with :ok <- control(conn, "BEGIN IMMEDIATE") do
+      case raise_reservation(conn, through) do
+        :ok ->
+          commit_reservation(conn)
+
+        {:error, _} = error ->
+          _ = Connection.exec(conn, "ROLLBACK")
+          error
+      end
+    end
+  end
+
+  defp raise_reservation(conn, through) do
+    case Connection.point_query(
+           conn,
+           "UPDATE db_meta SET sequence_reserved_through = max(sequence_reserved_through, ?) WHERE id = 1",
+           [through]
+         ) do
+      {:ok, _no_rows} ->
+        remember_raised(conn, through)
+
+      {:error, reason} ->
+        _ = forget_high_water(conn)
+        {:error, normalize_error(reason)}
+    end
+  end
+
+  defp remember_raised(conn, through) do
+    case Process.get({@high_water_key, conn}) do
+      cached when is_integer(cached) -> remember_high_water(conn, max(cached, through))
+      nil -> :ok
+    end
+  end
+
+  defp commit_reservation(conn) do
+    case control(conn, "COMMIT") do
+      :ok ->
+        :ok
+
+      {:error, _} = error ->
+        _ = Connection.exec(conn, "ROLLBACK")
+        error
+    end
+  end
+
+  defp control(conn, sql) do
+    case Connection.exec(conn, sql) do
+      :ok -> :ok
+      {:error, reason} -> {:error, normalize_error(reason)}
     end
   end
 
@@ -114,29 +188,16 @@ defmodule VialKeeper.Storage.SQLite.Changes do
   end
 
   @doc """
-  Loads change-feed rows after `since`, limited to `limit` rows.
+  Loads the change-feed rows with `since < sequence <= through`, at most
+  `limit`, and derives `has_more` from the same ordered query.
   """
-  @spec fetch_after(Connection.handle(), integer(), integer()) ::
-          {:ok, [[term()]]} | {:error, VialKeeper.Error.t()}
-  def fetch_after(conn, since, limit) do
-    case Connection.query(
-           conn,
-           "SELECT sequence, document_id, winning_revision, winning_deleted, leaf_set_term, origin FROM changes WHERE sequence > ? ORDER BY sequence LIMIT ?",
-           [since, limit]
-         ) do
-      {:ok, rows} -> {:ok, rows}
-      {:error, reason} -> {:error, normalize_error(reason)}
-    end
-  end
-
-  @doc "Loads a changes page and derives `has_more` from one ordered query."
-  @spec fetch_page(Connection.handle(), integer(), integer()) ::
+  @spec fetch_page(Connection.handle(), integer(), integer(), integer()) ::
           {:ok, {[[term()]], boolean()}} | {:error, VialKeeper.Error.t()}
-  def fetch_page(conn, since, limit) do
+  def fetch_page(conn, since, through, limit) do
     case Connection.query(
            conn,
-           "SELECT sequence, document_id, winning_revision, winning_deleted, leaf_set_term, origin FROM changes WHERE sequence > ? ORDER BY sequence LIMIT ?",
-           [since, limit + 1]
+           "SELECT sequence, document_id, winning_revision, winning_deleted, leaf_set_term, origin FROM changes WHERE sequence > ? AND sequence <= ? ORDER BY sequence LIMIT ?",
+           [since, through, limit + 1]
          ) do
       {:ok, rows} ->
         {page, extra} = Enum.split(rows, limit)

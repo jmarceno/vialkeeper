@@ -66,7 +66,7 @@ defmodule VialKeeper.Storage.Memory.Inspection do
     %{
       database_uuid: Map.fetch!(identity, :database_uuid),
       history_epoch: Map.fetch!(identity, :history_epoch),
-      current_sequence: Map.get(identity, :current_sequence, 0),
+      sequence_reserved_through: Map.get(identity, :sequence_reserved_through, 0),
       retention_floor_sequence: Map.get(identity, :retention_floor_sequence, 0),
       compaction_epoch: Map.get(identity, :compaction_epoch, 0),
       retention_boundary_digest: Map.get(identity, :retention_boundary_digest)

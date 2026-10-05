@@ -1,15 +1,19 @@
 defmodule VialKeeper.Runtime.CommandIO do
   @moduledoc """
-  Closed read/write/exclusive classification for owner command envelopes.
+  Closed read/concurrent-write/write/exclusive classification for owner
+  command envelopes.
 
-  This is the IO class used to choose the writer owner versus a snapshot reader.
+  This is the IO class used to choose a snapshot reader, a writer slot, or
+  the writer owner. `:concurrent_write` commands (document writes) may run in
+  parallel in the writer pool; `:write` commands run serially on the owner
+  behind a writer-pool barrier; `:exclusive` commands also pause readers.
   It is distinct from admission service class (`foreground`, `subscription`, and
   so on), which only describes scheduling origin.
   """
 
   alias VialKeeper.Commands
 
-  @type class :: :read | :write | :exclusive
+  @type class :: :read | :concurrent_write | :write | :exclusive
 
   @read MapSet.new([
           Commands.Identity,
@@ -40,13 +44,16 @@ defmodule VialKeeper.Runtime.CommandIO do
           Commands.ListDerivedSources
         ])
 
+  @concurrent_write MapSet.new([
+                      Commands.PutDocument,
+                      Commands.CreateDocument,
+                      Commands.DeleteDocument,
+                      Commands.ResolveConflict,
+                      Commands.BulkWrite
+                    ])
+
   @write MapSet.new([
            Commands.UpdateConfig,
-           Commands.PutDocument,
-           Commands.CreateDocument,
-           Commands.DeleteDocument,
-           Commands.ResolveConflict,
-           Commands.BulkWrite,
            Commands.ImportRevisionChains,
            Commands.PutLocalRecord,
            Commands.PutCheckpoint,
@@ -86,6 +93,7 @@ defmodule VialKeeper.Runtime.CommandIO do
 
   @classes @read
            |> Map.new(&{&1, :read})
+           |> Map.merge(Map.new(@concurrent_write, &{&1, :concurrent_write}))
            |> Map.merge(Map.new(@write, &{&1, :write}))
            |> Map.merge(Map.new(@exclusive, &{&1, :exclusive}))
 
@@ -96,6 +104,7 @@ defmodule VialKeeper.Runtime.CommandIO do
   def classify(%module{}) do
     cond do
       module in @read -> :read
+      module in @concurrent_write -> :concurrent_write
       module in @write -> :write
       module in @exclusive -> :exclusive
       true -> raise ArgumentError, "unclassified command #{inspect(module)}"

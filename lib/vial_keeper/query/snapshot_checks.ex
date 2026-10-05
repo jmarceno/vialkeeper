@@ -58,8 +58,10 @@ defmodule VialKeeper.Query.SnapshotChecks do
     end
   end
 
+  # A bookmark holds the data version its page was read at; any committed
+  # document write since then makes it stale.
   defp check_bookmark_sequence(sequence, identity) do
-    case MapAccess.get(identity, :current_sequence) do
+    case MapAccess.get(identity, :data_version) do
       ^sequence -> :ok
       _current -> {:error, Error.bookmark_stale("bookmark sequence is no longer current")}
     end

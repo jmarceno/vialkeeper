@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS db_meta (
   revision_algorithm_version INTEGER NOT NULL CHECK (revision_algorithm_version = 1),
   canonicalization_version INTEGER NOT NULL CHECK (canonicalization_version = 1),
   replication_protocol_major INTEGER NOT NULL CHECK (replication_protocol_major = 1),
-  current_sequence INTEGER NOT NULL CHECK (current_sequence >= 0),
+  sequence_reserved_through INTEGER NOT NULL CHECK (sequence_reserved_through >= 0),
   retention_floor_sequence INTEGER NOT NULL CHECK (retention_floor_sequence >= 0),
   compaction_epoch INTEGER NOT NULL CHECK (compaction_epoch >= 0),
   retention_boundary_digest TEXT,

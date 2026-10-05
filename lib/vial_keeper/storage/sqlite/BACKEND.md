@@ -67,12 +67,40 @@ checkpoint fsync. Close still runs `wal_checkpoint(TRUNCATE)`. A power/OS
 failure can therefore lose a larger suffix of unsynced WAL frames than the
 SQLite default; application-crash consistency is unchanged.
 
-Close order is drain in-flight snapshots, close readers, checkpoint the writer
+Close order is drain running writer-pool writes, drain in-flight snapshots,
+close writer-slot connections, close readers, checkpoint the writer
 (`wal_checkpoint(TRUNCATE)`), close the writer, then remove empty `-wal`/`-shm`
 sidecars. Exclusive commands (compact, integrity, rebuild, live-digest, blob
 cleanup) drain snapshots before the writer runs, then resume the reader pool.
 Runtime code never names sidecar files; this backend document does because it
 owns the artifact.
+
+## Sequence reservations
+
+Change sequences come from the runtime sequence ledger, not from write
+transactions. `db_meta.sequence_reserved_through` stores the highest sequence
+the ledger may have handed out. Before handing out a sequence above it, the
+ledger raises it by a block of 4096 in a short `BEGIN IMMEDIATE` transaction
+on a writer connection of its own (`persist_sequence_reservation`, the only
+statement that writes the column, always `max(current, new)`). The column is
+therefore at or above every sequence stored in `changes`,
+`documents.update_sequence` and `revisions.insertion_sequence`, and a restart
+after a crash continues above it: sequences are never reused, and unused ones
+are permanent holes. Integrity checks the retention floor and peer positions
+against this column.
+
+Storage used without a ledger (offline tooling and storage-level callers) has
+one writer; there a write raises the column inside its own write transaction,
+so a rolled-back write leaves no hole. The value is cached per connection and
+forgotten on rollback.
+
+The backend reports `max_writers` (from the test-only `:sqlite_max_writers`
+setting, default 1) and `sequence_persistence: :separate_connection` for disk
+databases (`:none` for `:memory:`). `open_writer/1` opens an extra read-write
+connection (`role: :writer_slot`) for writer slots and the ledger; its close
+only clears that connection's caches and closes it, and never checkpoints or
+removes sidecars. Extra SQLite writers serialize through `BEGIN IMMEDIATE`;
+`run_concurrent/2` is `run/2`.
 
 ## Statement scheduling
 
@@ -123,6 +151,16 @@ are backend diagnostics, not the product identity model.
     document/revision facts, change log, local records, retention records,
     index/candidate search, view state, derived state, attachment metadata,
     inspection)
+[ ] Change log: `sequence_high_water/1` returns the persisted reserved-through
+    value; `persist_sequence_reservation/2` raises it to at least the given
+    value in its own transaction; `read_page/4` returns only rows with
+    `since < sequence <= through`; never allocate sequences in a write
+[ ] Lifecycle: `open_writer/1` and `close_writer/1` for an extra read-write
+    connection (or `{:error, :unsupported_writers}`); `reset_writer_caches/1`;
+    `capabilities/1` reports `max_writers` (positive integer) and
+    `sequence_persistence` (`:separate_connection` or `:none`)
+[ ] Transaction: `run_concurrent/2` (equal to `run/2` with one writer); report
+    a write-write conflict as a retryable `:write_conflict` error
 [ ] Own bundle artifact layout under the `.vialkeeper` root
 [ ] Provide ownership acquire/release with typed in-use errors
 [ ] Provide capability validation used at application startup

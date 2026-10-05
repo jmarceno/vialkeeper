@@ -11,7 +11,7 @@ defmodule VialKeeper.Retention.ServiceEffectTest do
   alias VialKeeper.Retention.Service, as: RetentionService
   alias VialKeeper.Storage.AdapterCase
   alias VialKeeper.Storage.BackendContext
-  alias VialKeeper.Storage.Ports.Access
+  alias VialKeeper.Storage.Services
   alias VialKeeper.Storage.Services.Facts
 
   @retention_config %{
@@ -116,8 +116,10 @@ defmodule VialKeeper.Retention.ServiceEffectTest do
     end
   end
 
+  # Mirrors the retention service: the visible sequence comes from the
+  # identity overlay, never from the backend's stored identity.
   defp load_meta(%BackendContext{} = context) do
-    case Access.port(context, :lifecycle).identity(context) do
+    case Services.identity(context) do
       {:ok, identity} when is_map(identity) ->
         config = Map.get(identity, :config) || VialKeeper.Config.defaults()
 

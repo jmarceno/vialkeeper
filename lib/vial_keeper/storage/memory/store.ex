@@ -104,7 +104,7 @@ defmodule VialKeeper.Storage.Memory.Store do
     end
   end
 
-  @doc "Returns the current identity map, including current_sequence."
+  @doc "Returns the stored identity map."
   @spec identity(pid()) :: map()
   def identity(pid), do: Agent.get(pid, &refresh_identity/1)
 
@@ -393,15 +393,11 @@ defmodule VialKeeper.Storage.Memory.Store do
     {:ok, %{state | peers: peers}}
   end
 
-  @doc "Allocates contiguous change sequences."
-  @spec allocate_sequences(state(), non_neg_integer()) :: {:ok, state(), [integer()]}
-  def allocate_sequences(state, 0), do: {:ok, state, []}
-
-  def allocate_sequences(state, count) when count > 0 do
-    current = state.identity.current_sequence
-    sequences = Enum.to_list((current + 1)..(current + count))
-    identity = %{state.identity | current_sequence: current + count}
-    {:ok, %{state | identity: identity}, sequences}
+  @doc "Raises the reserved-through sequence to at least `through`."
+  @spec reserve_sequences_through(state(), non_neg_integer()) :: state()
+  def reserve_sequences_through(state, through) when is_integer(through) and through >= 0 do
+    reserved = max(state.identity.sequence_reserved_through, through)
+    %{state | identity: %{state.identity | sequence_reserved_through: reserved}}
   end
 
   @doc "Appends a change-log entry."

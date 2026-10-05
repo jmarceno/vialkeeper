@@ -1,7 +1,8 @@
 defmodule VialKeeper.Runtime.CommandIOTest do
   @moduledoc """
-  Classification of command envelopes into `:read`, `:write`, and `:exclusive`
-  IO classes, including the shadow-read allow-list invariant.
+  Classification of command envelopes into `:read`, `:concurrent_write`,
+  `:write`, and `:exclusive` IO classes, including the shadow-read allow-list
+  invariant.
   """
   use ExUnit.Case, async: true
 
@@ -15,11 +16,29 @@ defmodule VialKeeper.Runtime.CommandIOTest do
            "CommandIO.classes/0 must cover Commands.command_types/0"
 
     Enum.each(classified, fn {module, class} ->
-      assert class in [:read, :write, :exclusive],
-             "#{inspect(module)} must be :read, :write, or :exclusive"
+      assert class in [:read, :concurrent_write, :write, :exclusive],
+             "#{inspect(module)} must be :read, :concurrent_write, :write, or :exclusive"
 
       assert CommandIO.classify(struct(module)) == class
     end)
+  end
+
+  test "only document writes are concurrent writes" do
+    concurrent =
+      CommandIO.classes()
+      |> Enum.filter(fn {_module, class} -> class == :concurrent_write end)
+      |> MapSet.new(&elem(&1, 0))
+
+    assert concurrent ==
+             MapSet.new([
+               Commands.PutDocument,
+               Commands.CreateDocument,
+               Commands.DeleteDocument,
+               Commands.ResolveConflict,
+               Commands.BulkWrite
+             ])
+
+    assert CommandIO.classify(%Commands.ImportRevisionChains{request: %{}}) == :write
   end
 
   test "shadow-read allow-list is a subset of :read" do

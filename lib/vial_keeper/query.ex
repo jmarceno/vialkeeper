@@ -324,7 +324,9 @@ defmodule VialKeeper.Query do
     end
   end
 
-  # The storage result's sequence is the identity read in the query's snapshot.
+  # The bookmark carries the data version read in the query's snapshot: it
+  # changes on every committed document write, even when the visible
+  # sequence does not.
   defp add_next_bookmark(result, request) do
     values =
       case get(result, :results) do
@@ -340,18 +342,18 @@ defmodule VialKeeper.Query do
 
     last_id = get(last, :id)
 
-    sequence = value_or_default(get(result, :sequence), 0)
+    data_version = value_or_default(get(result, :data_version), 0)
 
     case result_plan_metadata(result, request) do
       {:ok, index_bindings, plan_digest} when is_binary(last_id) ->
         sort_direction = sort_direction(request)
         ordering_key = value_or_default(get(result, :last_ordering_key), last_id)
-        response = Map.delete(result, :last_ordering_key) |> Map.delete("last_ordering_key")
+        response = internal_fields_removed(result)
 
         {:ok,
          encode_bookmark(response, %{
            "query_fingerprint" => request.fingerprint,
-           "sequence" => sequence,
+           "sequence" => data_version,
            "last_id" => last_id,
            "plan_digest" => plan_digest,
            "index_bindings" => index_bindings,
@@ -388,9 +390,12 @@ defmodule VialKeeper.Query do
 
   defp without_bookmark(result) do
     result
-    |> Map.delete(:last_ordering_key)
-    |> Map.delete("last_ordering_key")
+    |> internal_fields_removed()
     |> Map.put(:bookmark, nil)
+  end
+
+  defp internal_fields_removed(result) do
+    Map.drop(result, [:last_ordering_key, "last_ordering_key", :data_version, "data_version"])
   end
 
   defp result_plan_metadata(result, _request) do

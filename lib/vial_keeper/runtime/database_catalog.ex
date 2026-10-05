@@ -24,7 +24,8 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
     DatabaseOwner,
     DatabaseRuntimeSupervisor,
     ReadPool,
-    RegistrationManifest
+    RegistrationManifest,
+    WriterPool
   }
 
   alias VialKeeper.Shadow.Reconciler
@@ -648,18 +649,54 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
   defp route_command(uuid, class, command, deadline) do
     Probe.measure :catalog_route do
-      case {command_io_class(command), ReadPool.enabled?(uuid)} do
-        {:read, true} -> ReadPool.execute(uuid, class, command, deadline)
-        {:exclusive, true} -> exclusive_command(uuid, class, command, deadline)
-        _ -> DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
+      case command_io_class(command) do
+        :read -> read_command(uuid, class, command, deadline)
+        :concurrent_write -> concurrent_write_command(uuid, class, command, deadline)
+        :write -> serial_write_command(uuid, class, command, deadline)
+        :exclusive -> exclusive_command(uuid, class, command, deadline)
       end
     end
   end
 
-  defp exclusive_command(uuid, class, command, deadline) do
-    ReadPool.with_quiesce(uuid, deadline, fn ->
+  defp read_command(uuid, class, command, deadline) do
+    if ReadPool.enabled?(uuid),
+      do: ReadPool.execute(uuid, class, command, deadline),
+      else: DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
+  end
+
+  defp concurrent_write_command(uuid, class, command, deadline) do
+    if WriterPool.enabled?(uuid),
+      do: WriterPool.execute(uuid, class, command, deadline),
+      else: DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
+  end
+
+  defp serial_write_command(uuid, class, command, deadline) do
+    if WriterPool.enabled?(uuid) do
+      WriterPool.with_quiesce(uuid, deadline, fn ->
+        DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
+      end)
+    else
       DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
-    end)
+    end
+  end
+
+  # Writers are always quiesced outside readers, so barriers never invert.
+  defp exclusive_command(uuid, class, command, deadline) do
+    if WriterPool.enabled?(uuid),
+      do:
+        WriterPool.with_quiesce(uuid, deadline, fn ->
+          reader_exclusive_command(uuid, class, command, deadline)
+        end),
+      else: reader_exclusive_command(uuid, class, command, deadline)
+  end
+
+  defp reader_exclusive_command(uuid, class, command, deadline) do
+    if ReadPool.enabled?(uuid),
+      do:
+        ReadPool.with_quiesce(uuid, deadline, fn ->
+          DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
+        end),
+      else: DatabaseAdmission.execute_with_deadline(uuid, class, command, deadline)
   end
 
   defp command_io_class({:command_context, _authority, inner}), do: command_io_class(inner)
@@ -1080,16 +1117,17 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
     # replication remains a hard blocker; callers must disable jobs first.
     with :ok <- ensure_kind_closeable(uuid),
          false <- JobManager.active?(uuid),
-         :ok <- drain_read_pool(uuid),
+         :ok <- drain_pool(uuid, &WriterPool.begin_close/1, &WriterPool.cancel_close/1, "writer"),
+         :ok <- drain_pool(uuid, &ReadPool.begin_close/1, &ReadPool.cancel_close/1, "read"),
          :ok <- drain_admission(uuid) do
       close_runtime_after_admission_drain(uuid)
     else
       true ->
-        _ = ReadPool.cancel_close(uuid)
+        cancel_pool_close(uuid)
         {:error, Error.database_not_closable("database has active replication jobs")}
 
       {:error, _} = error ->
-        _ = ReadPool.cancel_close(uuid)
+        cancel_pool_close(uuid)
         error
     end
   end
@@ -1113,8 +1151,10 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   defp close_runtime_after_admission_drain(uuid) do
     try do
       with :ok <- close_external_services(uuid),
+           :ok <- WriterPool.close_writers(uuid),
+           :ok <- stop_pool(uuid, :writer_pool_supervisor, "writer"),
            :ok <- ReadPool.close_readers(uuid),
-           :ok <- stop_read_pool(uuid) do
+           :ok <- stop_pool(uuid, :read_pool_supervisor, "read") do
         stop_owner(uuid)
         stop_runtime_supervisor(uuid)
       end
@@ -1154,11 +1194,17 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
   defp abort_close_on_error({:error, _} = error, uuid) do
     _ = DatabaseAdmission.cancel_close(uuid)
-    _ = ReadPool.cancel_close(uuid)
+    cancel_pool_close(uuid)
     error
   end
 
   defp abort_close_on_error(other, _uuid), do: other
+
+  defp cancel_pool_close(uuid) do
+    _ = WriterPool.cancel_close(uuid)
+    _ = ReadPool.cancel_close(uuid)
+    :ok
+  end
 
   defp close_external_services(uuid) do
     with :ok <- close_derived_manager(uuid),
@@ -1224,40 +1270,37 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
   defp close_change_notifier(uuid), do: ChangeNotifier.close(uuid)
 
-  defp drain_read_pool(uuid) do
-    case ReadPool.begin_close(uuid) do
+  defp drain_pool(uuid, begin_close, cancel_close, label) do
+    case begin_close.(uuid) do
       :ok -> :ok
       {:error, %Error{code: :database_closed}} -> :ok
       {:error, _} = error -> error
     end
   catch
     :exit, reason ->
-      _ = ReadPool.cancel_close(uuid)
+      _ = cancel_close.(uuid)
 
       {:error,
-       Error.internal_error("database read pool drain failed during close", %{
+       Error.internal_error("database #{label} pool drain failed during close", %{
          cause: inspect(reason)
        })}
   end
 
-  defp stop_read_pool(uuid) do
+  defp stop_pool(uuid, supervisor_id, label) do
     case runtime_pid(uuid) do
       pid when is_pid(pid) ->
-        case Supervisor.terminate_child(pid, {:read_pool_supervisor, uuid}) do
-          :ok ->
-            delete_read_pool_child(pid, uuid)
-
-          {:error, :not_found} ->
-            stop_read_pool_process(uuid)
+        case Supervisor.terminate_child(pid, {supervisor_id, uuid}) do
+          :ok -> delete_pool_child(pid, {supervisor_id, uuid}, label)
+          {:error, :not_found} -> stop_pool_process({supervisor_id, uuid})
         end
 
       nil ->
-        stop_read_pool_process(uuid)
+        stop_pool_process({supervisor_id, uuid})
     end
   end
 
-  defp delete_read_pool_child(runtime, uuid) do
-    case Supervisor.delete_child(runtime, {:read_pool_supervisor, uuid}) do
+  defp delete_pool_child(runtime, child_id, label) do
+    case Supervisor.delete_child(runtime, child_id) do
       :ok ->
         :ok
 
@@ -1266,14 +1309,14 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
 
       {:error, reason} ->
         {:error,
-         Error.internal_error("database read pool shutdown failed during close", %{
+         Error.internal_error("database #{label} pool shutdown failed during close", %{
            cause: inspect(reason)
          })}
     end
   end
 
-  defp stop_read_pool_process(uuid) do
-    case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, {:read_pool_supervisor, uuid}) do
+  defp stop_pool_process(registry_key) do
+    case Registry.lookup(VialKeeper.Runtime.DatabaseRegistry, registry_key) do
       [{pid, _}] ->
         if Process.alive?(pid),
           do: Supervisor.stop(pid, :shutdown, VialKeeper.Config.shutdown_timeout()),
@@ -1360,7 +1403,7 @@ defmodule VialKeeper.Runtime.DatabaseCatalog do
   end
 
   defp rollback_aborted_close(uuid) do
-    _ = ReadPool.cancel_close(uuid)
+    cancel_pool_close(uuid)
 
     case DatabaseAdmission.closing?(uuid) do
       {:ok, true} -> DatabaseAdmission.cancel_close(uuid)

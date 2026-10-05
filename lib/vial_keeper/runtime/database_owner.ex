@@ -5,6 +5,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   require VialKeeper.Probe
   alias VialKeeper.Commands
   alias VialKeeper.DatabaseBundle
+  alias VialKeeper.Deadline
   alias VialKeeper.DerivedView.Manager, as: DerivedViewManager
   alias VialKeeper.Error
   alias VialKeeper.MapAccess
@@ -19,12 +20,14 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
     CommandIO,
     DatabaseCommandPolicy,
     DatabaseReadDispatch,
+    MutationCommands,
     RetentionScheduler,
-    ShadowBinding
+    SequenceLedger,
+    ShadowBinding,
+    WriterPool
   }
 
   alias VialKeeper.Storage.Registry, as: StorageRegistry
-  alias VialKeeper.Storage.Results
   alias VialKeeper.Storage.Services
 
   @spec start_link({binary(), DatabaseBundle.t()}) :: GenServer.on_start()
@@ -113,6 +116,17 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
     end
   end
 
+  @doc """
+  Returns the owner's opaque backend context so a writer slot can open its own
+  read-write connection with `VialKeeper.Storage.Lifecycle.open_writer/1`.
+  Callers must not use the owner's connection.
+  """
+  @spec writer_source(binary(), timeout()) ::
+          {:ok, VialKeeper.Storage.BackendContext.t()} | {:error, Error.t()}
+  def writer_source(uuid, timeout \\ VialKeeper.Config.shutdown_timeout())
+      when is_binary(uuid),
+      do: reader_source(uuid, timeout)
+
   @impl true
   def init({uuid, %DatabaseBundle{} = bundle, expected_kind}) do
     backend = StorageRegistry.backend()
@@ -156,7 +170,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
             actual_kind || :ordinary
           end)
 
-        {:ok, %{uuid: uuid, bundle: bundle, context: context}}
+        start_ledger(backend, adapter, uuid, bundle, context)
 
       actual_uuid == uuid ->
         _ = backend.close(adapter)
@@ -179,6 +193,23 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
            "database UUID mismatch",
            Error.identity_mismatch_details(:uuid_mismatch, uuid, actual_uuid)
          )}
+    end
+  end
+
+  defp start_ledger(backend, adapter, uuid, bundle, context) do
+    case SequenceLedger.initialize(uuid, context) do
+      :ok ->
+        {:ok,
+         %{
+           uuid: uuid,
+           bundle: bundle,
+           context: context,
+           cache_epoch: WriterPool.cache_epoch(uuid)
+         }}
+
+      {:error, %Error{} = error} ->
+        _ = backend.close(adapter)
+        {:stop, error}
     end
   end
 
@@ -231,6 +262,8 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   end
 
   defp dispatch_command(%CommandContext{} = context, command, from, state) do
+    state = refresh_writer_caches(state)
+
     case Commands.normalize(command) do
       %_{} = normalized ->
         with :ok <- DatabaseCommandPolicy.authorize(database_kind(state), context, normalized),
@@ -246,10 +279,22 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   end
 
   defp handle_command(%module{} = command, from, state) do
-    case Map.get(CommandIO.classes(), module) do
-      :read -> reply(DatabaseReadDispatch.run(state.context, command), state)
-      _ -> handle_owner_command(command, from, state)
+    cond do
+      Map.get(CommandIO.classes(), module) == :read ->
+        reply(DatabaseReadDispatch.run(state.context, command), state)
+
+      MutationCommands.handles?(command) ->
+        mutation(command, state)
+
+      true ->
+        handle_owner_command(command, from, state)
     end
+  end
+
+  defp mutation(command, state) do
+    deadline = Deadline.from_timeout(VialKeeper.Config.request_timeout_ms())
+    outcome = MutationCommands.execute(command, state.context, state.uuid, deadline)
+    {:reply, MutationCommands.finish(outcome, command, state.uuid, deadline), state}
   end
 
   defp handle_owner_command(%Commands.UpdateConfig{request: request}, _from, state) do
@@ -266,58 +311,6 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
 
   defp handle_owner_command(%Commands.IntegrityCheck{request: request}, _from, state),
     do: reply(Services.integrity_check(state.context, request), state)
-
-  defp handle_owner_command(%Commands.PutDocument{request: request}, _from, state),
-    do:
-      Mutation.with_operation(:put, fn ->
-        writable_mutation(state, fn ->
-          mutate(
-            wrap_put(
-              Services.apply_local_mutation(state.context, Map.put(request, :operation, :put))
-            ),
-            state
-          )
-        end)
-      end)
-
-  defp handle_owner_command(%Commands.DeleteDocument{request: request}, _from, state),
-    do:
-      Mutation.with_operation(:delete, fn ->
-        writable_mutation(state, fn ->
-          mutate(
-            wrap_put(
-              Services.apply_local_mutation(state.context, Map.put(request, :operation, :delete))
-            ),
-            state
-          )
-        end)
-      end)
-
-  defp handle_owner_command(%Commands.BulkWrite{request: request}, _from, state),
-    do:
-      Mutation.with_operation(:bulk_write, fn ->
-        writable_mutation(state, fn ->
-          mutate(Services.apply_bulk_mutation(state.context, request), state)
-        end)
-      end)
-
-  defp handle_owner_command(%Commands.ResolveConflict{request: request}, _from, state),
-    do:
-      Mutation.with_operation(:resolve, fn ->
-        writable_mutation(state, fn ->
-          mutate(Services.resolve_conflict(state.context, request), state)
-        end)
-      end)
-
-  defp handle_owner_command(
-         %Commands.ImportRevisionChains{request: request},
-         _from,
-         state
-       ),
-       do:
-         writable_mutation(state, fn ->
-           mutate(Services.import_revision_chains(state.context, request), state)
-         end)
 
   defp handle_owner_command(%Commands.PutLocalRecord{request: request}, _from, state),
     do: reply(Services.put_local_record_cas(state.context, request), state)
@@ -395,21 +388,8 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
   defp handle_owner_command(%Commands.SetDerivedSourceError{request: request}, _from, state),
     do: reply(Services.set_derived_source_error(state.context, request), state)
 
-  defp handle_owner_command(%Commands.ApplyDerivedSourceBatch{request: request}, _from, state),
-    do: mutate(Services.apply_derived_source_batch(state.context, request), state)
-
   defp handle_owner_command(%Commands.BeginDerivedSourceRebuild{request: request}, _from, state),
     do: reply(Services.begin_derived_source_rebuild(state.context, request), state)
-
-  defp handle_owner_command(%Commands.ApplyDerivedRebuildPage{request: request}, _from, state),
-    do: mutate(Services.apply_derived_rebuild_page(state.context, request), state)
-
-  defp handle_owner_command(
-         %Commands.PruneDerivedRebuildStalePage{request: request},
-         _from,
-         state
-       ),
-       do: mutate(Services.prune_derived_rebuild_stale_page(state.context, request), state)
 
   defp handle_owner_command(%Commands.FinishDerivedSourceRebuild{request: request}, _from, state),
     do: reply(Services.finish_derived_source_rebuild(state.context, request), state)
@@ -506,52 +486,7 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
     :ok
   end
 
-  defp mutate({:ok, %{sequence: sequence} = value}, state) do
-    Mutation.phase(:change_notifier, fn -> ChangeNotifier.publish(state.uuid, sequence) end)
-    {:reply, {:ok, value}, state}
-  end
-
-  defp mutate({:ok, %{last_sequence: sequence} = value}, state)
-       when is_integer(sequence) and sequence > 0 do
-    Mutation.phase(:change_notifier, fn -> ChangeNotifier.publish(state.uuid, sequence) end)
-    {:reply, {:ok, value}, state}
-  end
-
-  defp mutate({:ok, values} = result, state) when is_list(values) do
-    sequence =
-      Enum.reduce(values, 0, fn
-        %{sequence: value}, maximum when is_integer(value) -> max(maximum, value)
-        _value, maximum -> maximum
-      end)
-
-    if sequence > 0,
-      do: Mutation.phase(:change_notifier, fn -> ChangeNotifier.publish(state.uuid, sequence) end)
-
-    {:reply, result, state}
-  end
-
-  defp mutate({:ok, value}, state), do: {:reply, {:ok, value}, state}
-  defp mutate({:error, _} = result, state), do: {:reply, result, state}
   defp reply(result, state), do: {:reply, result, state}
-
-  defp wrap_put({:ok, map}) when is_map(map),
-    do: {:ok, Results.put_document(map)}
-
-  defp wrap_put(other), do: other
-
-  defp writable_mutation(state, fun) do
-    case database_kind(state) do
-      :derived ->
-        {:reply,
-         {:error,
-          Error.derived_database_read_only(
-            "derived databases accept writes only from their materializer"
-          )}, state}
-
-      _ ->
-        fun.()
-    end
-  end
 
   defp record_owner_queue(command, queued_at) do
     case mutation_operation(command) do
@@ -568,13 +503,16 @@ defmodule VialKeeper.Runtime.DatabaseOwner do
 
   defp mutation_operation(command) do
     case Commands.normalize(command) do
-      %Commands.PutDocument{} -> :put
-      %Commands.DeleteDocument{} -> :delete
-      %Commands.ResolveConflict{} -> :resolve
-      %Commands.BulkWrite{} -> :bulk_write
-      %Commands.ImportRevisionChains{} -> :import
+      %_{} = normalized -> MutationCommands.operation(normalized)
       _other -> nil
     end
+  end
+
+  # A barrier (a serial or exclusive command run while writer slots exist)
+  # bumps the writer pool's cache epoch; every writer then drops its caches.
+  defp refresh_writer_caches(state) do
+    epoch = WriterPool.refresh_writer_caches(state.uuid, state.context, state.cache_epoch)
+    %{state | cache_epoch: epoch}
   end
 
   defp database_kind(%{context: context}) do

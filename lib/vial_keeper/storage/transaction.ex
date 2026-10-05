@@ -7,7 +7,7 @@ defmodule VialKeeper.Storage.Transaction do
   """
 
   alias VialKeeper.Storage.BackendContext
-  alias VialKeeper.Storage.Ports.Errors
+  alias VialKeeper.Storage.Ports.{Access, Errors}
 
   @type fun :: (BackendContext.t() -> {:ok, term()} | {:error, VialKeeper.Error.t()})
 
@@ -15,9 +15,13 @@ defmodule VialKeeper.Storage.Transaction do
   Runs `fun` atomically for `context`.
 
   `fun` receives an opaque backend context and must return `{:ok, value}` or
-  `{:error, VialKeeper.Error.t()}`.
+  `{:error, VialKeeper.Error.t()}`. A context in `:concurrent` write mode (a
+  writer slot) uses the transaction port's `run_concurrent/2`.
   """
   @spec run(BackendContext.t(), fun()) :: {:ok, term()} | {:error, VialKeeper.Error.t()}
+  def run(%BackendContext{write_mode: :concurrent} = context, fun) when is_function(fun, 1),
+    do: Errors.wrap(Access.port(context, :transaction).run_concurrent(context, fun))
+
   def run(%BackendContext{} = context, fun) when is_function(fun, 1) do
     backend = BackendContext.backend(context)
 

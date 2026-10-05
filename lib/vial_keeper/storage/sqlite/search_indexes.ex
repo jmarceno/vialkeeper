@@ -12,6 +12,7 @@ defmodule VialKeeper.Storage.SQLite.SearchIndexes do
   alias VialKeeper.Query.Projection
   alias VialKeeper.Search
   alias VialKeeper.Storage.BackendContext
+  alias VialKeeper.Storage.Services.Sequences
   alias VialKeeper.Storage.SQLite.{Changes, Connection, Context, IndexCatalog, TermBlob}
 
   @query_body_term_cache_limit 256
@@ -107,7 +108,7 @@ defmodule VialKeeper.Storage.SQLite.SearchIndexes do
            definition
            |> Map.merge(nested_metadata(index))
            |> Map.put("index_id", index_id),
-         {:ok, start_sequence} <- Changes.current_sequence(adapter.conn) do
+         {:ok, %{visible: start_sequence}} <- Sequences.view(context) do
       Search.rebuild_pages(
         context,
         index_id,
@@ -149,29 +150,36 @@ defmodule VialKeeper.Storage.SQLite.SearchIndexes do
   defp document_id(%{id: id}) when is_binary(id), do: id
   defp document_id(_), do: nil
 
+  # Rows commit in the serial lane here, so the visible sequence covers every
+  # committed row. Holes are expected: progress is measured against the
+  # visible sequence, not the last row seen.
   defp catch_up(context, conn, index_id, sequence, deadline) do
     with :ok <- check_deadline(deadline),
-         {:ok, next_sequence} <- catch_up_page(context, conn, index_id, sequence, deadline),
-         {:ok, latest_sequence} <- Changes.current_sequence(conn) do
-      if latest_sequence > next_sequence do
-        catch_up(context, conn, index_id, next_sequence, deadline)
-      else
-        :ok
-      end
+         {:ok, %{visible: through}} <- Sequences.view(context) do
+      catch_up_through(context, conn, index_id, sequence, through, deadline)
     end
   end
 
-  defp catch_up_page(context, conn, index_id, sequence, deadline) do
-    with {:ok, {rows, has_more}} <- Changes.fetch_page(conn, sequence, @rebuild_page_size),
+  defp catch_up_through(_context, _conn, _index_id, sequence, through, _deadline)
+       when through <= sequence,
+       do: :ok
+
+  defp catch_up_through(context, conn, index_id, sequence, through, deadline) do
+    with :ok <- catch_up_page(context, conn, index_id, sequence, through, deadline),
+         do: catch_up(context, conn, index_id, through, deadline)
+  end
+
+  defp catch_up_page(context, conn, index_id, sequence, through, deadline) do
+    with {:ok, {rows, has_more}} <-
+           Changes.fetch_page(conn, sequence, through, @rebuild_page_size),
          ids <- rows |> Enum.map(&change_document_id/1) |> Enum.filter(&is_binary/1) |> Enum.uniq(),
          {:ok, documents} <- current_documents(conn, ids),
          {:ok, _count} <- Search.rebuild_batch(context, index_id, documents, deadline) do
-      next_sequence = rows |> List.last() |> change_sequence(sequence)
-
       if has_more do
-        catch_up_page(context, conn, index_id, next_sequence, deadline)
+        next_sequence = rows |> List.last() |> change_sequence(sequence)
+        catch_up_page(context, conn, index_id, next_sequence, through, deadline)
       else
-        {:ok, next_sequence}
+        :ok
       end
     end
   end
