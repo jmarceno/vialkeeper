@@ -844,6 +844,12 @@ That drill requires a working **Docker or Podman** daemon (`docker info` /
 `podman info`); the restore host is a glibc container with only the OTP release
 and a bind-mounted destination `VIAL_KEEPER_ROOT`.
 
+`mix test.container_replication` runs a separate three-container replication
+drill (integrity, replication delay, container and network loss, and a burst
+benchmark). It is excluded from `mix test`, `mix check.fast`,
+`mix check.integration`, and `mix check.full`. Pass `--burst N` to change the
+burst size. The drill needs the same container engine as the restore drill.
+
 Please report security issues privately rather than in a public issue — see
 [SECURITY.md](SECURITY.md).
 

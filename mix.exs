@@ -51,6 +51,7 @@ defmodule VialKeeper.MixProject do
         "check.fast": :test,
         "check.integration": :test,
         "check.full": :test,
+        "test.container_replication": :test,
         "bench.replication": :test,
         "release.build": :prod
       ]
@@ -132,7 +133,7 @@ defmodule VialKeeper.MixProject do
         "compile --warnings-as-errors",
         "credo --strict",
         "ex_dna --max-clones 0",
-        "test --warnings-as-errors --exclude slow --exclude integration"
+        "test --warnings-as-errors --exclude slow --exclude integration --exclude container_replication"
       ],
       "check.integration": ["test --warnings-as-errors --only integration"],
       "check.full": [
@@ -145,7 +146,7 @@ defmodule VialKeeper.MixProject do
         "storage.boundary_check",
         "reach.check --arch --smells --strict",
         "reach.check --dead-code",
-        "test --warnings-as-errors",
+        "test --warnings-as-errors --exclude container_replication",
         "dialyzer"
       ],
       bench: ["run --no-start bench/product_benchmark.exs"],
