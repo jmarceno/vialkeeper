@@ -15,6 +15,7 @@ defmodule VialKeeper.TestSupport.AdmissionClassProbe do
     ref = make_ref()
     Application.put_env(:vial_keeper, :admission_class_probe, {pid, ref})
     Application.put_env(:vial_keeper, :read_pool_probe, {pid, ref})
+    Application.put_env(:vial_keeper, :writer_pool_probe, {pid, ref})
     ref
   end
 
@@ -22,6 +23,7 @@ defmodule VialKeeper.TestSupport.AdmissionClassProbe do
   def uninstall do
     Application.delete_env(:vial_keeper, :admission_class_probe)
     Application.delete_env(:vial_keeper, :read_pool_probe)
+    Application.delete_env(:vial_keeper, :writer_pool_probe)
     :ok
   end
 
@@ -78,6 +80,7 @@ defmodule VialKeeper.TestSupport.AdmissionClassProbe do
     receive do
       {^ref, :admission_grant, class, op} -> drain_loop(ref, [{class, op} | acc], remaining)
       {^ref, :read_pool_grant, class, op} -> drain_loop(ref, [{class, op} | acc], remaining)
+      {^ref, :writer_pool_grant, class, op} -> drain_loop(ref, [{class, op} | acc], remaining)
     after
       0 ->
         if remaining <= 0 do

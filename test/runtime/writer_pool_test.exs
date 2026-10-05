@@ -137,6 +137,47 @@ defmodule VialKeeper.Runtime.WriterPoolTest do
     assert {:ok, _} = Task.await(queued)
   end
 
+  @tag writer_pool_size: 2, write_queue_limit: 1
+  test "writes waiting for a busy document do not count against the queue limit",
+       %{uuid: uuid} do
+    gate = hold_writes(uuid)
+
+    running =
+      for id <- ["a", "b"] do
+        task = Task.async(fn -> put(uuid, id, %{"n" => 1}) end)
+        assert_receive {^gate, :before_write, slot, [^id]}, 2_000
+        {task, slot}
+      end
+
+    queued = Task.async(fn -> put(uuid, "c", %{"n" => 1}) end)
+    await_stats(uuid, &match?(%{active: 2, queued: 1}, &1))
+
+    # The queue is full, yet writes to the held documents are still accepted.
+    waiting =
+      for id <- ["a", "a", "b", "c"] do
+        task = Task.async(fn -> put(uuid, id, %{"n" => 2}) end)
+        {id, task}
+      end
+
+    await_stats(uuid, &match?(%{active: 2, queued: 5}, &1))
+
+    assert {:error, %VialKeeper.Error{code: :database_overloaded, retryable: true}} =
+             put(uuid, "d", %{"n" => 1})
+
+    Application.delete_env(:vial_keeper, :writer_slot_sync)
+
+    for {_task, slot} <- running, do: send(slot, {:go, gate})
+
+    for {task, _slot} <- running, do: assert({:ok, _} = Task.await(task))
+    assert {:ok, _} = Task.await(queued)
+
+    # Each ran after the document was free; without a base revision they
+    # conflict with the earlier write instead of being rejected for load.
+    for {_id, task} <- waiting do
+      assert {:error, %VialKeeper.Error{code: :revision_conflict}} = Task.await(task)
+    end
+  end
+
   test "a queued write past its deadline is withdrawn from the queue", %{uuid: uuid} do
     gate = hold_writes(uuid)
 

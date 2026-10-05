@@ -4,7 +4,8 @@ defmodule VialKeeper.Runtime.WriterPool do
 
   Occupancy is `active + queued` and never exceeds
   `effective_writers + write_queue_limit`; overflow is the existing retryable
-  `database_overloaded` error.
+  `database_overloaded` error. A queued write waiting for a busy document
+  (held by a running write or an earlier queued one) does not count.
 
   Two writes that touch the same document never run at the same time. A
   queued write may start when an idle slot exists and its document ids
@@ -32,6 +33,7 @@ defmodule VialKeeper.Runtime.WriterPool do
       :request_ref,
       :from,
       :monitor_ref,
+      :class,
       :command,
       :authority,
       :document_ids,
@@ -44,6 +46,7 @@ defmodule VialKeeper.Runtime.WriterPool do
             request_ref: reference(),
             from: GenServer.from(),
             monitor_ref: reference(),
+            class: ServiceClass.t(),
             command: struct(),
             authority: CommandContext.t(),
             document_ids: [binary()],
@@ -136,7 +139,7 @@ defmodule VialKeeper.Runtime.WriterPool do
 
     cond do
       Deadline.exhausted?(deadline) -> {:error, deadline_error()}
-      match?(%_{}, normalized) -> submit(uuid, authority, normalized, deadline)
+      match?(%_{}, normalized) -> submit(uuid, class, authority, normalized, deadline)
       true -> {:error, Error.invalid_request("unknown database command")}
     end
   end
@@ -250,8 +253,7 @@ defmodule VialKeeper.Runtime.WriterPool do
       state.closing? ->
         {:reply, {:error, closed_error()}, state}
 
-      map_size(state.busy) + :queue.len(state.waiters) >=
-          state.effective_writers + state.queue_limit ->
+      over_limit?(state, waiter_fields.document_ids) ->
         DatabaseInstrumentation.overload(state.uuid)
         {:reply, {:error, Error.database_overloaded("database write queue is full")}, state}
 
@@ -358,10 +360,11 @@ defmodule VialKeeper.Runtime.WriterPool do
 
   defp reply_when_idle(state, park), do: {:noreply, park.(state)}
 
-  defp submit(uuid, authority, command, deadline) do
+  defp submit(uuid, class, authority, command, deadline) do
     request_ref = make_ref()
 
     waiter_fields = %{
+      class: class,
       command: command,
       authority: authority,
       document_ids: WriteKeys.document_ids(command),
@@ -418,6 +421,7 @@ defmodule VialKeeper.Runtime.WriterPool do
 
   defp grant(state, slot_pid, %Waiter{} = waiter) do
     Process.demonitor(waiter.monitor_ref, [:flush])
+    probe_grant(waiter.class)
 
     job = %Job{
       request_ref: waiter.request_ref,
@@ -437,6 +441,21 @@ defmodule VialKeeper.Runtime.WriterPool do
       | busy: Map.put(state.busy, slot_pid, job),
         held: Enum.into(job.document_ids, state.held)
     }
+  end
+
+  # Writes waiting for a busy document hold no slot and add no load until the
+  # document frees up, so only writes that could start count against the limit.
+  defp over_limit?(state, document_ids) do
+    {ready, blocked} =
+      state.waiters
+      |> :queue.to_list()
+      |> Enum.reduce({0, state.held}, fn %Waiter{document_ids: ids}, {ready, blocked} ->
+        ready = if Enum.any?(ids, &MapSet.member?(blocked, &1)), do: ready, else: ready + 1
+        {ready, Enum.into(ids, blocked)}
+      end)
+
+    not Enum.any?(document_ids, &MapSet.member?(blocked, &1)) and
+      map_size(state.busy) + ready >= state.effective_writers + state.queue_limit
   end
 
   defp release(held, document_ids), do: Enum.reduce(document_ids, held, &MapSet.delete(&2, &1))
@@ -631,5 +650,15 @@ defmodule VialKeeper.Runtime.WriterPool do
       %{reason: :deadline_exhausted},
       retryable: true
     )
+  end
+
+  defp probe_grant(class) do
+    case Application.get_env(:vial_keeper, :writer_pool_probe) do
+      {pid, ref} when is_pid(pid) and is_reference(ref) ->
+        send(pid, {ref, :writer_pool_grant, class, nil})
+
+      _ ->
+        :ok
+    end
   end
 end

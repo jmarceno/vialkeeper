@@ -19,6 +19,9 @@ defmodule VialKeeper.Runtime.DatabaseRuntimeSupervisor do
     WriterPoolSupervisor
   }
 
+  @registry VialKeeper.Runtime.DatabaseRegistry
+  @previous_wait_ms 1_000
+
   @spec start_link(map()) :: Supervisor.on_start()
   def start_link(%{uuid: uuid} = args), do: Supervisor.start_link(__MODULE__, args, name: via(uuid))
 
@@ -32,12 +35,32 @@ defmodule VialKeeper.Runtime.DatabaseRuntimeSupervisor do
 
   @impl true
   def init(%{uuid: uuid, bundle: %DatabaseBundle{} = bundle} = args) do
+    :ok = await_previous_runtime(uuid, System.monotonic_time(:millisecond) + @previous_wait_ms)
     limit = VialKeeper.Config.host_limits()[:admission_limit] || 128
     policy = admission_policy(limit)
 
     children = children_for_kind(uuid, bundle, Map.get(args, :database_kind), limit, policy)
 
     Supervisor.init(children, strategy: :rest_for_one)
+  end
+
+  # After a killed runtime, its ledger and owner may still be closing their
+  # connections, and the registry drops their names asynchronously. A restart
+  # waits, bounded, until both names are free instead of failing on them and
+  # using up the parent's restart budget. Past the bound the restart proceeds
+  # and the parent's budget applies as before.
+  defp await_previous_runtime(uuid, deadline_ms) do
+    cond do
+      Enum.all?([{:sequence_ledger, uuid}, {:owner, uuid}], &(Registry.lookup(@registry, &1) == [])) ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline_ms ->
+        :ok
+
+      true ->
+        Process.sleep(1)
+        await_previous_runtime(uuid, deadline_ms)
+    end
   end
 
   defp children_for_kind(uuid, bundle, :shadow, limit, policy) do
