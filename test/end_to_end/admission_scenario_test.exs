@@ -877,7 +877,7 @@ defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
       Task.async(fn ->
         DatabaseCatalog.command(
           a_uuid,
-          {:command, :put, %{document_id: "a-block", body: %{"n" => 1}}}
+          AdmissionScenario.serial_write()
         )
       end)
 
@@ -889,7 +889,7 @@ defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
           DatabaseCatalog.command_as(
             a_uuid,
             class,
-            {:command, :put, %{document_id: "a-q-#{class}", body: %{"n" => 1}}}
+            AdmissionScenario.serial_write()
           )
         end)
       end
@@ -920,7 +920,7 @@ defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
       Task.async(fn ->
         DatabaseCatalog.command(
           b_uuid,
-          {:command, :put, %{document_id: "b-block", body: %{"n" => 1}}}
+          AdmissionScenario.serial_write()
         )
       end)
 
@@ -930,7 +930,7 @@ defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
       Task.async(fn ->
         DatabaseCatalog.command(
           b_uuid,
-          {:command, :put, %{document_id: "b-wait", body: %{"n" => 1}}}
+          AdmissionScenario.serial_write()
         )
       end)
 
@@ -1000,7 +1000,7 @@ defmodule VialKeeper.EndToEnd.AdmissionScenarioTest do
         DatabaseCatalog.command_as(
           uuid,
           :replication,
-          {:command, :put, %{document_id: "repl-close", body: %{"n" => 1}}}
+          AdmissionScenario.serial_write()
         )
       end)
 

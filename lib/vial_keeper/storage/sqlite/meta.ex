@@ -4,7 +4,7 @@ defmodule VialKeeper.Storage.SQLite.Meta do
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.Storage.SQLite.Connection
 
-  @query "SELECT database_uuid, history_epoch, current_sequence, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
+  @query "SELECT database_uuid, history_epoch, sequence_reserved_through, retention_floor_sequence, compaction_epoch, retention_boundary_digest, config_json FROM db_meta WHERE id = 1"
 
   @spec load(Connection.handle()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def load(conn) do
@@ -15,7 +15,7 @@ defmodule VialKeeper.Storage.SQLite.Meta do
            %{
              database_uuid: uuid,
              history_epoch: history_epoch,
-             current_sequence: sequence,
+             sequence_reserved_through: sequence,
              retention_floor_sequence: floor,
              compaction_epoch: compaction_epoch,
              retention_boundary_digest: digest,

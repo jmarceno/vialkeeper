@@ -188,6 +188,7 @@ defmodule VialKeeper.Query.Executor do
       has_more: length(ordered) > limit,
       examined: examined,
       sequence: Map.get(identity, :current_sequence, 0),
+      data_version: Map.get(identity, :data_version, 0),
       selected_index: selected_metadata.index_id,
       index_digest: selected_metadata.definition_digest,
       plan_kind: plan.kind,

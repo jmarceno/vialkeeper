@@ -8,7 +8,7 @@ defmodule VialKeeper.Query.QueryServiceTest do
   use ExUnit.Case, async: false
 
   alias VialKeeper.Error
-  alias VialKeeper.Runtime.DatabaseCatalog
+  alias VialKeeper.Runtime.{DatabaseCatalog, SequenceLedger}
   alias VialKeeper.View.Manager
 
   setup do
@@ -31,7 +31,7 @@ defmodule VialKeeper.Query.QueryServiceTest do
       assert {:ok, _} = VialKeeper.Documents.put(uuid, %{id: id, body: %{"type" => "task"}})
     end
 
-    {:ok, uuid: uuid}
+    {:ok, uuid: uuid, relative: relative}
   end
 
   test "a query and an explain each make one database trip", %{uuid: uuid} do
@@ -71,6 +71,58 @@ defmodule VialKeeper.Query.QueryServiceTest do
              VialKeeper.Query.execute(uuid, Map.put(request, "bookmark", bookmark))
   end
 
+  test "a write between pages makes the bookmark stale even when the visible sequence holds",
+       %{uuid: uuid} do
+    request = %{"selector" => %{"/type" => "task"}, "limit" => 2}
+    assert {:ok, %{bookmark: bookmark}} = VialKeeper.Query.execute(uuid, request)
+
+    # An earlier reservation stays outstanding, so the write below commits
+    # out of order and the visible sequence cannot move past it.
+    {:ok, token, _first, _last} = SequenceLedger.reserve(uuid, 1, :infinity)
+    visible = SequenceLedger.visible(uuid)
+    version = SequenceLedger.data_version(uuid)
+
+    write =
+      Task.async(fn -> VialKeeper.Documents.put(uuid, %{id: "d", body: %{"type" => "task"}}) end)
+
+    VialKeeper.Eventual.eventually(fn -> SequenceLedger.data_version(uuid) > version end,
+      timeout: 5_000,
+      message: "the write did not commit"
+    )
+
+    assert {:ok, %{current_sequence: ^visible}} =
+             DatabaseCatalog.command(uuid, {:command, :identity, %{}})
+
+    assert {:error, %Error{code: :bookmark_stale}} =
+             VialKeeper.Query.execute(uuid, Map.put(request, "bookmark", bookmark))
+
+    assert :ok = SequenceLedger.complete(uuid, token, :aborted)
+    assert {:ok, %{sequence: sequence}} = Task.await(write)
+    assert SequenceLedger.visible(uuid) >= sequence
+  end
+
+  test "a bookmark survives a close and reopen with no writes", %{uuid: uuid} = context do
+    request = %{"selector" => %{"/type" => "task"}, "limit" => 2}
+    assert {:ok, %{bookmark: bookmark}} = VialKeeper.Query.execute(uuid, request)
+
+    reopen!(context)
+
+    assert {:ok, %{documents: [%{id: "c"}], has_more: false}} =
+             VialKeeper.Query.execute(uuid, Map.put(request, "bookmark", bookmark))
+  end
+
+  test "a bookmark is stale after a reopen when a write happened before the close",
+       %{uuid: uuid} = context do
+    request = %{"selector" => %{"/type" => "task"}, "limit" => 2}
+    assert {:ok, %{bookmark: bookmark}} = VialKeeper.Query.execute(uuid, request)
+    assert {:ok, _} = VialKeeper.Documents.put(uuid, %{id: "d", body: %{"type" => "task"}})
+
+    reopen!(context)
+
+    assert {:error, %Error{code: :bookmark_stale}} =
+             VialKeeper.Query.execute(uuid, Map.put(request, "bookmark", bookmark))
+  end
+
   test "the database's configured limit bounds queries and explains", %{uuid: uuid} do
     assert {:ok, _} =
              DatabaseCatalog.command(
@@ -89,6 +141,14 @@ defmodule VialKeeper.Query.QueryServiceTest do
 
     assert {:ok, %{documents: [_, _]}} =
              VialKeeper.Query.execute(uuid, Map.put(request, "limit", 2))
+  end
+
+  defp reopen!(%{uuid: uuid, relative: relative}) do
+    assert :ok = DatabaseCatalog.close(uuid)
+    assert :ok = DatabaseCatalog.unregister(uuid)
+    assert {:ok, %{database_uuid: ^uuid}} = DatabaseCatalog.register(relative)
+    assert {:ok, _} = DatabaseCatalog.open(uuid)
+    assert :ok = Manager.await_resumed(uuid)
   end
 
   defp catalog_entry_points do

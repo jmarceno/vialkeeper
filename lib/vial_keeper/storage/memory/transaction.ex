@@ -19,6 +19,14 @@ defmodule VialKeeper.Storage.Memory.Transaction do
     end
   end
 
+  @doc """
+  The memory store has one writer, so a concurrent transaction is an
+  ordinary write transaction.
+  """
+  @impl true
+  def run_concurrent(%BackendContext{} = context, fun) when is_function(fun, 1),
+    do: run(context, fun)
+
   @impl true
   def run_snapshot(%BackendContext{} = context, fun) when is_function(fun, 1) do
     with {:ok, adapter} <- Context.unwrap(context) do

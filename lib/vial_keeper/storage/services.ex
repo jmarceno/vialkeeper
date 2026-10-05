@@ -30,6 +30,7 @@ defmodule VialKeeper.Storage.Services do
     Mutations,
     Query,
     Retention,
+    Sequences,
     Shadows,
     Views
   }
@@ -45,10 +46,21 @@ defmodule VialKeeper.Storage.Services do
     :attachment_metadata
   ]
 
-  @doc "Loads the current backend identity through the lifecycle port."
+  @doc """
+  Loads the current backend identity through the lifecycle port.
+
+  `current_sequence` is the visible sequence watermark and `data_version` the
+  committed-write counter; both come from the sequence ledger (see
+  `VialKeeper.Storage.Services.Sequences.overlay/2`), never from the backend.
+  """
   @spec identity(BackendContext.t()) :: {:ok, map()} | {:error, VialKeeper.Error.t()}
   def identity(%BackendContext{} = context),
-    do: with_port(context, :lifecycle, fn -> Access.port(context, :lifecycle).identity(context) end)
+    do:
+      with_port(context, :lifecycle, fn ->
+        with {:ok, stored} <- Access.port(context, :lifecycle).identity(context) do
+          Sequences.overlay(context, stored)
+        end
+      end)
 
   @doc "Updates backend configuration through the lifecycle port."
   @spec update_config(BackendContext.t(), map()) ::
@@ -132,7 +144,8 @@ defmodule VialKeeper.Storage.Services do
                limit,
                get_in(current_identity, [:config, "changes", "max_batch"])
              ) do
-        Access.port(context, :change_log).read_page(context, since, limit)
+        through = Map.fetch!(current_identity, :current_sequence)
+        Access.port(context, :change_log).read_page(context, since, max(since, through), limit)
       end
     end)
   end
@@ -212,7 +225,7 @@ defmodule VialKeeper.Storage.Services do
       with_port(context, :index_candidates, fn ->
         with {:ok, current_identity} <- identity(context),
              {:ok, normalized} <- Normalizer.normalize_public_request(request),
-             {:ok, admitted} <- admit_public_query(request, normalized, current_identity) do
+             {:ok, admitted} <- admit_public_query(context, request, normalized, current_identity) do
           Query.execute(context, admitted, current_identity)
         end
       end)
@@ -221,10 +234,20 @@ defmodule VialKeeper.Storage.Services do
 
   # A prepared request comes from the public query service, which leaves its
   # identity-dependent checks to this snapshot (see `SnapshotChecks`).
-  defp admit_public_query(%Prepared{}, normalized, identity),
-    do: SnapshotChecks.admit(normalized, identity)
+  defp admit_public_query(context, %Prepared{}, normalized, identity),
+    do: SnapshotChecks.admit(normalized, identity, &changed_after?(context, &1))
 
-  defp admit_public_query(_request, normalized, _identity), do: {:ok, normalized}
+  defp admit_public_query(_context, _request, normalized, _identity), do: {:ok, normalized}
+
+  # Reads the change log itself rather than `sequence_high_water`, which is
+  # cached per connection and never refreshed on reader connections.
+  @max_sequence 9_223_372_036_854_775_807
+  defp changed_after?(context, visible) do
+    with {:ok, %{results: results}} <-
+           Access.port(context, :change_log).read_page(context, visible, @max_sequence, 1) do
+      {:ok, results != []}
+    end
+  end
 
   defp check_public_query_limit(%Prepared{}, normalized, identity),
     do: SnapshotChecks.check_limit(normalized, identity)

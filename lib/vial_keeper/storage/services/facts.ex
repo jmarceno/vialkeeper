@@ -10,7 +10,7 @@ defmodule VialKeeper.Storage.Services.Facts do
   alias VialKeeper.Revisions.Compare
   alias VialKeeper.Storage.BackendContext
   alias VialKeeper.Storage.Ports.Access
-  alias VialKeeper.Storage.Services.Attachments
+  alias VialKeeper.Storage.Services.{Attachments, Sequences}
 
   @type change_entry :: %{
           required(:sequence) => pos_integer(),
@@ -265,22 +265,19 @@ defmodule VialKeeper.Storage.Services.Facts do
   def delete_revisions(%BackendContext{} = ctx, document_id, revision_ids),
     do: Access.port(ctx, :document_facts).delete_revisions(ctx, document_id, revision_ids)
 
-  @doc "Allocates one change sequence."
+  @doc """
+  Takes one change sequence from this process's sequence reservation.
+  """
   @spec allocate_sequence(BackendContext.t()) ::
           {:ok, integer()} | {:error, VialKeeper.Error.t()}
   def allocate_sequence(%BackendContext{} = ctx) do
-    case Access.port(ctx, :change_log).allocate_sequences(ctx, 1) do
-      {:ok, [sequence]} -> {:ok, sequence}
-      {:ok, []} -> {:error, VialKeeper.Error.internal_error("sequence allocation returned empty")}
-      {:error, _} = error -> error
-    end
+    with {:ok, [sequence]} <- Sequences.take(ctx, 1), do: {:ok, sequence}
   end
 
-  @doc "Allocates `count` change sequences."
+  @doc "Takes `count` change sequences from this process's sequence reservation."
   @spec allocate_sequences(BackendContext.t(), non_neg_integer()) ::
           {:ok, [integer()]} | {:error, VialKeeper.Error.t()}
-  def allocate_sequences(%BackendContext{} = ctx, count),
-    do: Access.port(ctx, :change_log).allocate_sequences(ctx, count)
+  def allocate_sequences(%BackendContext{} = ctx, count), do: Sequences.take(ctx, count)
 
   @doc "Builds the backend-neutral change entry accepted by the change-log port."
   @spec change_entry(

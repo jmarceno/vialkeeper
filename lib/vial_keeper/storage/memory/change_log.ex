@@ -10,13 +10,19 @@ defmodule VialKeeper.Storage.Memory.ChangeLog do
   alias VialKeeper.Storage.Ports.Errors
 
   @impl true
-  def allocate_sequences(%BackendContext{} = context, count)
-      when is_integer(count) and count >= 0 do
+  def sequence_high_water(%BackendContext{} = context) do
     with {:ok, adapter} <- Context.unwrap(context) do
-      Store.update(adapter.store, fn state ->
-        {:ok, new_state, sequences} = Store.allocate_sequences(state, count)
-        {:ok, new_state, sequences}
-      end)
+      {:ok, Store.get(adapter.store).identity.sequence_reserved_through}
+    end
+  end
+
+  @impl true
+  def persist_sequence_reservation(%BackendContext{} = context, through)
+      when is_integer(through) and through >= 0 do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      adapter.store
+      |> Store.update(&{:ok, Store.reserve_sequences_through(&1, through), :ok})
+      |> normalize_ok()
     end
   end
 
@@ -42,10 +48,11 @@ defmodule VialKeeper.Storage.Memory.ChangeLog do
   end
 
   @impl true
-  def read_page(%BackendContext{} = context, since, limit)
-      when is_integer(since) and since >= 0 and is_integer(limit) and limit > 0 do
+  def read_page(%BackendContext{} = context, since, through, limit)
+      when is_integer(since) and is_integer(through) and through >= since and since >= 0 and
+             is_integer(limit) and limit > 0 do
     with {:ok, adapter} <- Context.unwrap(context) do
-      {:ok, page_from_state(Store.get(adapter.store), since, limit)}
+      {:ok, page_from_state(Store.get(adapter.store), since, through, limit)}
     end
   end
 
@@ -88,16 +95,20 @@ defmodule VialKeeper.Storage.Memory.ChangeLog do
     end
   end
 
-  defp page_from_state(state, since, limit) do
+  defp page_from_state(state, since, through, limit) do
     changes =
       state.changes
-      |> Enum.filter(&(&1.sequence > since))
+      |> Enum.filter(&(&1.sequence > since and &1.sequence <= through))
       |> Enum.take(limit + 1)
 
-    page = Enum.take(changes, limit)
-    last = List.last(page, %{sequence: since}).sequence
+    # Holes are allowed: a final page reaches `through`.
+    {page, last, has_more} =
+      case Enum.split(changes, limit) do
+        {page, []} -> {page, through, false}
+        {page, [_next | _]} -> {page, Enum.at(page, limit - 1).sequence, true}
+      end
 
-    Page.new(Enum.map(page, &change_row/1), last, length(changes) > limit)
+    Page.new(Enum.map(page, &change_row/1), last, has_more)
   end
 
   defp append_entries(state, entries) do

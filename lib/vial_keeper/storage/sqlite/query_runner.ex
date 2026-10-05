@@ -65,7 +65,7 @@ defmodule VialKeeper.Storage.SQLite.QueryRunner do
   defp adapter_identity(adapter) do
     case Adapter.identity(adapter) do
       {:ok, value} -> value
-      _ -> %{current_sequence: 0, config: VialKeeper.Config.defaults()}
+      _ -> %{config: VialKeeper.Config.defaults()}
     end
   end
 end

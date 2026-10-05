@@ -22,6 +22,7 @@ defmodule VialKeeper.Runtime.ReadWorker do
     DatabaseOwner,
     DatabaseReadDispatch,
     ReadPool,
+    SequenceLedger,
     ShadowBinding
   }
 
@@ -158,7 +159,9 @@ defmodule VialKeeper.Runtime.ReadWorker do
     sync_before_begin(state.uuid, probe_op)
 
     with :ok <- DatabaseCommandPolicy.authorize(database_kind, authority, normalized) do
-      run_authorized_read(state, authority, normalized, database_kind, probe_op)
+      state
+      |> fix_sequence_view()
+      |> run_authorized_read(authority, normalized, database_kind, probe_op)
     end
   catch
     error_kind, reason ->
@@ -167,6 +170,15 @@ defmodule VialKeeper.Runtime.ReadWorker do
          kind: error_kind,
          reason: inspect(reason)
        })}
+  end
+
+  # The watermark is read before the snapshot begins, so every sequence at or
+  # below it is committed and visible inside the snapshot.
+  defp fix_sequence_view(state) do
+    case SequenceLedger.view(state.uuid) do
+      {:ok, view} -> %{state | context: %{state.context | sequence_view: view}}
+      :none -> state
+    end
   end
 
   # Shadow reads check their durable binding and read data in one snapshot.

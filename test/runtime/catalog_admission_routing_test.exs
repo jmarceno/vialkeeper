@@ -96,27 +96,21 @@ defmodule VialKeeper.Runtime.CatalogAdmissionRoutingTest do
     gate_ref = make_ref()
     :ok = Application.put_env(:vial_keeper, :admitted_command_sync, {parent, gate_ref, uuid_a})
 
+    # Admission orders serial-lane commands, so a configuration update holds
+    # database A's admission while document writes may run beside it.
     blocker =
-      Task.async(fn ->
-        DatabaseCatalog.command(
-          uuid_a,
-          {:command, :put, %{document_id: "block", body: %{"n" => 1}}}
-        )
-      end)
+      Task.async(fn -> DatabaseCatalog.command(uuid_a, config_update(100)) end)
 
     assert_receive {^gate_ref, :before_begin, blocker_executor}, 2_000
 
     queued_classes = [:subscription, :replication, :maintenance, :foreground]
 
     queued =
-      Enum.map(queued_classes, fn class ->
+      queued_classes
+      |> Enum.with_index(101)
+      |> Enum.map(fn {class, max_limit} ->
         Task.async(fn ->
-          result =
-            DatabaseCatalog.command_as(
-              uuid_a,
-              class,
-              {:command, :put, %{document_id: "q-#{class}", body: %{"n" => 1}}}
-            )
+          result = DatabaseCatalog.command_as(uuid_a, class, config_update(max_limit))
 
           send(parent, {:a_ran, class})
           result
@@ -174,4 +168,7 @@ defmodule VialKeeper.Runtime.CatalogAdmissionRoutingTest do
         false
     end
   end
+
+  defp config_update(max_limit),
+    do: {:command, :update_config, %{"queries" => %{"max_limit" => max_limit}}}
 end

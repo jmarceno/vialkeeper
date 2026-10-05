@@ -182,7 +182,7 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   """
 
-  @sequence_update_sql "UPDATE db_meta SET current_sequence = ? WHERE id = 1"
+  @sequence_update_sql "UPDATE db_meta SET sequence_reserved_through = ? WHERE id = 1"
 
   @local_record_upsert_sql """
   INSERT INTO local_records(namespace, record_key, record_version, value_json)
@@ -676,7 +676,7 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
     [[documents]] = Raw.query!(conn, "SELECT count(*) FROM documents")
     [[revisions]] = Raw.query!(conn, "SELECT count(*) FROM revisions")
     [[changes]] = Raw.query!(conn, "SELECT count(*) FROM changes")
-    [[sequence]] = Raw.query!(conn, "SELECT current_sequence FROM db_meta WHERE id = 1")
+    [[sequence]] = Raw.query!(conn, "SELECT sequence_reserved_through FROM db_meta WHERE id = 1")
     {documents, revisions, changes, sequence}
   end
 
@@ -684,7 +684,7 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
     "SELECT count(*) FROM documents",
     "SELECT count(*) FROM revisions",
     "SELECT count(*) FROM changes",
-    "SELECT current_sequence FROM db_meta WHERE id = 1"
+    "SELECT sequence_reserved_through FROM db_meta WHERE id = 1"
   ]
 
   defp native_table_counts(port) do

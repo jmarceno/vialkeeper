@@ -60,7 +60,12 @@ defmodule VialKeeper.Integrity.Rules do
     validators = [
       fn -> validate_uuid(Map.get(meta, :database_uuid)) end,
       fn -> validate_history_epoch(Map.get(meta, :history_epoch)) end,
-      fn -> validate_non_negative(Map.get(meta, :current_sequence), "current_sequence") end,
+      fn ->
+        validate_non_negative(
+          Map.get(meta, :sequence_reserved_through),
+          "sequence_reserved_through"
+        )
+      end,
       fn ->
         validate_non_negative(Map.get(meta, :retention_floor_sequence), "retention_floor_sequence")
       end,
@@ -90,16 +95,16 @@ defmodule VialKeeper.Integrity.Rules do
     do: {:error, Error.integrity_violation("metadata field is invalid", %{field: field})}
 
   defp validate_floor_within_sequence(meta) do
-    sequence = Map.get(meta, :current_sequence)
+    reserved = Map.get(meta, :sequence_reserved_through)
     floor = Map.get(meta, :retention_floor_sequence)
 
-    if is_integer(floor) and is_integer(sequence) and floor <= sequence,
+    if is_integer(floor) and is_integer(reserved) and floor <= reserved,
       do: :ok,
       else:
         {:error,
-         Error.integrity_violation("retention floor exceeds current sequence", %{
+         Error.integrity_violation("retention floor exceeds reserved sequences", %{
            floor: floor,
-           current_sequence: sequence
+           sequence_reserved_through: reserved
          })}
   end
 
@@ -172,7 +177,7 @@ defmodule VialKeeper.Integrity.Rules do
       peer.source_history_epoch != Map.get(meta, :history_epoch) ->
         {:error, Error.integrity_violation("peer source history epoch mismatch")}
 
-      peer.safe_source_sequence > Map.get(meta, :current_sequence) ->
+      peer.safe_source_sequence > Map.get(meta, :sequence_reserved_through) ->
         {:error, Error.integrity_violation("peer safe sequence exceeds source sequence")}
 
       peer.installed_source_compaction_epoch > Map.get(meta, :compaction_epoch) ->

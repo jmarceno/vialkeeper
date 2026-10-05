@@ -66,7 +66,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
   ) VALUES (?, ?, ?, ?, 0, ?, ?, 'local')
   """
 
-  @sequence_update_sql "UPDATE db_meta SET current_sequence = ? WHERE id = 1"
+  @sequence_update_sql "UPDATE db_meta SET sequence_reserved_through = ? WHERE id = 1"
 
   @pending_upsert_sql """
   INSERT INTO local_records(namespace, record_key, record_version, value_json)

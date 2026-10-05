@@ -8,14 +8,36 @@ defmodule VialKeeper.Storage.BackendContext do
   """
 
   @enforce_keys [:backend, :backend_ref, :bundle_root]
-  defstruct [:backend, :backend_ref, :bundle_root, capabilities: %{}, identity: %{}]
+  defstruct [
+    :backend,
+    :backend_ref,
+    :bundle_root,
+    capabilities: %{},
+    identity: %{},
+    sequence_view: nil,
+    write_mode: :serial
+  ]
+
+  @typedoc """
+  The visible sequence and data version a reader fixed before its snapshot
+  began; `nil` reads them from the sequence ledger when needed.
+  """
+  @type sequence_view :: nil | VialKeeper.Storage.SequenceView.t()
+
+  @typedoc """
+  `:concurrent` makes write transactions use the backend's concurrent
+  transaction mode (writer slots only).
+  """
+  @type write_mode :: :serial | :concurrent
 
   @type t :: %__MODULE__{
           backend: module(),
           backend_ref: term(),
           bundle_root: binary(),
           capabilities: map(),
-          identity: map()
+          identity: map(),
+          sequence_view: sequence_view(),
+          write_mode: write_mode()
         }
 
   @doc "Builds an opaque backend context."

@@ -149,7 +149,7 @@ defmodule VialKeeper.StorageAdapter.FormatMigrationTest do
                  """
                  SELECT database_uuid, database_kind, history_epoch, logical_schema_version,
                         revision_algorithm_version, canonicalization_version, replication_protocol_major,
-                        current_sequence, retention_floor_sequence, compaction_epoch,
+                        sequence_reserved_through, retention_floor_sequence, compaction_epoch,
                         retention_boundary_digest, created_at, config_json
                  FROM db_meta WHERE id = 1
                  """
@@ -186,7 +186,7 @@ defmodule VialKeeper.StorageAdapter.FormatMigrationTest do
                  revision_algorithm_version INTEGER NOT NULL,
                  canonicalization_version INTEGER NOT NULL,
                  replication_protocol_major INTEGER NOT NULL,
-                 current_sequence INTEGER NOT NULL,
+                 sequence_reserved_through INTEGER NOT NULL,
                  retention_floor_sequence INTEGER NOT NULL,
                  compaction_epoch INTEGER NOT NULL,
                  retention_boundary_digest TEXT,
@@ -202,7 +202,7 @@ defmodule VialKeeper.StorageAdapter.FormatMigrationTest do
                  INSERT INTO db_meta_next (
                    id, database_uuid, database_kind, history_epoch, file_format_version,
                    logical_schema_version, revision_algorithm_version, canonicalization_version,
-                   replication_protocol_major, current_sequence, retention_floor_sequence,
+                   replication_protocol_major, sequence_reserved_through, retention_floor_sequence,
                    compaction_epoch, retention_boundary_digest, created_at, config_json
                  ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  """,

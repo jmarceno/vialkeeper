@@ -1,6 +1,11 @@
 defmodule VialKeeper.Storage.Ports.ChangeLog do
   @moduledoc """
-  Change-log fact port: sequence allocation, append, and causal reads.
+  Change-log fact port: sequence reservations, append, and causal reads.
+
+  Sequences are handed out by the runtime sequence ledger, never by a write
+  transaction. The backend only stores the highest sequence that may have
+  been handed out (`sequence_high_water/1`), raised by
+  `persist_sequence_reservation/2` in a transaction of its own.
 
   Retention policy and product change-feed shaping remain outside this port.
   """
@@ -10,10 +15,17 @@ defmodule VialKeeper.Storage.Ports.ChangeLog do
   @type result(ok) :: {:ok, ok} | {:error, VialKeeper.Error.t()}
   @type change_entry :: map()
 
-  @callback allocate_sequences(BackendContext.t(), non_neg_integer()) :: result([integer()])
+  @callback sequence_high_water(BackendContext.t()) :: result(non_neg_integer())
+  @callback persist_sequence_reservation(BackendContext.t(), non_neg_integer()) ::
+              :ok | {:error, VialKeeper.Error.t()}
   @callback append_change(BackendContext.t(), map()) :: :ok | {:error, VialKeeper.Error.t()}
   @callback append_changes(BackendContext.t(), [map()]) :: :ok | {:error, VialKeeper.Error.t()}
-  @callback read_page(BackendContext.t(), non_neg_integer(), pos_integer()) ::
+  @doc """
+  Reads rows with `since < sequence <= through` in order, at most `limit`.
+  `last_sequence` is the last returned row while more rows remain, and
+  `through` once the page reaches it (sequences may have holes).
+  """
+  @callback read_page(BackendContext.t(), non_neg_integer(), non_neg_integer(), pos_integer()) ::
               result(%{
                 results: [change_entry()],
                 last_sequence: non_neg_integer(),

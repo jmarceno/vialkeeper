@@ -117,6 +117,10 @@ defmodule VialKeeper.Storage.SQLite.Connection do
     end
   end
 
+  @doc "True inside this process's write transaction body on `conn`."
+  @spec in_write_transaction?(handle()) :: boolean()
+  def in_write_transaction?(conn), do: Process.get({@write_transaction_key, conn}) == true
+
   defp stepper(conn) do
     case Process.get({@write_transaction_key, conn}) do
       true -> :inline

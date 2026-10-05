@@ -456,17 +456,22 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
     await_stats(uuid, &(&1.total_occupancy == 0), timeout: 15_000)
   end
 
+  @doc """
+  A serial-lane write. Admission orders serial-lane commands; document
+  writes may run beside them in the writer pool, so scenarios that occupy
+  admission use this instead of a document put.
+  """
+  @spec serial_write() :: tuple()
+  def serial_write,
+    do: {:command, :update_config, %{"queries" => %{"max_limit" => 500}}}
+
   defp spawn_real_path_request!(uuid, :foreground) do
     {:ok, _} =
       Task.start(fn ->
         _ =
           DatabaseCatalog.command(
             uuid,
-            {:command, :put,
-             %{
-               document_id: "fg-#{System.unique_integer([:positive])}",
-               body: %{"n" => 1}
-             }}
+            serial_write()
           )
       end)
   end
@@ -478,11 +483,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
           DatabaseCatalog.command_as(
             uuid,
             :subscription,
-            {:command, :put,
-             %{
-               document_id: "sub-#{System.unique_integer([:positive])}",
-               body: %{"n" => 1}
-             }}
+            serial_write()
           )
       end)
   end
@@ -494,11 +495,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
           DatabaseCatalog.command_as(
             uuid,
             :replication,
-            {:command, :put,
-             %{
-               document_id: "repl-#{System.unique_integer([:positive])}",
-               body: %{"n" => 1}
-             }}
+            serial_write()
           )
       end)
   end
@@ -1029,11 +1026,7 @@ defmodule VialKeeper.TestSupport.AdmissionScenario do
             DatabaseCatalog.command_as(
               uuid,
               :replication,
-              {:command, :put,
-               %{
-                 document_id: "repl-#{System.unique_integer([:positive])}",
-                 body: %{"n" => 1}
-               }}
+              serial_write()
             )
         catch
           :exit, _ -> :ok

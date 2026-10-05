@@ -16,7 +16,7 @@ defmodule VialKeeper.Storage.SQLite.Lifecycle do
 
   @impl true
   def identity(%BackendContext{} = context) do
-    with {:ok, adapter} <- Context.unwrap(context), do: Adapter.identity(adapter)
+    with {:ok, adapter} <- Context.unwrap(context), do: Adapter.stored_identity(adapter)
   end
 
   @impl true
@@ -27,8 +27,11 @@ defmodule VialKeeper.Storage.SQLite.Lifecycle do
   @impl true
   def capabilities(%BackendContext{} = context) do
     case Context.unwrap(context) do
-      {:ok, _adapter} -> Adapter.capabilities_report()
-      {:error, _} -> %{}
+      {:ok, adapter} ->
+        Map.merge(Adapter.capabilities_report(), Adapter.writer_capabilities(adapter))
+
+      {:error, _} ->
+        %{}
     end
   end
 
@@ -45,6 +48,28 @@ defmodule VialKeeper.Storage.SQLite.Lifecycle do
 
   @impl true
   def close_reader(%BackendContext{} = context), do: close(context)
+
+  @impl true
+  def open_writer(%BackendContext{} = context) do
+    with {:ok, adapter} <- Context.unwrap(context) do
+      case Adapter.open_writer(adapter) do
+        {:ok, writer} -> {:ok, Adapter.to_context(writer)}
+        {:error, :unsupported_writers} -> {:error, :unsupported_writers}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def close_writer(%BackendContext{} = context), do: close(context)
+
+  @impl true
+  def reset_writer_caches(%BackendContext{} = context) do
+    case Context.unwrap(context) do
+      {:ok, adapter} -> Adapter.reset_writer_caches(adapter)
+      {:error, _} -> :ok
+    end
+  end
 
   @impl true
   def interrupt_reader(%BackendContext{} = context) do

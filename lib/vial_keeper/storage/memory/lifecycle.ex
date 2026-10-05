@@ -51,7 +51,7 @@ defmodule VialKeeper.Storage.Memory.Lifecycle do
   @impl true
   def capabilities(%BackendContext{} = context) do
     case Context.unwrap(context) do
-      {:ok, _adapter} -> %{engine: "memory"}
+      {:ok, _adapter} -> %{engine: "memory", max_writers: 1, sequence_persistence: :none}
       {:error, _} -> %{}
     end
   end
@@ -64,4 +64,13 @@ defmodule VialKeeper.Storage.Memory.Lifecycle do
 
   @impl true
   def interrupt_reader(%BackendContext{}), do: :unsupported
+
+  @impl true
+  def open_writer(%BackendContext{}), do: {:error, :unsupported_writers}
+
+  @impl true
+  def close_writer(%BackendContext{} = context), do: close(context)
+
+  @impl true
+  def reset_writer_caches(%BackendContext{}), do: :ok
 end
