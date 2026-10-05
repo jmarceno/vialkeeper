@@ -748,7 +748,7 @@ defmodule VialKeeper.Retention.ReviewerFixesTest do
 
   defp open_adapter(prefix) do
     {:ok, bundle_path} = TempDatabase.create(prefix: prefix)
-    path = TempDatabase.sqlite_path(bundle_path)
+    path = TempDatabase.artifact_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
 
     on_exit(fn ->

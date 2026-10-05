@@ -51,7 +51,7 @@ defmodule VialKeeper.Replication.SafeReportProbeTest do
 
   test "adapter reports local-origin changes on target", %{b: b} do
     {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "safe-probe-adapter")
-    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
+    path = VialKeeper.TempDatabase.artifact_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{database_uuid: b.database_uuid})
 
     try do

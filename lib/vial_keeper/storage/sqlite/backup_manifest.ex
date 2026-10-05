@@ -3,9 +3,10 @@ defmodule VialKeeper.Storage.SQLite.BackupManifest do
   Offline helpers for building backup manifests from a closed SQLite bundle.
 
   These helpers run outside the `DatabaseOwner` lifecycle. They open the
-  bundle's `database.sqlite3` through SQLite's immutable read-only URI, run the
-  logical and physical integrity checks, read `db_meta`, and supply the fields
-  required by `VialKeeper.Backup.Manifest` without creating WAL sidecars.
+  bundle's engine artifact read-only through its driver (SQLite uses its
+  immutable URI), run the logical and physical integrity checks, read
+  `db_meta`, and supply the fields required by `VialKeeper.Backup.Manifest`
+  without leaving sidecars behind.
 
   This module lives in the SQLite backend layer so that `application` and
   `core` code do not directly depend on `VialKeeper.Storage.SQLite.*`.
@@ -13,7 +14,8 @@ defmodule VialKeeper.Storage.SQLite.BackupManifest do
   """
 
   alias VialKeeper.Backup.Manifest
-  alias VialKeeper.Storage.SQLite.{Connection, IndexCatalog, Integrity}
+  alias VialKeeper.Storage.Engines
+  alias VialKeeper.Storage.SQLite.{Connection, Driver, IndexCatalog, Integrity}
 
   @doc "Builds and writes a manifest using identity metadata read from the copied bundle."
   @spec write(String.t(), map()) :: {:ok, Manifest.t()} | {:error, VialKeeper.Error.t()}
@@ -86,14 +88,16 @@ defmodule VialKeeper.Storage.SQLite.BackupManifest do
   end
 
   defp with_readonly_connection(bundle_path, fun) do
-    sqlite_path = Path.join(bundle_path, "database.sqlite3")
-    immutable_uri = "file:" <> URI.encode(sqlite_path) <> "?immutable=1"
+    driver = bundle_driver(bundle_path)
+    artifact = Path.join(bundle_path, driver.artifact_name())
 
-    with :ok <- ensure_closed_bundle(bundle_path),
-         {:ok, conn} <- Connection.open(immutable_uri, mode: [:readonly]) do
+    with :ok <- ensure_closed_bundle(bundle_path, driver),
+         {:ok, conn} <- driver.open_closed_artifact(artifact) do
       result = fun.(conn)
+      closed = Connection.close(conn)
+      driver.release_closed_artifact(artifact)
 
-      case Connection.close(conn) do
+      case closed do
         :ok -> result
         {:error, reason} -> close_error(reason)
       end
@@ -109,11 +113,18 @@ defmodule VialKeeper.Storage.SQLite.BackupManifest do
     end
   end
 
-  defp ensure_closed_bundle(bundle_path) do
+  # A bundle without any engine artifact falls back to SQLite, whose open
+  # then reports the missing file.
+  defp bundle_driver(bundle_path) do
+    Enum.find(Engines.drivers(), Driver.Rusqlite, fn driver ->
+      File.regular?(Path.join(bundle_path, driver.artifact_name()))
+    end)
+  end
+
+  defp ensure_closed_bundle(bundle_path, driver) do
     sidecars = [
-      bundle_path <> ".lease",
-      Path.join(bundle_path, "database.sqlite3-wal"),
-      Path.join(bundle_path, "database.sqlite3-shm")
+      bundle_path <> ".lease"
+      | Enum.map(driver.sidecar_suffixes(), &Path.join(bundle_path, driver.artifact_name() <> &1))
     ]
 
     case Enum.find(sidecars, &File.exists?/1) do

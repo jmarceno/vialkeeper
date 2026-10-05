@@ -1,0 +1,69 @@
+defmodule VialKeeper.Storage.Contracts.Physical.Portability do
+  @moduledoc """
+  Shared portability tests for the SQLite-dialect storage engines.
+
+  Injected into one test module per engine (`test/physical/sqlite/` and
+  `test/physical/turso/`).
+  """
+
+  defmacro __using__(opts) do
+    # quality:reason contract tests are injected via quote into each adapter module
+    # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
+    quote do
+      use VialKeeper.Storage.AdapterCase, unquote(opts)
+
+      test "closed-file OS copy without lease reopens with integrity", %{
+        adapter: adapter,
+        path: path
+      } do
+        assert {:ok, %{revision: revision}} =
+                 @adapter.apply_local_mutation(adapter, %{
+                   operation: :put,
+                   document_id: "portable",
+                   body: %{"copied" => true, "n" => 7}
+                 })
+
+        assert {:ok, identity} = @adapter.identity(adapter)
+        assert :ok = @adapter.close(adapter)
+
+        refute File.exists?(path <> ".lease")
+        refute File.exists?(path <> "-journal")
+        refute File.exists?(path <> "-wal")
+        refute File.exists?(path <> "-shm")
+
+        {:ok, copy_bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-portable-copy")
+        copy_sqlite = VialKeeper.TempDatabase.artifact_path(copy_bundle)
+        File.cp!(path, copy_sqlite)
+        refute File.exists?(copy_sqlite <> ".lease")
+
+        on_exit(fn -> VialKeeper.TempDatabase.cleanup(copy_bundle) end)
+
+        assert {:ok, reopened} = @adapter.open(copy_sqlite)
+
+        assert {:ok, reopened_identity} = @adapter.identity(reopened)
+        assert reopened_identity.database_uuid == identity.database_uuid
+        assert reopened_identity.current_sequence == identity.current_sequence
+        assert reopened_identity.config == identity.config
+
+        assert {:ok, %{revision: ^revision, body: %{"copied" => true, "n" => 7}}} =
+                 @adapter.get_document(reopened, %{document_id: "portable"})
+
+        assert {:ok, %{ok: true}} = @adapter.integrity_check(reopened, %{})
+        assert :ok = @adapter.close(reopened)
+
+        # Original path remains independently openable after copy.
+        assert {:ok, original} = @adapter.open(path)
+
+        assert {:ok, original_identity} = @adapter.identity(original)
+        assert original_identity.database_uuid == identity.database_uuid
+        assert original_identity.current_sequence == identity.current_sequence
+
+        assert {:ok, %{revision: ^revision, body: %{"copied" => true, "n" => 7}}} =
+                 @adapter.get_document(original, %{document_id: "portable"})
+
+        assert {:ok, %{ok: true}} = @adapter.integrity_check(original, %{})
+        assert :ok = @adapter.close(original)
+      end
+    end
+  end
+end

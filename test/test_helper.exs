@@ -1,7 +1,17 @@
 # The multi-container replication drill is opt-in. Default `mix test` and every
 # check alias skip `:container_replication`. Run it with
 # `mix test.container_replication`.
+#
+# Tests tagged `:sqlite_engine` or `:turso_engine` exercise one engine through
+# the runtime; they run only when `VIALKEEPER_TEST_ENGINE` selects it.
+other_engine =
+  case Application.fetch_env!(:vial_keeper, :storage_backend) do
+    VialKeeper.Storage.Turso.Adapter -> :sqlite_engine
+    _sqlite -> :turso_engine
+  end
+
 ExUnit.start(exclude: [:container_replication])
+ExUnit.configure(exclude: [other_engine | ExUnit.configuration()[:exclude]])
 
 # `VIALKEEPER_TEST_MAX_WRITERS=N` lets the SQLite backend report N writer
 # connections (test-only `:sqlite_max_writers`), so the whole suite runs

@@ -157,11 +157,13 @@ defmodule VialKeeper.Storage.SQLite.Documents do
       when is_binary(id) and is_integer(sequence) and sequence >= 0 do
     body = if winner.deleted, do: nil, else: body_json || Canonical.encode!(winner.body)
 
+    # No returning clause: a plain insert plus the connection's last rowid is the same
+    # inside a write transaction and far cheaper on every driver.
     with {:ok, body_term} <- materialized_body_term(winner, body),
-         {:ok, [[doc_key]]} <-
-           Connection.point_query(
+         :ok <-
+           Connection.point_execute(
              conn,
-             "INSERT INTO documents(document_id, winning_revision, winning_body_json, winning_body_term, winning_deleted, update_sequence) VALUES (?, ?, ?, ?, ?, ?) RETURNING doc_key",
+             "INSERT INTO documents(document_id, winning_revision, winning_body_json, winning_body_term, winning_deleted, update_sequence) VALUES (?, ?, ?, ?, ?, ?)",
              [
                id,
                winner.revision_id,
@@ -171,7 +173,7 @@ defmodule VialKeeper.Storage.SQLite.Documents do
                sequence
              ]
            ) do
-      {:ok, doc_key}
+      Connection.last_insert_rowid(conn)
     end
   end
 
@@ -180,7 +182,8 @@ defmodule VialKeeper.Storage.SQLite.Documents do
 
   `rows` carry the already computed `body` and `body_term` so a document and
   its revision share one term encoding. Returns the `doc_key` per document id
-  in input order via `RETURNING`.
+  in input order, read back by document id after the insert (concurrent
+  writers may interleave rowids, so keys are not assumed consecutive).
   """
   @spec insert_many_with_winners(
           Connection.handle(),
@@ -203,19 +206,26 @@ defmodule VialKeeper.Storage.SQLite.Documents do
         ]
       end)
 
-    case Connection.query(
-           conn,
-           "INSERT INTO documents(document_id, winning_revision, winning_body_json, winning_body_term, winning_deleted, update_sequence) VALUES " <>
-             placeholders <> " RETURNING doc_key",
-           params
-         ) do
-      {:ok, keys} ->
-        {:ok,
-         Enum.zip(keys, rows)
-         |> Enum.map(fn {[key], {id, _winner, _seq, _body, _term}} -> {key, id} end)}
+    ids = Enum.map(rows, &elem(&1, 0))
 
-      {:error, reason} ->
-        {:error, normalize_error(reason)}
+    with :ok <-
+           Connection.execute(
+             conn,
+             "INSERT INTO documents(document_id, winning_revision, winning_body_json, winning_body_term, winning_deleted, update_sequence) VALUES " <>
+               placeholders,
+             params
+           ),
+         {:ok, keyed} <-
+           Connection.query(
+             conn,
+             "SELECT document_id, doc_key FROM documents WHERE document_id IN (" <>
+               Enum.map_join(ids, ",", fn _id -> "?" end) <> ")",
+             ids
+           ) do
+      keys = Map.new(keyed, fn [id, key] -> {id, key} end)
+      {:ok, Enum.map(ids, &{Map.fetch!(keys, &1), &1})}
+    else
+      {:error, reason} -> {:error, normalize_error(reason)}
     end
   end
 

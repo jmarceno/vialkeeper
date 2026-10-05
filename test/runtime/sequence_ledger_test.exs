@@ -15,7 +15,7 @@ defmodule VialKeeper.Runtime.SequenceLedgerTest do
 
   setup do
     {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-ledger")
-    path = VialKeeper.TempDatabase.sqlite_path(bundle)
+    path = VialKeeper.TempDatabase.artifact_path(bundle)
     {:ok, adapter} = Adapter.create(path, %{})
     context = Adapter.to_context(adapter)
     uuid = context.identity.database_uuid

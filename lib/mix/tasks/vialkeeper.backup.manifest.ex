@@ -17,11 +17,11 @@ defmodule Mix.Tasks.Vialkeeper.Backup.Manifest do
         [--generation-id <uuid>] \\
         [--manifest-path /path/to/manifest.json]
 
-  Storage versions and database UUID are read from the bundle's
-  `database.sqlite3`; operator-supplied identity metadata is not accepted.
+  Storage versions and database UUID are read from the bundle's engine
+  artifact; operator-supplied identity metadata is not accepted.
 
-  The manifest includes `Diagnostics.runtime/0`, bundle sizes, SHA-256 of
-  `database.sqlite3` and of `blobs/`, and the post-close integrity result.
+  The manifest includes `Diagnostics.runtime/0`, bundle sizes, SHA-256 of the
+  engine artifact and of `blobs/`, and the post-close integrity result.
   See `VialKeeper Recovery Strategy` MAINT-006 and `Operations.md`.
   """
 

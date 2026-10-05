@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS db_meta (
   compaction_epoch INTEGER NOT NULL CHECK (compaction_epoch >= 0),
   retention_boundary_digest TEXT,
   created_at TEXT NOT NULL,
-  config_json TEXT NOT NULL
+  config_json TEXT NOT NULL,
+  storage_engine TEXT NOT NULL CHECK (storage_engine IN ('turso', 'sqlite'))
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS shadow_metadata (

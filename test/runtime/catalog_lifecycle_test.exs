@@ -7,7 +7,7 @@ defmodule VialKeeper.Runtime.CatalogLifecycleTest do
 
   alias VialKeeper.DatabaseBundle
   alias VialKeeper.Runtime.DatabaseCatalog
-  alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.TestBackend, as: Adapter
 
   setup do
     prefix = "uuid-mismatch-#{System.unique_integer([:positive])}"
@@ -41,13 +41,16 @@ defmodule VialKeeper.Runtime.CatalogLifecycleTest do
   } do
     registered_bundle = Path.join(root, registered_path)
     replacement_bundle = Path.join(root, replacement_path)
-    registered_sqlite = VialKeeper.TempDatabase.sqlite_path(registered_bundle)
-    replacement_sqlite = VialKeeper.TempDatabase.sqlite_path(replacement_bundle)
+    registered_sqlite = VialKeeper.TempDatabase.artifact_path(registered_bundle)
+    replacement_sqlite = VialKeeper.TempDatabase.artifact_path(replacement_bundle)
 
     assert :ok = DatabaseCatalog.close(uuid)
 
     assert {:ok, bundle} = DatabaseBundle.create(replacement_bundle)
-    {:ok, other} = Adapter.create(Path.join(DatabaseBundle.root(bundle), "database.sqlite3"))
+
+    {:ok, other} =
+      Adapter.create(VialKeeper.TempDatabase.artifact_path(DatabaseBundle.root(bundle)))
+
     {:ok, other_identity} = Adapter.identity(other)
     :ok = Adapter.close(other)
     assert other_identity.database_uuid != uuid

@@ -13,6 +13,7 @@ defmodule VialKeeper.HostConfig do
   alias VialKeeper.JSON.StrictDecoder
   alias VialKeeper.PathSafety
   alias VialKeeper.Runtime.AdmissionPolicy
+  alias VialKeeper.Storage.Engines, as: StorageEngines
 
   @filename "host.toml"
 
@@ -131,12 +132,13 @@ defmodule VialKeeper.HostConfig do
 
   @default_admission AdmissionPolicy.default_toml_map()
 
-  @known_sections ~w(listener limits admission auth tls security observability federation web_ui shadow_controller shadow_worker)
+  @known_sections ~w(listener limits admission auth tls security observability federation web_ui shadow_controller shadow_worker storage)
   @allowed_listener ~w(ip port)
   @allowed_auth ~w(enabled tokens)
   @allowed_tls ~w(enabled certfile keyfile)
   @allowed_security ~w(allow_insecure_remote)
   @allowed_observability ~w(otlp_endpoint)
+  @allowed_storage ~w(engine)
   @allowed_web_ui ~w(enabled)
   @allowed_shadow_controller ~w(enabled source_base_url source_bearer_token location)
   @allowed_shadow_location ~w(name kind control_base_url control_bearer_token control_timeout_ms read_timeout_ms)
@@ -167,6 +169,7 @@ defmodule VialKeeper.HostConfig do
       "tls" => @default_tls,
       "security" => @default_security,
       "observability" => @default_observability,
+      "storage" => %{"engine" => StorageEngines.default()},
       "web_ui" => @default_web_ui,
       "shadow_controller" => @default_shadow_controller,
       "shadow_worker" => @default_shadow_worker,
@@ -282,6 +285,7 @@ defmodule VialKeeper.HostConfig do
          {:ok, tls} <- validate_tls(raw["tls"], root),
          {:ok, security} <- validate_security(raw["security"]),
          {:ok, obs} <- validate_observability(raw["observability"]),
+         {:ok, storage_backend} <- validate_storage(raw["storage"]),
          {:ok, web_ui} <- validate_web_ui(raw["web_ui"]),
          {:ok, shadow_controller} <- validate_shadow_controller(raw["shadow_controller"], limits),
          {:ok, shadow_worker} <- validate_shadow_worker(raw["shadow_worker"], root),
@@ -303,6 +307,7 @@ defmodule VialKeeper.HostConfig do
         |> Keyword.put(:tls, tls)
         |> Keyword.put(:security, security)
         |> Keyword.put(:otlp_endpoint, obs)
+        |> Keyword.put(:storage_backend, storage_backend)
         |> Keyword.put(:web_ui, web_ui)
         |> Keyword.put(:shadow_controller, shadow_controller)
         |> Keyword.put(:shadow_worker, shadow_worker)
@@ -522,6 +527,26 @@ defmodule VialKeeper.HostConfig do
   end
 
   defp validate_observability(_), do: {:error, "host.toml: [observability] must be a table"}
+
+  defp validate_storage(nil), do: validate_storage(%{})
+
+  defp validate_storage(%{} = storage) do
+    with :ok <- allow_only(storage, @allowed_storage, "storage") do
+      engine = Map.get(storage, "engine", StorageEngines.default())
+
+      case StorageEngines.backend(engine) do
+        {:ok, backend} ->
+          {:ok, backend}
+
+        :error ->
+          {:error,
+           "host.toml: storage.engine must be one of " <>
+             Enum.map_join(StorageEngines.names(), ", ", &inspect/1)}
+      end
+    end
+  end
+
+  defp validate_storage(_), do: {:error, "host.toml: [storage] must be a table"}
 
   defp validate_web_ui(nil), do: {:ok, [enabled: true]}
 

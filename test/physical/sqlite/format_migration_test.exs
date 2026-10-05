@@ -126,7 +126,7 @@ defmodule VialKeeper.StorageAdapter.FormatMigrationTest do
 
   defp database_path(prefix) do
     {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: prefix)
-    {bundle, VialKeeper.TempDatabase.sqlite_path(bundle)}
+    {bundle, VialKeeper.TempDatabase.artifact_path(bundle)}
   end
 
   defp exec!(path, sql) do

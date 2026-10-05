@@ -26,8 +26,9 @@ config :opentelemetry_experimental, readers: []
 # so Reach layers stay acyclic (runtime must not depend on the application facade).
 config :vial_keeper, :attachment_gc_module, VialKeeper.Attachments
 
-# Default physical backend. Runtime selects through VialKeeper.Storage.Registry;
-# tests may swap this for VialKeeper.Storage.Sentinel.Adapter.
-config :vial_keeper, :storage_backend, VialKeeper.Storage.SQLite.Adapter
+# Default physical backend (the Turso engine). host.toml's [storage].engine
+# overrides it at boot; runtime selects through VialKeeper.Storage.Registry.
+# Tests may swap this for VialKeeper.Storage.Sentinel.Adapter.
+config :vial_keeper, :storage_backend, VialKeeper.Storage.Turso.Adapter
 
 import_config "#{config_env()}.exs"

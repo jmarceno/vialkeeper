@@ -16,7 +16,7 @@ defmodule VialKeeper.Storage.SQLite.OwnershipOsProcessTest do
 
   setup do
     {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-os-lease")
-    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
+    path = VialKeeper.TempDatabase.artifact_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
     :ok = Adapter.close(adapter)
 

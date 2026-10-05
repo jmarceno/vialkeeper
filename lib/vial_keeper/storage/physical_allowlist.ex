@@ -1,6 +1,6 @@
 defmodule VialKeeper.Storage.PhysicalAllowlist do
   @moduledoc """
-  Approved locations for SQLite and SQLite driver physical details.
+  Approved locations for SQLite-dialect engine and driver physical details.
 
   Outside this allowlist, product, runtime, domain, and documentation sources
   must not embed engine names, SQL transaction modes, PRAGMA, rowid, or the
@@ -10,9 +10,11 @@ defmodule VialKeeper.Storage.PhysicalAllowlist do
 
   @path_prefixes [
     "lib/vial_keeper/storage/sqlite/",
+    "lib/vial_keeper/storage/turso/",
     "lib/vial_keeper/backup/",
     "priv/sqlite/",
     "test/physical/sqlite/",
+    "test/physical/turso/",
     "test/vial_keeper/storage/sqlite/",
     "bench/"
   ]
@@ -20,6 +22,7 @@ defmodule VialKeeper.Storage.PhysicalAllowlist do
   @path_files [
     "lib/vial_keeper/observability/instrumentation/sqlite.ex",
     "lib/vial_keeper/storage/boundary_guard.ex",
+    "lib/vial_keeper/storage/engines.ex",
     "lib/vial_keeper/storage/opaque_handle.ex",
     "lib/vial_keeper/storage/opaque_handle/server.ex",
     "lib/vial_keeper/storage/physical_allowlist.ex",

@@ -587,10 +587,10 @@ defmodule VialKeeper.Attachments.GCTest do
   defp expire_pending!(uuid, digest) do
     {:ok, root} = DatabaseCatalog.bundle_root(uuid)
     {:ok, bundle} = DatabaseBundle.open(root)
-    path = Path.join(DatabaseBundle.root(bundle), "database.sqlite3")
+    path = VialKeeper.TempDatabase.artifact_path(DatabaseBundle.root(bundle))
     past = DateTime.utc_now() |> DateTime.add(-3_600, :second) |> DateTime.to_iso8601()
 
-    {:ok, conn} = Connection.open(path)
+    {:ok, conn} = Connection.open(path, driver: VialKeeper.TestBackend.driver())
 
     try do
       :ok =

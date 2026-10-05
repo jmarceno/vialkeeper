@@ -16,7 +16,7 @@ defmodule VialKeeper.StorageAdapter.DocumentsTest do
       VialKeeper.TempDatabase.cleanup(bundle_path)
     end)
 
-    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
+    path = VialKeeper.TempDatabase.artifact_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
     on_exit(fn -> Adapter.close(adapter) end)
     {:ok, adapter: adapter}
@@ -101,7 +101,7 @@ defmodule VialKeeper.StorageAdapter.DocumentsTest do
     adapter: adapter
   } do
     {:ok, other_bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-canonical")
-    other_path = VialKeeper.TempDatabase.sqlite_path(other_bundle_path)
+    other_path = VialKeeper.TempDatabase.artifact_path(other_bundle_path)
     {:ok, other_adapter} = Adapter.create(other_path, %{})
 
     on_exit(fn ->

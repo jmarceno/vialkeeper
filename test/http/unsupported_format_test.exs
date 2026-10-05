@@ -28,9 +28,9 @@ defmodule VialKeeper.HTTP.UnsupportedFormatTest do
     assert close.status == 200
 
     sqlite =
-      VialKeeper.TempDatabase.sqlite_path(Path.join(VialKeeper.Config.database_root(), path))
+      VialKeeper.TempDatabase.artifact_path(Path.join(VialKeeper.Config.database_root(), path))
 
-    {:ok, conn} = Connection.open(sqlite)
+    {:ok, conn} = Connection.open(sqlite, driver: VialKeeper.TestBackend.driver())
 
     try do
       assert :ok = Connection.exec(conn, "PRAGMA user_version = 2")

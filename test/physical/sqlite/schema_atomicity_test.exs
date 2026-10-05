@@ -8,7 +8,7 @@ defmodule VialKeeper.Storage.SQLite.SchemaAtomicityTest do
 
   test "failed initialization rolls back the schema and metadata together" do
     {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-schema-atomic")
-    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
+    path = VialKeeper.TempDatabase.artifact_path(bundle_path)
     {:ok, conn} = Connection.open(path)
 
     on_exit(fn ->

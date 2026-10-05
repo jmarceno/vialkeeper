@@ -44,6 +44,8 @@ defmodule VialKeeper.Runtime.WriterPoolTest do
     {:ok, uuid: uuid}
   end
 
+  # Only SQLite's writer count is configurable; Turso always reports 16.
+  @tag :sqlite_engine
   @tag max_writers: 1
   test "a single-writer backend starts no writer pool", %{uuid: uuid} do
     refute WriterPool.enabled?(uuid)

@@ -11,7 +11,7 @@ defmodule VialKeeper.Observability.SQLiteProbeTest do
 
   setup do
     {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-sqlite-probes")
-    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
+    path = VialKeeper.TempDatabase.artifact_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
 
     on_exit(fn ->

@@ -12,7 +12,7 @@ defmodule VialKeeper.Runtime.DiagnosticsTest do
     assert Map.has_key?(metadata, :storage_backend)
     assert Map.has_key?(metadata, :backend)
     assert is_map(metadata.backend)
-    assert metadata.backend.engine == "sqlite"
+    assert metadata.backend.engine == VialKeeper.TestBackend.engine()
     assert Map.has_key?(metadata.backend, :sqlite)
 
     assert is_binary(metadata.app_version)

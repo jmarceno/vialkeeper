@@ -206,7 +206,7 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
 
       {total_us, samples, phases} =
         Enum.reduce(documents, {0, [], %{}}, fn document, {total, samples, phases} ->
-          {elapsed, phase_row} = raw_insert_document(adapter.conn, statements, document)
+          {elapsed, phase_row} = raw_insert_document(native_ref(adapter.conn), statements, document)
           {total + elapsed, [elapsed | samples], merge_phases(phases, phase_row)}
         end)
 
@@ -368,12 +368,13 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
     schema_sql = File.read!(schema_path)
     started = System.monotonic_time(:microsecond)
 
-    {open_us, {:ok, conn}} = :timer.tc(fn -> Native.open(path, 0x6) end)
+    {open_us, {:ok, conn}} = :timer.tc(fn -> Connection.open(path) end)
+    ref = native_ref(conn)
     {configure_us, :ok} = :timer.tc(fn -> Schema.configure(conn) end)
-    {begin_us, :ok} = :timer.tc(fn -> Native.execute(conn, @begin_sql) end)
-    {schema_us, :ok} = :timer.tc(fn -> execute_script(conn, schema_sql) end)
-    {commit_us, :ok} = :timer.tc(fn -> Native.execute(conn, @commit_sql) end)
-    {close_us, :ok} = :timer.tc(fn -> Native.close(conn) end)
+    {begin_us, :ok} = :timer.tc(fn -> Native.execute(ref, @begin_sql) end)
+    {schema_us, :ok} = :timer.tc(fn -> execute_script(ref, schema_sql) end)
+    {commit_us, :ok} = :timer.tc(fn -> Native.execute(ref, @commit_sql) end)
+    {close_us, :ok} = :timer.tc(fn -> Native.close(ref) end)
 
     %{
       total: System.monotonic_time(:microsecond) - started,
@@ -1043,6 +1044,9 @@ defmodule VialKeeper.Bench.PerformanceDiagnostics do
 
   # The driver keeps each statement prepared in its connection cache.
   defp raw_run(conn, sql, params), do: Native.query(conn, sql, params)
+
+  # Raw controls call the SQLite NIF directly with the connection's reference.
+  defp native_ref({_driver, ref}), do: ref
 
   defp connection_pragmas(conn) do
     Map.new(

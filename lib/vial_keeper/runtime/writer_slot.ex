@@ -99,13 +99,15 @@ defmodule VialKeeper.Runtime.WriterSlot do
 
   # A write-write conflict rolled back and aborted its reservation; the job
   # runs again with a fresh reservation after `min(50, 2^attempt)` ms plus up
-  # to 1 ms of jitter, while its deadline allows.
+  # to 1 ms of jitter, while its deadline allows. Every conflict emits
+  # `[:vial_keeper, :writer, :write_conflict]` with whether it was retried.
   defp attempt(state, %Job{} = job, attempt) do
     case run_job(state, job) do
       {{:error, %Error{code: :write_conflict}}, _max_used} when attempt < @max_attempts ->
         retry_or_give_up(state, job, attempt)
 
       {{:error, %Error{code: :write_conflict}}, _max_used} ->
+        conflict_event(state.uuid, attempt, :exhausted)
         finish_job(state.uuid, job, {{:error, conflicts_exhausted()}, 0})
 
       outcome ->
@@ -119,11 +121,21 @@ defmodule VialKeeper.Runtime.WriterSlot do
     delay = min(@max_backoff_ms, Integer.pow(2, attempt)) + :rand.uniform(2) - 1
 
     if time_for?(job.deadline_ms, delay) do
+      conflict_event(state.uuid, attempt, :retry)
       _ = Process.send_after(self(), {:retry, job, attempt + 1}, delay)
       :ok
     else
+      conflict_event(state.uuid, attempt, :exhausted)
       finish_job(state.uuid, job, {{:error, conflicts_exhausted()}, 0})
     end
+  end
+
+  defp conflict_event(uuid, attempt, outcome) do
+    :telemetry.execute(
+      [:vial_keeper, :writer, :write_conflict],
+      %{count: 1},
+      %{database_uuid: uuid, attempt: attempt, outcome: outcome}
+    )
   end
 
   defp time_for?(:infinity, _delay), do: true

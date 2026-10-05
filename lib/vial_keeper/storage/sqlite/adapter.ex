@@ -24,6 +24,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   alias VialKeeper.Query.{Normalizer, Prepared, SubscriptionRequest}
   alias VialKeeper.Search
   alias VialKeeper.Storage.BackendContext
+  alias VialKeeper.Storage.Engines
   alias VialKeeper.Storage.OpaqueHandle
   alias VialKeeper.Storage.Ports.Errors
   alias VialKeeper.Storage.RequestValidation
@@ -35,6 +36,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     Connection,
     Context,
     Documents,
+    Driver,
     IndexCatalog,
     LocalRecords,
     Ownership,
@@ -57,6 +59,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
     :conn,
     :identity,
     :context_ref,
+    driver: VialKeeper.Storage.SQLite.Driver.Rusqlite,
     storage_mode: :disk,
     reader?: false,
     role: :owner,
@@ -79,6 +82,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
           conn: Connection.handle(),
           identity: map(),
           context_ref: OpaqueHandle.t() | nil,
+          driver: module(),
           storage_mode: storage_mode(),
           reader?: boolean(),
           role: role(),
@@ -88,7 +92,11 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
         }
 
   @impl true
-  def create(path, options \\ %{}) do
+  def create(path, options \\ %{}), do: create(path, options, Driver.Rusqlite)
+
+  @doc "Creates a database at `path` on the engine `driver`."
+  @spec create(binary(), map(), module()) :: {:ok, t()} | {:error, Error.t()}
+  def create(path, options, driver) when is_atom(driver) do
     options = if is_map(options), do: options, else: %{}
     uuid = MapAccess.get(options, :database_uuid, VialKeeper.UUID.v4())
     config = MapAccess.get(options, :config, VialKeeper.Config.defaults())
@@ -98,7 +106,8 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
          {:ok, bounded_config} <- VialKeeper.Config.merge_and_bound(config),
          {:ok, config_json} <- Canonical.encode(bounded_config),
          :ok <- ensure_parent_directory(path, storage_mode),
-         {:ok, conn} <- Connection.open(connection_path(path, storage_mode)) do
+         :ok <- reject_foreign_artifact(path, storage_mode, driver),
+         {:ok, conn} <- Connection.open(connection_path(path, storage_mode), driver: driver) do
       finish_create(conn, path, uuid, config_json, storage_mode, options)
     else
       false ->
@@ -112,12 +121,25 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   @doc "Returns the SQLite data artifact path inside a bundle root."
   @spec artifact_path(binary()) :: binary()
   def artifact_path(bundle_root) when is_binary(bundle_root),
-    do: Path.join(bundle_root, "database.sqlite3")
+    do: artifact_path(bundle_root, Driver.Rusqlite)
+
+  @doc "Returns `driver`'s data artifact path inside a bundle root."
+  @spec artifact_path(binary(), module()) :: binary()
+  def artifact_path(bundle_root, driver) when is_binary(bundle_root) and is_atom(driver),
+    do: Path.join(bundle_root, driver.artifact_name())
 
   @doc "Starts SQLite ownership for the data artifact under `bundle_root`."
   @spec start_ownership(binary()) :: GenServer.on_start()
-  def start_ownership(bundle_root) when is_binary(bundle_root) do
-    Ownership.start_link(artifact_path(bundle_root))
+  def start_ownership(bundle_root) when is_binary(bundle_root),
+    do: start_ownership(bundle_root, Driver.Rusqlite)
+
+  @doc """
+  Starts ownership for `driver`'s data artifact under `bundle_root`. The lease
+  is always a SQLite companion file, whatever the engine.
+  """
+  @spec start_ownership(binary(), module()) :: GenServer.on_start()
+  def start_ownership(bundle_root, driver) when is_binary(bundle_root) and is_atom(driver) do
+    Ownership.start_link(artifact_path(bundle_root, driver))
   end
 
   @doc "Validates required SQLite runtime capabilities."
@@ -127,6 +149,10 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   @doc "Returns opaque SQLite capability metadata."
   @spec capabilities_report() :: map()
   def capabilities_report, do: Capabilities.report()
+
+  @doc "Returns the engine capability metadata of an open adapter."
+  @spec capabilities_report(t()) :: map()
+  def capabilities_report(%__MODULE__{driver: driver}), do: driver.capabilities_report()
 
   @doc "Wraps an open SQLite adapter in an opaque backend context."
   @spec to_context(t()) :: BackendContext.t()
@@ -149,7 +175,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
       backend: __MODULE__,
       backend_ref: adapter.context_ref,
       bundle_root: bundle_root,
-      capabilities: capabilities_report(),
+      capabilities: capabilities_report(adapter),
       identity: identity
     )
   end
@@ -202,10 +228,15 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
           {:ok, t()} | {:error, :unsupported_readers} | {:error, Error.t()}
   def open_reader(%__MODULE__{storage_mode: :memory}), do: {:error, :unsupported_readers}
 
-  def open_reader(%__MODULE__{storage_mode: :disk, path: path, identity: writer_identity})
+  def open_reader(%__MODULE__{
+        storage_mode: :disk,
+        path: path,
+        identity: writer_identity,
+        driver: driver
+      })
       when is_binary(path) and path != ":memory:" do
     with :ok <- Schema.recognize_artifact(path),
-         {:ok, conn} <- Connection.open(path, mode: [:readonly]) do
+         {:ok, conn} <- Connection.open(path, mode: [:readonly], driver: driver) do
       finish_open_reader(conn, path, writer_identity)
     else
       {:error, reason} -> {:error, normalize_error(reason)}
@@ -221,9 +252,15 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   """
   @spec open_writer(t()) ::
           {:ok, t()} | {:error, :unsupported_writers} | {:error, Error.t()}
-  def open_writer(%__MODULE__{storage_mode: :disk, reader?: false, path: path, identity: identity})
+  def open_writer(%__MODULE__{
+        storage_mode: :disk,
+        reader?: false,
+        path: path,
+        identity: identity,
+        driver: driver
+      })
       when is_binary(path) and path != ":memory:" do
-    case Connection.open(path, mode: [:readwrite]) do
+    case Connection.open(path, mode: [:readwrite], driver: driver) do
       {:ok, conn} -> finish_open_writer(conn, path, identity)
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -233,20 +270,14 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
 
   @doc """
   Reports how many writer connections may run at once and how the sequence
-  ledger persists reservations. `max_writers` is the test-only
-  `:sqlite_max_writers` setting (default 1); extra SQLite writers still
-  serialize through `BEGIN IMMEDIATE`.
+  ledger persists reservations; the engine driver decides both.
   """
   @spec writer_capabilities(t()) :: %{
           max_writers: pos_integer(),
           sequence_persistence: :separate_connection | :none
         }
-  def writer_capabilities(%__MODULE__{storage_mode: storage_mode}) do
-    %{
-      max_writers: Application.get_env(:vial_keeper, :sqlite_max_writers, 1),
-      sequence_persistence: if(storage_mode == :disk, do: :separate_connection, else: :none)
-    }
-  end
+  def writer_capabilities(%__MODULE__{storage_mode: storage_mode, driver: driver}),
+    do: driver.writer_capabilities(storage_mode)
 
   @doc "Clears every per-connection cache a writer process holds for `adapter`."
   @spec reset_writer_caches(t()) :: :ok
@@ -270,9 +301,14 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
   def invalidate_identity_cache(conn), do: Process.delete({@identity_cache_key, conn})
 
   @impl true
-  def open(path, _options \\ %{}) do
-    with :ok <- Schema.recognize_artifact(path),
-         {:ok, conn} <- Connection.open(path, mode: [:readwrite]) do
+  def open(path, _options \\ %{}), do: open_with_driver(path, Driver.Rusqlite)
+
+  @doc "Opens the database at `path` on the engine `driver`."
+  @spec open_with_driver(binary(), module()) :: {:ok, t()} | {:error, Error.t()}
+  def open_with_driver(path, driver) when is_binary(path) and is_atom(driver) do
+    with :ok <- reject_foreign_artifact(path, :disk, driver),
+         :ok <- Schema.recognize_artifact(path),
+         {:ok, conn} <- Connection.open(path, mode: [:readwrite], driver: driver) do
       finish_open(conn, path)
     else
       {:error, reason} -> {:error, normalize_error(reason)}
@@ -313,6 +349,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
          path: path,
          conn: conn,
          identity: decode_identity(identity),
+         driver: Connection.driver(conn),
          storage_mode: storage_mode
        })}
     else
@@ -327,7 +364,13 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
          :ok <- Schema.configure(conn),
          {:ok, identity} <- Schema.validate(conn),
          :ok <- Changes.remember_high_water(conn, identity.sequence_reserved_through) do
-      {:ok, Context.bind(%__MODULE__{path: path, conn: conn, identity: decode_identity(identity)})}
+      {:ok,
+       Context.bind(%__MODULE__{
+         path: path,
+         conn: conn,
+         identity: decode_identity(identity),
+         driver: Connection.driver(conn)
+       })}
     else
       {:error, reason} ->
         _ = Connection.close(conn)
@@ -345,6 +388,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
          path: path,
          conn: conn,
          identity: writer_identity,
+         driver: Connection.driver(conn),
          role: :writer_slot
        })}
     else
@@ -363,6 +407,7 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
          path: path,
          conn: conn,
          identity: writer_identity,
+         driver: Connection.driver(conn),
          storage_mode: :disk,
          reader?: true
        })}
@@ -395,9 +440,9 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
 
   defp remove_empty_sidecars(%__MODULE__{reader?: true}), do: :ok
 
-  defp remove_empty_sidecars(%__MODULE__{storage_mode: :disk, path: path})
+  defp remove_empty_sidecars(%__MODULE__{storage_mode: :disk, path: path, driver: driver})
        when is_binary(path) and path != ":memory:" do
-    Enum.each(["-wal", "-shm"], fn suffix ->
+    Enum.each(driver.sidecar_suffixes(), fn suffix ->
       sidecar = path <> suffix
 
       case File.stat(sidecar) do
@@ -957,6 +1002,21 @@ defmodule VialKeeper.Storage.SQLite.Adapter do
 
       _ ->
         {:error, Error.invalid_request("SQLite storage mode must be :disk or :memory")}
+    end
+  end
+
+  # A bundle belongs to the engine that created it. Another engine's artifact
+  # next to this engine's (missing) one means the bundle is foreign.
+  defp reject_foreign_artifact(_path, :memory, _driver), do: :ok
+
+  defp reject_foreign_artifact(path, :disk, driver) do
+    if File.exists?(path), do: :ok, else: reject_other_artifacts(Path.dirname(path), driver)
+  end
+
+  defp reject_other_artifacts(bundle_root, driver) do
+    case Enum.find(Engines.drivers() -- [driver], &File.exists?(artifact_path(bundle_root, &1))) do
+      nil -> :ok
+      other -> {:error, Schema.foreign_engine_error(other.engine())}
     end
   end
 

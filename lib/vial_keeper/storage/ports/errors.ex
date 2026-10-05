@@ -14,6 +14,9 @@ defmodule VialKeeper.Storage.Ports.Errors do
   @spec normalize(term()) :: VialKeeper.Error.t()
   def normalize(%VialKeeper.Error{} = error), do: error
 
+  def normalize(:write_conflict),
+    do: VialKeeper.Error.new(:write_conflict, "write transaction conflicted with another writer")
+
   def normalize(reason),
     do:
       VialKeeper.Error.internal_error("storage backend operation failed", %{cause: inspect(reason)})

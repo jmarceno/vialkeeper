@@ -1,0 +1,18 @@
+[package]
+name = "vial_turso"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "vial_turso"
+crate-type = ["cdylib"]
+
+[dependencies]
+turso = { version = "=0.8.1", default-features = false }
+rustler = "=0.38.0"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+
+[profile.release]
+codegen-units = 1
+lto = true

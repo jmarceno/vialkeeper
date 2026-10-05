@@ -8,6 +8,10 @@ defmodule VialKeeper.EndToEnd.ConcurrentWritesTest do
   final changes table exactly once and in increasing order, the final winners
   must match a per-document replay of the acknowledged writes, and every
   acknowledged write must already be visible when its call returns.
+
+  On Turso the writer slots commit concurrently and conflict per row; a
+  conflict is retried inside the writer pool and must never reach a client
+  unless its retries run out.
   """
   use ExUnit.Case, async: false
 
@@ -20,13 +24,13 @@ defmodule VialKeeper.EndToEnd.ConcurrentWritesTest do
   @document_count 300
   @page 100
 
-  setup do
+  setup context do
     previous_limits = Application.get_env(:vial_keeper, :host_limits)
     previous_writers = Application.get_env(:vial_keeper, :sqlite_max_writers)
 
     limits =
       (previous_limits || [])
-      |> Keyword.put(:writer_pool_size, 4)
+      |> Keyword.put(:writer_pool_size, Map.get(context, :pool_size, 4))
       |> Keyword.put(:write_queue_limit, 128)
 
     Application.put_env(:vial_keeper, :host_limits, limits)
@@ -53,25 +57,46 @@ defmodule VialKeeper.EndToEnd.ConcurrentWritesTest do
       VialKeeper.TempDatabase.cleanup(absolute)
     end)
 
-    {:ok, uuid: uuid, sqlite: VialKeeper.TempDatabase.sqlite_path(absolute)}
+    {:ok, uuid: uuid, sqlite: VialKeeper.TempDatabase.artifact_path(absolute)}
   end
 
   @tag timeout: 300_000
-  test "a follower sees every committed row once, in order, while writers race", %{
-    uuid: uuid,
-    sqlite: sqlite
-  } do
+  test "a follower sees every committed row once, in order, while writers race", context do
+    race(context, @writers, @document_count)
+  end
+
+  @tag :turso_engine
+  @tag pool_size: 16
+  @tag timeout: 300_000
+  test "sixteen concurrent Turso writer slots serve 32 clients", context do
+    race(context, 32, @document_count)
+  end
+
+  @tag :turso_engine
+  @tag pool_size: 16
+  @tag timeout: 300_000
+  test "sixteen Turso writer slots on ten hot documents", context do
+    race(context, 16, 10)
+  end
+
+  defp race(%{uuid: uuid, sqlite: sqlite}, writers, documents) do
     assert WriterPool.enabled?(uuid)
+    conflicts = count_conflicts(uuid)
 
     follower = Task.async(fn -> follow(uuid, 0, []) end)
 
     acknowledged =
-      1..@writers
-      |> Enum.map(fn writer -> Task.async(fn -> write_randomly(uuid, writer) end) end)
+      1..writers
+      |> Enum.map(fn writer -> Task.async(fn -> write_randomly(uuid, writer, documents) end) end)
       |> Enum.flat_map(&Task.await(&1, 240_000))
 
     send(follower.pid, :writers_done)
     followed = Task.await(follower, 60_000)
+
+    # Retried conflicts are counted; none ran out of retries.
+    %{retry: retried, exhausted: exhausted} = Agent.get(conflicts, & &1)
+    assert is_integer(retried)
+    assert exhausted == 0
 
     assert acknowledged != []
     followed_sequences = Enum.map(followed, & &1.sequence)
@@ -86,8 +111,34 @@ defmodule VialKeeper.EndToEnd.ConcurrentWritesTest do
     end)
   end
 
-  defp write_randomly(uuid, writer) do
+  defp count_conflicts(uuid) do
+    {:ok, agent} = Agent.start_link(fn -> %{retry: 0, exhausted: 0} end)
+    handler = {__MODULE__, uuid}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:vial_keeper, :writer, :write_conflict],
+        &__MODULE__.handle_conflict/4,
+        %{uuid: uuid, agent: agent}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    agent
+  end
+
+  @doc false
+  def handle_conflict(_event, %{count: count}, %{database_uuid: uuid, outcome: outcome}, %{
+        uuid: uuid,
+        agent: agent
+      }),
+      do: Agent.update(agent, &Map.update!(&1, outcome, fn total -> total + count end))
+
+  def handle_conflict(_event, _measurements, _metadata, _config), do: :ok
+
+  defp write_randomly(uuid, writer, documents) do
     :rand.seed(:exsss, {writer, 17, 31})
+    Process.put(:document_count, documents)
 
     Enum.flat_map(1..@operations_per_writer, fn _step ->
       uuid
@@ -129,7 +180,11 @@ defmodule VialKeeper.EndToEnd.ConcurrentWritesTest do
   end
 
   defp acknowledge({_targets, :skipped}, _uuid), do: []
-  defp acknowledge({_targets, {:error, %VialKeeper.Error{}}}, _uuid), do: []
+
+  defp acknowledge({_targets, {:error, %VialKeeper.Error{code: code}}}, _uuid) do
+    refute code == :write_conflict, "a write conflict reached the client"
+    []
+  end
 
   defp acknowledge({[{id, deleted}], {:ok, %{revision: revision, sequence: sequence}}}, uuid) do
     assert_visible(uuid, sequence)
@@ -215,7 +270,8 @@ defmodule VialKeeper.EndToEnd.ConcurrentWritesTest do
   end
 
   defp stored_change_sequences(sqlite) do
-    {:ok, conn} = Connection.open(sqlite, mode: [:readonly])
+    {:ok, conn} =
+      Connection.open(sqlite, mode: [:readonly], driver: VialKeeper.TestBackend.driver())
 
     try do
       {:ok, rows} = Connection.query(conn, "SELECT sequence FROM changes ORDER BY sequence")
@@ -225,7 +281,7 @@ defmodule VialKeeper.EndToEnd.ConcurrentWritesTest do
     end
   end
 
-  defp random_id, do: "doc-#{:rand.uniform(@document_count)}"
+  defp random_id, do: "doc-#{:rand.uniform(Process.get(:document_count, @document_count))}"
 
   defp command(uuid, command), do: DatabaseCatalog.command(uuid, command, 30_000)
 end

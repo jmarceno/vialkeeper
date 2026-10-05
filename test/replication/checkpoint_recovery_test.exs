@@ -77,7 +77,7 @@ defmodule VialKeeper.Replication.CheckpointRecoveryTest do
 
   test "checkpoint CAS rejects safe sequence regression", %{a: a} do
     {:ok, bundle_path} = TempDatabase.create(prefix: "ckpt-recovery-cas")
-    path = TempDatabase.sqlite_path(bundle_path)
+    path = TempDatabase.artifact_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{database_uuid: a.database_uuid})
 
     try do

@@ -17,7 +17,7 @@ defmodule VialKeeper.Storage.SQLite.OwnershipTest do
 
   setup do
     {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-lease")
-    sqlite_path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
+    sqlite_path = VialKeeper.TempDatabase.artifact_path(bundle_path)
     {:ok, adapter} = Adapter.create(sqlite_path, %{})
     :ok = Adapter.close(adapter)
 
@@ -61,7 +61,7 @@ defmodule VialKeeper.Storage.SQLite.OwnershipTest do
 
     assert {:ok, _} = DatabaseCatalog.open(identity.database_uuid)
 
-    sqlite_path = VialKeeper.TempDatabase.sqlite_path(absolute)
+    sqlite_path = VialKeeper.TempDatabase.artifact_path(absolute)
 
     assert {:error, %VialKeeper.Error{code: :database_in_use}} =
              GenServer.start(Ownership, sqlite_path)

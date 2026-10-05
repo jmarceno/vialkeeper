@@ -83,9 +83,17 @@ defmodule VialKeeper.Storage.AdapterCase do
   """
   @spec adapter_path(module(), binary()) :: binary()
   def adapter_path(VialKeeper.Storage.SQLite.Adapter, bundle_path),
-    do: VialKeeper.TempDatabase.sqlite_path(bundle_path)
+    do: VialKeeper.Storage.SQLite.Adapter.artifact_path(bundle_path)
+
+  def adapter_path(VialKeeper.Storage.Turso.Adapter, bundle_path),
+    do: VialKeeper.Storage.Turso.Adapter.artifact_path(bundle_path)
 
   def adapter_path(_adapter_mod, bundle_path), do: bundle_path
+
+  @doc "The connection driver behind a SQLite-dialect adapter module."
+  @spec driver(module()) :: module()
+  def driver(VialKeeper.Storage.Turso.Adapter), do: VialKeeper.Storage.Turso.Driver
+  def driver(_adapter_mod), do: VialKeeper.Storage.SQLite.Driver.Rusqlite
 
   @doc """
   Builds a wire revision map for import/replication chain fixtures.

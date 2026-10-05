@@ -53,6 +53,7 @@ defmodule VialKeeper.MixProject do
         "check.full": :test,
         "test.container_replication": :test,
         "bench.replication": :test,
+        "bench.concurrent_writes": :test,
         "release.build": :prod
       ]
     ]
@@ -64,8 +65,9 @@ defmodule VialKeeper.MixProject do
 
   defp deps do
     [
-      # Builds the SQLite driver NIF in native/vial_sqlite, with the same Rust
-      # toolchain tantivy_ex uses.
+      # Builds the storage driver NIFs in native/vial_sqlite and native/vial_turso
+      # (both always build: the ownership lease uses SQLite on every engine),
+      # with the same Rust toolchain tantivy_ex uses.
       {:rustler, "0.38.0", runtime: false},
       # Rust-backed JSON parsing handles the hot decode path; Decimal preserves
       # the strict binary64 overflow and underflow checks at the Elixir boundary.
@@ -121,7 +123,11 @@ defmodule VialKeeper.MixProject do
           opentelemetry_exporter: :load,
           opentelemetry_experimental: :load
         ],
-        steps: [:assemble, &VialKeeper.ReleaseSteps.patch_launcher/1]
+        steps: [
+          :assemble,
+          &VialKeeper.ReleaseSteps.patch_launcher/1,
+          &VialKeeper.ReleaseSteps.prune_native_artifacts/1
+        ]
       ]
     ]
   end
@@ -157,6 +163,7 @@ defmodule VialKeeper.MixProject do
       "bench.torture": ["run --no-start bench/open_images_torture_benchmark.exs"],
       "bench.overhead": ["run --no-start bench/sqlite_driver_overhead_benchmark.exs"],
       "bench.replication": ["run --no-start bench/replication_wire_benchmark.exs"],
+      "bench.concurrent_writes": ["run --no-start bench/concurrent_writes_benchmark.exs"],
       "release.build": ["deps.get", "compile", "release --overwrite"]
     ]
   end

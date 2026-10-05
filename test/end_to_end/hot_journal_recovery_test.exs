@@ -13,6 +13,7 @@ defmodule VialKeeper.EndToEnd.HotJournalRecoveryTest do
   use ExUnit.Case, async: false
 
   @moduletag :sqlite_physical
+  @moduletag :sqlite_engine
   @moduletag :integration
 
   alias VialKeeper.Runtime.DatabaseCatalog
@@ -24,7 +25,7 @@ defmodule VialKeeper.EndToEnd.HotJournalRecoveryTest do
 
     rel = "e2e-hot-journal-#{System.unique_integer([:positive])}.vialkeeper"
     abs = Path.join(root, rel)
-    sqlite = VialKeeper.TempDatabase.sqlite_path(abs)
+    sqlite = VialKeeper.TempDatabase.artifact_path(abs)
     wal = sqlite <> "-wal"
     copy_rel = String.replace_suffix(rel, ".vialkeeper", "-copy.vialkeeper")
     copy_abs = Path.join(root, copy_rel)

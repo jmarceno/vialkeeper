@@ -12,7 +12,7 @@ defmodule VialKeeper.Observability.SearchRebuildMetricTest do
   alias VialKeeper.Query
   alias VialKeeper.Runtime.DatabaseCatalog
   alias VialKeeper.Search
-  alias VialKeeper.Storage.SQLite.Adapter
+  alias VialKeeper.TestBackend, as: Adapter
 
   @span "vial_keeper.search.rebuild"
   @count_metric "vial_keeper.search.rebuild.count"
@@ -56,7 +56,7 @@ defmodule VialKeeper.Observability.SearchRebuildMetricTest do
 
   test "missing search cache rebuilds with cache_miss trigger" do
     {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "obs-search-miss")
-    path = Path.join(bundle_path, "database.sqlite3")
+    path = VialKeeper.TempDatabase.artifact_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
 
     try do

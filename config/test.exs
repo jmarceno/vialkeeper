@@ -102,3 +102,22 @@ config :opentelemetry_experimental,
       }
     }
   ]
+
+# `VIALKEEPER_TEST_ENGINE=turso|sqlite` selects the storage engine for the
+# whole suite. It defaults to turso, matching the product default.
+config :vial_keeper,
+       :storage_backend,
+       (case System.get_env("VIALKEEPER_TEST_ENGINE", "turso") do
+          "turso" ->
+            VialKeeper.Storage.Turso.Adapter
+
+          "sqlite" ->
+            VialKeeper.Storage.SQLite.Adapter
+
+          other ->
+            raise ArgumentError, "VIALKEEPER_TEST_ENGINE must be turso or sqlite, got: #{other}"
+        end)
+
+# Compiles in the connection's statement tap (see `Connection`), which tests
+# use to inspect the SQL a driver receives.
+config :vial_keeper, :sql_tap_compiled, true

@@ -9,8 +9,8 @@ defmodule VialKeeper.DerivedView.ContributionsTest do
   alias VialKeeper.MaterializedViews
   alias VialKeeper.Runtime.DatabaseCatalog
   alias VialKeeper.Storage.PortFault
-  alias VialKeeper.Storage.SQLite.Adapter
   alias VialKeeper.TempDatabase
+  alias VialKeeper.TestBackend, as: Adapter
 
   setup do
     path = "derived-contrib-source-#{System.unique_integer([:positive])}.vialkeeper"
@@ -390,7 +390,7 @@ defmodule VialKeeper.DerivedView.ContributionsTest do
     assert :ok = DatabaseCatalog.unregister(derived.database_uuid)
 
     {:ok, adapter} =
-      Adapter.open(Path.join(bundle, "database.sqlite3"))
+      Adapter.open(VialKeeper.TempDatabase.artifact_path(bundle))
 
     on_exit(fn -> Adapter.close(adapter) end)
 

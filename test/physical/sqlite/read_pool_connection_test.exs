@@ -8,7 +8,7 @@ defmodule VialKeeper.StorageAdapter.ReadPoolConnectionTest do
 
   test "disk reader is readonly and query_only" do
     {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-read-pool-conn")
-    sqlite = VialKeeper.TempDatabase.sqlite_path(bundle)
+    sqlite = VialKeeper.TempDatabase.artifact_path(bundle)
 
     assert {:ok, writer} = Adapter.create(sqlite, %{storage_mode: :disk})
 

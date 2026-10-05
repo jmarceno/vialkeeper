@@ -245,8 +245,12 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
     root = Path.join(run_dir, "runtime")
     previous_root = Application.get_env(:vial_keeper, :database_root)
     previous_listener = Application.get_env(:vial_keeper, :listener)
+    previous_backend = Application.get_env(:vial_keeper, :storage_backend)
     ensure_application_stopped!()
     File.mkdir_p!(root)
+    # Every layer measured here runs on the SQLite driver, including the
+    # service and HTTP variants, whatever the configured default engine is.
+    Application.put_env(:vial_keeper, :storage_backend, Adapter)
     Application.put_env(:vial_keeper, :database_root, root)
     Application.put_env(:vial_keeper, :listener, ip: {127, 0, 0, 1}, port: 0)
     Process.put({__MODULE__, :run_dir}, run_dir)
@@ -260,6 +264,7 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
       _ = Application.stop(:vial_keeper)
       restore_application_env(:database_root, previous_root)
       restore_application_env(:listener, previous_listener)
+      restore_application_env(:storage_backend, previous_backend)
       restore_application_env(:performance_probe_tiers, previous_tiers)
       _ = File.rm_rf(run_dir)
     end
@@ -833,7 +838,7 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
         end
       end)
 
-    engine = sqlite_metadata(variant.conn)
+    engine = sqlite_metadata(native_ref(variant.conn))
     port = Native.start(native["path"])
     variant = %{variant | port: port}
 
@@ -877,7 +882,7 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
   defp finalize_native(variants, _native, _mode), do: {variants, nil}
 
   defp open_native!(port, variant, :memory) do
-    {:ok, image} = Driver.serialize(variant.conn)
+    {:ok, image} = Driver.serialize(native_ref(variant.conn))
     _ = Adapter.close(variant.adapter)
     Native.open_image(port, image)
   end
@@ -1085,7 +1090,7 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
   end
 
   defp invoke!(state, :driver_replay, %{replay: replay}) do
-    rows = run_driver_ops(state.variants.driver_replay.conn, replay.driver, 0)
+    rows = run_driver_ops(native_ref(state.variants.driver_replay.conn), replay.driver, 0)
     check_rows!(:driver_replay, rows, replay.expected_rows)
   end
 
@@ -1142,6 +1147,9 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
 
   defp check_rows!(variant, rows, expected),
     do: Mix.raise("#{variant} returned #{rows} rows; the captured run returned #{expected}")
+
+  # Driver variants call the SQLite NIF with the connection handle's reference.
+  defp native_ref({_driver, ref}), do: ref
 
   # One driver call per statement, as `Connection` makes, so L1 and L2 differ
   # only in the wrapper.
@@ -1314,7 +1322,7 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
   defp prepare_minimal(variants, _scenario), do: variants
 
   defp minimal_operation!(variant, scenario, base, state),
-    do: run_minimal!(variant.conn, variant.statements, scenario, base, state)
+    do: run_minimal!(native_ref(variant.conn), variant.statements, scenario, base, state)
 
   defp run_minimal!(conn, statements, :point_read, ids, _state) do
     Enum.each(ids, fn id ->
@@ -1949,12 +1957,18 @@ defmodule VialKeeper.Benchmarks.DriverOverhead do
 
     alias VialKeeper.Storage.SQLite.Native, as: Driver
 
-    def query!(conn, sql, params \\ []) do
+    # Accepts a bare NIF reference or a `Connection` handle (`{driver, ref}`).
+    def query!(conn, sql, params \\ [])
+    def query!({_driver, ref}, sql, params), do: query!(ref, sql, params)
+
+    def query!(conn, sql, params) do
       case Driver.query(conn, sql, params) do
         {:ok, rows} -> rows
         {:error, reason} -> Mix.raise("benchmark SQL failed: #{inspect(reason)}")
       end
     end
+
+    def execute!({_driver, ref}, sql), do: execute!(ref, sql)
 
     def execute!(conn, sql) do
       case Driver.execute(conn, sql) do

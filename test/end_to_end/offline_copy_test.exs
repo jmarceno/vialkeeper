@@ -63,7 +63,7 @@ defmodule VialKeeper.EndToEnd.OfflineCopyTest do
 
     # Closed copy — LIFE-009: database must be closed before offline portability.
     assert :ok = DatabaseCatalog.close(source_uuid)
-    source_sqlite = VialKeeper.TempDatabase.sqlite_path(source_abs)
+    source_sqlite = VialKeeper.TempDatabase.artifact_path(source_abs)
     refute File.exists?(source_sqlite <> "-journal")
     refute File.exists?(source_sqlite <> "-wal")
     File.cp_r!(source_abs, dest_abs)
@@ -165,7 +165,7 @@ defmodule VialKeeper.EndToEnd.OfflineCopyTest do
 
     # Active close waits for attachment activity (none left) then becomes portable.
     assert :ok = DatabaseCatalog.close(uuid)
-    source_sqlite = VialKeeper.TempDatabase.sqlite_path(source_abs)
+    source_sqlite = VialKeeper.TempDatabase.artifact_path(source_abs)
     refute File.exists?(source_sqlite <> "-journal")
 
     # Lease is non-authoritative: copying a closed bundle (lease file may remain

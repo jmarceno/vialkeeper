@@ -36,7 +36,7 @@ defmodule VialKeeper.StorageAdapter.PutStatementsTest do
              {:exec, "BEGIN IMMEDIATE"},
              {:point_query, "SELECT doc_key" <> _},
              {:point_query, "UPDATE db_meta" <> _},
-             {:point_query, "INSERT INTO documents" <> _},
+             {:point_execute, "INSERT INTO documents" <> _},
              {:point_execute, "INSERT INTO revisions" <> _},
              {:point_execute, "INSERT INTO changes" <> _},
              {:exec, "COMMIT"}

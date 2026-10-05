@@ -27,6 +27,7 @@ defmodule VialKeeper.Backup.Manifest do
 
   alias VialKeeper.Diagnostics
   alias VialKeeper.Error
+  alias VialKeeper.Storage.Engines, as: StorageEngines
   alias VialKeeper.UUID
 
   @manifest_version 1
@@ -81,7 +82,8 @@ defmodule VialKeeper.Backup.Manifest do
   Optional keys:
 
   - `:bundle_bytes` - total bytes of the bundle directory (computed if not given)
-  - `:sqlite_bytes` / `:sqlite_sha256` - computed from `bundle_path/database.sqlite3` if not given
+  - `:sqlite_bytes` / `:sqlite_sha256` - computed from the bundle's engine artifact
+    (`database.sqlite3` or the default engine's artifact) if not given
   - `:blobs` - computed by inventorying `bundle_path/blobs` if not given
 
   Returns `{:ok, manifest}` or `{:error, reason}`.
@@ -399,13 +401,14 @@ defmodule VialKeeper.Backup.Manifest do
   end
 
   defp compute_sqlite_artifact(bundle_path) do
-    sqlite_path = Path.join(bundle_path, "database.sqlite3")
+    artifact = bundle_artifact(bundle_path)
+    sqlite_path = Path.join(bundle_path, artifact)
 
     with {:ok, bytes} <- file_bytes(sqlite_path),
          {:ok, sha256} <- hash_file(sqlite_path) do
       {:ok,
        %{
-         "relative_path" => "database.sqlite3",
+         "relative_path" => artifact,
          "bytes" => bytes,
          "sha256" => sha256
        }}
@@ -673,20 +676,24 @@ defmodule VialKeeper.Backup.Manifest do
   end
 
   defp ensure_no_hot_journal(bundle_path) do
-    wal = Path.join(bundle_path, "database.sqlite3-wal")
-    shm = Path.join(bundle_path, "database.sqlite3-shm")
-
-    cond do
-      File.exists?(wal) ->
-        {:error,
-         VialKeeper.Error.invalid_request("closed bundle must not have a hot WAL file", %{path: wal})}
-
-      File.exists?(shm) ->
-        {:error,
-         VialKeeper.Error.invalid_request("closed bundle must not have a hot SHM file", %{path: shm})}
-
-      true ->
+    case StorageEngines.hot_sidecars(bundle_path) do
+      [] ->
         :ok
+
+      [path | _] ->
+        {:error,
+         VialKeeper.Error.invalid_request("closed bundle must not have a hot journal file", %{
+           path: path
+         })}
+    end
+  end
+
+  # The engine artifact the bundle holds; a bundle without one reports the
+  # SQLite name so the missing-file error names a concrete path.
+  defp bundle_artifact(bundle_path) do
+    case StorageEngines.bundle_artifact(bundle_path) do
+      {:ok, name} -> name
+      :error -> "database.sqlite3"
     end
   end
 
@@ -714,8 +721,8 @@ defmodule VialKeeper.Backup.Manifest do
   end
 
   defp verify_sqlite(manifest, bundle_path) do
-    sqlite_path = Path.join(bundle_path, "database.sqlite3")
     expected = manifest["artifacts"]["sqlite"] || %{}
+    sqlite_path = Path.join(bundle_path, expected["relative_path"] || bundle_artifact(bundle_path))
 
     with {:ok, actual_bytes} <- file_bytes(sqlite_path),
          {:ok, actual_sha} <- hash_file(sqlite_path) do
@@ -947,12 +954,13 @@ defmodule VialKeeper.Backup.Manifest do
 
   defp validate_sqlite_artifact(%{"relative_path" => path, "bytes" => bytes, "sha256" => sha})
        when is_binary(path) and is_integer(bytes) and bytes >= 0 and is_binary(sha) do
-    if path == "database.sqlite3" and sha =~ ~r/^[0-9a-f]{64}$/ do
+    if path in StorageEngines.artifact_names() and sha =~ ~r/^[0-9a-f]{64}$/ do
       :ok
     else
       {:error,
        VialKeeper.Error.invalid_request(
-         "artifacts.sqlite must name database.sqlite3 with lowercase SHA-256 hex"
+         "artifacts.sqlite must name an engine artifact with lowercase SHA-256 hex",
+         %{allowed: StorageEngines.artifact_names()}
        )}
     end
   end

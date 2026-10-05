@@ -12,8 +12,9 @@ defmodule VialKeeper.DerivedView.MaterializationContractTest do
   alias VialKeeper.Replication
   alias VialKeeper.Replication.{LocalEndpoint, RemoteEndpoint}
   alias VialKeeper.Runtime.DatabaseCatalog
-  alias VialKeeper.Storage.SQLite.{Adapter, Connection}
+  alias VialKeeper.Storage.SQLite.Connection
   alias VialKeeper.TempDatabase
+  alias VialKeeper.TestBackend, as: Adapter
   alias VialKeeper.TestServer
 
   test "derived databases replicate as sources through local and remote endpoints" do
@@ -176,7 +177,7 @@ defmodule VialKeeper.DerivedView.MaterializationContractTest do
     assert :ok = DatabaseCatalog.close(derived.database_uuid)
     assert :ok = DatabaseCatalog.close(source.database_uuid)
 
-    assert {:ok, source_adapter} = Adapter.open(TempDatabase.sqlite_path(source_abs))
+    assert {:ok, source_adapter} = Adapter.open(TempDatabase.artifact_path(source_abs))
 
     try do
       for table <- ~w(derived_view derived_sources derived_rows derived_groups) do

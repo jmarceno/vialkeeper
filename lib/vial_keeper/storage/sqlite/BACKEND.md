@@ -1,11 +1,27 @@
 # SQLite storage backend
 
-Backend-owned layout and controls for the default `VialKeeper.Storage.SQLite`
+Backend-owned layout and controls for the `VialKeeper.Storage.SQLite`
 implementation. Product contracts (bundle portability, ownership, integrity
 rules, public errors) are described in [Operations.md](../../../../Operations.md)
 and [README.md](../../../../README.md). Replacing this backend means
 implementing the storage ports under `lib/vial_keeper/storage/ports/` plus a
 backend module registered like `VialKeeper.Storage.SQLite.Adapter`.
+
+## Engines and drivers
+
+The SQL modules in this directory serve two SQLite-dialect engines: SQLite
+itself and Turso (the product default, see
+[../turso/BACKEND.md](../turso/BACKEND.md)). Everything engine-specific sits
+behind `VialKeeper.Storage.SQLite.Driver`: the NIF statement calls, connection
+pragmas, the concurrent-write `BEGIN` statement, the artifact and sidecar file
+names, writer capabilities and the startup probe. A connection handle is
+`{driver, ref}`, and an open `Adapter` struct records its `driver`, so every
+port and SQL module runs unchanged on either engine.
+`VialKeeper.Storage.SQLite.Driver.Rusqlite` is the SQLite driver. A host picks
+one engine with `[storage].engine` in `host.toml`
+(`VialKeeper.Storage.Engines`).
+
+Sections marked *shared* apply to both engines; the rest is SQLite-only.
 
 ## Bundle artifact
 
@@ -21,11 +37,12 @@ notes.vialkeeper/
 The artifact filename and SQL schema are owned by this backend. Generic
 runtime code opens the selected backend with the bundle root only.
 
-## Ownership lease
+## Ownership lease (shared)
 
 Single-owner admission is a storage capability. The SQLite implementation
-holds an exclusive transaction on `<bundle-path>.lease`. A second owner fails
-with `database_in_use` (HTTP 409, retryable).
+holds an exclusive transaction on `<artifact-path>.lease`, always through the
+SQLite driver, whatever the engine. A second owner fails with
+`database_in_use` (HTTP 409, retryable).
 
 Safe recovery:
 
@@ -75,7 +92,7 @@ cleanup) drain snapshots before the writer runs, then resume the reader pool.
 Runtime code never names sidecar files; this backend document does because it
 owns the artifact.
 
-## Sequence reservations
+## Sequence reservations (shared)
 
 Change sequences come from the runtime sequence ledger, not from write
 transactions. `db_meta.sequence_reserved_through` stores the highest sequence
@@ -94,13 +111,31 @@ one writer; there a write raises the column inside its own write transaction,
 so a rolled-back write leaves no hole. The value is cached per connection and
 forgotten on rollback.
 
-The backend reports `max_writers` (from the test-only `:sqlite_max_writers`
-setting, default 1) and `sequence_persistence: :separate_connection` for disk
-databases (`:none` for `:memory:`). `open_writer/1` opens an extra read-write
-connection (`role: :writer_slot`) for writer slots and the ledger; its close
-only clears that connection's caches and closes it, and never checkpoints or
-removes sidecars. Extra SQLite writers serialize through `BEGIN IMMEDIATE`;
-`run_concurrent/2` is `run/2`.
+The driver reports `max_writers` and `sequence_persistence`. SQLite reports
+`max_writers` from the test-only `:sqlite_max_writers` setting (default 1) and
+`sequence_persistence: :separate_connection` for disk databases (`:none` for
+`:memory:`). `open_writer/1` opens an extra read-write connection
+(`role: :writer_slot`) for writer slots and the ledger; its close only clears
+that connection's caches and closes it, and never checkpoints or removes
+sidecars.
+
+## Write transactions (shared)
+
+Serial write transactions (`run/2`) begin with `BEGIN IMMEDIATE`; DDL (index
+and view catalog changes) only runs there. Concurrent write transactions
+(`run_concurrent/2`, writer slots) begin with the driver's `begin_concurrent/0`
+statement. On SQLite that is `BEGIN IMMEDIATE` too, so extra SQLite writers
+serialize on the write lock and never conflict. A statement or commit that the
+driver reports as `{:error, :write_conflict}` is normalized to a retryable
+`:write_conflict` error, even when a SQL module wrapped the statement error
+(`Connection.take_conflict/1`). `run_concurrent/2` returns it to the writer
+pool, which retries the command; `run/2` retries it itself up to the driver's
+`serial_conflict_retries/0` (0 on SQLite).
+
+No storage SQL uses a returning clause: a plain insert plus
+`Connection.last_insert_rowid/1` (or a keyed read-back for multi-row inserts)
+gives the same result and avoids a large per-statement cost in the Turso
+binding.
 
 ## Statement scheduling
 
@@ -120,7 +155,7 @@ The driver installs its own busy handler (2000 ms default, polled in short
 sleeps) so `Connection.close/1` and `Connection.interrupt/1` wake a caller
 waiting on another connection's lock.
 
-## Integrity probes
+## Integrity probes (shared)
 
 Product integrity rules run over normalized domain facts. The SQLite backend
 additionally reports engine probes (foreign keys, required tables). Failures
@@ -132,13 +167,17 @@ records them as external rather than comparing FTS rows.
 
 Open recognizes Version 1 before applying persistent pragmas. Empty files and
 non-SQLite bytes are rejected without opening the engine. A SQLite file is
-opened, then `application_id`, `user_version`, `db_meta` versions, and required
-tables are confirmed. Only then does open set `journal_mode=WAL`. Header fields
+opened, then `application_id`, `user_version`, `db_meta` versions, required
+tables and `db_meta.storage_engine` (the engine that created the bundle) are
+confirmed. Only then does open set `journal_mode=WAL`. A bundle created by
+another engine, or holding only another engine's artifact, is
+`unsupported_format` ("bundle was created by the turso storage engine"); there
+is no conversion between engines. Header fields
 are not trusted from the raw file because page 1 may still live in WAL after a
 crash. A foreign, future, or partial schema is `unsupported_format` and is not
 rewritten. There is no in-place migrator in V1.
 
-## Diagnostics
+## Diagnostics (shared)
 
 `VialKeeper.Diagnostics.runtime/0` includes an opaque selected-backend
 capability map. SQLite version, compile options, FTS5, and transaction probes

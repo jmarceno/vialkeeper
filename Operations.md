@@ -20,7 +20,7 @@ VIAL_KEEPER_ROOT/
   host.toml              # listener, auth, TLS, limits, federation, …
   registrations.json     # routing only (UUID → relative path)
   notes.vialkeeper/        # one bundle per logical database
-    <backend data>       # backend-owned durable artifact
+    <backend data>       # engine-owned durable artifact (turso.db by default)
     blobs/
     tmp/
   notes.vialkeeper.lease   # transient exclusive ownership (not data)
@@ -141,8 +141,26 @@ All host config is one editable file under the database root. Edit, then
 | `[tls]` | HTTPS cert/key paths (relative to root) |
 | `[security]` | `allow_insecure_remote` |
 | `[observability]` | `otlp_endpoint` (empty = no exporter, no network) |
+| `[storage]` | `engine`: `"turso"` (default) or `"sqlite"` |
 
 Template with defaults: `priv/host.toml`.
+
+### Storage engine
+
+`[storage].engine` selects the storage engine for every database on the host.
+A host without a `[storage]` table, or without `engine`, runs **Turso**.
+
+| Engine | Concurrent document writes | Bundle artifact |
+| ------ | -------------------------- | --------------- |
+| `turso` (default) | up to 16 (`writer_pool_size` caps it) | `turso.db` |
+| `sqlite` | 1 | the SQLite artifact |
+
+Bundles are engine-specific. A bundle belongs to the engine that created it:
+opening or registering it on a host running the other engine fails with
+`unsupported_format` ("bundle was created by the … storage engine"), and
+nothing converts a bundle between engines. To move data to the other engine,
+create a database on a host running that engine and replicate into it. An
+unknown engine name fails startup with a `host.toml:` error.
 
 ---
 
@@ -394,7 +412,9 @@ mistakes; keep independent backups.
 
 Do not copy an active crash-recoverable bundle piecemeal: keep every
 backend-owned recovery artifact with the durable data until recovery finishes.
-Reopen, close, then copy. SQLite-specific journal pairing is documented in
+Reopen, close, then copy. Engine-specific journal pairing is documented in
+[lib/vial_keeper/storage/turso/BACKEND.md](lib/vial_keeper/storage/turso/BACKEND.md)
+(log and WAL sidecars) and
 [lib/vial_keeper/storage/sqlite/BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).
 
 Disk WAL uses `synchronous=NORMAL` and a 64 MiB autocheckpoint. Application
@@ -485,8 +505,8 @@ Safe recovery:
    `.lease` file when you are sure nothing has the database open.
 4. Never delete or rewrite backend data artifacts to “clear” a lease.
 
-SQLite implements ownership with an exclusive sidecar lease; see
-[BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).
+Both storage engines implement ownership with the same exclusive SQLite
+sidecar lease; see [BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md).
 
 ---
 
@@ -576,8 +596,11 @@ writer pool of up to `writer_pool_size` writer connections when the storage
 backend supports more than one writer; extra writes wait in a FIFO queue
 capped by `write_queue_limit`. The effective pool size is
 `min(writer_pool_size, backend writer limit)`, and the pool exists only when
-that is above one. The SQLite backend supports one writer, so with SQLite
-every write goes through `DatabaseOwner`. Writes to the same document always
+that is above one. The Turso engine supports 16 concurrent writers; a write
+that conflicts with another writer on the same row is retried inside the pool
+and reaches the client only as `database_overloaded` once its retries run
+out. The SQLite engine supports one writer, so with SQLite every write goes
+through `DatabaseOwner`. Writes to the same document always
 run one at a time, in arrival order. A full write queue returns the retryable
 `database_overloaded` error.
 
@@ -829,7 +852,7 @@ Important `[limits]` keys (see `priv/host.toml` for defaults):
 - `admission_limit` — active + queued owner ops per open DB
 - `read_pool_size` — concurrent snapshot readers per open disk DB (`1..32`, default `4`)
 - `read_queue_limit` — queued classified reads waiting for a reader (`1..4096`, default `128`)
-- `writer_pool_size` — concurrent document writers per open disk DB (`1..64`, default `8`); the effective size is capped by the storage backend's writer limit (1 for SQLite)
+- `writer_pool_size` — concurrent document writers per open disk DB (`1..64`, default `8`); the effective size is capped by the storage engine's writer limit (16 for Turso, 1 for SQLite)
 - `write_queue_limit` — queued document writes waiting for a writer (`1..4096`, default `128`)
 - `max_open_databases`, `max_replication_workers`
 - Replication chain-fetch / blob-transfer / batch / in-flight-byte ceilings

@@ -115,7 +115,7 @@ defmodule VialKeeper.EndToEnd.ReadPoolScenarioTest do
     assert %{status: 200} = Task.await(second, 10_000)
     assert {:ok, %{status: 200}} = Task.await(closer, 10_000)
 
-    sqlite = VialKeeper.TempDatabase.sqlite_path(absolute)
+    sqlite = VialKeeper.TempDatabase.artifact_path(absolute)
     refute File.exists?(sqlite <> "-wal")
     refute File.exists?(sqlite <> "-shm")
   end

@@ -17,7 +17,7 @@ defmodule VialKeeper.Storage.SequenceBoundsTest do
 
   setup do
     {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-sequence-bounds")
-    {:ok, adapter} = Adapter.create(VialKeeper.TempDatabase.sqlite_path(bundle), %{})
+    {:ok, adapter} = Adapter.create(VialKeeper.TempDatabase.artifact_path(bundle), %{})
 
     on_exit(fn ->
       _ = Adapter.close(adapter)

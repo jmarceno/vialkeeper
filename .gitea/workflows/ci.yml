@@ -19,6 +19,14 @@ jobs:
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
+      # The storage driver NIFs: vial_turso takes about 8 minutes from cold.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            native/vial_sqlite/target
+            native/vial_turso/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native/vial_sqlite/Cargo.lock', 'native/vial_turso/Cargo.lock') }}
       - run: mix deps.get
       - run: mix check.full
       - name: Build OTP release
@@ -45,6 +53,32 @@ jobs:
         with:
           name: vialkeeper-release
           path: _build/prod/rel/vial_keeper
+
+  # The full gate again on the SQLite storage engine (the default is Turso).
+  checks_sqlite:
+    runs-on: ubuntu-latest
+    env:
+      VIALKEEPER_TEST_ENGINE: sqlite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29.0.4'
+          elixir-version: '1.20.2'
+          version-type: strict
+      - uses: actions/cache@v4
+        with:
+          path: deps
+          key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            native/vial_sqlite/target
+            native/vial_turso/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native/vial_sqlite/Cargo.lock', 'native/vial_turso/Cargo.lock') }}
+      - run: mix deps.get
+      - run: mix check.full
 
   # Debian-compatible OTP release for co-located production hosts.
   # Do not deploy the ubuntu-latest artifact from the checks job to Debian LXCs.

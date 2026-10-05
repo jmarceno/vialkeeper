@@ -211,7 +211,7 @@ defmodule VialKeeper.Contract.FixturesTest do
 
   defp execute_checkpoint_cas_scenario(fixture) do
     {:ok, bundle_path} = TempDatabase.create(prefix: "vialkeeper-fixture-cas")
-    path = TempDatabase.sqlite_path(bundle_path)
+    path = TempDatabase.artifact_path(bundle_path)
     assert {:ok, adapter} = Adapter.create(path, %{})
 
     try do

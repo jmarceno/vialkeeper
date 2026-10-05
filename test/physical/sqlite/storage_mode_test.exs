@@ -50,7 +50,7 @@ defmodule VialKeeper.StorageAdapter.MemoryModeTest do
 
   test "disk databases use WAL and drop sidecars on close" do
     {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-disk-wal")
-    sqlite = VialKeeper.TempDatabase.sqlite_path(bundle)
+    sqlite = VialKeeper.TempDatabase.artifact_path(bundle)
 
     assert {:ok, adapter} = Adapter.create(sqlite, %{storage_mode: :disk})
 

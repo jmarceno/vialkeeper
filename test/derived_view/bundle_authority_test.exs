@@ -81,7 +81,7 @@ defmodule VialKeeper.DerivedView.BundleAuthorityTest do
 
     assert {:ok, entries} = DatabaseCatalog.list()
     assert Enum.any?(entries, &(&1.database_uuid == uuid and &1.database_kind == :derived))
-    assert File.exists?(Path.join(original, "database.sqlite3"))
+    assert File.exists?(VialKeeper.TempDatabase.artifact_path(original))
 
     assert {:ok, %{enabled: false}} =
              DatabaseCatalog.command(

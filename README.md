@@ -92,10 +92,17 @@ database root/
   host.toml            # listener, auth, TLS, limits — one editable file
   registrations.json   # routing only: database UUID → relative path
   notes.vialkeeper/    # portable database bundle
-    <backend data>     # metadata, revisions, indexes, views, jobs
+    turso.db           # metadata, revisions, indexes, views, jobs
     blobs/             # attachment representations (digest.blob)
     tmp/               # incomplete uploads and rebuildable search cache
 ```
+
+**Storage engine:** Turso is the default storage engine; it commits up to 16
+document writes concurrently. SQLite is available with
+`[storage] engine = "sqlite"` in `host.toml` and runs one writer at a time.
+The engine owns the bundle's data artifact (`turso.db` above; a SQLite bundle
+holds the SQLite artifact instead), and a bundle opens only on the engine that
+created it. See [Operations.md](Operations.md#storage-engine).
 
 **Runtime baseline:** Elixir 1.20.2 on Erlang/OTP 29.0.4 (`mise.toml`,
 `mix.lock`). Production hosts run an OTP release; Mix is for development and CI.
@@ -154,7 +161,7 @@ Production and staging run an assembled OTP release:
 
 ```sh
 # Pinned toolchain from mise.toml (Elixir 1.20.2 / OTP 29.0.4); a Rust
-# toolchain is required because the Tantivy and SQLite NIFs compile at build time.
+# toolchain is required because the Tantivy, Turso and SQLite NIFs compile at build time.
 MIX_ENV=prod mix release.build
 
 export VIAL_KEEPER_ROOT=/var/lib/vialkeeper
@@ -353,7 +360,7 @@ Elixir tokenization layer. A rebuild writes a fresh generation under the bundle
 `tmp/search/indexes/` directory and publishes it only after commit; the previous
 generation remains searchable while the rebuild is in progress. Winner changes
 are applied as bounded Tantivy writer updates and published without fsync
-(cache-level durability); the index is rebuildable from SQLite. Rebuild
+(cache-level durability); the index is rebuildable from the database. Rebuild
 completion performs a durable commit with explicit sync.
 
 ```typescript
@@ -808,7 +815,8 @@ and compaction, replication jobs, shadow workers, observability, and a
 go-live checklist:
 
 - **[Operations.md](Operations.md)** — deployment and operator procedures
-- **[lib/vial_keeper/storage/sqlite/BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md)** — backend layout and controls
+- **[lib/vial_keeper/storage/turso/BACKEND.md](lib/vial_keeper/storage/turso/BACKEND.md)** — Turso engine layout and controls (default)
+- **[lib/vial_keeper/storage/sqlite/BACKEND.md](lib/vial_keeper/storage/sqlite/BACKEND.md)** — SQLite engine and shared storage layout and controls
 - **[bench/README.md](bench/README.md)** — dataset-backed FTS, stress, and torture benchmarks
 - **[docs/vialkeeper-introduction.html](docs/vialkeeper-introduction.html)** — visual introduction
 - **[demo/replication_harness/README.md](demo/replication_harness/README.md)** — replication scenario harness
@@ -830,6 +838,12 @@ mix check.integration   # integration-tagged tests only
 mix check.full          # before handoff (integration, :slow, Doctor, Reach dead-code; needs Docker or Podman)
 MIX_ENV=prod mix release.build
 ```
+
+The suite runs on the default Turso storage engine. Run it on SQLite with
+`VIALKEEPER_TEST_ENGINE=sqlite` (for example
+`VIALKEEPER_TEST_ENGINE=sqlite mix check.full`); a storage change is done when
+both engines pass. Tests tagged `:turso_engine` or `:sqlite_engine` run only on
+their engine.
 
 When you change storage, runtime, domain, or product-model code, also run the
 repository boundary scan:

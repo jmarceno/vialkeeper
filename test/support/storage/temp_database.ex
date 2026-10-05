@@ -7,8 +7,7 @@ defmodule VialKeeper.TempDatabase do
   """
 
   alias VialKeeper.DatabaseBundle
-
-  @sqlite_filename "database.sqlite3"
+  alias VialKeeper.Storage.Registry
 
   @doc """
   Returns a unique absolute database bundle directory path that does not yet exist.
@@ -22,11 +21,12 @@ defmodule VialKeeper.TempDatabase do
   end
 
   @doc """
-  Returns the canonical SQLite metadata path inside a bundle directory.
+  Returns the configured storage engine's data artifact path inside a bundle
+  directory.
   """
-  @spec sqlite_path(binary()) :: binary()
-  def sqlite_path(bundle_path) when is_binary(bundle_path),
-    do: Path.join(bundle_path, @sqlite_filename)
+  @spec artifact_path(binary()) :: binary()
+  def artifact_path(bundle_path) when is_binary(bundle_path),
+    do: Registry.backend().artifact_path(bundle_path)
 
   @doc """
   Builds a unique temporary bundle directory and creates the bundle layout.
@@ -43,18 +43,18 @@ defmodule VialKeeper.TempDatabase do
   end
 
   @doc """
-  Removes a database bundle directory and SQLite companion files when present.
+  Removes a database bundle directory and engine companion files when present.
 
-  SQLite may leave `-wal`, `-shm`, or `-journal` files behind after an
-  interrupted process. Tests must remove those sidecars explicitly so a later
+  An interrupted process may leave `-wal`, `-shm`, `-log` or `-journal` files
+  behind. Tests must remove those sidecars explicitly so a later
   test cannot inherit stale recovery state from another scenario.
   """
   @spec cleanup(binary()) :: :ok
   def cleanup(bundle_path) when is_binary(bundle_path) do
-    sqlite_path = sqlite_path(bundle_path)
+    artifact_path = artifact_path(bundle_path)
 
-    for suffix <- ["", ".lease", ".lease-journal", "-journal", "-wal", "-shm"] do
-      _ = File.rm(sqlite_path <> suffix)
+    for suffix <- ["", ".lease", ".lease-journal", "-journal", "-wal", "-shm", "-log"] do
+      _ = File.rm(artifact_path <> suffix)
     end
 
     _ = File.rm_rf(bundle_path)

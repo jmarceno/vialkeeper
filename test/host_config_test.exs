@@ -183,6 +183,46 @@ defmodule VialKeeper.HostConfigTest do
     assert String.contains?(msg, "listener.port")
   end
 
+  test "a host without a [storage] table runs the Turso engine", %{dir: dir} do
+    write_config(dir, "[listener]\nport = 4000\n")
+    assert {:ok, config} = HostConfig.load_from(dir)
+    assert config[:storage_backend] == VialKeeper.Storage.Turso.Adapter
+  end
+
+  test "the shipped template selects the Turso engine", %{dir: dir} do
+    assert {:ok, config} = HostConfig.load_from(dir)
+    assert config[:storage_backend] == VialKeeper.Storage.Turso.Adapter
+  end
+
+  test "storage.engine selects SQLite or Turso", %{dir: dir} do
+    write_config(dir, "[storage]\nengine = \"sqlite\"\n")
+    assert {:ok, config} = HostConfig.load_from(dir)
+    assert config[:storage_backend] == VialKeeper.Storage.SQLite.Adapter
+
+    write_config(dir, "[storage]\n")
+    assert {:ok, config} = HostConfig.load_from(dir)
+    assert config[:storage_backend] == VialKeeper.Storage.Turso.Adapter
+  end
+
+  test "an unknown storage engine or key is named in the error", %{dir: dir} do
+    write_config(dir, "[storage]\nengine = \"postgres\"\n")
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert msg =~ "host.toml: storage.engine must be one of"
+    assert msg =~ ~s("sqlite") and msg =~ ~s("turso")
+
+    write_config(dir, "[storage]\nengine = 1\n")
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert msg =~ "storage.engine"
+
+    write_config(dir, "[storage]\nbogus = true\n")
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert msg =~ "bogus"
+
+    write_config(dir, "storage = 1\n")
+    assert {:error, msg} = HostConfig.load_from(dir)
+    assert msg =~ "[storage] must be a table"
+  end
+
   test "unknown section is named in the error", %{dir: dir} do
     write_config(dir, "[unknown_section]\nfoo = 1\n")
     assert {:error, msg} = HostConfig.load_from(dir)

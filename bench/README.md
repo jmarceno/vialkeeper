@@ -41,6 +41,14 @@ Full-text post-filter candidates are bounded by `[limits].max_search_candidates`
 the benchmark reports a resource-limit failure rather than accepting silently
 truncated candidates.
 
+### Concurrent writes per storage engine
+
+`mix bench.concurrent_writes` drives `Documents.put` through the catalog from
+8 and 16 concurrent clients (20,000 new-document puts per run, writer pool
+sized to the client count up to 16) and prints throughput and p50/p99 put
+latency for each storage engine. `--engine turso|sqlite`, `--clients N` and
+`--puts N` narrow or resize a run.
+
 ### Component diagnostics
 
 `mix bench.diagnostics` measures isolated phases on the same external root

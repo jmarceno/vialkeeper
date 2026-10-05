@@ -13,6 +13,13 @@
 ip   = "127.0.0.1"
 port = 4000
 
+# Storage engine for every database on this host. "turso" (the default)
+# commits up to 16 document writes concurrently; "sqlite" runs one writer at a
+# time. A database bundle belongs to the engine that created it and does not
+# open on the other one.
+[storage]
+engine = "turso"
+
 # Host-enforced resource ceilings. Clients cannot exceed these; per-database
 # configuration can only be more restrictive.
 [limits]

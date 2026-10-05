@@ -15,7 +15,7 @@ defmodule VialKeeper.Query.QueryTest do
 
   setup do
     {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-query")
-    path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
+    path = VialKeeper.TempDatabase.artifact_path(bundle_path)
     {:ok, adapter} = Adapter.create(path, %{})
 
     on_exit(fn ->
@@ -519,7 +519,7 @@ defmodule VialKeeper.Query.QueryTest do
 
     setup do
       {:ok, bundle_path} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-query-threshold")
-      path = VialKeeper.TempDatabase.sqlite_path(bundle_path)
+      path = VialKeeper.TempDatabase.artifact_path(bundle_path)
       {:ok, adapter} = Adapter.create(path, %{config: %{"queries" => %{"scan_threshold" => 5}}})
 
       on_exit(fn ->

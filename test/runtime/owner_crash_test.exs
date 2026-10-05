@@ -9,7 +9,13 @@ defmodule VialKeeper.Runtime.OwnerCrashTest do
 
   @moduletag :integration
 
-  alias VialKeeper.Runtime.{CommandContext, DatabaseCatalog, DatabaseOwner, Ownership}
+  alias VialKeeper.Runtime.{
+    AttachmentCoordinator,
+    CommandContext,
+    DatabaseCatalog,
+    DatabaseOwner,
+    Ownership
+  }
 
   setup do
     relative = "owner-crash-#{System.unique_integer([:positive])}.vialkeeper"
@@ -48,7 +54,7 @@ defmodule VialKeeper.Runtime.OwnerCrashTest do
     assert {:error, %VialKeeper.Error{code: :database_in_use}} =
              GenServer.start(
                VialKeeper.Storage.SQLite.Ownership,
-               VialKeeper.TempDatabase.sqlite_path(absolute)
+               VialKeeper.TempDatabase.artifact_path(absolute)
              )
 
     assert {:ok, %{revision: revision}} =
@@ -77,11 +83,16 @@ defmodule VialKeeper.Runtime.OwnerCrashTest do
     assert Process.alive?(lease_pid)
 
     # Admission restarts with the owner under :rest_for_one; wait until commands work.
+    # Reads come back before the later children (writer pool, attachment
+    # coordinator) finish restarting, so wait for the coordinator as well.
     VialKeeper.Eventual.eventually(
       fn ->
         case VialKeeper.Documents.get(uuid, %{id: "crash-doc"}) do
-          {:ok, %{revision: ^revision, body: %{"n" => 1}}} -> true
-          _ -> false
+          {:ok, %{revision: ^revision, body: %{"n" => 1}}} ->
+            is_map(AttachmentCoordinator.status(uuid))
+
+          _ ->
+            false
         end
       end,
       timeout: 5_000,
@@ -103,7 +114,7 @@ defmodule VialKeeper.Runtime.OwnerCrashTest do
     assert {:ok, lease} =
              GenServer.start(
                VialKeeper.Storage.SQLite.Ownership,
-               VialKeeper.TempDatabase.sqlite_path(absolute)
+               VialKeeper.TempDatabase.artifact_path(absolute)
              )
 
     assert :ok = GenServer.stop(lease)

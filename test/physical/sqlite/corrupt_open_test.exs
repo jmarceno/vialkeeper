@@ -101,7 +101,7 @@ defmodule VialKeeper.StorageAdapter.CorruptOpenTest do
 
   defp database_path(prefix) do
     {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: prefix)
-    {bundle, VialKeeper.TempDatabase.sqlite_path(bundle)}
+    {bundle, VialKeeper.TempDatabase.artifact_path(bundle)}
   end
 
   defp assert_typed_error(result) do

@@ -28,7 +28,7 @@ defmodule VialKeeper.Storage.SQLite.Lifecycle do
   def capabilities(%BackendContext{} = context) do
     case Context.unwrap(context) do
       {:ok, adapter} ->
-        Map.merge(Adapter.capabilities_report(), Adapter.writer_capabilities(adapter))
+        Map.merge(Adapter.capabilities_report(adapter), Adapter.writer_capabilities(adapter))
 
       {:error, _} ->
         %{}

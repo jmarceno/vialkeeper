@@ -36,7 +36,7 @@ defmodule VialKeeper.Runtime.OwnerUniquenessTest do
     assert Process.alive?(owner_pid)
 
     # Unlinked start so a failed lease init does not exit the test process.
-    sqlite_path = VialKeeper.TempDatabase.sqlite_path(absolute)
+    sqlite_path = VialKeeper.TempDatabase.artifact_path(absolute)
 
     assert {:error, %VialKeeper.Error{code: :database_in_use}} =
              GenServer.start(Ownership, sqlite_path)

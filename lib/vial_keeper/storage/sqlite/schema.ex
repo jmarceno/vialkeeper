@@ -18,35 +18,17 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
   @spec configure(Connection.handle(), keyword()) :: :ok | {:error, term()}
   def configure(conn, opts \\ []) do
-    storage_mode = Keyword.get(opts, :storage_mode, :disk)
-
-    with :ok <- Connection.execute(conn, journal_mode_sql(storage_mode)),
-         :ok <- Connection.execute(conn, synchronous_sql(storage_mode)),
-         :ok <- wal_autocheckpoint(conn, storage_mode),
-         :ok <- Connection.execute(conn, "PRAGMA foreign_keys = ON"),
-         :ok <- Connection.execute(conn, "PRAGMA locking_mode = NORMAL"),
-         :ok <- Connection.execute(conn, "PRAGMA trusted_schema = OFF"),
-         :ok <- Connection.execute(conn, cache_size_sql()) do
-      Connection.execute(conn, temp_store_sql())
-    end
+    Connection.driver(conn).configure(conn, Keyword.get(opts, :storage_mode, :disk))
   end
 
   @doc """
   Configures a readonly snapshot connection.
 
-  Does not set journal_mode or synchronous; the writer connection already owns
-  those. Sets query_only so the handle cannot mutate the file.
+  Does not set the journal mode; the writer connection already owns it. Sets
+  query_only where the engine supports it so the handle cannot mutate the file.
   """
   @spec configure_reader(Connection.handle()) :: :ok | {:error, term()}
-  def configure_reader(conn) do
-    with :ok <- Connection.execute(conn, "PRAGMA query_only = ON"),
-         :ok <- Connection.execute(conn, "PRAGMA foreign_keys = ON"),
-         :ok <- Connection.execute(conn, "PRAGMA locking_mode = NORMAL"),
-         :ok <- Connection.execute(conn, "PRAGMA trusted_schema = OFF"),
-         :ok <- Connection.execute(conn, cache_size_sql()) do
-      Connection.execute(conn, temp_store_sql())
-    end
-  end
+  def configure_reader(conn), do: Connection.driver(conn).configure_reader(conn)
 
   @spec required_tables_present(Connection.handle()) :: :ok | {:error, :missing_tables}
   def required_tables_present(conn) do
@@ -107,7 +89,8 @@ defmodule VialKeeper.Storage.SQLite.Schema do
              conn,
              "SELECT file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major FROM db_meta WHERE id = 1"
            ),
-         :ok <- recognize_version_row(row) do
+         :ok <- recognize_version_row(row),
+         :ok <- recognize_engine(conn) do
       :ok
     else
       {:ok, []} ->
@@ -172,10 +155,7 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
     with {:ok, [[application_id]]} <- Connection.pragma(conn, "application_id"),
          {:ok, [[user_version]]} <- Connection.pragma(conn, "user_version"),
-         {:ok, [[journal_mode]]} <- Connection.pragma(conn, "journal_mode"),
-         {:ok, [[synchronous]]} <- Connection.pragma(conn, "synchronous"),
-         {:ok, [[locking_mode]]} <- Connection.pragma(conn, "locking_mode"),
-         {:ok, [[trusted_schema]]} <- Connection.pragma(conn, "trusted_schema"),
+         :ok <- recognize_engine(conn),
          {:ok, [meta]} <-
            Connection.query(
              conn,
@@ -185,12 +165,8 @@ defmodule VialKeeper.Storage.SQLite.Schema do
              validate_schema_metadata(
                application_id,
                user_version,
-               journal_mode,
-               synchronous,
-               locking_mode,
-               trusted_schema,
-               meta,
-               storage_mode
+               Connection.driver(conn).valid_pragmas?(conn, storage_mode),
+               meta
              ),
            :ok <- validate_kind_state(conn, identity) do
         {:ok, identity}
@@ -207,34 +183,10 @@ defmodule VialKeeper.Storage.SQLite.Schema do
     end
   end
 
-  defp validate_schema_metadata(
-         @application_id,
-         1,
-         journal_mode,
-         synchronous,
-         locking_mode,
-         trusted_schema,
-         meta,
-         storage_mode
-       ) do
-    if valid_storage_pragmas?(storage_mode, journal_mode, synchronous, locking_mode, trusted_schema) do
-      validate_metadata_row(meta)
-    else
-      {:error, Error.unsupported_format("SQLite file is not a Version 1 VialKeeper database")}
-    end
-  end
+  defp validate_schema_metadata(@application_id, 1, true, meta), do: validate_metadata_row(meta)
 
-  defp validate_schema_metadata(
-         _application_id,
-         _user_version,
-         _journal_mode,
-         _synchronous,
-         _locking_mode,
-         _trusted_schema,
-         _meta,
-         _storage_mode
-       ),
-       do: {:error, Error.unsupported_format("SQLite file is not a Version 1 VialKeeper database")}
+  defp validate_schema_metadata(_application_id, _user_version, _valid_pragmas?, _meta),
+    do: {:error, Error.unsupported_format("SQLite file is not a Version 1 VialKeeper database")}
 
   defp validate_metadata_row(row) do
     case row do
@@ -501,13 +453,14 @@ defmodule VialKeeper.Storage.SQLite.Schema do
   defp insert_metadata(conn, database_uuid, database_kind, config_json) do
     Connection.execute(
       conn,
-      "INSERT INTO db_meta (id, database_uuid, database_kind, history_epoch, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, sequence_reserved_through, retention_floor_sequence, compaction_epoch, retention_boundary_digest, created_at, config_json) VALUES (1, ?, ?, ?, 1, 1, 1, 1, 1, 0, 0, 0, NULL, ?, ?)",
+      "INSERT INTO db_meta (id, database_uuid, database_kind, history_epoch, file_format_version, logical_schema_version, revision_algorithm_version, canonicalization_version, replication_protocol_major, sequence_reserved_through, retention_floor_sequence, compaction_epoch, retention_boundary_digest, created_at, config_json, storage_engine) VALUES (1, ?, ?, ?, 1, 1, 1, 1, 1, 0, 0, 0, NULL, ?, ?, ?)",
       [
         database_uuid,
         VialKeeper.DatabaseKind.storage(database_kind),
         UUID.v4(),
         DateTime.utc_now() |> DateTime.to_iso8601(),
-        config_json
+        config_json,
+        Connection.driver(conn).engine()
       ]
     )
   end
@@ -743,51 +696,23 @@ defmodule VialKeeper.Storage.SQLite.Schema do
 
   defp valid_uuid?(_), do: false
 
-  defp journal_mode_sql(:disk), do: "PRAGMA journal_mode = WAL"
-  defp journal_mode_sql(:memory), do: "PRAGMA journal_mode = MEMORY"
+  # Each engine owns its bundles: a file created by the other engine is
+  # rejected, never converted.
+  defp recognize_engine(conn) do
+    expected = Connection.driver(conn).engine()
 
-  # WAL NORMAL keeps every acknowledged transaction consistent on app crash
-  # and fsyncs the WAL at checkpoints; the last transactions can be lost on
-  # OS/power failure. FULL added one WAL fsync per commit, which caps write
-  # throughput at disk fsync latency.
-  defp synchronous_sql(:disk), do: "PRAGMA synchronous = NORMAL"
-  defp synchronous_sql(:memory), do: "PRAGMA synchronous = NORMAL"
-
-  # 16 384 pages × 4 KiB = 64 MiB, matching the page cache. The SQLite default
-  # (1 000 pages, 4 MiB) fsyncs the WAL inside ordinary commits on spinning
-  # disk and produces the bulk-write p95 tail. Close still TRUNCATEs. App-crash
-  # durability is unchanged under NORMAL; a larger checkpoint interval only
-  # widens the already-documented power/OS-loss window.
-  @wal_autocheckpoint_pages 16_384
-
-  defp wal_autocheckpoint(conn, :disk),
-    do: Connection.execute(conn, "PRAGMA wal_autocheckpoint = #{@wal_autocheckpoint_pages}")
-
-  defp wal_autocheckpoint(_conn, :memory), do: :ok
-
-  # 64 MiB page cache. Negative values are KiB, independent of page size.
-  defp cache_size_sql, do: "PRAGMA cache_size = -65536"
-
-  defp temp_store_sql, do: "PRAGMA temp_store = MEMORY"
-
-  defp valid_storage_pragmas?(:disk, journal_mode, synchronous, locking_mode, trusted_schema) do
-    String.downcase(to_string(journal_mode)) == "wal" and synchronous in [1, "1"] and
-      String.downcase(to_string(locking_mode)) == "normal" and trusted_schema in [0, "0"]
+    case Connection.query(conn, "SELECT storage_engine FROM db_meta WHERE id = 1") do
+      {:ok, [[^expected]]} -> :ok
+      {:ok, [[engine]]} when is_binary(engine) -> {:error, foreign_engine_error(engine)}
+      {:ok, _} -> {:error, unrecognized_v1_error()}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp valid_storage_pragmas?(:memory, journal_mode, synchronous, locking_mode, trusted_schema) do
-    String.downcase(to_string(journal_mode)) == "memory" and synchronous in [1, "1"] and
-      String.downcase(to_string(locking_mode)) == "normal" and trusted_schema in [0, "0"]
-  end
-
-  defp valid_storage_pragmas?(
-         _storage_mode,
-         _journal_mode,
-         _synchronous,
-         _locking_mode,
-         _trusted_schema
-       ),
-       do: false
+  @doc "The error for a bundle that another storage engine created."
+  @spec foreign_engine_error(binary()) :: Error.t()
+  def foreign_engine_error(engine),
+    do: Error.unsupported_format("bundle was created by the #{engine} storage engine")
 
   defp required_tables_as_format(conn) do
     case required_tables_present(conn) do

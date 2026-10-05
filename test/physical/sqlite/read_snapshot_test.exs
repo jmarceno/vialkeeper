@@ -9,7 +9,7 @@ defmodule VialKeeper.StorageAdapter.ReadSnapshotTest do
 
   test "in-flight snapshot does not see a concurrent writer commit" do
     {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-read-snapshot")
-    sqlite = VialKeeper.TempDatabase.sqlite_path(bundle)
+    sqlite = VialKeeper.TempDatabase.artifact_path(bundle)
 
     assert {:ok, writer} = Adapter.create(sqlite, %{storage_mode: :disk})
 
@@ -67,7 +67,7 @@ defmodule VialKeeper.StorageAdapter.ReadSnapshotTest do
 
   test "nested snapshots join the outer snapshot" do
     {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-nested-snapshot")
-    sqlite = VialKeeper.TempDatabase.sqlite_path(bundle)
+    sqlite = VialKeeper.TempDatabase.artifact_path(bundle)
 
     assert {:ok, writer} = Adapter.create(sqlite, %{storage_mode: :disk})
 
@@ -88,7 +88,7 @@ defmodule VialKeeper.StorageAdapter.ReadSnapshotTest do
 
   test "conflict get and revision get stay on one snapshot" do
     {:ok, bundle} = VialKeeper.TempDatabase.create(prefix: "vialkeeper-read-snapshot-multi")
-    sqlite = VialKeeper.TempDatabase.sqlite_path(bundle)
+    sqlite = VialKeeper.TempDatabase.artifact_path(bundle)
 
     assert {:ok, writer} = Adapter.create(sqlite, %{storage_mode: :disk})
 

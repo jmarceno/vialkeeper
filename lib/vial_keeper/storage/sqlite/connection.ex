@@ -1,14 +1,22 @@
 defmodule VialKeeper.Storage.SQLite.Connection do
-  @moduledoc "Private SQLite connection and statement execution primitives."
+  @moduledoc """
+  Private connection and statement execution primitives for the SQLite-dialect
+  engines.
+
+  A handle is `{driver, ref}`: the `VialKeeper.Storage.SQLite.Driver` module
+  that opened the connection and its NIF reference.
+  """
   require VialKeeper.Probe
 
   alias VialKeeper.Probe
-  alias VialKeeper.Storage.SQLite.Native
+  alias VialKeeper.Storage.SQLite.Driver
 
-  @type handle :: Native.conn()
+  @type handle :: {module(), Driver.conn()}
   @type open_mode :: :readonly | :readwrite | :create
 
+  @sql_tap_compiled Application.compile_env(:vial_keeper, :sql_tap_compiled, false)
   @write_transaction_key :vial_keeper_sqlite_write_transaction
+  @conflict_key :vial_keeper_sqlite_write_conflict
 
   # https://www.sqlite.org/c3ref/c_open_autoproxy.html
   @open_flags %{readonly: 0x1, readwrite: 0x2, create: 0x4}
@@ -17,42 +25,53 @@ defmodule VialKeeper.Storage.SQLite.Connection do
   Opens `path`, a file name or `file:` URI.
 
   `mode:` lists open modes; the default is `[:readwrite, :create]`.
+  `driver:` is the engine driver; the default is `Driver.Rusqlite`.
   """
-  @spec open(binary(), mode: [open_mode()]) :: {:ok, handle()} | {:error, term()}
+  @spec open(binary(), mode: [open_mode()], driver: module()) ::
+          {:ok, handle()} | {:error, term()}
   def open(path, opts \\ []) do
+    driver = Keyword.get(opts, :driver, Driver.Rusqlite)
+
     flags =
       opts
       |> Keyword.get(:mode, [:readwrite, :create])
       |> Enum.reduce(0, &Bitwise.bor(&2, Map.fetch!(@open_flags, &1)))
 
-    Native.open(path, flags)
+    case driver.open(path, flags) do
+      {:ok, ref} -> {:ok, {driver, ref}}
+      {:error, reason} -> {:error, reason}
+    end
   end
+
+  @doc "Returns the driver module that opened `handle`."
+  @spec driver(handle()) :: module()
+  def driver({driver, _ref}), do: driver
 
   @spec close(handle() | nil) :: :ok | {:error, term()}
   def close(nil), do: :ok
 
-  def close(handle) do
+  def close({driver, ref}) do
     # Cancelling first wakes a connection blocked in the busy handler before
     # the database handle closes. This matters for short-lived contenders such
     # as the file-lease process, which must not leave a journal/lock behind for
     # the next owner.
-    :ok = Native.cancel(handle)
-    Native.close(handle)
+    :ok = driver.cancel(ref)
+    driver.close(ref)
   end
 
   @spec interrupt(handle()) :: :ok
-  def interrupt(handle), do: Native.cancel(handle)
+  def interrupt({driver, ref}), do: driver.cancel(ref)
 
   @doc "Sets how long statements wait for another connection's lock."
   @spec set_busy_timeout(handle(), non_neg_integer()) :: :ok
-  def set_busy_timeout(handle, timeout_ms), do: Native.set_busy_timeout(handle, timeout_ms)
+  def set_busy_timeout({driver, ref}, timeout_ms), do: driver.set_busy_timeout(ref, timeout_ms)
 
   @spec last_insert_rowid(handle()) :: {:ok, integer()} | {:error, term()}
-  def last_insert_rowid(handle), do: Native.last_insert_rowid(handle)
+  def last_insert_rowid({driver, ref}), do: driver.last_insert_rowid(ref)
 
-  @doc "Returns the main database as an in-memory image."
+  @doc "Returns the main database as an in-memory image, where the driver supports it."
   @spec serialize(handle()) :: {:ok, binary()} | {:error, term()}
-  def serialize(handle), do: Native.serialize(handle)
+  def serialize({driver, ref}), do: driver.serialize(ref)
 
   @spec execute(handle(), iodata(), list()) :: :ok | {:error, term()}
   def execute(conn, sql, params \\ []) do
@@ -69,10 +88,37 @@ defmodule VialKeeper.Storage.SQLite.Connection do
   statements; SQLite treats those as connection state changes.
   """
   @spec exec(handle(), binary()) :: :ok | {:error, term()}
-  def exec(conn, sql) when is_binary(sql) do
+  def exec({driver, ref}, sql) when is_binary(sql) do
+    tap_sql(driver, sql)
+
     Probe.measure :sqlite_exec do
-      Native.execute(conn, sql)
+      case driver.execute(ref, sql) do
+        {:error, :write_conflict} -> note_conflict({driver, ref})
+        result -> result
+      end
     end
+  end
+
+  @doc """
+  Returns and clears whether a statement on `conn` hit a write-write conflict
+  in this process since the last call.
+
+  SQL modules may wrap a statement error in their own error; the transaction
+  owner uses this to still recognize the conflict and retry.
+  """
+  @spec take_conflict(handle()) :: boolean()
+  def take_conflict(conn), do: Process.delete({@conflict_key, conn}) == true
+
+  @doc "Forgets an earlier conflict on `conn`, before a new transaction starts."
+  @spec clear_conflict(handle()) :: :ok
+  def clear_conflict(conn) do
+    _ = Process.delete({@conflict_key, conn})
+    :ok
+  end
+
+  defp note_conflict(conn) do
+    Process.put({@conflict_key, conn}, true)
+    {:error, :write_conflict}
   end
 
   @spec query(handle(), iodata(), list()) :: {:ok, [list()]} | {:error, term()}
@@ -148,23 +194,39 @@ defmodule VialKeeper.Storage.SQLite.Connection do
   defp run(conn, sql, params, collect_rows, stepper \\ :dirty) do
     sql = IO.iodata_to_binary(sql)
     params = normalize_params(params)
+    tap_sql(driver(conn), sql)
 
     Probe.measure :sqlite_step do
       case step(stepper, conn, sql, params) do
         {:ok, rows} when collect_rows -> {:ok, rows}
         {:ok, _rows} -> {:ok, []}
+        {:error, :write_conflict} -> note_conflict(conn)
         {:error, reason} -> {:error, reason}
       end
     end
   end
 
-  defp step(:dirty, conn, sql, params), do: Native.query(conn, sql, params)
+  defp step(:dirty, {driver, ref}, sql, params), do: driver.query(ref, sql, params)
 
-  defp step(:inline, conn, sql, params) do
-    case Native.query_inline(conn, sql, params) do
-      :contended -> Native.query(conn, sql, params)
+  defp step(:inline, {driver, ref}, sql, params) do
+    case driver.query_inline(ref, sql, params) do
+      :contended -> driver.query(ref, sql, params)
       result -> result
     end
+  end
+
+  # Test-only statement tap, compiled in with `config :vial_keeper,
+  # :sql_tap_compiled, true`. While `:sql_tap` is `{driver, pid}`, every
+  # statement text sent to `driver` is also sent to `pid` as `{:sql_tap, sql}`.
+  if @sql_tap_compiled do
+    defp tap_sql(driver, sql) do
+      case Application.get_env(:vial_keeper, :sql_tap) do
+        {^driver, pid} -> send(pid, {:sql_tap, sql})
+        _ -> :ok
+      end
+    end
+  else
+    defp tap_sql(_driver, _sql), do: :ok
   end
 
   # Storage binds integers, floats, binaries, nil and `{:blob, binary}`, which

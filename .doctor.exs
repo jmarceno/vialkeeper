@@ -2,8 +2,10 @@
   # AdapterFacade and LifecycleHelpers only quote `def`s into adapters/ports.
   # Doctor still walks those quote blocks as functions of the helper modules,
   # including `unquote(name)` nodes that cannot carry BEAM @spec entries.
+  # SQLite.Driver quotes the NIF stubs and driver delegations the same way.
   ignore_modules: [
     VialKeeper.Storage.AdapterFacade,
+    VialKeeper.Storage.SQLite.Driver,
     VialKeeper.Storage.Ports.LifecycleHelpers
   ],
   ignore_paths: [
