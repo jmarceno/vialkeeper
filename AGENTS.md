@@ -32,3 +32,17 @@ tracked files.
 
 Do not publish or push changes automatically. Review the complete diff and
 remove any secrets or personal data before distribution.
+
+
+## Remote Rust builds
+
+Compile with `cargo remote` instead of a local `cargo build`, `cargo test`, or `cargo clippy`. One command syncs the sources, builds on the shared builder, and copies back only the finished executable into `target/<profile>/`. Crates, incremental files, and the rest of `target/` stay on the builder.
+
+```bash
+cargo remote -- build --release
+cargo remote -- test
+cargo remote -- clippy --all-targets -- -D warnings
+```
+
+`cargo fmt` stays local. Dotfiles are not synced; pass `-h` only when the build needs them. Pass `-c <path-under-target>` only when you explicitly want a different file copied back.
+
