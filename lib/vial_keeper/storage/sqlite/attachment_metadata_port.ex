@@ -85,12 +85,5 @@ defmodule VialKeeper.Storage.SQLite.AttachmentMetadataPort do
     end
   end
 
-  defp verify_each_digest(root, digests) do
-    Enum.reduce_while(digests, :ok, fn {digest, logical_size}, :ok ->
-      case RequestValidation.verify_blob(root, digest, logical_size) do
-        :ok -> {:cont, :ok}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-  end
+  defp verify_each_digest(root, digests), do: RequestValidation.verify_blobs(root, digests)
 end

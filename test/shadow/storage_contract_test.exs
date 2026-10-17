@@ -53,4 +53,60 @@ defmodule VialKeeper.Shadow.StorageContractTest do
       TempDatabase.cleanup(bundle_path)
     end
   end
+
+  test "shadow imports verify attachment references against the external store" do
+    for adapter_mod <- @adapters do
+      {:ok, bundle_path} = TempDatabase.create(prefix: "vialkeeper-shadow-import")
+      {:ok, cas_root} = TempDatabase.create(prefix: "vialkeeper-shadow-cas")
+      blobs = Path.join(cas_root, "blobs")
+      File.mkdir_p!(blobs)
+      path = AdapterCase.adapter_path(adapter_mod, bundle_path)
+      shadow_uuid = UUID.v4()
+
+      metadata = %{
+        source_database_uuid: UUID.v4(),
+        shadow_database_uuid: shadow_uuid,
+        generation: 1,
+        operation_id: UUID.v4(),
+        attachment_store_type: "external_cas",
+        attachment_location: blobs,
+        specification_digest: "spec-digest",
+        created_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+      }
+
+      assert {:ok, adapter} =
+               adapter_mod.create(path, %{
+                 database_uuid: shadow_uuid,
+                 database_kind: :shadow,
+                 shadow_metadata: metadata
+               })
+
+      missing = :crypto.hash(:sha256, "never stored") |> Base.encode16(case: :lower)
+
+      request = %{
+        profile: :shadow,
+        chains: [
+          %{
+            document_id: "doc",
+            leaf_revision: "1-" <> String.duplicate("a", 32),
+            revisions: [
+              %{
+                revision_id: "1-" <> String.duplicate("a", 32),
+                attachments: %{
+                  "file" => %{digest: missing, length: 12, content_type: "text/plain"}
+                }
+              }
+            ]
+          }
+        ]
+      }
+
+      assert {:error, %VialKeeper.Error{code: :attachment_blob_not_found}} =
+               adapter_mod.import_revision_chains(adapter, request)
+
+      assert :ok = adapter_mod.close(adapter)
+      TempDatabase.cleanup(bundle_path)
+      TempDatabase.cleanup(cas_root)
+    end
+  end
 end

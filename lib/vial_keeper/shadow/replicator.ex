@@ -2,6 +2,8 @@ defmodule VialKeeper.Shadow.Replicator do
   @moduledoc "Managed pull process for one generation-fenced shadow replica."
   use GenServer
 
+  require Logger
+
   alias VialKeeper.Error
   alias VialKeeper.Replication
   alias VialKeeper.Replication.{LocalEndpoint, Profile, RemoteEndpoint}
@@ -92,12 +94,31 @@ defmodule VialKeeper.Shadow.Replicator do
     {:noreply, %{state | status: {:replacement_required, error}}}
   end
 
-  defp handle_pull_result({:error, _error}, state) do
+  defp handle_pull_result({:error, error}, state) do
+    log_pull_failure(error, state)
+
     if continuous?(state.options) do
       {:noreply, schedule_pull(%{state | status: :retrying}, retry_ms(state.options))}
     else
       {:noreply, %{state | status: :failed}}
     end
+  end
+
+  # Log once per failure streak so a wedged generation is visible without
+  # flooding the log at the retry cadence.
+  defp log_pull_failure(_error, %{status: :retrying}), do: :ok
+
+  defp log_pull_failure(error, state) do
+    {code, message} =
+      case error do
+        %Error{code: code, message: message} -> {code, message}
+        other -> {:unknown, Kernel.inspect(other)}
+      end
+
+    Logger.warning(
+      "shadow pull failed shadow_uuid=#{request_value(state.request, "shadow_uuid")} " <>
+        "generation=#{request_value(state.request, "generation")} code=#{code} error=#{message}"
+    )
   end
 
   defp schedule_pull(state, delay), do: %{state | timer: Process.send_after(self(), :pull, delay)}

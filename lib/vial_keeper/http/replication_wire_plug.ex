@@ -13,7 +13,7 @@ defmodule VialKeeper.HTTP.ReplicationWirePlug do
   import Plug.Conn
 
   alias VialKeeper.Error
-  alias VialKeeper.HTTP.Response
+  alias VialKeeper.HTTP.{Response, RoutePath}
   alias VialKeeper.Observability.Instrumentation.Replication, as: ReplicationInstr
   alias VialKeeper.Replication.BlobRepresentationStream
   alias VialKeeper.Replication.WireCompression
@@ -41,23 +41,17 @@ defmodule VialKeeper.HTTP.ReplicationWirePlug do
   @doc """
   Returns true when `path` is under the remote replication wire prefix.
 
-  Matches `/v1/databases/<segment>/replication` and nested paths. Does not
-  match `/v1/databases/<segment>/replications` job-management routes.
+  Matches `/v1/databases/<segment>/replication` and nested paths, plus the
+  shadow control plane. Does not match `/v1/databases/<segment>/replications`
+  job-management routes. Classifies on the decoded segment view the router
+  dispatches on, so non-canonical spellings select the same codec.
   """
   @spec wire_path?(binary()) :: boolean()
   def wire_path?(path) when is_binary(path) do
-    case String.split(path, "/", parts: 6) do
-      ["", "v1", "control-plane" | _rest] ->
-        true
-
-      ["", "v1", "databases", segment, "replication"] when segment != "" ->
-        true
-
-      ["", "v1", "databases", segment, "replication", _rest] when segment != "" ->
-        true
-
-      _ ->
-        false
+    case RoutePath.segments(path) do
+      {:ok, ["v1", "control-plane" | _rest]} -> true
+      {:ok, ["v1", "databases", _segment, "replication" | _rest]} -> true
+      _ -> false
     end
   end
 

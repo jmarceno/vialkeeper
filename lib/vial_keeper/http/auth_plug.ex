@@ -19,7 +19,7 @@ defmodule VialKeeper.HTTP.AuthPlug do
   @behaviour Plug
 
   import Plug.Conn
-  alias VialKeeper.HTTP.Response
+  alias VialKeeper.HTTP.{Response, RoutePath}
   alias VialKeeper.WebUI
   alias VialKeeper.WebUI.Assets
 
@@ -41,6 +41,15 @@ defmodule VialKeeper.HTTP.AuthPlug do
       public_web_ui_request?(conn) ->
         conn
 
+      malformed_path?(conn) ->
+        conn
+        |> Response.error(
+          VialKeeper.Error.invalid_request("request path is malformed", %{
+            path: conn.request_path
+          })
+        )
+        |> halt()
+
       control_plane_request?(conn) ->
         authenticate(conn, control_token_digests())
 
@@ -60,10 +69,32 @@ defmodule VialKeeper.HTTP.AuthPlug do
       public_web_ui_path?(conn.request_path)
   end
 
-  @doc "Returns true when this request is a control-plane route."
+  @doc """
+  Returns true when this request routes to the control plane.
+
+  Classifies on the decoded segment view the router dispatches on, so
+  non-canonical spellings such as `/v1//control-plane` or
+  `/v1/%63ontrol-plane` cannot skip the control token gate.
+  """
   @spec control_plane_request?(Plug.Conn.t()) :: boolean()
-  def control_plane_request?(conn),
-    do: String.starts_with?(conn.request_path, "/v1/control-plane")
+  def control_plane_request?(conn) do
+    match?({:ok, ["v1", "control-plane" | _]}, RoutePath.segments(conn.request_path))
+  end
+
+  @doc """
+  Authenticates `conn` against the shadow control token digests.
+
+  Plug-compatible so the control-plane sub-router enforces its own token class
+  regardless of how the request reached it. Fails closed when no digests are
+  configured.
+  """
+  @spec authenticate_control_token(Plug.Conn.t(), Plug.opts()) :: Plug.Conn.t()
+  def authenticate_control_token(%Plug.Conn{halted: true} = conn, _opts), do: conn
+
+  def authenticate_control_token(conn, _opts),
+    do: authenticate(conn, control_token_digests())
+
+  defp malformed_path?(conn), do: RoutePath.segments(conn.request_path) == :error
 
   defp public_web_ui_path?("/ui"), do: true
   defp public_web_ui_path?("/ui/"), do: true

@@ -6,7 +6,7 @@ defmodule VialKeeper.Storage.Services.Import do
   replication-sourced change finalization against storage ports.
   """
 
-  alias VialKeeper.Attachments.Manifest
+  alias VialKeeper.Attachments.{Manifest, StoreRef}
   alias VialKeeper.Domain.{RetentionBoundary, Revision}
   alias VialKeeper.Error
   alias VialKeeper.JSON.Canonical
@@ -14,7 +14,7 @@ defmodule VialKeeper.Storage.Services.Import do
   alias VialKeeper.Observability.Instrumentation.Import, as: ImportInstrumentation
   alias VialKeeper.Replication.Profile
   alias VialKeeper.Revisions.{Id, Winner}
-  alias VialKeeper.Storage.BackendContext
+  alias VialKeeper.Storage.{BackendContext, RequestValidation}
   alias VialKeeper.Storage.Services.Facts
   alias VialKeeper.Storage.Services.Shadows
 
@@ -102,6 +102,41 @@ defmodule VialKeeper.Storage.Services.Import do
 
   def ensure_physical_blobs(_context, _chains),
     do: {:error, Error.invalid_request("replication chains must be an array")}
+
+  @doc """
+  Ensures every attachment digest referenced by shadow import chains is
+  physically valid in the shadow's external attachment store.
+
+  A shadow bundle keeps no blobs of its own; its bytes are served from the
+  external CAS recorded in the durable shadow metadata, so references are
+  verified there before they are committed.
+  """
+  @spec ensure_shadow_physical_blobs(BackendContext.t(), term()) :: :ok | {:error, Error.t()}
+  def ensure_shadow_physical_blobs(%BackendContext{} = context, chains) when is_list(chains) do
+    with {:ok, store_ref} <- shadow_store_ref(context) do
+      RequestValidation.verify_blobs(store_ref, collect_import_digests(chains))
+    end
+  end
+
+  def ensure_shadow_physical_blobs(_context, _chains),
+    do: {:error, Error.invalid_request("replication chains must be an array")}
+
+  # The location was confined to the worker's allowed attachment roots when the
+  # shadow was provisioned; here it only needs to name an external CAS.
+  defp shadow_store_ref(context) do
+    case Shadows.metadata(context) do
+      {:ok, %{attachment_location: location}} when is_binary(location) and location != "" ->
+        location
+        |> StoreRef.external_read_only([Path.dirname(location)])
+        |> StoreRef.normalize()
+
+      {:ok, _metadata} ->
+        {:error, Error.shadow_incompatible("shadow import requires durable shadow metadata")}
+
+      {:error, _} = error ->
+        error
+    end
+  end
 
   @doc """
   Imports revision chains inside an open transaction.
@@ -965,12 +1000,19 @@ defmodule VialKeeper.Storage.Services.Import do
 
   defp put_shadow_watermark(_context, _request, _origins, false), do: :ok
 
+  # Bootstrap pages arrive in document_id order, so a page's max sequence, an
+  # empty page's 0, and the handshake-time terminal on the final page are not
+  # monotonic; an earlier failed attempt may also have committed a higher
+  # value. The watermark is a monotonic claim, so it never regresses here.
+  # The shadow becomes readable only after the post-bootstrap catch-up has
+  # imported every change through the source's current sequence.
   defp put_shadow_watermark(context, request, origins, true) do
-    watermark = MapAccess.get(request, :source_watermark) || max_origin(origins)
+    requested = MapAccess.get(request, :source_watermark) || max_origin(origins)
 
-    case Shadows.put_watermark(context, watermark) do
-      {:ok, _} -> :ok
-      {:error, error} -> {:error, error}
+    with {:ok, current} <- Shadows.watermark(context),
+         {:ok, _} <-
+           Shadows.put_watermark(context, Enum.max([requested, max_origin(origins), current])) do
+      :ok
     end
   end
 

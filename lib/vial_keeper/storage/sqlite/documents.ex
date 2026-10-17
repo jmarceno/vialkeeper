@@ -287,13 +287,11 @@ defmodule VialKeeper.Storage.SQLite.Documents do
     case Connection.query(conn, elem(query, 0), elem(query, 1)) do
       {:ok, rows} ->
         ids = Enum.map(rows, fn [id] -> id end)
-        page = Enum.take(ids, limit)
+        {page, rest} = Enum.split(ids, limit)
 
-        next_cursor =
-          case Enum.drop(ids, limit) do
-            [next | _] -> next
-            _ -> nil
-          end
+        # The extra row only signals that more pages exist. The next page
+        # filters strictly after the cursor, so the cursor is the last served id.
+        next_cursor = if rest != [], do: Enum.at(ids, limit - 1)
 
         {:ok, {page, next_cursor}}
 

@@ -355,7 +355,11 @@ defmodule VialKeeper.Storage.Memory.DocumentFacts do
   defp page_documents(state, cursor, limit) do
     sorted = state.documents |> Map.keys() |> Enum.sort()
     ids = if is_binary(cursor), do: Enum.drop_while(sorted, &(&1 <= cursor)), else: sorted
-    %{document_ids: Enum.take(ids, limit), next_cursor: Enum.at(ids, limit)}
+    {page, rest} = Enum.split(ids, limit)
+
+    # The next page resumes strictly after the cursor: export the last served id.
+    next_cursor = if rest != [], do: Enum.at(ids, limit - 1)
+    %{document_ids: page, next_cursor: next_cursor}
   end
 
   defp accept_or_insert(context, adapter, document_id, revision) do

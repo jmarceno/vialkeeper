@@ -398,7 +398,7 @@ defmodule VialKeeper.Storage.Services do
 
   defp maybe_ensure_physical_blobs(context, chains, request) do
     if shadow_profile?(MapAccess.get(request, :profile)),
-      do: :ok,
+      do: Import.ensure_shadow_physical_blobs(context, chains),
       else: Import.ensure_physical_blobs(context, chains)
   end
 

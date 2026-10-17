@@ -333,8 +333,11 @@ defmodule VialKeeper.HTTP.Routes.ReplicationWire do
           end
 
         {:error, error} ->
-          conn = discard_request_body(conn)
-          Response.error(conn, error)
+          # Do not drain a body of unbounded declared size; close the
+          # connection instead so it is never reused with an unread body.
+          conn
+          |> Conn.put_resp_header("connection", "close")
+          |> Response.error(error)
       end
     end)
   end
@@ -443,14 +446,6 @@ defmodule VialKeeper.HTTP.Routes.ReplicationWire do
     case Manifest.validate_digest(conn.path_params["digest"]) do
       {:ok, digest} -> fun.(conn, digest)
       {:error, error} -> Response.error(conn, error)
-    end
-  end
-
-  defp discard_request_body(conn) do
-    case Conn.read_body(conn, length: 65_536, read_length: 65_536) do
-      {:ok, _, conn} -> conn
-      {:more, _, conn} -> discard_request_body(conn)
-      {:error, _} -> conn
     end
   end
 

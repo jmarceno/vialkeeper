@@ -618,7 +618,9 @@ defmodule VialKeeper.Attachments.FilesystemStoreTest do
   test "concurrent different representations keep the first valid file", %{bundle: bundle} do
     logical = "shared-logical"
     digest = :crypto.hash(:sha256, logical) |> Base.encode16(case: :lower)
-    other = "other-payload-bytes"
+    assert {:ok, ctx} = Compression.new_compression_context()
+    assert :ok = Compression.set_level(ctx)
+    assert {:ok, other} = Compression.compress_chunks(ctx, [logical], true)
     other_digest = :crypto.hash(:sha256, other) |> Base.encode16(case: :lower)
 
     raw_descriptor = %{
@@ -694,7 +696,8 @@ defmodule VialKeeper.Attachments.FilesystemStoreTest do
   end
 
   @tag :compressed
-  test "verify detects a valid physical payload with the wrong logical digest", %{bundle: bundle} do
+  test "representation install rejects a valid physical payload with the wrong logical digest",
+       %{bundle: bundle} do
     logical = compressible_payload()
     lying_digest = :crypto.hash(:sha256, "not-the-logical-bytes") |> Base.encode16(case: :lower)
     assert {:ok, ctx} = Compression.new_compression_context()
@@ -714,16 +717,78 @@ defmodule VialKeeper.Attachments.FilesystemStoreTest do
              FilesystemStore.begin_put_representation(bundle.root, descriptor, 1_000_000)
 
     assert :ok = FilesystemStore.write_representation_chunk(writer, compressed)
-    assert {:ok, _} = FilesystemStore.finish_put_representation(writer)
-
-    assert {:ok, {stored, reader}} =
-             FilesystemStore.open_representation_read(bundle.root, lying_digest)
-
-    assert stored.payload_sha256 == payload_digest
-    assert collect_representation(reader) == compressed
 
     assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
-             FilesystemStore.verify(bundle.root, lying_digest, byte_size(logical))
+             FilesystemStore.finish_put_representation(writer)
+
+    refute FilesystemStore.exists?(bundle.root, lying_digest)
+    assert {:ok, []} = FilesystemStore.list_digests(bundle.root)
+  end
+
+  @tag :compressed
+  test "representation install stops a zstd payload that decodes past its logical length",
+       %{bundle: bundle} do
+    logical = :binary.copy("a", 4 * 1024 * 1024)
+    assert {:ok, ctx} = Compression.new_compression_context()
+    assert :ok = Compression.set_level(ctx)
+    assert {:ok, compressed} = Compression.compress_chunks(ctx, [logical], true)
+
+    descriptor = %{
+      encoding: :zstd,
+      logical_digest: :crypto.hash(:sha256, "a") |> Base.encode16(case: :lower),
+      logical_length: 1,
+      payload_length: byte_size(compressed),
+      payload_sha256: :crypto.hash(:sha256, compressed) |> Base.encode16(case: :lower)
+    }
+
+    assert {:ok, writer} = FilesystemStore.begin_put_representation(bundle.root, descriptor, 10)
+
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
+             FilesystemStore.write_representation_chunk(writer, compressed)
+  end
+
+  test "representation put bounds the declared physical payload length", %{bundle: bundle} do
+    max_logical = 1_024
+    payload_length = FilesystemStore.max_representation_payload_bytes(max_logical) + 1
+
+    descriptor = %{
+      encoding: :zstd,
+      logical_digest: :crypto.hash(:sha256, "x") |> Base.encode16(case: :lower),
+      logical_length: 1,
+      payload_length: payload_length,
+      payload_sha256: :crypto.hash(:sha256, "y") |> Base.encode16(case: :lower)
+    }
+
+    assert {:error, %VialKeeper.Error{code: :payload_too_large}} =
+             FilesystemStore.begin_put_representation(bundle.root, descriptor, max_logical)
+  end
+
+  @tag :compressed
+  test "dedup rejects an existing zstd blob whose content does not match its digest",
+       %{bundle: bundle} do
+    honest = compressible_payload()
+    digest = :crypto.hash(:sha256, honest) |> Base.encode16(case: :lower)
+    forged = String.duplicate("forged-", 2_000)
+    assert {:ok, ctx} = Compression.new_compression_context()
+    assert :ok = Compression.set_level(ctx)
+    assert {:ok, compressed} = Compression.compress_chunks(ctx, [forged], true)
+
+    descriptor = %{
+      encoding: :zstd,
+      logical_digest: digest,
+      logical_length: byte_size(honest),
+      payload_length: byte_size(compressed),
+      payload_sha256: :crypto.hash(:sha256, compressed) |> Base.encode16(case: :lower)
+    }
+
+    # Plant the forged blob directly, as a pre-existing poisoned store would.
+    {:ok, trailer} = Representation.encode_trailer(Map.new(descriptor))
+    path = blob_path_for(bundle.root, digest)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, [compressed, trailer])
+
+    assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
+             put_whole(bundle.root, honest)
   end
 
   defp put_whole(bundle_path, payload) do

@@ -3,7 +3,7 @@ defmodule VialKeeper.HTTP.Routes.ShadowControl do
   use Plug.Router
   use VialKeeper.HTTP.RouterSpecs
 
-  alias VialKeeper.HTTP.{Request, Response}
+  alias VialKeeper.HTTP.{AuthPlug, Request, Response}
   alias VialKeeper.Replication.BlobRepresentationStream
   alias VialKeeper.Shadow.{Protocol, Worker}
 
@@ -11,8 +11,14 @@ defmodule VialKeeper.HTTP.Routes.ShadowControl do
   @provision_fields ~w(source_uuid shadow_uuid generation operation_id attachment_store_type attachment_location specification_digest source_base_url source_bearer_token)
   @read_fields ~w(source_uuid shadow_uuid generation operation_id id document_id revision include_conflicts requests name)
 
+  # The front-door AuthPlug already gates this prefix; the sub-router also
+  # enforces the control token class itself so no request-target spelling can
+  # reach a control-plane operation without one.
+  plug(:authenticate_control)
   plug(:match)
   plug(:dispatch)
+
+  defp authenticate_control(conn, opts), do: AuthPlug.authenticate_control_token(conn, opts)
 
   get "/capabilities" do
     Response.result(conn, Worker.capabilities())

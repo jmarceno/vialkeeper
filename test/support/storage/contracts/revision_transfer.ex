@@ -13,7 +13,42 @@ defmodule VialKeeper.Storage.Contracts.RevisionTransfer do
       alias VialKeeper.Attachments.FilesystemStore
       alias VialKeeper.Attachments.Manifest
       alias VialKeeper.Storage.AdapterCase
+      alias VialKeeper.Storage.Services
       alias VialKeeper.TestRevisionId, as: Id
+
+      test "bootstrap pages cover every document exactly once", %{adapter: adapter} do
+        ids = for n <- 1..11, do: "doc-#{String.pad_leading(Integer.to_string(n), 2, "0")}"
+
+        for id <- ids do
+          assert {:ok, _} =
+                   @adapter.apply_local_mutation(adapter, %{
+                     operation: :put,
+                     document_id: id,
+                     body: %{"id" => id}
+                   })
+        end
+
+        context = @adapter.to_context(adapter)
+
+        served =
+          Stream.unfold(:start, fn
+            :done ->
+              nil
+
+            cursor ->
+              request = %{bootstrap: true, limit: 3}
+              request = if cursor == :start, do: request, else: Map.put(request, :cursor, cursor)
+
+              assert {:ok, %{chains: chains, continuation_cursor: next}} =
+                       Services.get_revision_chains(context, request)
+
+              {Enum.map(chains, & &1.document_id), next || :done}
+          end)
+          |> Enum.to_list()
+          |> List.flatten()
+
+        assert served == ids
+      end
 
       test "diff and import transfer a root-to-leaf chain", %{
         adapter: source,

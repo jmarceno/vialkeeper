@@ -125,7 +125,10 @@ defmodule VialKeeper.Storage.Services.Retention do
       Facts.put_peer_position_record(context, %{
         peer_database_uuid: peer_uuid,
         expected_version: MapAccess.get(request, :expected_version, 0),
-        value: RetentionService.peer_wire(peer)
+        value:
+          peer
+          |> RetentionService.bound_peer_lease(meta.config, System.system_time(:millisecond))
+          |> RetentionService.peer_wire()
       })
     end
   end

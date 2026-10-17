@@ -1,6 +1,8 @@
 defmodule VialKeeper.Shadow.ReadRoutingContractTest do
   use ExUnit.Case, async: false
 
+  alias VialKeeper.Attachments.Compression
+  alias VialKeeper.Replication.BlobRepresentationStream
   alias VialKeeper.Runtime.DatabaseCatalog
   alias VialKeeper.Shadow.{ReadRouter, RouteTable}
   alias VialKeeper.Storage.Results
@@ -63,6 +65,18 @@ defmodule VialKeeper.Shadow.ReadRoutingContractTest do
 
     def open_attachment_representation(_endpoint, _request, _timeout, _opts),
       do: {:error, VialKeeper.Error.shadow_attachment_unavailable()}
+  end
+
+  defmodule AttachmentEndpoint do
+    defstruct [:representation]
+
+    def open_attachment_representation(
+          %__MODULE__{representation: stream},
+          _request,
+          _timeout,
+          _opts
+        ),
+        do: {:ok, %{"stream" => stream, "attachment" => %{}, "source_watermark" => 9}}
   end
 
   setup do
@@ -200,4 +214,74 @@ defmodule VialKeeper.Shadow.ReadRoutingContractTest do
                operation_id: VialKeeper.UUID.v4()
              })
   end
+
+  describe "shadow-served attachment bytes are verified against the route digest" do
+    test "honest zstd representations stream intact", %{source_uuid: source_uuid} do
+      logical = String.duplicate("honest-bytes-", 1_000)
+      put_route(source_uuid, attachment_endpoint(logical, logical))
+
+      assert collect_attachment(source_uuid, logical) == {:ok, logical}
+    end
+
+    test "forged content under an honest digest halts the stream", %{source_uuid: source_uuid} do
+      honest = String.duplicate("h", 64)
+      forged = String.duplicate("f", 64)
+      put_route(source_uuid, attachment_endpoint(honest, forged))
+
+      assert {:error, %VialKeeper.Error{code: :integrity_violation}} =
+               collect_attachment(source_uuid, honest)
+    end
+
+    test "decoded output beyond the logical length is cut off", %{source_uuid: source_uuid} do
+      declared = "x"
+      bomb = :binary.copy("x", 8 * 1024 * 1024)
+      put_route(source_uuid, attachment_endpoint(declared, bomb))
+
+      assert {:error, %VialKeeper.Error{code: :integrity_violation}, emitted} =
+               collect_attachment_with_bytes(source_uuid, declared)
+
+      assert emitted <= byte_size(declared)
+    end
+  end
+
+  defp attachment_endpoint(declared_logical, actual_logical) do
+    {:ok, ctx} = Compression.new_compression_context()
+    :ok = Compression.set_level(ctx)
+    {:ok, payload} = Compression.compress_chunks(ctx, [actual_logical], true)
+
+    stream =
+      BlobRepresentationStream.new!(%{
+        encoding: :zstd,
+        logical_digest: sha256(declared_logical),
+        logical_length: byte_size(declared_logical),
+        payload_length: byte_size(payload),
+        payload_sha256: sha256(payload),
+        body: [payload]
+      })
+
+    %AttachmentEndpoint{representation: stream}
+  end
+
+  defp collect_attachment(source_uuid, declared) do
+    case collect_attachment_with_bytes(source_uuid, declared) do
+      {:ok, body} -> {:ok, body}
+      {:error, error, _emitted} -> {:error, error}
+    end
+  end
+
+  defp collect_attachment_with_bytes(source_uuid, declared) do
+    assert {:ok, logical, %{served_by: "shadow"}} =
+             ReadRouter.open_attachment(
+               source_uuid,
+               %{id: "doc", name: "file", digest: sha256(declared)},
+               primary: fn _ -> flunk("eventual attachment read should use the shadow") end
+             )
+
+    Enum.reduce_while(logical.body, {:ok, ""}, fn
+      {:error, error}, {:ok, acc} -> {:halt, {:error, error, byte_size(acc)}}
+      chunk, {:ok, acc} -> {:cont, {:ok, acc <> chunk}}
+    end)
+  end
+
+  defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
 end

@@ -25,6 +25,10 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   @reader_key {:vialkeeper, :attachment_reader}
   @representation_reader_key {:vialkeeper, :attachment_representation_reader}
 
+  # Fixed allowance on top of zstd's proportional worst-case expansion for frame
+  # and block headers of an incompressible payload.
+  @max_payload_overhead_bytes 1_048_576
+
   @type writer :: {:writer, reference()}
   @type representation_writer :: {:representation_writer, reference()}
   @type reader :: {:reader, reference()}
@@ -138,6 +142,8 @@ defmodule VialKeeper.Attachments.FilesystemStore do
     with {:ok, ref} <- writable_ref(store_ref),
          {:ok, descriptor} <- Representation.descriptor(descriptor),
          :ok <- enforce_max_logical_bytes(descriptor.logical_length, max_logical_bytes),
+         :ok <- enforce_max_payload_bytes(descriptor.payload_length, max_logical_bytes),
+         {:ok, decompress_ctx} <- maybe_open_decompressor(descriptor.encoding),
          {:ok, bundle} <- bundle_for(ref),
          {:ok, tmp_path} <- exclusive_tmp(bundle.tmp_path),
          {:ok, fd} <- File.open(tmp_path, [:write, :binary, :raw]) do
@@ -152,7 +158,10 @@ defmodule VialKeeper.Attachments.FilesystemStore do
           fd: fd,
           descriptor: descriptor,
           payload_hash_ctx: :crypto.hash_init(:sha256),
-          payload_length: 0
+          payload_length: 0,
+          decompress_ctx: decompress_ctx,
+          logical_hash_ctx: :crypto.hash_init(:sha256),
+          logical_length: 0
         }
       )
 
@@ -233,7 +242,7 @@ defmodule VialKeeper.Attachments.FilesystemStore do
 
   def abort_put_representation(_), do: :ok
 
-  @doc false
+  @doc "Returns the private temporary path of an active writer, or nil."
   @spec writer_tmp_path(writer() | representation_writer()) :: binary() | nil
   def writer_tmp_path({:writer, ref}) do
     writer_tmp_from_key(@writer_key, ref)
@@ -284,22 +293,7 @@ defmodule VialKeeper.Attachments.FilesystemStore do
          {:ok, descriptor, _size} <- read_validated_descriptor(path, digest),
          {:ok, fd, decompress_ctx} <- open_logical_components(path, descriptor) do
       ref = make_ref()
-
-      put_reader(
-        ref,
-        %{
-          fd: fd,
-          encoding: descriptor.encoding,
-          remaining_payload: descriptor.payload_length,
-          decompress_ctx: decompress_ctx,
-          pending: <<>>,
-          done?: false,
-          hash_ctx: :crypto.hash_init(:sha256),
-          logical_size: 0,
-          expected_size: descriptor.logical_length,
-          expected_digest: descriptor.logical_digest
-        }
-      )
+      put_reader(ref, logical_reader_state(fd, descriptor, decompress_ctx))
 
       {:ok, {:reader, ref}}
     else
@@ -483,6 +477,27 @@ defmodule VialKeeper.Attachments.FilesystemStore do
     {:error, Error.payload_too_large("attachment exceeds max_attachment_bytes")}
   end
 
+  # The physical payload length of a representation put is declared by the
+  # peer. Bound it by the logical ceiling plus the worst-case zstd expansion so
+  # a small logical descriptor cannot stream unbounded bytes onto disk.
+  defp enforce_max_payload_bytes(payload_length, max_logical_bytes) do
+    if payload_length <= max_representation_payload_bytes(max_logical_bytes) do
+      :ok
+    else
+      {:error, Error.payload_too_large("attachment exceeds max_attachment_bytes")}
+    end
+  end
+
+  @doc """
+  Returns the largest physical payload a representation put may declare for a
+  logical ceiling: the ceiling plus zstd's worst-case expansion.
+  """
+  @spec max_representation_payload_bytes(pos_integer()) :: pos_integer()
+  def max_representation_payload_bytes(max_logical_bytes)
+      when is_integer(max_logical_bytes) and max_logical_bytes > 0 do
+    max_logical_bytes + div(max_logical_bytes, 128) + @max_payload_overhead_bytes
+  end
+
   defp write_representation_state(state, chunk) do
     chunk_size = byte_size(chunk)
     new_length = state.payload_length + chunk_size
@@ -495,23 +510,53 @@ defmodule VialKeeper.Attachments.FilesystemStore do
         {:error, Error.integrity_violation("attachment representation payload length mismatch")}
 
       true ->
-        case :file.write(state.fd, chunk) do
-          :ok ->
-            {:ok,
-             %{
-               state
-               | payload_length: new_length,
-                 payload_hash_ctx: :crypto.hash_update(state.payload_hash_ctx, chunk)
-             }}
-
-          {:error, reason} ->
-            {:error, reason}
+        with {:ok, state} <- track_representation_logical(state, chunk),
+             :ok <- :file.write(state.fd, chunk) do
+          {:ok,
+           %{
+             state
+             | payload_length: new_length,
+               payload_hash_ctx: :crypto.hash_update(state.payload_hash_ctx, chunk)
+           }}
         end
+    end
+  end
+
+  # The descriptor's logical identity is peer-declared. Decode the payload as
+  # it streams so the installed blob is proven to hash to its CAS address, and
+  # stop as soon as decoded output exceeds the declared logical length.
+  defp track_representation_logical(%{decompress_ctx: nil} = state, chunk) do
+    add_representation_logical(state, chunk)
+  end
+
+  defp track_representation_logical(%{decompress_ctx: ctx} = state, chunk) do
+    case Compression.decompress_chunk(ctx, chunk) do
+      {:ok, output, ctx} ->
+        add_representation_logical(%{state | decompress_ctx: ctx}, IO.iodata_to_binary(output))
+
+      {:error, reason} ->
+        {:error, Error.integrity_violation("compressed attachment is corrupt: #{inspect(reason)}")}
+    end
+  end
+
+  defp add_representation_logical(state, output) do
+    new_length = state.logical_length + byte_size(output)
+
+    if new_length > state.descriptor.logical_length do
+      {:error, Error.integrity_violation("attachment representation logical length mismatch")}
+    else
+      {:ok,
+       %{
+         state
+         | logical_length: new_length,
+           logical_hash_ctx: :crypto.hash_update(state.logical_hash_ctx, output)
+       }}
     end
   end
 
   defp finalize_representation_payload(state) do
     digest = :crypto.hash_final(state.payload_hash_ctx) |> Base.encode16(case: :lower)
+    logical_digest = :crypto.hash_final(state.logical_hash_ctx) |> Base.encode16(case: :lower)
 
     cond do
       state.payload_length != state.descriptor.payload_length ->
@@ -519,6 +564,12 @@ defmodule VialKeeper.Attachments.FilesystemStore do
 
       digest != state.descriptor.payload_sha256 ->
         {:error, Error.integrity_violation("attachment representation payload digest mismatch")}
+
+      state.logical_length != state.descriptor.logical_length ->
+        {:error, Error.integrity_violation("attachment representation logical length mismatch")}
+
+      logical_digest != state.descriptor.logical_digest ->
+        {:error, Error.integrity_violation("attachment representation logical digest mismatch")}
 
       true ->
         :ok
@@ -893,12 +944,15 @@ defmodule VialKeeper.Attachments.FilesystemStore do
     end
   end
 
+  # A digest is only deduplicated when the existing blob provably decodes to
+  # content hashing to its CAS address; otherwise a blob with a forged
+  # logical identity would silently absorb every honest upload.
   defp reuse_validated_blob(dest, tmp_path, digest) do
-    result = validate_physical_blob(dest, digest)
+    result = validate_logical_blob(dest, digest)
     _ = File.rm(tmp_path)
 
     case result do
-      {:ok, _descriptor} -> {:ok, :deduplicated}
+      :ok -> {:ok, :deduplicated}
       {:error, _} = error -> error
     end
   end
@@ -929,8 +983,8 @@ defmodule VialKeeper.Attachments.FilesystemStore do
   defp reuse_after_collision(dest, digest) do
     case blob_file_kind(dest) do
       :regular ->
-        case validate_physical_blob(dest, digest) do
-          {:ok, _descriptor} -> {:ok, :deduplicated}
+        case validate_logical_blob(dest, digest) do
+          :ok -> {:ok, :deduplicated}
           {:error, _} = error -> error
         end
 
@@ -1186,6 +1240,43 @@ defmodule VialKeeper.Attachments.FilesystemStore do
            reason: inspect(reason)
          })}
     end
+  end
+
+  # Proves that the blob at `path` decodes to content hashing to `digest`.
+  # Raw payloads are covered by the payload hash (raw descriptors require
+  # payload_sha256 == logical_digest); zstd payloads are decoded and re-hashed.
+  defp validate_logical_blob(path, digest) do
+    case validate_physical_blob(path, digest) do
+      {:ok, %{encoding: :raw}} -> :ok
+      {:ok, descriptor} -> verify_logical_payload(path, descriptor)
+      {:error, _} = error -> error
+    end
+  end
+
+  defp verify_logical_payload(path, descriptor) do
+    with {:ok, fd, decompress_ctx} <- open_logical_components(path, descriptor) do
+      ref = make_ref()
+      put_reader(ref, logical_reader_state(fd, descriptor, decompress_ctx))
+      reader = {:reader, ref}
+      result = stream_verify(reader, descriptor.logical_length, descriptor.logical_digest)
+      close_read(reader)
+      result
+    end
+  end
+
+  defp logical_reader_state(fd, descriptor, decompress_ctx) do
+    %{
+      fd: fd,
+      encoding: descriptor.encoding,
+      remaining_payload: descriptor.payload_length,
+      decompress_ctx: decompress_ctx,
+      pending: <<>>,
+      done?: false,
+      hash_ctx: :crypto.hash_init(:sha256),
+      logical_size: 0,
+      expected_size: descriptor.logical_length,
+      expected_digest: descriptor.logical_digest
+    }
   end
 
   defp validate_physical_blob(path, digest) do

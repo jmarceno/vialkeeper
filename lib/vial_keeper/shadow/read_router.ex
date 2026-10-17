@@ -1,7 +1,7 @@
 defmodule VialKeeper.Shadow.ReadRouter do
   @moduledoc "Routes eventual reads through an exact ready shadow snapshot."
 
-  alias VialKeeper.Attachments.Manifest
+  alias VialKeeper.Attachments.{Compression, Manifest}
   alias VialKeeper.Attachments.Representation
   alias VialKeeper.Error
   alias VialKeeper.Observability.Instrumentation.Shadow, as: ShadowInstr
@@ -292,23 +292,84 @@ defmodule VialKeeper.Shadow.ReadRouter do
   defp logical_attachment_stream(_, _),
     do: {:error, Error.shadow_attachment_unavailable("shadow attachment response is invalid")}
 
-  defp decode_body(%BlobRepresentationStream{encoding: :raw, body: body}), do: {:ok, body}
-
-  defp decode_body(%BlobRepresentationStream{encoding: :zstd, body: body}) do
-    alias VialKeeper.Attachments.Compression
-
-    with {:ok, context} <- Compression.new_decompression_context() do
+  # The external CAS is outside the source's control, so the logical bytes are
+  # verified as they stream: decoded output may never exceed the declared
+  # length, and the final size and digest must match the route digest. A
+  # failure emits an error element, which halts the response.
+  defp decode_body(%BlobRepresentationStream{} = stream) do
+    with {:ok, decoder} <- new_decoder(stream.encoding) do
       {:ok,
-       Stream.transform(body, context, fn chunk, context ->
-         case Compression.decompress_chunk(context, chunk) do
-           {:ok, output, next} -> {[IO.iodata_to_binary(output)], next}
-           {:error, error} -> throw({:shadow_attachment_decode_error, error})
-         end
-       end)}
+       Stream.transform(
+         stream.body,
+         fn ->
+           %{
+             decoder: decoder,
+             size: 0,
+             hash: :crypto.hash_init(:sha256),
+             failed?: false
+           }
+         end,
+         &verify_chunk(&1, &2, stream.logical_length),
+         &finish_verified_body(&1, stream),
+         fn _acc -> :ok end
+       )}
     end
-  catch
-    {:shadow_attachment_decode_error, error} ->
-      {:error, Error.internal_error("shadow attachment decode failed", %{cause: error})}
+  end
+
+  defp new_decoder(:raw), do: {:ok, :raw}
+
+  defp new_decoder(:zstd) do
+    case Compression.new_decompression_context() do
+      {:ok, context} ->
+        {:ok, context}
+
+      {:error, reason} ->
+        {:error, Error.internal_error("shadow attachment decode failed", %{cause: reason})}
+    end
+  end
+
+  defp verify_chunk(_chunk, %{failed?: true} = acc, _limit), do: {:halt, acc}
+
+  defp verify_chunk({:error, %Error{}} = error, acc, _limit), do: {[error], %{acc | failed?: true}}
+
+  defp verify_chunk(chunk, acc, limit) when is_binary(chunk) do
+    case decode_chunk(acc.decoder, chunk) do
+      {:ok, output, decoder} ->
+        size = acc.size + byte_size(output)
+
+        if size > limit do
+          {[{:error, Error.integrity_violation("shadow attachment exceeds its logical length")}],
+           %{acc | failed?: true}}
+        else
+          {[output],
+           %{acc | decoder: decoder, size: size, hash: :crypto.hash_update(acc.hash, output)}}
+        end
+
+      {:error, reason} ->
+        {[{:error, Error.integrity_violation("shadow attachment is corrupt", %{cause: reason})}],
+         %{acc | failed?: true}}
+    end
+  end
+
+  defp decode_chunk(:raw, chunk), do: {:ok, chunk, :raw}
+
+  defp decode_chunk(context, chunk) do
+    case Compression.decompress_chunk(context, chunk) do
+      {:ok, output, next} -> {:ok, IO.iodata_to_binary(output), next}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp finish_verified_body(%{failed?: true} = acc, _stream), do: {[], acc}
+
+  defp finish_verified_body(acc, stream) do
+    digest = :crypto.hash_final(acc.hash) |> Base.encode16(case: :lower)
+
+    if acc.size == stream.logical_length and digest == stream.logical_digest do
+      {[], acc}
+    else
+      {[{:error, Error.integrity_violation("shadow attachment does not match its digest")}], acc}
+    end
   end
 
   defp consistency(opts) do

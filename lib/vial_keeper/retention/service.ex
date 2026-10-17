@@ -10,6 +10,8 @@ defmodule VialKeeper.Retention.Service do
   alias VialKeeper.Retention.{CompactionPlan, Frontier}
 
   @page_size 100
+  @default_peer_lease_ms 86_400_000
+  @lease_clock_skew_ms 300_000
 
   @type meta :: %{
           required(:database_uuid) => binary(),
@@ -279,6 +281,48 @@ defmodule VialKeeper.Retention.Service do
     end
   end
 
+  @doc """
+  Bounds a peer's declared lease by the local retention policy.
+
+  The peer ledger is writable over the replication wire, and an unexpired
+  active row holds back the compaction frontier. The ceiling is the
+  database's `retention.peer_expiry_ms`, capped by the host
+  `max_peer_expiry_ms`, plus a clock-skew allowance. Honest peers renew on
+  every pull, so clamping keeps them working. Unparseable leases are left
+  as-is; `PeerPosition.expired?/2` already treats them as expired.
+  """
+  @spec bound_peer_lease(PeerPosition.t(), map(), integer()) :: PeerPosition.t()
+  def bound_peer_lease(%PeerPosition{} = peer, config, now_ms)
+      when is_map(config) and is_integer(now_ms) do
+    ceiling_ms = now_ms + peer_lease_ceiling_ms(config) + @lease_clock_skew_ms
+
+    case DateTime.from_iso8601(peer.lease_expires_at) do
+      {:ok, expires_at, _offset} ->
+        if DateTime.to_unix(expires_at, :millisecond) > ceiling_ms do
+          ceiling = ceiling_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
+          %{peer | lease_expires_at: ceiling}
+        else
+          peer
+        end
+
+      {:error, _} ->
+        peer
+    end
+  end
+
+  defp peer_lease_ceiling_ms(config) do
+    configured =
+      case get_in(config, ["retention", "peer_expiry_ms"]) do
+        value when is_integer(value) and value > 0 -> value
+        _ -> @default_peer_lease_ms
+      end
+
+    case VialKeeper.Config.host_limits()[:max_peer_expiry_ms] do
+      maximum when is_integer(maximum) and maximum > 0 -> min(configured, maximum)
+      _ -> configured
+    end
+  end
+
   @doc "Wire map for a peer position ledger record."
   @spec peer_wire(PeerPosition.t()) :: map()
   def peer_wire(%PeerPosition{} = peer) do
@@ -510,13 +554,20 @@ defmodule VialKeeper.Retention.Service do
     end
   end
 
+  # boundary_start_index/2 resumes strictly after the cursor record, so the
+  # cursor is the last served record; the next record only signals more pages.
   defp next_boundary_cursor(sorted, start_index, page) do
-    case Enum.at(sorted, start_index + length(page)) do
-      %{boundary: boundary, source_database_uuid: source_uuid} ->
-        BoundaryPage.record_key(source_uuid, boundary.document_id, boundary.history_id)
+    served_through = start_index + length(page)
 
-      _ ->
+    case Enum.at(sorted, served_through) do
+      nil ->
         nil
+
+      _more ->
+        %{boundary: boundary, source_database_uuid: source_uuid} =
+          Enum.at(sorted, served_through - 1)
+
+        BoundaryPage.record_key(source_uuid, boundary.document_id, boundary.history_id)
     end
   end
 

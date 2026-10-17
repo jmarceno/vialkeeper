@@ -3,7 +3,7 @@ defmodule VialKeeper.Storage.RequestValidation do
   Shared request validation helpers used by storage adapters.
   """
 
-  alias VialKeeper.Attachments.FilesystemStore
+  alias VialKeeper.Attachments.{FilesystemStore, StoreRef}
 
   @uuid_re ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -65,11 +65,24 @@ defmodule VialKeeper.Storage.RequestValidation do
     end
   end
 
-  @doc "Verifies one physical attachment digest under a bundle root."
-  @spec verify_blob(binary(), binary(), non_neg_integer()) ::
+  @doc "Verifies `{digest, logical_size}` pairs, stopping at the first failure."
+  @spec verify_blobs(binary() | StoreRef.t(), [{binary(), non_neg_integer()}]) ::
+          :ok | {:error, VialKeeper.Error.t()}
+  def verify_blobs(root, digests) when is_list(digests) do
+    Enum.reduce_while(digests, :ok, fn {digest, logical_size}, :ok ->
+      case verify_blob(root, digest, logical_size) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  @doc "Verifies one physical attachment digest under a bundle root or store reference."
+  @spec verify_blob(binary() | StoreRef.t(), binary(), non_neg_integer()) ::
           :ok | {:error, VialKeeper.Error.t()}
   def verify_blob(root, digest, logical_size)
-      when is_binary(root) and is_binary(digest) and is_integer(logical_size) do
+      when (is_binary(root) or is_struct(root, StoreRef)) and is_binary(digest) and
+             is_integer(logical_size) do
     case FilesystemStore.verify(root, digest, logical_size) do
       :ok ->
         :ok

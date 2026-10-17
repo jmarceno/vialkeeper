@@ -110,9 +110,25 @@ defmodule VialKeeper.Retention.ReviewerFixesTest do
            }}
         )
 
+      {:ok, page3} =
+        DatabaseCatalog.command(
+          db.database_uuid,
+          {:command, :read_boundary_pages,
+           %{
+             "limit" => 1,
+             "cursor" => page2.next_page
+           }}
+        )
+
       assert page1.boundary_digest == page2.boundary_digest
+      assert page2.boundary_digest == page3.boundary_digest
       assert page1.next_page != nil
-      assert page2.next_page == nil
+      assert page2.next_page != nil
+      assert page3.next_page == nil
+
+      served = Enum.flat_map([page1, page2, page3], & &1.boundaries)
+      assert Enum.map(served, & &1.document_id) == ["a", "b", "c"]
+      assert BoundaryPage.digest_for(served) == page1.boundary_digest
     end
 
     test "replaces stale boundaries only after the complete set verifies" do
